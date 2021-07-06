@@ -3,7 +3,7 @@ This repository contains the data files and algorithms for clustering Microsoft 
 ## Table of Contents
 * `av_labels/`: Directory of JSON files, one per sample, containing AntiVirus labels (if any).
 * `macros/`: Directory of raw VBA macro files, extracted from the document samples.
-* `cluster.ipynb`: Jupyter notebook demonstrating K-means clustering over the corpus.
+* `clustering.ipynb`: Jupyter notebook demonstrating K-means clustering over the corpus.
 * `classification.csv`: CSV representation of hash, AV positive count and label (one of UNKNOWN, MALICIOUS, BENIGN).
 * `vba_features.csv`: CSV representation of VBA feature vectors extracted from the raw macros above.
 * `requirements.txt`: Libraries required for the notebook to work

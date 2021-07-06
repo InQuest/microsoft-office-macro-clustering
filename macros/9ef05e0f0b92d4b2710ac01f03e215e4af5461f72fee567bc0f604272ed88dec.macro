@@ -1,0 +1,282 @@
+Attribute VB_Name = "Module1"
+Option Compare Text  ' "AAA" = "aaa"
+Option Explicit
+
+Public ShowInTaskbar As Boolean
+
+'Variables shared between procs.
+Dim PathOnly As String
+Dim OutputFile As String
+Dim StopWait As Boolean
+Public GoodSeparator As String
+Public BadSeparator As String
+
+Sub RunSweep()
+   Dim ScrFile As String
+   
+   'Error checking on user input fields.
+   
+   If Dir([PathVNWA]) = "" Then
+      MsgBox "Invalid path to VNWA exe.", vbExclamation, "Invalid Entry"
+      Exit Sub
+   End If
+   
+   If [NumPoints] = "?" Then
+      MsgBox "Invalid Start/Stop/Step.", vbExclamation, "Invalid Entry"
+      Exit Sub
+   End If
+   
+   If Not IsNumeric([TimePerPoint]) Then
+      MsgBox "Invalid Time per Point.", vbExclamation, "Invalid Entry"
+      Exit Sub
+   End If
+   
+   If [TimePerPoint] <= 0 Then
+      MsgBox "Invalid Time per Point.", vbExclamation, "Invalid Entry"
+      Exit Sub
+   End If
+
+   'Make sure VNWA not already running.
+   
+   On Error Resume Next
+   AppActivate "DG8SAQ  -  Vector Network Analyzer Software"
+   If Err.Number = 0 Then
+      AppActivate Application.Caption
+      MsgBox "Close existing VNWA window.", vbExclamation, "Close VNWA"
+      AppActivate "DG8SAQ  -  Vector Network Analyzer Software"
+      Exit Sub
+   End If
+   
+   'Set CurDir to VNWA.exe folder, create script file.
+   'Note that OutputFile is also written to CurDir.
+   
+   PathOnly = Left([PathVNWA], Len([PathVNWA]) - Len(Dir([PathVNWA])))
+   ChDrive PathOnly
+   ChDir PathOnly
+   
+   If [NumPorts] = 1 Then
+      OutputFile = "$remote$.s1p"
+   Else
+      OutputFile = "$remote$.s2p"
+   End If
+   
+   Kill OutputFile  'so can test below
+   Kill "$temp$.tmp"
+   On Error GoTo 0
+   
+   'Note:  For Start, Stop, and TimePerPoint use Str instead of CStr.
+   'The VNWA program recognizes only "." as the decimal point.
+   ScrFile = "$remote$.scr"
+   Open ScrFile For Output As #1
+   Print #1, "range " & Str([Start]) & "e6 " & Str([Stop]) & "e6"
+   If Right([Step], 1) = "e" Then
+      Print #1, "frame " & CStr([NumPoints]) & " log"
+   Else
+      Print #1, "frame " & CStr([NumPoints]) & " lin"
+   End If
+   Print #1, "timeperpoint " & Str([TimePerPoint])
+   If [NumPorts] = 1 Then
+      Print #1, "sweep s11"
+      Print #1, "writes1p " & OutputFile & " s11"
+   Else
+      Print #1, "sweep s11 s21"
+      Print #1, "writes2p " & OutputFile
+   End If
+   Print #1, "exitVNWA"
+   Close #1
+   
+   StopWait = False
+   Sheets("Sheet1").Shapes("btnSweep").Visible = False  'which make btnReset visible
+   Application.ScreenUpdating = True
+   
+   'Shell VNWA plus script file, then wait for OutputFile ready.
+
+   Shell """" & [PathVNWA] & """ " & ScrFile, 1
+   '''Shell """" & [PathVNWA] & """ " & ScrFile & " -debug", 1
+   
+   WaitForFinish
+End Sub
+
+Public Sub WaitForFinish()
+   'Wait until OutputFile created by VNWA can be renamed (or user Reset).
+   'Note that the Name statement will fail with either error 53
+   '(File not found) or error 75 (File access error) until the
+   'OutputFile has been opened, written, and closed by the VNWA program.
+   With ThisWorkbook.Sheets("Sheet1")
+      If StopWait Then
+         .Shapes("btnSweep").Visible = True  'which hides btnReset (underneath)
+         Exit Sub
+      End If
+      On Error Resume Next
+      Name OutputFile As "$temp$.tmp"
+      If Err.Number = 0 Then
+         On Error GoTo 0
+         'Sweep finished, pass OutputFile to Zplots.
+         Name "$temp$.tmp" As OutputFile
+         .Shapes("btnSweep").Visible = True
+         RunZplots PathOnly & OutputFile
+      Else
+         'Continue waiting.
+         Application.OnTime Now + TimeValue("00:00:01"), "WaitForFinish"
+      End If
+   End With
+End Sub
+
+Sub Reset()
+   StopWait = True
+End Sub
+
+Sub BrowsePathVNWA()
+   Dim FileToOpen As Variant
+   FileToOpen = Application.GetOpenFilename( _
+                "Exe Files (*.exe),*.exe,", 1, _
+                "Select and Open the VNWA exe File")
+   If FileToOpen <> False Then
+      Range("PathVNWA").Value = FileToOpen
+   End If
+End Sub
+
+Function CalcNumPoints(vStart As Variant, vStop As Variant, vStep As Variant) As Variant
+   Dim dStart As Double
+   Dim dStop As Double
+   Dim dStep As Double
+   Dim vNumPoints As Variant
+   
+   On Error Resume Next
+   dStart = vStart
+   dStop = vStop
+   If dStop <= dStart Or dStart < 0 Then
+      vNumPoints = "?"
+   ElseIf Right(vStep, 1) = "p" Or Right(vStep, 1) = "e" Then
+      'Show number of points as entered.
+      vNumPoints = CDbl(Left(vStep, Len(vStep) - 1))
+   ElseIf Right(vStep, 1) = "%" Then
+      'Convert percentage to number of points.
+      vNumPoints = CDbl(CLng(100 / Left(vStep, Len(vStep) - 1)) + 1)
+   Else
+      'Calculate from start/stop/step.
+      dStep = Application.Round(CDbl(vStep), 6)  'allow 1 Hz granularity
+      vNumPoints = CLng((dStop - dStart) / dStep + 1)
+   End If
+   'Show "?" if any errors.
+   If Err.Number > 0 Then
+      vNumPoints = "?"
+   End If
+   CalcNumPoints = vNumPoints
+End Function
+
+Sub RunZplots(FileToLoad As String)
+   Dim wb As Workbook
+   Dim ZplotsFullName As String
+   Dim ZplotsIsOpen As Boolean
+   
+   'Get Path+Name of Zplots workbook.  Make sure valid.
+   'If run directly from web page, ThisWorkbook.Path=http://ac6la.com and Dir will be invalid.
+   On Error Resume Next
+   ZplotsFullName = ThisWorkbook.Path & "\Zplots.xls"
+   If Dir(ZplotsFullName) = "" Then  '.xls not found, maybe .xlsm/.xlsb?
+      If Val(Application.Version) > 11 Then  'XL2007 or above
+         ZplotsFullName = ThisWorkbook.Path & "\Zplots.xlsm"
+         If Dir(ZplotsFullName) = "" Then
+            ZplotsFullName = ThisWorkbook.Path & "\Zplots.xlsb"
+         End If
+      End If
+   End If
+   If Dir(ZplotsFullName) = "" Then
+      MsgBox "Zplots workbook '" & _
+             ThisWorkbook.Path & "\Zplots.xls" & _
+                IIf(Val(Application.Version) > 11, "(.xlsm,.xlsb)", "") & _
+             "' not found." & vbLf & vbLf & _
+             "Make sure Zplots is in the same folder as RemoteVNWA.", _
+             vbExclamation, "Zplots Not Found"
+      Exit Sub
+   End If
+   On Error GoTo 0
+   
+   'Open Zplots if necessary.  If already open, Activate.
+   For Each wb In Workbooks
+      If wb.FullName = ZplotsFullName Then
+         ZplotsIsOpen = True
+         Exit For
+      End If
+   Next wb
+   If ZplotsIsOpen Then
+      Workbooks(Dir(ZplotsFullName)).Activate
+   Else
+      Workbooks.Open ZplotsFullName  'includes Activate
+   End If
+
+   'Pass remote VNWA data file path+name, which triggers Change event in Zplots.
+   Workbooks(Dir(ZplotsFullName)).Sheets("TriggerLoad").Range("A1").Value = FileToLoad
+End Sub
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+   If Application.Intersect(Target, _
+      Application.Union(Range("Start"), Range("Stop"), Range("Step"), _
+                        Range("TimeperPoint"))) Is Nothing Then Exit Sub
+   
+   If Right(Target.Text, 1) = "%" Then
+      Application.EnableEvents = False
+      Target.Value = "'" & Target.Text
+      Target.NumberFormat = "General"
+      Application.EnableEvents = True
+   End If
+   
+   If InStr(Target.Text, BadSeparator) <> 0 Then
+      Target.Select
+      Target.NumberFormat = "General"
+      Application.EnableEvents = False
+      Target.Value = "?"
+      Application.EnableEvents = True
+      MsgBox "Use a " & GoodSeparator & " as the decimal point character.", vbExclamation, "Invalid Entry"
+   End If
+End Sub
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_Open()
+   With Application
+      On Error Resume Next
+      ShowInTaskbar = .ShowWindowsInTaskbar  'save current status (not valid in XL97)
+      .ShowWindowsInTaskbar = True  'make it easy to switch between here and Zplots
+      On Error GoTo 0
+   End With
+   
+   Sheets("Sheet1").Shapes("btnSweep").Visible = True  'in case closed mid-sweep
+   
+   If Application.International(xlDecimalSeparator) = "." Then  'used with Sheet1 Change event
+      GoodSeparator = "period (.)"
+      BadSeparator = ","
+   Else
+      GoodSeparator = "comma (,)"
+      BadSeparator = "."
+   End If
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+   With Application
+      On Error Resume Next
+      .ShowWindowsInTaskbar = ShowInTaskbar
+      On Error GoTo 0
+   End With
+End Sub
+
+
+INQUEST-PP=macro

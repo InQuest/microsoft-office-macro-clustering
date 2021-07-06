@@ -1,0 +1,1714 @@
+Attribute VB_Name = "Module1"
+
+' Code of FINDLINK.XLA - an Excel add-in to find/delete links in Excel workbooks
+' It runs on Excel 97 or later.
+' (c) Bill Manville Associates 1997-2016
+' Author: Bill@manville.org.uk
+
+Option Explicit
+Option Compare Text      ' ensure case insensitive compares done.
+
+Dim iFound As Integer    ' number of matches so far
+Dim LinkString As String ' what is being sought
+Dim iOLEFound As Integer ' number of matches in OLE objects on current sheet
+Dim iOption As Integer   ' 1 for message, 0 for list, -1 for delete
+Dim rLog As Range
+Dim bUpdate As Boolean   ' normal state of ScreenUpdating for the current option
+Dim bShared As Boolean   ' whether the workbook is shared or not. Can't select in shared workbook
+
+Const stVersion = "11.0"
+Const cstTitle = "Link Finder " & stVersion
+
+' version 5; extended for Excel 97
+' version 6: improved commenting
+' version 6.1: corrected for embedded OLE objects in Excel 97
+' version 6.2: corrected for embedded OLE objects in Excel 95!
+' version 6.3: added LinkedCell and ListFillRange of controls
+' version 6.4: correction for long formula
+' version 7.0: deals with links in formulas in broken line chart series
+'              finds links in chart titles and primary axis titles
+'              unprotects sheets
+'              deals with links in cells hidden by merging
+'              deals with print titles referring to a different workbook
+'              selects the object concerned when giving the message so that if you cancel you have the right object ready to change
+'              deals with links in pivotcaches and pivottables.
+' version 7.1: help corrected
+'              deals with GroupObjects
+'              screen updates off if just listing
+'              deals with formulas on Rectangles, Arcs, etc
+'         7.2  deals with data labels
+'         7.3  deletes sereies if cannot replace with values
+'         7.4  screen updating turned off for List and Delete options
+'         7.5  does not select an object if it is not visible
+'         7.6  retries if sheet unprotect fails on wrong password;
+'              disables events in 97 and later
+'              anticipates errors on charts on protected sheets
+'         7.7  avoid error on datalabels.
+'         7.8  switch calculation off - can be faster with merged cells.
+'         7.9  no action (except logging) if find linkstring in value of a cell rather than formula
+'         8.0  dropdown list including names of Excel link sources.
+'              detects hide objects option and asks to change it
+'              detects shared workbook and asks to change to exclusive access
+'              detects filtered sheets and asks to unfilter them
+'              recommends JKP's repair names utility on finding a corrupted name
+'              ignores OnAction which references a macro in the active workbook.
+'         8.0a check for no active workbook; tab order fixed; large fonts better.
+'         8.1  scans DrawingObjects collection using numerical index to avoid problems
+'              ..with implicitly named GroupObject components appearing in a For Each scan
+'         8.1a restores user's calculation option in a couple of cases where previously it would have left as manual
+'         8.2  On hitting a problem with a data label, changes the series type to Area and tries again.
+'              Check for active autofilter now makes sure there is an active filter
+'         8.3  Linked cell of checkbox, optionbutton, scrollbar and spinner
+'              ChartObject on a chart sheet where both charts have links doesn't cause error
+'              Change to R1C1 reference mode to deal with corrupt names.
+'         8.4  Really unprotects sheets
+'         8.5  OK with array for pivot table source data
+'         8.6  Control toolbox controls: LinkedCell and ListFillRange
+'         8.7  Finds link (and avoids error) if in first cell of used range which is merged.
+'         8.8  Works if the link source is a URL which uses / instead of \ as file component separator
+'         8.9  undeletable name Print_Area treated the same as Print_Titles, using SendKeys to Insert / Name / Define / Delete
+'         9.0  If there's a formula that is too long to read in R1C1 notation then no error - just stops the recognition of cells with same formula
+'         9.1  Where cell containing link is a named range, handle name better in log options
+'         9.2  Look for #REF rather than #REF! to allow for #REF'!.  Sign with new certificate
+'         9.3  Modify group object handling for 2007/2010 compatibility
+'              Modify axis title handling for 2007/2010 compatibility
+'              Advises that it can't see error bar information
+'              Gives a means of escaping from a sequence of messages (not implemented throughout)
+'         9.4  If the range with a constant formula is disjoint, deal with each area separately
+'         9.5  Fix bug in 9.3 that limited scanning to first worksheet
+'              Improve axis title handling in 2010.
+'         9.6  Save and restore AutoFilter
+'              Remove PlotVisibleOnly while looking at charts
+'         9.7  Allow for Mac pathseparator (:)
+'         9.8  Conditional formatting formulas in Excel 2010 and later
+'         9.9  Handle error in Formula2 property of conditional format
+'         9.9a Update to email address
+'        10.0  Improve checking of conditional formatting formulas
+'        10.1  Deal better with filenames containing '
+'        10.2  No error on pivotcache which has external source
+'        10.3  Additional error reporting for mergecells error
+'        10.4  Bugfix on 10.3 changes
+'        10.5  Conditional formatting (2007+) scanned from worksheet not by range
+'        10.6  Deal with conditional formatting formula wrongly classified as type 1 with no Operator value and earlier exit from 2003 conditional format loop
+'        10.7  Faster processing of large blocks of formulas
+'        10.8  Rebuilt and AddInUninstall event added to attempt to get over persistent menu item problem
+'        10.9  Debug statements removed; icon and add-in description added.
+'        11.0  Fix broken link on Help button
+
+' does not yet detect
+' - secondary axis titles
+' - custom error bar sources
+
+' known problems
+' - doesn't find formulas in rows hidden by advanced filtering.  Could copy sheet to new book and remove filter there (if links found)
+
+Sub FindLinks()
+' this is the main procedure, assigned to the Tools / Find Links menu item
+
+  Dim obj As Object, stMsg As String, oSheet As Object, iName As Integer
+  Dim iProtectOption As Integer  ' 0: unknown, vbNo: try UserInterfaceOnly. vbYes: unprotect
+  Dim oActive As Object, oWB As Object, V As Variant
+  Dim stStage As String
+  Dim iResp As Integer
+  Dim stName As String
+  Dim iChar As Integer
+  Dim bBad As Boolean
+  Dim iCalc As Integer
+  Dim vLinks, iLink As Integer
+  Dim iDispDOs As Integer
+  Dim bLFound As Boolean
+  Dim stSource As String
+  Dim bCancel As Boolean
+  
+  On Error GoTo locErr
+  
+  iFound = 0
+  stStage = "Dialog"
+  If ActiveWorkbook Is Nothing Then
+    MsgBox "You need to have a workbook active for FindLink to be useful", vbExclamation, cstTitle
+    Exit Sub
+  End If
+  iCalc = Application.Calculation
+  Application.Calculation = xlManual
+  With ThisWorkbook.DialogSheets("Options")
+    If LinkString = "" Then .OptionButtons("optMessage").Value = xlOn ' first use
+    vLinks = ActiveWorkbook.LinkSources(xlExcelLinks)
+    .DropDowns("ddLinkString").List = Array(".XLS", "#REF")
+    If Not IsEmpty(vLinks) Then
+      For iLink = LBound(vLinks) To UBound(vLinks)
+        For iChar = Len(vLinks(iLink)) To 1 Step -1
+          If Mid(vLinks(iLink), iChar, 1) = Application.PathSeparator Or Mid(vLinks(iLink), iChar, 1) = "/" Then Exit For
+        Next
+        .DropDowns("ddLinkString").AddItem Mid(vLinks(iLink), iChar + 1)
+        If Mid(vLinks(iLink), iChar + 1) = LinkString Then bLFound = True
+      Next
+      If Not bLFound Then LinkString = .DropDowns("ddLinkString").List(3) ' first linked file
+    ElseIf LinkString = "" Then
+      LinkString = ".XLS"
+      MsgBox "There are no Excel formula links in the active workbook," & Chr(13) & _
+       "but you can still use FINDLINK to look for other things" & Chr(13) & _
+       "(e.g. names) in your formulas", vbInformation, cstTitle
+    End If
+    .DropDowns("ddLinkString").Text = LinkString
+    
+    .DialogFrame.Caption = "Link Finder Version " & stVersion
+    If .Show = False Then GoTo tidyUp ' cancel
+    LinkString = .DropDowns("ddLinkString").Text
+    LinkString = Replace(LinkString, "'", "''")
+    Select Case xlOn
+      Case .OptionButtons("optMessage").Value
+        iOption = 1
+      Case .OptionButtons("optList").Value
+        iOption = 0
+      Case .OptionButtons("optDelete").Value
+        iOption = -1
+    End Select
+  End With
+  bUpdate = iOption > 0 ' update screen normally off for options 0 and -1
+    
+  Application.ScreenUpdating = bUpdate
+  If Val(Application.Version) >= 8 Then Events False
+    
+  Set oWB = ActiveWorkbook
+  
+  If iOption < 1 Then
+    stStage = "Start Log"
+    Workbooks.Add (xlWorksheet)
+    On Error Resume Next
+    ActiveSheet.Name = "Links in " & Left(oWB.Name, 22)
+    If Err Then ActiveSheet.Name = "Links found"
+    On Error GoTo locErr
+    With Range("A1:F1")
+      .Value = Array("Sheet", "Object", "Name", "Property", "Value", "Action")
+      .Font.Bold = True
+      .Offset(1).Font.Bold = False
+    End With
+    Set rLog = Range("A2")
+    oWB.Activate
+  End If
+    
+  stStage = "Reveal Objects"
+  iDispDOs = ActiveWorkbook.DisplayDrawingObjects
+  If iDispDOs = xlHide Then
+    If MsgBox("This workbook has drawing objects hidden" & Chr(13) & _
+        "(Tools / Options / View Objects / Hide All)" & Chr(13) & _
+        "This prevents me from checking such objects for links" & Chr(13) & _
+        "Shall I unhide them?", vbYesNo, cstTitle) = vbYes Then
+      ActiveWorkbook.DisplayDrawingObjects = xlAll
+    End If
+  End If
+  
+  stStage = "Check for shared workbook"
+  bShared = False
+  If ActiveWorkbook.MultiUserEditing Then
+    If MsgBox("This workbook is shared" & Chr(13) & _
+        "This prevents me from doing certain checks and removing some links" & Chr(13) & _
+        "Shall I unshare it?", vbYesNo, cstTitle) = vbYes Then
+      ActiveWorkbook.ExclusiveAccess
+    Else
+      bShared = True  ' prevent Select of objects (which will fail)
+    End If
+  End If
+  
+  iProtectOption = 0
+  stStage = "Protection"
+  Application.StatusBar = "Checking protection"
+  For Each oSheet In ActiveWorkbook.Sheets
+    If TypeName(oSheet) <> "Module" Then
+      If oSheet.ProtectContents Or oSheet.ProtectDrawingObjects Then
+        If iProtectOption = 0 Then
+          Application.ScreenUpdating = True
+          iProtectOption = MsgBox("Sheet '" & oSheet.Name & "' is protected." & Chr(13) & _
+            "There are some types of link that cannot be detected or removed on a protected sheet" & Chr(13) & _
+            "Shall I unprotect protected sheets?", vbYesNo, cstTitle)
+          Application.ScreenUpdating = bUpdate
+        End If
+        If iProtectOption = vbNo Then
+          ' try for userinterfaceonly protection (will not work in Excel 5)
+          On Error Resume Next
+          If Val(Application.Version) >= 7 Then
+            oSheet.Protect userinterfaceonly:=True
+          End If
+          On Error GoTo locErr
+        Else
+          Do
+            On Error Resume Next
+            oSheet.Unprotect
+            If Err Then
+              Application.ScreenUpdating = True
+              iResp = MsgBox("Sorry, I could not unprotect sheet " & oSheet.Name & Chr(13) & Error() & Chr(13), vbExclamation + vbAbortRetryIgnore, cstTitle)
+              If iResp = vbAbort Then GoTo tidyUp
+              If iResp = vbIgnore And iOption <= 0 Then
+                LogIt oSheet.Name, "", "Protection", "Password protected?", "", "Not Unprotected"
+              End If
+              Application.ScreenUpdating = bUpdate
+            End If
+          Loop While Err <> 0 And iResp = vbRetry
+          On Error GoTo locErr
+          'If Val(Application.Version) >= 7 Then
+          '  oSheet.Protect userinterfaceonly:=True
+          'End If
+          LogIt oSheet.Name, "", "Protection", "", "", "Unprotected"
+        End If
+      End If
+    End If
+  Next oSheet
+    
+  Application.StatusBar = "Looking for links in workbook names"
+  
+  ' first look for names
+  stStage = "Names"
+  For Each obj In ActiveWorkbook.Names
+    If InStr(obj.RefersTo, LinkString) > 0 Then
+      If CheckDel(obj, obj.RefersTo) Then
+        stName = obj.Name
+        If stName = "Print_Titles" Or stName = "Print_Area" Then
+          ' likely to fail without error
+          obj.Delete
+          Set obj = Nothing
+          On Error Resume Next
+          Set obj = ActiveWorkbook.Names(stName)
+          On Error GoTo locErr
+          If Not obj Is Nothing Then
+            ' try SendKeys and insert/name/delete dialog
+
+            SendKeys stName & "+{TAB}~~"
+            Application.CommandBars.FindControl(ID:=878).Execute
+            Set obj = Nothing
+            On Error Resume Next
+            Set obj = ActiveWorkbook.Names(stName)
+            If Not obj Is Nothing Then
+              If iOption > 0 Then
+                MsgBox "Excel would not let me delete this name." & Chr(13) & _
+                  "Use Insert / Name / Define / Print_Area / Delete", , cstTitle
+              Else
+                ReviseAction "Could not delete: use Insert / Name / Define / Delete"
+              End If
+            End If
+            On Error GoTo locErr
+          End If
+        ElseIf Right(stName, 13) = "!Print_Titles" Then
+          ' cannot delete this name but can kill it via PageSetup
+          With Sheets(Left(stName, Len(stName) - 13)).PageSetup
+            .PrintTitleColumns = ""
+            .PrintTitleRows = ""
+          End With
+        Else
+          ' sometimes have problems with corrupted names
+          bBad = False
+          For iChar = 1 To Len(stName)
+            If Asc(Mid(stName, iChar, 1)) <= 32 Then
+              bBad = True
+              Exit For
+            End If
+          Next
+          If Not bBad Then
+            obj.Delete
+          Else
+            On Error Resume Next
+            ActiveWorkbook.Names(obj.Index).Delete
+            'ExecuteExcel4Macro "DELETE.NAME("" & obj.name & "")"   'doesn't work or give error
+            If Err <> 0 And Application.ReferenceStyle = xlA1 Then
+              MsgBox "I cannot delete name " & stName & Chr(13) & _
+                "I am going to try to delete it by changing Excel's reference style to R1C1" & Chr(13) & _
+                "If there are multiple bad names you may see a dialog asking for replacement names" & Chr(13) & _
+                "After you provide such names, FindLink will continue and delete the names for you", vbInformation, cstTitle
+              ' try the changing reference mode option
+              On Error GoTo locErr
+              SendKeys "FindLink_Substitution~"
+              Application.ReferenceStyle = xlR1C1
+              Application.ReferenceStyle = xlA1
+              ActiveWorkbook.Names("FindLink_Substitution").Delete
+'              If iOption > 0 Then
+'                obj.Visible = True
+'              Else
+'                LogIt "", "Name", , stName, obj.RefersTo, "Invalid name; cannot be deleted by program; try Insert / Name / Define / Delete or Jan Karel Pieterse's ""repair corrupt names"" utility from http://www.BMSLtd.co.uk/mvp"
+'              End If
+            End If
+            On Error GoTo locErr
+          End If
+        End If
+      End If
+    End If
+  Next obj
+  
+  ' check PivotCaches
+  stStage = "PivotCache"
+  If Val(Application.Version) >= 8 Then
+    Set oWB = ActiveWorkbook
+    For Each obj In oWB.PivotCaches
+      If obj.SourceType <> xlExternal Then
+        stSource = Flatten(obj.SourceData)
+        If InStr(stSource, LinkString) Then
+          If CheckDel(obj, stSource, , "SourceData", "You will need to change the source of the pivot table(s) that use this cache") Then
+            If iOption > 0 Then
+              On Error Resume Next
+              stSource = Application.InputBox("Select an alternative source range for this pivot cache", Type:=8).Address(external:=True, ReferenceStyle:=xlR1C1)
+              obj.SourceData = UnFlatten(stSource)
+              If Err Then
+                MsgBox "Sorry, failed to set source data of pivot cache", vbExclamation, cstTitle
+              End If
+            End If
+            On Error GoTo locErr
+          End If
+        End If
+      End If
+    Next
+  End If
+  
+  ' now scan each sheet in turn
+  Set oActive = ActiveSheet
+  For Each oSheet In ActiveWorkbook.Sheets
+    stStage = "Sheet " & oSheet.Name
+    oSheet.Activate
+    If TypeName(oSheet) <> "Module" Then
+      ' Module sheets don't have links, but others may have
+      Application.StatusBar = "Looking for links in sheet " & oSheet.Name
+      iOLEFound = 0
+            
+      ' go and look in the current sheet
+      bCancel = ScanSheet(oSheet, oSheet.Name) = False
+      
+      ' if there were links found in OLE objects in Excel 5/95 report them as unchecked
+      If iOption > 0 Then
+        If iOLEFound = 1 Then
+          MsgBox "There is a linked OLE Object on sheet " & oSheet.Name & " which I could not check", vbExclamation, cstTitle
+          If Not bShared Then oSheet.OLEObjects.Select
+        ElseIf iOLEFound > 1 Then
+          MsgBox "There are " & iOLEFound & " linked OLE Objects on sheet " & oSheet.Name & _
+               " which I could not check", vbExclamation, cstTitle
+          If Not bShared Then oSheet.OLEObjects.Select
+        End If
+      End If
+      If bCancel Then Exit For
+    End If
+  Next oSheet
+  stStage = "End"
+  oActive.Activate
+  Application.ScreenUpdating = True
+  If iFound = 0 Then
+    MsgBox "No links found including '" & LinkString & "'", vbInformation, cstTitle
+    If iOption <= 0 Then rLog.Parent.Parent.Close False
+  Else
+    If iOption <= 0 Then
+      rLog.Parent.Range("A1").CurrentRegion.Columns.AutoFit
+      rLog.Parent.Activate
+    End If
+  End If
+tidyUp:
+  If Val(Application.Version) >= 8 Then Events True
+  Application.StatusBar = False
+  Application.Calculation = iCalc
+  Exit Sub
+locErr:
+  Select Case Central(Err, Error(), "FindLinks", stStage)
+    Case vbRetry
+      Resume
+    Case vbAbort
+      Resume tidyUp
+    Case vbIgnore
+      Resume Next
+  End Select
+End Sub
+
+Function Central(ByVal lErrNo As Long, stError As String, stProc As String, ParamArray Additions())
+  Dim iResp As Integer
+  Dim stDetails As String
+  Dim iAdd As Integer
+  
+  On Error Resume Next
+  'If Not IsMissing(vExtra) Then stDetails = " stage " & vExtra & " of "
+  stDetails = " stage " & Additions(LBound(Additions)) & " of "
+  stDetails = stDetails & stProc
+  Application.ScreenUpdating = True
+  Central = MsgBox("Sorry, an unexpected error has occurred in " & stDetails & Chr(13) & _
+      "Error " & lErrNo & ": " & stError & Chr(13), vbAbortRetryIgnore + vbExclamation, cstTitle)
+  Application.ScreenUpdating = bUpdate
+  Open ThisWorkbook.Path & Application.PathSeparator & "FINDLINK.LOG" For Append As #1
+  Print #1, stVersion & " " & ActiveWorkbook.FullName
+  Print #1, stDetails
+  Print #1, "Error " & lErrNo & ": " & stError
+  For iAdd = LBound(Additions) + 1 To UBound(Additions)
+    Print #1, Additions(iAdd)
+  Next
+  Print #1, "--"
+  Close #1
+  If UCase(Right(ThisWorkbook.Name, 3)) = "XLS" And Central = vbRetry Then
+    Stop
+  End If
+End Function
+
+Function CheckDel(obj, Value As String, Optional Sheetname, Optional Prop, Optional DelAction, Optional LogOnly) As Boolean
+  Dim stMsg As String
+  Dim stName As String
+  Dim bHid As Boolean
+  Dim stAct As String
+  iFound = iFound + 1
+  On Error Resume Next
+  bHid = Not obj.Visible
+  On Error GoTo 0
+  If bHid Then stMsg = "hidden "   ' only some object have this
+  If TypeName(obj) = "Range" Then
+    stName = obj.Address
+    On Error Resume Next
+    stName = obj.Name.Name
+  Else
+    On Error Resume Next
+    stName = obj.Name
+    If Err Then stName = obj.Index
+  End If
+  If iOption > 0 And IsMissing(LogOnly) Then
+    stMsg = stMsg & TypeName(obj)
+    If TypeName(obj) = "OLEObject" Then
+      stMsg = stMsg & "(" & TypeName(obj.Object) & ")"
+    End If
+    stMsg = stMsg & " " & stName
+    On Error GoTo 0
+    If Not IsMissing(Sheetname) Then stMsg = stMsg & " on '" & Sheetname & "'"
+    If Not IsMissing(Prop) Then stMsg = Prop & " of " & stMsg
+    CheckDel = CheckDelete(stMsg, Value)
+  ElseIf iOption = 0 Then
+    LogIt Sheetname, stMsg & TypeName(obj), Prop, stName, Value, ""
+    CheckDel = False
+  Else
+    stAct = "Deleted"
+    If Not IsMissing(DelAction) Then stAct = DelAction
+    LogIt Sheetname, stMsg & TypeName(obj), Prop, stName, Value, stAct
+    CheckDel = True
+  End If
+End Function
+
+Function CheckDelete(Where As String, What As String) As Boolean
+  ' general function to report the presence of a link and request user decision.
+  ' Where is a string describing where the link was found
+  ' What is the text containing the link
+  Dim iResp As Integer
+  Application.ScreenUpdating = True
+  iResp = MsgBox("Found a link in " & Where & ":" & Chr(10) & What & Chr(10) & "Shall I delete it?", vbYesNoCancel, cstTitle)
+  Application.ScreenUpdating = bUpdate
+  Select Case iResp
+    Case vbCancel
+      Application.StatusBar = False
+      If Val(Application.Version) >= 8 Then Events True
+      End                   ' stop the whole run
+    Case vbYes
+      CheckDelete = True
+    Case vbNo
+      CheckDelete = False
+  End Select
+End Function
+
+Sub Events(bOn As Boolean)
+  Application.EnableEvents = bOn
+End Sub
+
+Sub ScanObjects(oCollection As Object, ChosenName As String)
+' scan through the drawing objects in oCollection
+  Dim obj As Object
+  Dim ST As String
+  Dim oGroup As Object
+  Dim stMembers() As String
+  Dim I As Integer
+  Dim lObj As Long
+  Dim bCancel As Boolean
+  Dim stWhat As String
+  
+  On Error GoTo locErr
+  'For Each obj In oCollection '- problem: groupobject components appear (unless they have explicit names!)
+  
+  For lObj = oCollection.Count To 1 Step -1
+    Set obj = oCollection(lObj)
+    On Error Resume Next
+    stWhat = TypeName(obj)
+    stWhat = stWhat & " " & obj.Name
+    Err.Clear
+    ' any drawing object could be linked to a macro
+    ' once had a problem with a malformed object that had no accessible properties
+    ST = obj.OnAction
+    If Err Then
+      ST = "[Name unobtainable]"
+      ST = obj.Name
+      On Error GoTo locErr
+      If ST <> "[Name unobtainable]" Then
+        If iOption > 0 Then
+          MsgBox "I cannot obtain the properties of " & TypeName(obj) & " " & ST & " on " & ChosenName & Chr(13) & _
+            "Possibly it contains the link you are looking for; you will need to check it yourself", vbInformation, cstTitle
+        Else
+          LogIt ChosenName, TypeName(obj), ST, "OnAction", , "You should check manually"
+        End If
+      Else
+        If iOption > 0 Then
+          If MsgBox("I cannot obtain the properties of a " & TypeName(obj) & " on " & ChosenName & Chr(13) & _
+            "Shall I try to delete it?", vbQuestion + vbYesNo, cstTitle) = vbYes Then
+               On Error Resume Next
+               obj.Delete
+               If Err Then MsgBox "Sorry, I couldn't delete it", vbExclamation, cstTitle
+               On Error GoTo locErr
+          End If
+        ElseIf iOption = 0 Then
+          LogIt ChosenName, TypeName(obj), "Properties", ST, "[could not access its properties]", ""
+        Else
+          LogIt ChosenName, TypeName(obj), "Properties", ST, "[could not access its properties]", "Deleted it"
+          On Error Resume Next
+          obj.Delete
+          If Err Then ReviseAction "Deletion attempt may have failed"
+          On Error GoTo locErr
+        End If
+      End If
+    Else
+      On Error GoTo locErr
+      If InStr(ST, LinkString) > 0 Then
+        ' ignore OnAction to ourself
+        If InStr(ST, ActiveWorkbook.Name & "!") <> 1 And InStr(ST, "'" & ActiveWorkbook.Name & "'!") <> 1 Then
+          If obj.Visible And Not bShared Then obj.Select
+          If CheckDel(obj, ST, ChosenName, "OnAction", "Deassigned macro") Then
+            obj.OnAction = ""
+            If obj.OnAction <> "" Then ReviseAction "OnAction not cleared - part of Group Object?"
+          End If
+        End If
+      End If
+                
+      If TypeName(obj) = "Shape" And Val(Application.Version) >= 12 Then Set obj = obj.DrawingObject
+          
+      ' some drawing objects have formula properties
+      Select Case TypeName(obj)
+          
+      Case "TextBox", "Picture", "Button", "Arc", "Drawing", "Oval", "Rectangle"
+        ST = ""
+        On Error Resume Next
+        ST = obj.Formula
+        On Error GoTo locErr
+        If InStr(ST, LinkString) > 0 Then
+          If obj.Visible And Not bShared Then obj.Select
+          If CheckDel(obj, ST, ChosenName, "Formula", "Removed formula") Then
+            obj.Formula = ""
+            If obj.Formula <> "" Then ReviseAction "Formula not cleared: part of GroupObject?"
+          End If
+        End If
+         
+      Case "OLEObject"
+        If obj.OLEType = xlOLELink Then
+          If Val(Application.Version) >= 8 Then
+            ' in Excel 8 we can check the source of the link
+            If InStr(obj.SourceName, LinkString) > 0 Then
+              If obj.Visible And Not bShared Then obj.Select
+              If CheckDel(obj, obj.SourceName, ChosenName, "Source") Then obj.Delete
+            End If
+          Else
+            ' can't get to the formula of an OLEObject in Excel 5 / 95 - so report at end
+            iOLEFound = iOLEFound + 1
+          End If
+        Else
+          ' (8.6) might be a control toolbox control or similar
+          On Error Resume Next
+          I = InStr(obj.LinkedCell, LinkString)
+          If I > 0 And Err = 0 Then
+            On Error GoTo locErr
+            If obj.Visible And Not bShared Then obj.Select
+            If CheckDel(obj, obj.LinkedCell, ChosenName, "LinkedCell") Then obj.LinkedCell = ""
+          End If
+          On Error Resume Next
+          I = InStr(obj.ListFillRange, LinkString)
+          If I > 0 And Err = 0 Then
+            On Error GoTo locErr
+            If obj.Visible And Not bShared Then obj.Select
+            If CheckDel(obj, obj.ListFillRange, ChosenName, "ListFillRange") Then obj.ListFillRange = ""
+          End If
+          On Error GoTo locErr
+        End If
+        
+      
+      Case "GroupObject"
+        ST = obj.Name
+        If Val(Application.Version) >= 12 Then
+          Set oGroup = obj.ShapeRange.GroupItems
+          'Debug.Print ChosenName, ST, oGroup.Count
+          'obj.Ungroup
+          ScanObjects oGroup, "GroupObject " & ST & " in " & ChosenName
+          ' regroup
+          'oGroup(1).Select True
+          'For I = 2 To oGroup.Count
+          '  oGroup(I).Select False
+          'Next
+          'Selection.ShapeRange.Regroup
+          'Selection.Item(1).Name = ST
+          
+'          ScanObjects obj.ShapeRange.GroupItems, "GroupObject " & ST & " in " & ChosenName
+        Else
+          Set oGroup = obj.Ungroup
+          ReDim stMembers(1 To oGroup.Count)
+          For I = 1 To oGroup.Count
+            stMembers(I) = oGroup(I).Name
+          Next
+          ScanObjects oGroup, "GroupObject " & ST & " in " & ChosenName
+          ' regroup
+          ActiveSheet.DrawingObjects(stMembers()).Group.Name = ST
+        End If
+        
+      Case "ChartObject"
+        ' check the Chart
+        bCancel = ScanSheet(obj.Chart, "Chart " & obj.Name & " on " & ChosenName) = False
+    
+      Case "DropDown", "ListBox"
+        If InStr(obj.LinkedCell, LinkString) > 0 Then
+          If obj.Visible And Not bShared Then obj.Select
+          If CheckDel(obj, obj.LinkedCell, ChosenName, "LinkedCell", "Unlinked") Then obj.LinkedCell = ""
+        End If
+        If InStr(obj.ListFillRange, LinkString) > 0 Then
+          If obj.Visible And Not bShared Then obj.Select
+          If CheckDel(obj, obj.ListFillRange, ChosenName, "ListFillRange", "Replaced with list of values") Then obj.List = obj.List
+        End If
+          
+      Case "CheckBox", "OptionButton", "ScrollBar", "Spinner"
+        If InStr(obj.LinkedCell, LinkString) > 0 Then
+          If obj.Visible And Not bShared Then obj.Select
+          If CheckDel(obj, obj.LinkedCell, ChosenName, "LinkedCell", "Unlinked") Then obj.LinkedCell = ""
+        End If
+          
+      End Select
+    End If
+    If bCancel Then Exit For
+  Next
+  Exit Sub
+locErr:
+  Select Case Central(Err, Error(), "ScanObjects " & ChosenName, stWhat)
+    Case vbRetry
+      Resume
+    Case vbAbort
+      Exit Sub
+    Case vbIgnore
+      Resume Next
+  End Select
+End Sub
+
+Function FindBlock(rStart As Range) As Range
+  Dim iCol As Integer
+  Dim lRow As Long
+  Dim stForm As String
+  Dim R As Range
+  stForm = rStart.FormulaR1C1
+  For lRow = 1 To rStart.Parent.Rows.Count - rStart.Row
+    If rStart.Offset(lRow).FormulaR1C1 <> stForm Then Exit For
+  Next
+  For iCol = 1 To rStart.Parent.Columns.Count - rStart.Column
+    If rStart.Column + iCol > rStart.Parent.UsedRange.SpecialCells(xlLastCell).Column Then Exit For
+    On Error Resume Next
+    Set R = rStart.Resize(lRow, iCol + 1).RowDifferences(rStart)
+    If Err = 0 Then Exit For
+  Next
+  Set FindBlock = rStart.Resize(lRow, iCol)
+End Function
+
+Function ScanSheet(oChosen As Object, ChosenName As String) As Boolean
+  ' scan through the object oChosen looking for the link string ChosenName
+  ' Note that ScanSheet can call itself recursively if it finds a ChartObject
+  ' on oChosen, to look for links in the contained Chart
+  Dim obj As Object, oSheet As Object, oSeries As Series
+  Dim stMsg As String, stForm As String
+  Dim rCell As Range, rFirst As Range, rToDo As Range
+  Dim rDone As Range, rAll As Range, rArea As Range
+  Dim arBlocks() As Range
+  Dim lBlock As Long
+  Dim lBlocks As Long
+  Dim ST As String, iSeries As Integer, CT As Long
+  Dim oAxis As Axis, iAxis As Integer, iAxisGroup As Integer
+  Dim V, C As Range, bCheck As Boolean
+  Dim stStage As String
+  Dim oGroup As Object
+  Dim iPoint As Integer
+  Dim iFilter As Integer
+  Dim bLabel As Boolean
+  Dim bChartObjActive As Boolean
+  Dim stSource As String
+  Dim stFormR1C1 As String
+  Dim stFormRC As String
+  Dim bDoIt As Boolean
+  Dim bCancel As Boolean
+  Dim stUnchecked As String
+  Dim vSources
+  Dim iSource As Integer
+  Dim WB As Workbook
+  Dim rShow As Range
+  Dim rA As Range
+  Dim bCopyFailed As Boolean
+  Dim bFilterToRestore As Boolean
+  Dim bVisibleOnly As Boolean
+  Dim oFC As Object
+  Dim iFC As Integer
+  Dim iItem As Integer
+  Dim stXtra As String
+  Dim rRow As Range
+  Dim iCfOp As Integer
+  
+  On Error GoTo locErr
+  
+  If ActiveWorkbook.DisplayDrawingObjects <> xlHide Then
+    ScanObjects oChosen.DrawingObjects, ChosenName
+  End If
+  
+  ' now for additional checks for particular types of oChosen
+  If TypeName(oChosen) = "Worksheet" Then
+    
+    ' look in cell formulae
+    stStage = "Checking for filter"
+    If oChosen.AutoFilterMode Then
+      For iFilter = 1 To oChosen.AutoFilter.Filters.Count
+        If oChosen.AutoFilter.Filters(iFilter).On Then
+          bFilterToRestore = True
+          SaveFilters
+          oChosen.ShowAllData
+        End If
+      Next
+    ElseIf oChosen.FilterMode Then
+      If MsgBox("Sheet " & oChosen.Name & " has an active advanced filter" & Chr(13) & _
+        "I cannot find links in rows hidden by advanced filtering" & Chr(13) & _
+        "Shall I remove the filter?", vbYesNo, cstTitle) = vbYes Then
+          oChosen.ShowAllData
+      End If
+    End If
+    
+    stStage = "Formulas"
+    Application.ScreenUpdating = False  ' otherwise screen flashes
+    'Debug.Print Timer, "Start formulas in " & oChosen.Name
+    Set rCell = Nothing
+    On Error Resume Next
+    ' there's a bug in Find: if the first cell in the usedrange is merged you won't find the data in it
+    Set rArea = oChosen.UsedRange.Range("A1").MergeArea
+    If rArea.Cells.Count > 1 Then rArea.UnMerge
+    Set rCell = oChosen.UsedRange.Find(LinkString, oChosen.UsedRange.Range("A1"), xlFormulas, xlPart, xlByRows, xlNext)
+    On Error GoTo locErr
+    If Not rCell Is Nothing Then
+      ' found one
+      ' rather than reporting each cell in a block that has the same formula
+      ' apart from relative reference adjustment, try to find the whole block and
+      ' report the block as a whole
+      ' find the blocks first because changing the content will prevent the detection of the end of the loop
+      Set rFirst = rCell          ' remember the first cell found so that we can
+                                  ' detect when there are no other cells to find
+      Set rAll = rCell            ' rAll builds up a range of all cells with links
+      Set rDone = Nothing
+      lBlocks = 0
+      Do
+        lBlocks = lBlocks + 1
+        ReDim Preserve arBlocks(1 To lBlocks)
+        Set arBlocks(lBlocks) = FindBlock(rCell)
+        Set rAll = Union(rAll, arBlocks(lBlocks))
+        Do
+          ' find another example, but we can skip the columns of the most recent block.
+          If Not Intersect(rCell, arBlocks(lBlocks)) Is Nothing Then Set rCell = rCell.Offset(, arBlocks(lBlocks).Columns.Count - 1)
+          Set rCell = oChosen.UsedRange.FindNext(rCell)
+        Loop Until Intersect(rCell, rAll) Is Nothing Or rCell.Address = rFirst.Address
+      Loop Until rCell.Address = rFirst.Address
+      
+      If rArea.Cells.Count > 1 Then rArea.Merge    ' put it back
+      
+      'Debug.Print Timer, "All found: " & lBlocks & ": " & rAll.Address
+      Application.ScreenUpdating = bUpdate
+      
+      For lBlock = 1 To lBlocks
+        Set rToDo = arBlocks(lBlock)
+        On Error Resume Next
+        ' this may fail if the formula is too long
+        stForm = rToDo.Range("A1").Formula
+        If Err Then
+          stForm = "[Formula too long to report]"
+        End If
+        On Error GoTo locErr
+        rToDo.Select
+        If rToDo.Range("A1").HasFormula Then
+          If CheckDel(rToDo, stForm, oChosen.Name, "Formula", "Replaced with values") Then
+'              ' if the link is to be deleted, replace formulae with values
+'              For Each rA In rToDo.Areas
+'                rA.Formula = rA.Value
+'              Next
+            rToDo.Formula = rToDo.Value
+          End If
+        Else
+          CheckDel rToDo, stForm, oChosen.Name, "Value", "No action", LogOnly:=True
+            ' report the value but take no action
+        End If
+      Next lBlock
+
+'      ' rAll may be a multi-area range so break it down into its constituents
+'
+'      For Each rArea In rAll.Areas
+'        Set rDone = rArea.Cells(1, 1)   ' rDone will contain the set of cells already
+'                                        ' dealt with
+'        Do
+'          ' first see if all formulas in the area are the same
+'          On Error Resume Next
+'          Set rA = rArea.ColumnDifferences(rArea.Cells(1))
+'          Set rToDo = Nothing
+'          If Err <> 0 Then
+'            Err.Clear
+'            Set rA = rArea.RowDifferences(rArea.Cells(1))
+'            If Err <> 0 Then
+'              ' all are the same
+'              Set rToDo = rArea
+'            End If
+'          End If
+'          On Error GoTo locErr
+'
+'          If rToDo Is Nothing Then        ' not all the same
+'            Set rToDo = rArea.Cells(1, 1)   ' rToDo builds up to a range that has all
+'                                          ' the cells in rArea with the same formula
+'            ' look at each cell in this Area
+'            For Each rCell In rArea.Cells
+'              If Intersect(rDone, rCell) Is Nothing Then
+'                ' we haven't reported this cell already
+'                If rToDo Is Nothing Then
+'                  Set rToDo = rCell
+'                ElseIf rCell.HasFormula = rToDo.HasFormula Then
+'                  stFormRC = ""
+'                  stFormR1C1 = ""
+'                  On Error Resume Next
+'                  stFormR1C1 = rToDo.Range("A1").FormulaR1C1 ' can fail if too long
+'                  stFormRC = rCell.FormulaR1C1
+'                  On Error GoTo locErr
+'                  If stFormRC = stFormR1C1 And stFormR1C1 <> "" Then
+'                    ' same in rCell as in rToDo's first cell
+'                    ' add rCell to rToDo
+'                    Set rToDo = Union(rToDo, rCell)
+'                  End If
+'                End If
+'              End If
+'            Next rCell
+'          End If
+'          Debug.Print Timer, "ToDo " & rToDo.Address
+'          On Error Resume Next
+'          ' this may fail if the formula is too long
+'          stForm = rToDo.Range("A1").Formula
+'          If Err Then
+'            stForm = "[Formula too long to report]"
+'          End If
+'          On Error GoTo locErr
+'          rToDo.Select
+'          If rToDo.Range("A1").HasFormula Then
+'            If CheckDel(rToDo, stForm, oChosen.Name, "Formula", "Replaced with values") Then
+''              ' if the link is to be deleted, replace formulae with values
+''              For Each rA In rToDo.Areas
+''                rA.Formula = rA.Value
+''              Next
+'              rToDo.Formula = rToDo.Value
+'            End If
+'          Else
+'            CheckDel rToDo, stForm, oChosen.Name, "Value", "No action", LogOnly:=True
+'              ' report the value but take no action
+'          End If
+'          ' note that these cells have been done.
+'          Set rDone = Union(rDone, rToDo)
+'          ' ready for the next lot of cells in the area
+'          Set rToDo = Nothing
+'        Loop Until rDone.Address = rArea.Address
+'      Next rArea
+    Else
+      If rArea.Cells.Count > 1 Then rArea.Merge
+    End If
+    Application.ScreenUpdating = False
+    ' there is an Excel bug which can result in a link being hidden in a cell which has been merged
+    ' by the pasting of formats which includes merged cells.
+    If Val(Application.Version) >= 8 Then
+      stStage = "Merged cells"
+      Set rDone = Nothing
+      For Each rRow In oChosen.UsedRange.Rows
+        DoEvents
+        V = rRow.MergeCells
+        'stXtra = "V:" & CStr(V)
+        If IsNull(V) Or V = True Then
+          'Debug.Print "Row", rRow.Row, "Some"
+          For Each rCell In rRow.Cells
+            DoEvents
+            stXtra = "rCell: " & rCell.Address
+            If Not rDone Is Nothing Then stXtra = stXtra & vbNewLine & "rDone: " & rDone.Address
+            If rCell.MergeCells Then
+              bCheck = True
+              If Not rDone Is Nothing Then bCheck = (Intersect(rCell, rDone) Is Nothing)
+              If bCheck Then
+                Set rArea = rCell.MergeArea
+                'Debug.Print rArea.Address
+                rArea.UnMerge
+                Set C = rArea.Find(LinkString, rArea.Range("A1"), xlFormulas, xlPart, xlByRows, xlNext)
+                If Not C Is Nothing Then
+                  If C.Address <> rArea.Range("A1").Address Then
+                    ' not first cell - already reported
+                    On Error Resume Next
+                    ' this may fail if the formula is too long
+                    stForm = C.Formula
+                    If Err Then
+                      stForm = "[Formula too long to report]"
+                    End If
+                    On Error GoTo locErr
+                    C.Select
+                    If CheckDel(C, stForm, oChosen.Name, "Formula hidden by merging", "Deleted formula") Then
+                      ' if the link is to be deleted, replace formulae with values
+                      C.Clear
+                    End If
+                  End If
+                End If
+                Application.DisplayAlerts = False
+                rArea.Merge  ' remerge
+                Application.DisplayAlerts = True
+                If rDone Is Nothing Then Set rDone = rArea Else Set rDone = Union(rDone, rArea)
+              End If
+            End If
+          Next  ' rCell
+        Else
+          'Debug.Print "Row", rRow.Row, "None"
+        End If
+        V = rRow.Resize(rRow.Parent.Rows.Count - rRow.Row + 1).MergeCells
+        If V = False Then Exit For ' no more to consider
+      Next ' rRow
+    End If
+    stStage = "PivotTables"
+    For Each obj In oChosen.PivotTables
+      On Error Resume Next
+      stSource = Flatten(obj.SourceData)  ' can fail if based on a cache based on External data
+      On Error GoTo locErr
+      If InStr(stSource, LinkString) Then
+        If CheckDel(obj, stSource, oChosen.Name, "SourceData", "You will need to change the source of the pivot table") Then
+          If iOption > 0 Then
+            On Error Resume Next
+            stSource = Application.InputBox("Select an alternative source range for this pivot table", Type:=8).Address(external:=True, ReferenceStyle:=xlR1C1)
+            obj.SourceData = UnFlatten(stSource)
+            If Err Then
+              MsgBox "Sorry, failed to set source data of pivot table", vbExclamation, cstTitle
+            End If
+            On Error GoTo locErr
+          End If
+        End If
+      End If
+    Next
+    stStage = "Validation"
+    On Error Resume Next
+    Set rAll = oChosen.Cells.SpecialCells(xlCellTypeAllValidation)
+    If Err Then
+      ' no validations
+      On Error GoTo locErr
+    Else
+      On Error GoTo locErr
+      Set rDone = Nothing
+      For Each rCell In rAll.Cells
+        bDoIt = False
+        If rDone Is Nothing Then
+          bDoIt = True
+        ElseIf Intersect(rDone, rCell) Is Nothing Then
+          bDoIt = True
+        End If
+        If bDoIt Then
+          rCell.Parent.Activate ' in case
+          rCell.Select
+          Set rToDo = rCell.SpecialCells(xlCellTypeSameValidation)
+          If InStr(rCell.Validation.Formula1, LinkString) Then
+            If CheckDel(rToDo, rCell.Validation.Formula1, oChosen.Name, "Validation.Formula1", "Cleared validation") Then
+              ' if the link is to be deleted, replace formulae with values
+              rToDo.Validation.Delete
+            End If
+          ElseIf InStr(rCell.Validation.Formula2, LinkString) Then
+            If CheckDel(rToDo, rCell.Validation.Formula2, oChosen.Name, "Validation.Formula2", "Cleared validation") Then
+              ' if the link is to be deleted, replace formulae with values
+              rToDo.Validation.Delete
+            End If
+          End If
+          If rDone Is Nothing Then Set rDone = rToDo Else Set rDone = Union(rDone, rToDo)
+        End If
+      Next
+    End If
+    If Val(Application.Version) >= 12 Then
+      stStage = "Conditional Formats"
+      If oChosen.Cells.FormatConditions.Count > 0 Then
+        For iFC = oChosen.Cells.FormatConditions.Count To 1 Step -1
+          Set oFC = oChosen.Cells.FormatConditions(iFC)
+          bDoIt = False
+          Select Case oFC.Type
+            Case 1 'xlCellValue
+              ' Formula1 is used.  Formula2 is used for .Operator = xlBetween (1) and xlNotBetween (2)
+              If InStr(oFC.Formula1, LinkString) Then
+                If CheckDel(oFC.AppliesTo, oFC.Formula1, oChosen.Name, "ConditionalFormat.Formula1", "Deleted conditional format") Then
+                  bDoIt = True
+                End If
+              End If
+              ' have had an error because Operator not set.
+              iCfOp = 0
+              On Error Resume Next
+              iCfOp = oFC.Operator
+              On Error GoTo locErr
+              If iCfOp = 1 Or iCfOp = 2 And Not bDoIt Then ' xlBetween or xlNotBetween
+                If InStr(oFC.Formula2, LinkString) Then
+                  If CheckDel(oFC.AppliesTo, oFC.Formula2, oChosen.Name, "ConditionalFormat.Formula2", "Deleted conditional format") Then
+                    bDoIt = True
+                  End If
+                End If
+              End If
+            Case 2, 9 'xlExpression, xlTextString
+              ' Formula1 is used
+              If InStr(oFC.Formula1, LinkString) Then
+                If CheckDel(oFC.AppliesTo, oFC.Formula1, oChosen.Name, "ConditionalFormat.Formula1", "Deleted conditional format") Then
+                  bDoIt = True
+                End If
+              End If
+            Case 3 'xlColorScale
+              ' ColorScaleCriteria (2 or 3) may have items of type formula
+              For iItem = 1 To oFC.ColorScaleCriteria.Count
+                If oFC.ColorScaleCriteria(iItem).Type = 4 Then ' xlConditionValueFormula
+                  If InStr(oFC.ColorScaleCriteria(iItem).Value, LinkString) Then
+                    If CheckDel(oFC.AppliesTo, oFC.ColorScaleCriteria(iItem).Value, oChosen.Name, "ConditionalFormat.ColorScaleCriterion" & iItem, "Deleted conditional format") Then
+                      bDoIt = True
+                      Exit For
+                    End If
+                  End If
+                End If
+              Next
+            Case 4 'xlDatabar
+              ' MinPoint and MaxPoint may be of type formula
+              If oFC.MinPoint.Type = 4 Then ' xlConditionValueFormula
+                If InStr(oFC.MinPoint.Value, LinkString) Then
+                  If CheckDel(oFC.AppliesTo, oFC.MinPoint.Value, oChosen.Name, "ConditionalFormat.MinPoint", "Deleted conditional format") Then
+                    bDoIt = True
+                  End If
+                End If
+              End If
+              If oFC.MaxPoint.Type = 4 Then ' xlConditionValueFormula
+                If InStr(oFC.MaxPoint.Value, LinkString) Then
+                  If CheckDel(oFC.AppliesTo, oFC.MaxPoint.Value, oChosen.Name, "ConditionalFormat.MaxPoint", "Deleted conditional format") Then
+                    bDoIt = True
+                  End If
+                End If
+              End If
+            Case 6 'xlIconSets
+              ' 1 to iconCriteria.Count - .iconcriteria(i) may be of type xlConditionValueFormula, in which case its Value is a formula
+              For iItem = 1 To oFC.IconCriteria.Count
+                If oFC.IconCriteria(iItem).Type = 4 Then ' xlConditionValueFormula
+                  If InStr(oFC.IconCriteria(iItem).Value, LinkString) Then
+                    If CheckDel(oFC.AppliesTo, oFC.IconCriteria(iItem).Value, oChosen.Name, "ConditionalFormat.IconCriterion" & iItem, "Deleted conditional format") Then
+                      bDoIt = True
+                      Exit For
+                    End If
+                  End If
+                End If
+              Next
+            Case Else
+              ' no formula possibilities
+          End Select
+          If bDoIt Then oFC.Delete
+        Next
+      End If
+    Else
+      ' 2003 or earlier
+      On Error Resume Next
+      Set rAll = oChosen.Cells.SpecialCells(xlCellTypeAllFormatConditions)
+      If Err Then
+        ' no conditional formats
+        On Error GoTo locErr
+      Else
+        On Error GoTo locErr
+        Set rDone = Nothing
+        For Each rCell In rAll.Cells
+          bDoIt = False
+          If rDone Is Nothing Then
+            bDoIt = True
+          ElseIf Intersect(rDone, rCell) Is Nothing Then
+            bDoIt = True
+          End If
+          If bDoIt Then
+            rCell.Parent.Activate  ' in case
+            rCell.Select
+            On Error Resume Next
+            Set rToDo = rCell.SpecialCells(xlCellTypeSameFormatConditions)
+            If Err Then Set rToDo = rCell
+            On Error GoTo locErr
+            For iFC = rToDo.FormatConditions.Count To 1 Step -1
+              Set oFC = rToDo.FormatConditions(iFC)
+              bDoIt = False
+              Select Case oFC.Type
+                Case 1 'xlCellValue
+                  ' Formula1 is used.  Formula2 is used for .Operator = xlBetween (1) and xlNotBetween (2)
+                  If InStr(oFC.Formula1, LinkString) Then
+                    If CheckDel(rToDo, oFC.Formula1, oChosen.Name, "ConditionalFormat.Formula1", "Deleted conditional format") Then
+                      bDoIt = True
+                    End If
+                  End If
+                  If oFC.Operator = 1 Or oFC.Operator = 2 And Not bDoIt Then ' xlBetween or xlNotBetween
+                    If InStr(oFC.Formula2, LinkString) Then
+                      If CheckDel(rToDo, oFC.Formula2, oChosen.Name, "ConditionalFormat.Formula2", "Deleted conditional format") Then
+                        bDoIt = True
+                      End If
+                    End If
+                  End If
+                Case 2  'xlExpression
+                  ' Formula1 is used
+                  If InStr(oFC.Formula1, LinkString) Then
+                    If CheckDel(rToDo, oFC.Formula1, oChosen.Name, "ConditionalFormat.Formula1", "Deleted conditional format") Then
+                      bDoIt = True
+                    End If
+                  End If
+              End Select
+              If bDoIt Then oFC.Delete
+            Next
+            If rDone Is Nothing Then Set rDone = rToDo Else Set rDone = Union(rDone, rToDo)
+          End If
+          If rDone.Address = rAll.Address Then Exit For
+        Next
+      End If
+      
+    End If
+  ElseIf TypeName(oChosen) = "Chart" Then
+    ' ensure hidden cells are plotted - otherwise we may not see some series
+    bVisibleOnly = oChosen.PlotVisibleOnly
+    oChosen.PlotVisibleOnly = False
+    ' for some checks we need the chart (or chart object) activated
+    If TypeName(oChosen.Parent) = "ChartObject" Then
+      Set rShow = oChosen.Parent.TopLeftCell
+      If oChosen.Parent.Visible Then
+        On Error Resume Next
+        oChosen.Parent.Activate
+        If Err Then
+          If iOption > 0 Then
+            If Not bCancel Then
+              Application.GoTo rShow, True
+              bCancel = MsgBox("I couldn't activate ChartObject " & oChosen.Parent.Name & " on sheet " & oChosen.Parent.Parent.Name & Chr(13) & _
+                "Some properties of the chart may not be checkable", vbInformation + vbOKCancel, cstTitle) = vbCancel
+            End If
+          Else
+            LogIt ChosenName, "ChartObject", oChosen.Parent.Name, "[could not activate the chart]", , "You should check the chart manually"
+          End If
+        Else
+          bChartObjActive = True
+        End If
+        On Error GoTo locErr
+      End If
+    End If
+    ' look in chart series
+    For iSeries = oChosen.SeriesCollection.Count To 1 Step -1  ' backwards in case of deletions
+      stStage = "Series " & iSeries
+      ' potential problem with series formula being inaccessible
+      ' seems to go away if series is changed to Area
+      CT = -1
+      Set oSeries = oChosen.SeriesCollection(iSeries)
+      ST = ""
+      On Error Resume Next
+      ST = oSeries.Formula
+      If Err Then
+        If oSeries.ChartType <> -4111 Then
+          CT = oSeries.ChartType
+          Err = 0
+          ' try changing to Area chart as then it seems possible to access the series properties
+          oSeries.ChartType = xlArea
+        End If
+        ST = oSeries.Formula
+        If Err Then
+          On Error GoTo locErr
+          If InStr(stUnchecked, "Series formulas") = 0 Then stUnchecked = JoinUp(", ", stUnchecked, "Series formulas")
+          ST = ""
+'          If iOption > 0 Then
+'            If Not bCancel Then
+'              bCancel = MsgBox("I cannot access the formula of series " & iSeries & " of " & ChosenName & Chr(13) & _
+'                "Possibly it contains the link you are looking for; you will need to check it yourself", vbInformation + vbOKCancel, cstTitle) = vbCancel
+'            End If
+'          Else
+'            LogIt ChosenName, "Series", "Formula", iSeries, "[could not access the formula]", "You should check the series manually"
+'          End If
+        End If
+      End If
+      On Error GoTo locErr
+      If InStr(ST, LinkString) > 0 Then
+        On Error Resume Next
+        oSeries.Select
+        On Error GoTo locErr
+        If CT <> -1 Then
+          If CheckDel(oSeries, ST, ChosenName, "Formula", "Deleted") Then
+            oSeries.Delete
+            Set oSeries = Nothing
+            CT = -1
+          End If
+        ElseIf CheckDel(oSeries, ST, ChosenName, "Formula", "Replaced with values") Then
+          On Error Resume Next
+          oSeries.Values() = oSeries.Values()
+          oSeries.XValues() = oSeries.XValues()
+          oSeries.Name = oSeries.Name
+          If Err Then
+            On Error GoTo locErr
+            oSeries.Delete
+            Set oSeries = Nothing
+            ReviseAction "Deleted"
+          End If
+          On Error GoTo locErr
+        End If
+      End If
+      ' try data labels
+      If Not oSeries Is Nothing Then
+        For iPoint = 1 To oSeries.Points.Count
+          On Error Resume Next
+          bLabel = oSeries.Points(iPoint).HasDataLabel
+          If Err <> 0 Then
+            Err = 0
+            If CT <> xlArea And oSeries.ChartType <> -4111 Then  ' -4111 is a type from a later version
+              CT = oSeries.ChartType
+              oSeries.ChartType = xlArea
+            End If
+            bLabel = oSeries.Points(iPoint).HasDataLabel
+            If Err Then bLabel = True ' to force the problem out
+          End If
+          If bLabel Then
+            If Val(Application.Version) >= 14 Then
+              ST = oSeries.Points(iPoint).DataLabel.Formula
+            Else
+              ST = ExecuteExcel4Macro("GET.FORMULA(""Text S" & iSeries & "P" & iPoint & """)")
+            End If
+            If Err Then
+              If InStr(stUnchecked, "Data labels") = 0 Then stUnchecked = JoinUp(", ", stUnchecked, "Data labels")
+              ST = ""
+'              If iOption > 0 Then
+'                If Not bCancel Then
+'                  bCancel = MsgBox("I cannot access datalabel " & iPoint & " of series " & iSeries & " of " & ChosenName & Chr(13) & _
+'                      "Possibly it contains the link you are looking for; you will need to check it yourself", vbInformation + vbOKCancel, cstTitle) = vbCancel
+'                End If
+'              Else
+'                LogIt ChosenName, "Datalabel", "Point " & iPoint & " of Series " & iSeries, "[could not access the formula]", , "You should check manually"
+'              End If
+              ' don't bother to continue
+              GoTo NoMorePoints
+            End If
+            On Error GoTo locErr
+            If InStr(ST, LinkString) Then
+              With oSeries.Points(iPoint)
+                .DataLabel.Select
+                If CheckDel(.DataLabel, ST, ChosenName, "Formula", "Replaced with value") Then
+                  .DataLabel.Text = .DataLabel.Text
+                End If
+              End With
+            End If
+          End If
+          On Error GoTo locErr
+        Next iPoint
+NoMorePoints:
+        On Error GoTo locErr
+      End If
+      If Not oSeries Is Nothing Then
+        If oSeries.HasErrorBars Then
+          If InStr(stUnchecked, "Error bars") = 0 Then stUnchecked = JoinUp(", ", stUnchecked, "Error bars")
+          ST = ""
+  '        If iOption > 0 Then
+  '          If Not bCancel Then
+  '            bCancel = MsgBox("I cannot access information for error bars for series " & iSeries & " of " & ChosenName & Chr(13) & _
+  '              "Custom values could contain the link you are looking for; you will need to check it yourself", vbInformation + vbOKCancel, cstTitle) = vbCancel
+  '          End If
+  '        Else
+  '          LogIt ChosenName, "ErrorBars", "Series " & iSeries, "[could not access the information]", , "You should check manually"
+  '        End If
+        End If
+        ' try to restore the chart type if we had to change it
+        If CT <> -1 Then
+          On Error Resume Next
+          oSeries.ChartType = CT
+          On Error GoTo locErr
+        End If
+      End If
+      If bCancel Then Exit For
+    Next iSeries
+    ' There may be a link in a chart title or axis title
+    ' but no VBA property gives us access to it - have to use Excel4macro.
+    If oChosen.HasTitle Then
+      stStage = "ChartTitle"
+      ST = CStr(ExecuteExcel4Macro("GET.FORMULA(""Title"")"))
+      If InStr(ST, LinkString) Then
+        oChosen.ChartTitle.Select
+        If CheckDel(oChosen.ChartTitle, ST, ChosenName, "Formula", "Replaced title with value") Then
+          oChosen.ChartTitle.Text = oChosen.ChartTitle.Text
+        End If
+      End If
+    End If
+    If oChosen.Axes.Count > 0 Then
+      For iAxisGroup = xlPrimary To xlSecondary Step (xlSecondary - xlPrimary)
+        For iAxis = xlCategory To xlSeries
+          stStage = "AxisTitle " & iAxisGroup & ":" & iAxis
+          Set oAxis = Nothing
+          On Error Resume Next
+          Set oAxis = oChosen.Axes(iAxis, iAxisGroup)
+          If Err = 0 Then
+            If oAxis.HasTitle Then
+              oAxis.AxisTitle.Select  ' may fail on protected sheet
+              If Err Then
+                On Error GoTo locErr
+                If InStr(stUnchecked, "Axis titles") = 0 Then stUnchecked = JoinUp(", ", stUnchecked, "Axis titles")
+  '              On Error GoTo locerr
+  '              If iOption > 0 Then
+  '                If Not bCancel Then
+  '                  bCancel = MsgBox("I cannot access the axis title of " & ChosenName & Chr(13) & _
+  '                    "You will need to check it yourself", vbInformation + vbOKCancel, cstTitle) = vbCancel
+  '                End If
+  '              Else
+  '                LogIt ChosenName, "AxisTitle", "Formula", , "[unable to check]", "Please check manually"
+  '              End If
+              Else
+                On Error GoTo locErr
+                If Val(Application.Version) >= 14 Then
+                  ' 2010 has a formula property for the axis title
+                  ST = Selection.Formula
+                Else
+                  On Error Resume Next
+                  ST = ExecuteExcel4Macro("GET.FORMULA(""" & Selection.Name & """)")
+                End If
+                If Err <> 0 Then
+                  On Error GoTo locErr
+                  If InStr(stUnchecked, "Axis titles") = 0 Then stUnchecked = JoinUp(", ", stUnchecked, "Axis titles")
+                  ST = ""
+  '                If iOption > 0 Then
+  '                  If Not bCancel Then
+  '                    bCancel = MsgBox("I cannot access the axis titles of " & ChosenName & Chr(13) & _
+  '                      "You will need to check it yourself", vbInformation + vbOKCancel, cstTitle) = vbCancel
+  '                  End If
+  '                Else
+  '                  LogIt ChosenName, "AxisTitle", "Formula", , "[unable to check]", "Please check manually"
+  '                End If
+                ElseIf InStr(ST, LinkString) Then
+                  On Error GoTo locErr
+                  If CheckDel(Selection, ST, ChosenName, "Formula", "Replaced title with value") Then
+                    With oAxis.AxisTitle
+                      .Text = .Text
+                    End With
+                  End If
+                ElseIf ST = "" And iAxisGroup = xlSecondary Then
+                  On Error GoTo locErr
+                  ' can't get the secondary axis title
+                  If InStr(stUnchecked, "Secondary axis titles") = 0 Then stUnchecked = JoinUp(", ", stUnchecked, "Secondary axis titles")
+                  'LogIt ChosenName, "AxisTitle", "Formula", "Secondary Axis Title", "[unable to check]", "Please check manually"
+                End If
+              End If
+            End If
+          End If
+          On Error GoTo locErr
+        Next iAxis
+      Next iAxisGroup
+    End If
+    If TypeName(oChosen.Parent) = "ChartObject" And bChartObjActive Then
+      ActiveWindow.Visible = False
+    End If
+    'now deal with things we couldn't check.
+    If stUnchecked <> "" Then
+      stStage = "Links from unchecked items"
+      ' try copying the chart to a new workbook and checking the linksources
+      Application.ScreenUpdating = False
+      Set WB = ActiveWorkbook
+      If TypeName(oChosen.Parent) = "ChartObject" Then
+        Workbooks.Add xlWorksheet
+        On Error Resume Next
+        oChosen.Parent.Copy
+        If Err <> 0 And InStr(ChosenName, "GroupObject") > 0 Then
+          Err.Clear
+          oChosen.Parent.ShapeRange.ParentGroup.Copy
+        End If
+        If Err = 0 Then ActiveSheet.Paste Range("A1")
+        bCopyFailed = Err <> 0
+        On Error GoTo locErr
+        If bCopyFailed Then
+          If iOption > 0 Then
+            If Not bCancel Then
+              If Not rShow Is Nothing Then Application.GoTo rShow, True
+              bCancel = MsgBox("I failed to copy " & ChosenName & " to check if the copy contains links" & Chr(13) & "I cannot access the properties of the following objects:" & Chr(13) & _
+                stUnchecked & Chr(13) & "You may need to check them yourself", vbInformation + vbOKCancel, cstTitle) = vbCancel
+            End If
+          Else
+            LogIt ChosenName, "Chart", stUnchecked, rShow.Address, "Unable to check", "Please check manually"
+          End If
+        End If
+      Else
+        oChosen.Copy  ' to new workbook
+      End If
+      vSources = ActiveWorkbook.LinkSources(xlExcelLinks)
+      ActiveWorkbook.Close False
+      WB.Activate
+      Application.ScreenUpdating = True
+      If TypeName(vSources) <> "Empty" Then
+        For iSource = LBound(vSources) To UBound(vSources)
+          If InStr(vSources(iSource), LinkString) > 0 And vSources(iSource) <> WB.FullName Then
+            iFound = iFound + 1
+            If iOption > 0 Then
+              If Not bCancel Then
+                If Not rShow Is Nothing Then Application.GoTo rShow, True
+                bCancel = MsgBox("There is a link somewhere in " & ChosenName & Chr(13) & "but I cannot access the properties of the following objects:" & Chr(13) & _
+                  stUnchecked & Chr(13) & "You will need to check them yourself", vbInformation + vbOKCancel, cstTitle) = vbCancel
+              End If
+            Else
+              LogIt ChosenName, "Chart", stUnchecked, "Can't access", vSources(iSource), "Please check manually"
+            End If
+            Exit For
+          End If
+        Next
+      End If
+    End If
+    oChosen.PlotVisibleOnly = bVisibleOnly
+  ElseIf TypeName(oChosen) = "DialogSheet" Then
+    ' look in OnAction of dialog frame
+    stStage = "DialogSheet"
+    If InStr(oChosen.DialogFrame.OnAction, LinkString) > 0 Then
+      If InStr(ST, ActiveWorkbook.Name & "!") <> 1 And InStr(ST, "'" & ActiveWorkbook.Name & "'!") <> 1 Then
+        If CheckDel(oChosen.DialogFrame, oChosen.DialogFrame.OnAction, ChosenName, "OnAction", "Deassigned macro") Then oChosen.DialogFrame.OnAction = ""
+      End If
+    End If
+  End If
+  ScanSheet = Not bCancel
+  If bFilterToRestore Then RestoreFilters
+  Exit Function
+locErr:
+  Select Case Central(Err, Error(), "ScanSheet " & ChosenName, stStage, stXtra)
+    Case vbRetry
+      Resume
+    Case vbAbort
+      Exit Function
+    Case vbIgnore
+      Resume Next
+  End Select
+  
+End Function
+
+Sub Help()
+  MsgBox "If this utility is not meeting your needs, you may email the developer at Bill@manville.org.uk" & Chr(13) & _
+      "He is also interested in any links which the utility fails to find or delete, and in any error reports" & Chr(13) & _
+      "Please ZIP and attach the workbook concerned.", _
+      vbInformation, cstTitle
+End Sub
+
+
+Private Sub LogIt(Optional Sheetname, Optional ObjType, Optional Where, Optional objName, Optional Value, Optional Action)
+  If iOption <= 0 Then
+    ' logging
+    If Not IsMissing(Sheetname) Then rLog.Cells(1, 1) = Sheetname
+    If Not IsMissing(ObjType) Then rLog.Cells(1, 2) = ObjType
+    If Not IsMissing(objName) Then rLog.Cells(1, 3) = objName
+    If Not IsMissing(Where) Then rLog.Cells(1, 4) = Where
+    If Not IsMissing(Value) Then rLog.Cells(1, 5) = "'" & Value
+    If Not IsMissing(Action) Then rLog.Cells(1, 6) = Action
+    Set rLog = rLog.Offset(1)
+  End If
+End Sub
+
+Sub ReviseAction(Action As String)
+  If iOption <= 0 Then rLog.Offset(-1, 5).Value = Action
+End Sub
+
+Function Flatten(V) As String
+  Dim I As Integer
+  Dim ST As String
+  On Error GoTo locErr
+  If IsArray(V) Then
+    For I = LBound(V) To UBound(V)
+      ST = ST & V(I)
+    Next
+  Else
+    ST = CStr(V)
+  End If
+  Flatten = ST
+tidyUp:
+  Exit Function
+locErr:
+  Select Case Central(Err, Error(), "Flatten")
+    Case vbRetry
+      Resume
+    Case vbAbort
+      Resume tidyUp
+    Case vbIgnore
+      Resume Next
+  End Select
+End Function
+
+Function UnFlatten(ST As String)
+  Dim A() As String
+  Dim I As Integer
+  On Error GoTo locErr
+  If Len(ST) < 200 Then
+    UnFlatten = ST
+  Else
+    ReDim A(0 To Len(ST) \ 200)
+    For I = 0 To UBound(A)
+      A(I) = Mid(ST, I * 200 + 1, 200)
+    Next
+  End If
+  UnFlatten = A
+tidyUp:
+  Exit Function
+locErr:
+  Select Case Central(Err, Error(), "UnFlatten")
+    Case vbRetry
+      Resume
+    Case vbAbort
+      Resume tidyUp
+    Case vbIgnore
+      Resume Next
+  End Select
+End Function
+
+Function IsIn(oCollection As Object, stName As String) As Boolean
+  Dim O As Object
+  On Error GoTo NotIn
+  Set O = oCollection(stName)
+  IsIn = True
+NotIn:
+End Function
+
+Function JoinUp(Sep, ParamArray Pars()) As String
+  Dim iPar As Integer
+  Dim ST As String
+  For iPar = LBound(Pars) To UBound(Pars)
+    If Pars(iPar) <> "" Then
+      If ST <> "" Then ST = ST & Sep
+      ST = ST & Pars(iPar)
+    End If
+  Next
+  JoinUp = ST
+End Function
+
+
+
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_AddinInstall()
+  Workbook_Open
+End Sub
+
+Private Sub Workbook_AddinUninstall()
+  Dim I As Integer
+  'Debug.Print "AddInUninstall"
+  With Application.CommandBars("Worksheet Menu Bar").FindControl(ID:=30007).CommandBar
+    For I = .Controls.Count To 1 Step -1
+      If .Controls(I).Caption = "Find Links" Then
+        If LCase(Replace(.Controls(I).OnAction, "'", "")) = LCase(ThisWorkbook.FullName & "!FindLinks") Then
+          .Controls(I).Delete
+          Debug.Print "gone"
+        End If
+      End If
+    Next
+  End With
+
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+  Dim I As Integer
+  'Debug.Print "BeforeClose"
+  With Application.CommandBars("Worksheet Menu Bar").FindControl(ID:=30007).CommandBar
+    For I = .Controls.Count To 1 Step -1
+      If .Controls(I).Caption = "Find Links" Then
+        If LCase(Replace(.Controls(I).OnAction, "'", "")) = LCase(ThisWorkbook.FullName & "!FindLinks") Then
+          .Controls(I).Delete
+          'Debug.Print "gone"
+        End If
+      End If
+    Next
+  End With
+End Sub
+
+Private Sub Workbook_Open()
+  With Application.CommandBars("Worksheet Menu Bar").FindControl(ID:=30007).CommandBar
+    If IsIn(.Controls, "Find Links") Then
+      With .Controls("Find Links")
+        .OnAction = ThisWorkbook.Name & "!FindLinks"
+      End With
+    Else
+      With .Controls.Add
+        .Caption = "Find Links"
+        .OnAction = ThisWorkbook.Name & "!FindLinks"
+      End With
+    End If
+    .Controls("Find Links").FaceId = 570
+  End With
+End Sub
+
+Attribute VB_Name = "modFilter"
+Option Explicit
+Option Private Module
+
+'updated 19/8/2011 to cater for color filtering and multiple selections
+
+Dim SaveArray() As Variant
+Dim bFiltered As Boolean
+Dim rFilterRange As Range
+
+Sub SaveFilters()
+  Dim I As Integer
+  Dim A As AutoFilter
+  Erase SaveArray
+  bFiltered = ActiveSheet.AutoFilterMode
+  If bFiltered = False Then Exit Sub
+  Set A = ActiveSheet.AutoFilter
+  With ActiveSheet.AutoFilter
+    ReDim SaveArray(1 To 4, 1 To .Filters.Count)
+    For I = 1 To .Filters.Count
+      With .Filters(I)
+        SaveArray(4, I) = .On
+        If .On Then
+          If IsObject(.Criteria1) Then
+            Select Case .Operator
+              Case 8 ' cell interior
+                SaveArray(1, I) = .Criteria1.Interior.Color
+              Case 9 ' cell font
+                SaveArray(1, I) = .Criteria1.Font.Color
+            End Select
+          Else
+            SaveArray(1, I) = .Criteria1
+          End If
+          Select Case .Operator
+            Case 3 To 6 ' top or bottom 10.  Criteria are held as strings (e.g. ">=10" not as the value of N
+              If Not IsNumeric(SaveArray(1, I)) Then
+                ' leave the operator empty so that the string criteria are used successfully
+                ' even though the user's original intention is lost
+                ' bug 684786 reported through Microsoft Connect.
+              Else
+                ' if the bug is fixed, keep the Operator
+                SaveArray(2, I) = .Operator
+              End If
+            Case Else
+              SaveArray(2, I) = .Operator
+          End Select
+          On Error Resume Next
+          SaveArray(3, I) = .Criteria2
+          On Error GoTo 0
+        End If
+      End With
+    Next
+    Set rFilterRange = .Range
+  End With
+End Sub
+
+Sub RestoreFilters()
+  Dim I As Integer
+  
+  If bFiltered = False Then Exit Sub
+  rFilterRange.AutoFilter
+  For I = 1 To UBound(SaveArray, 2)
+    If SaveArray(4, I) Then
+      If IsEmpty(SaveArray(3, I)) Then
+        If IsEmpty(SaveArray(2, I)) Or SaveArray(2, I) = 0 Then
+          ' one criterion
+          rFilterRange.AutoFilter I, SaveArray(1, I)
+        Else
+          rFilterRange.AutoFilter I, SaveArray(1, I), SaveArray(2, I)
+        End If
+      Else
+        rFilterRange.AutoFilter I, SaveArray(1, I), _
+            SaveArray(2, I), SaveArray(3, I)
+      End If
+    End If
+  Next
+End Sub
+
+
+
+INQUEST-PP=macro

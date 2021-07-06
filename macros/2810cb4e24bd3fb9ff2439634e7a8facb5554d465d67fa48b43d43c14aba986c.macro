@@ -1,0 +1,2573 @@
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Private Sub Workbook_Open()
+  Application.ScreenUpdating = False
+  Set shControl = Worksheets("CONTROL")
+  
+  If Names("Langu").Value <> "" Then
+    Call Translate(Names("Langu").Value)
+  End If
+  Worksheets("CONTROL").Activate
+  Range("Cursor").Select
+  Application.ScreenUpdating = True
+End Sub
+Attribute VB_Name = "Modul1"
+Sub Import()
+'************************************************************
+' Load import text file
+'*************************************************************
+
+' clear content
+  Call ResetAll
+  
+  Set shtempimp = Worksheets("TEMPIMP")
+  Set shControl = Worksheets("CONTROL")
+  Set order_list = Worksheets("CONTROL").lst_orders
+
+' text file open
+  shControl.Select
+  Filename = False
+  Filename = Application.GetOpenFilename(fileFilter:= _
+             getLanguageText("MSGBOX", "TextFiles", Range("CurrentLanguage")) & _
+             " (*.txt), *.txt" & _
+             "," & _
+             getLanguageText("MSGBOX", "AllFiles", Range("CurrentLanguage")) & _
+             " (*.*), *.*")
+  If Filename <> False Then
+    Workbooks.OpenText Filename:=Filename, _
+                       Origin:=xlWindows, _
+                       StartRow:=1, _
+                       DataType:=xlDelimited, _
+                       TextQualifier:= _
+                       xlDoubleQuote, _
+                       ConsecutiveDelimiter:=False, _
+                       Tab:=True, _
+                       Semicolon:=False, _
+                       Comma:=False, _
+                       Space:=False, _
+                       Other:=False, _
+                       FieldInfo:=Array(Array(1, 1), Array(2, 1), Array(3, 1), Array(4, 1), Array(5, 1), Array(6, 1))
+  Else
+    Exit Sub
+  End If
+  
+' set pointers to import data
+  Set wkimport = ActiveWorkbook
+  Set shimport = ActiveSheet
+
+' insert two columns
+  Range("A:B").Select
+  ActiveCell.EntireColumn.Insert
+  ActiveCell.EntireColumn.Insert
+
+' parse file for order number
+  rimport = 1
+  cimport = 3
+
+' retrieve service order numbers
+  Do
+    If shimport.Cells(rimport, cimport) = "" Then
+      Exit Do
+    Else
+      If shimport.Cells(rimport, cimport) = "AUFK" Then
+        order_list.AddItem shimport.Cells(rimport, cimport + 1)
+        currorder = shimport.Cells(rimport, cimport + 1)
+      End If
+    End If
+  ' write lookup values
+    With shimport
+      .Cells(rimport, 1) = currorder
+      .Cells(rimport, 2) = Str(currorder) + .Cells(rimport, 3)
+    End With
+    rimport = rimport + 1
+  Loop
+
+' now copy data to temp storage
+  shimport.Activate
+  Cells.Select
+  Selection.Copy
+  shtempimp.Activate
+  shtempimp.Cells(1, 1).Select
+  ActiveSheet.Paste
+
+' make pseudo selection to free up clipboard
+  shControl.Activate
+  shControl.Cells(1, 1).Select
+  Selection.Copy
+' close import sheet again
+  wkimport.Close (False)
+' and now sort the temporary import area
+  shtempimp.Range("A:Z").Sort Key1:=shtempimp.Range("A1"), Header:=xlNo
+' now copy components to COMPONENTS (see modul 10)
+  Call Copy_to_Components
+  
+  
+End Sub
+
+Sub Export()
+  
+  Set shResult = Worksheets("RESULT")
+  Set shtempwrk = Worksheets("TEMPWRK")
+  Set shControl = Worksheets("CONTROL")
+  
+  If IsEmpty(shResult.Cells(1, 1)) Then
+    shControl.Activate
+    check = MsgBox(getLanguageText("MSGBOX", "NoData", Range("CurrentLanguage")), vbOKOnly, "Warning")
+    Exit Sub
+  End If
+
+  shResult.AutoFilterMode = off
+
+' and copy the resulting values
+  shtempwrk.Range("A:Z").ClearContents
+  shResult.UsedRange.Copy Destination:=shtempwrk.Range("A1")
+  shtempwrk.Activate
+
+' remove first two columns
+  shtempwrk.Columns("A:B").Select
+  Selection.Delete Shift:=xlToLeft
+
+' create new sheet and copy data
+  Workbooks.Add
+  Set wkexport = ActiveWorkbook
+  Set shexport = ActiveSheet
+  shtempwrk.Range("A:Z").Copy Destination:=shexport.Range("A1")
+  shexport.Select
+  Fname = Application.UserName & shControl.lst_orders.Value & "exp.txt"
+  Filename = False
+  Filename = Application.GetSaveAsFilename(InitialFileName:=Fname, _
+                                           fileFilter:="Text Files (*.txt), *.txt")
+  If Filename <> False Then
+    On Error GoTo ende
+    ActiveWorkbook.SaveAs Filename:=Filename, FileFormat:=xlTextWindows, CreateBackup:=False
+ende:
+    ActiveWindow.Close (False)
+    shControl.Select
+    If Err.Number = 0 Then
+      check = MsgBox(Filename & " " & getLanguageText("MSGBOX", "Saved", Range("CurrentLanguage")), vbOKOnly, getLanguageText("MSGBOX", "FileSaved", Range("CurrentLanguage")))
+    End If
+        
+  Else
+    ActiveWindow.Close (False)
+    shControl.Select
+  End If
+
+End Sub
+Attribute VB_Name = "Modul10"
+'Erweiterungen CR_SAP_193 Teil 1
+'*****************************************************
+'
+Public Sub Servicereport_Rename(Quelle, Ziel)
+    Dim ShSource As Worksheet
+    Set ShSource = Worksheets(Quelle)
+    ShSource.Name = Ziel
+    If InStr(1, Ziel, "EDM") Then
+       Call Change_LookUP_INIT("SERVICEREPORT_EDM")
+    End If
+    
+    If InStr(1, Ziel, "MILLING") Then
+       Call Change_LookUP_INIT("SERVICEREPORT_MILLING")
+    End If
+    
+End Sub
+'
+Public Sub Change_LookUP_INIT(ZielName)
+   Dim J, K As Integer
+   Dim Inhalt As String
+   Dim ShTarget As Worksheet
+   Set ShTarget = Worksheets("LOOKUP")
+   
+   For K = 1 To 2
+
+       For J = 1 To 2000
+         If InStr(1, ShTarget.Cells(J, 1).Value, "SERVICEREPORT") _
+             And Mid(ShTarget.Cells(J, 1).Value, 1, 4) <> "ONLY" Then
+             Inhalt = ZielName
+             If InStr(1, ShTarget.Cells(J, 1).Value, "_FORMULA") Then
+                Inhalt = ZielName & "_FORMULA"
+             End If
+             If InStr(1, ShTarget.Cells(J, 1).Value, "_OBJECTS") Then
+                Inhalt = ZielName & "_OBJECTS"
+             End If
+             ShTarget.Cells(J, 1).Value = Inhalt
+         End If
+       Next J
+       Set ShTarget = Worksheets("INIT")
+   Next K
+End Sub
+
+Public Sub Copy_to_Components()
+  Dim J, K  As Integer
+  Set ShSource = Worksheets("TEMPIMP")
+  Set ShTarget = Worksheets("COMPONENTS").Range("A3:O1000")
+   
+  With ShTarget
+     .Clear
+  End With
+  Set ShTarget = Worksheets("COMPONENTS")
+  K = 2 'Row in Shtarget
+  J = 1
+  While ShSource.Cells(J, 1).Value <> ""
+    If ShSource.Cells(J, 3).Value = "COMP" Then
+       Set Sourcezeile = ShSource.Range("D" & J & ":M" & J)
+       K = K + 1
+       Set Target = ShTarget.Range("A" & K)
+       Sourcezeile.Copy Target
+       'MsgBox ShSource.Cells(J, 6).Value
+    End If
+    J = J + 1
+  Wend
+ Set Target = ShTarget.Range("A1:I" & K)
+' create a frame
+ With Target
+    .Borders(xlDiagonalDown).LineStyle = xlNone
+    .Borders(xlDiagonalUp).LineStyle = xlNone
+     With .Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+     End With
+     With .Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With .Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With .Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With .Borders(xlInsideVertical)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With .Borders(xlInsideHorizontal)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+     End With
+  End With
+
+' filter for order number
+ Set Target = ShTarget.Range("A:A")
+ With Target
+      .AutoFilter
+      .AutoFilter Field:=1, Criteria1:="="
+ End With
+End Sub
+
+
+
+
+Attribute VB_Name = "Modul11"
+'  Erweiterungen CR_SAP_193 Teil 1
+'  sheet Servicereport_milling / EDM
+'  Rande K4:R8 and R9
+
+Public Sub EDM_MILLING(SWorksheet As String)
+'***********************************
+' SName contain EDM or Milling
+'***********************************
+  Dim Sname As String
+  Dim WorksheetSave As String
+  
+  WorksheetSave = ActiveSheet.Name
+  
+  If InStr(1, SWorksheet, "EDM") Then
+      Sname = "EDM"
+  Else
+     Sname = "Milling"
+  End If
+' Clear K4 ... R8 and R9
+  Call Clear_EDM_Milling(SWorksheet)
+
+' Text from LOCKUP
+  Call Translate_EDM_MILLING(SWorksheet)
+
+' Data from measurement points
+  Call Fill_data_EDM_Milling(SWorksheet, Sname)
+ 
+' Yellow background and underline
+  Call Format_EDM_Milling(SWorksheet, Sname)
+  
+End Sub
+
+
+Public Sub Translate_EDM_MILLING(ControlName)
+
+  Set ShServicereport = Worksheets(ControlName)
+  Set ShLookup = Worksheets("LOOKUP")
+  language = Range("currentLanguage")
+   
+  r = 1
+  With ShServicereport
+    .Activate
+    Do
+      If ShLookup.Cells(r, 1) = "" Then
+        Exit Do
+      End If
+      If ShLookup.Cells(r, 1) = "ONLY_" & .Name _
+          And ShLookup.Cells(r, 3) = language Then
+          .Range(ShLookup.Cells(r, 2)).Value = ShLookup.Cells(r, 4)
+      End If
+      
+      r = r + 1
+      If r > 60000 Then
+        Exit Do
+       End If
+     Loop
+   End With
+   Set shControl = Worksheets("CONTROL")
+   shControl.Activate
+   
+End Sub
+
+Public Sub Clear_EDM_Milling(SWorksheet)
+   Dim Spalten As Variant
+   Spalten = Array("Spalte_2", "Spalte_4")
+   Set ShTarget = Worksheets(SWorksheet)
+   
+   With ShTarget
+     .Range("Spalte_1").ClearContents
+     .Range("Spalte_2").ClearContents
+     .Range("Spalte_3").ClearContents
+     .Range("Spalte_4").ClearContents
+'    Delete color and underline
+      For Each sp In Spalten
+       With .Range(sp)
+         .Interior.ColorIndex = xlNone
+         .Borders(xlDiagonalDown).LineStyle = xlNone
+         .Borders(xlDiagonalUp).LineStyle = xlNone
+         .Borders(xlEdgeLeft).LineStyle = xlNone
+         .Borders(xlEdgeTop).LineStyle = xlNone
+         .Borders(xlEdgeBottom).LineStyle = xlNone
+         If sp = "Spalte_4" Then
+           .Borders(xlEdgeRight).LineStyle = xlYes
+         Else
+           .Borders(xlEdgeRight).LineStyle = xlNone
+         End If
+         .Borders(xlInsideHorizontal).LineStyle = xlNone
+        End With
+      Next sp
+   End With
+End Sub
+
+
+
+Public Sub Fill_data_EDM_Milling(SWorksheet, Sname)
+
+  Dim K, r, q As Integer
+  Dim MeasPoint, MeasValue As Variant
+ 'Text name in Spalte_3 --> meassurement point
+ If Sname = "EDM" Then
+    MeasPoint = Array("TXT_P4", "TXT_P5")
+    MeasValue = Array("INP_R4", "INP_R5")
+  Else
+    MeasPoint = Array("TXT_P4", "TXT_P5", "TXT_P6", "TXT_P7", "TXT_P8", "TXT_P9", "TXT_K7")
+    MeasValue = Array("INP_R4", "INP_R5", "INP_R6", "INP_R7", "INP_R8", "INP_R9", "INP_M7")
+  End If
+  language = Range("currentLanguage")
+  Set ShServicereport = Worksheets(SWorksheet)
+  Set shControl = Worksheets("CONTROL")
+  Set shResult = Worksheets("RESULT")
+  Dim aa As String
+  K = 0
+  With ShServicereport
+    For Each MP In MeasPoint
+        MP_Name = getLanguageText(SWorksheet, MP, language)
+        r = 1
+        'determine old value (from SAP)
+        Do
+          If shControl.Range("measlookup").Cells(r, 1) = "" Then
+             Exit Do
+          Else
+            If Trim(MP_Name) = shControl.Range("measlookup").Cells(r, 3) Then
+               .Range(MeasValue(K)).Value = shControl.Range("measlookup").Cells(r, 4)
+               Exit Do
+            End If
+            r = r + 1
+          End If
+        Loop
+        'determine new Version / Value - only results from Sheet RESULT
+        q = 1
+        Do
+          If shResult.Cells(q, 1) = "" Then
+             Exit Do
+          Else
+             If Trim(shResult.Cells(q, 4)) = Trim(shControl.Range("measlookup").Cells(r, 1)) And _
+                Trim(shResult.Cells(q, 1)) = Get_OrderNumber() And _
+                Trim(shResult.Cells(q, 3)) = "MEAS" Then
+                 .Range(MeasValue(K)).Value = shResult.Cells(q, 6) & shResult.Cells(q, 7)
+             End If
+             q = q + 1
+          End If
+        Loop
+        
+      K = K + 1
+    Next MP
+  End With
+End Sub
+
+Public Function Get_OrderNumber()
+  Dim oOle As OLEObject
+  Dim oCombobox As msforms.ComboBox
+  Dim WksControl As Worksheet
+
+  Set WksControl = Worksheets("Control")
+  Get_OrderNumber = ""
+
+  For Each oOle In WksControl.OLEObjects
+     If TypeName(oOle.Object) = "ComboBox" Then
+        Set oCombobox = oOle.Object
+        If Trim(oCombobox.Name) = "lst_orders" Then
+            Get_OrderNumber = oCombobox.Object.Value
+        End If
+     End If
+  Next oOle
+End Function
+  
+
+Public Sub Format_EDM_Milling(SWorksheet As String, Sname As String)
+
+  Dim Yellow_Color As Variant
+  Dim Underline_2 As Variant
+  Dim Underline_4 As Variant
+' yellow Background and underlined the following fields
+  If Sname = "EDM" Then
+    Yellow_Color = Array("INP_M4", "INP_M5", "INP_M6")
+    Underline_2 = Array("INP_M4", "INP_M5", "INP_M6")
+    Underline_4 = Array("INP_R4", "INP_R5")
+  Else
+    Yellow_Color = Array("INP_M4", "INP_M5", "INP_M6", "INP_M7")
+    Underline_2 = Array("INP_M4", "INP_M5", "INP_M6", "INP_M7")
+    Underline_4 = Array("INP_R4", "INP_R5", "INP_R6", "INP_R7", "INP_R8", "INP_R9")
+  End If
+  Set ShServicereport = Worksheets(SWorksheet)
+
+  K = 0
+  With ShServicereport
+ ' Background yellow
+    For Each sp In Yellow_Color
+      With .Range(sp)
+         With .Interior
+          .ColorIndex = 36
+          .Pattern = xlSolid
+         End With
+      End With
+    Next sp
+ '  second row
+    For Each sp In Underline_2
+      With .Range(sp)
+        .Borders(xlDiagonalDown).LineStyle = xlNone
+        .Borders(xlDiagonalUp).LineStyle = xlNone
+        .Borders(xlEdgeLeft).LineStyle = xlNone
+        With .Borders(xlEdgeTop)
+           .LineStyle = xlContinuous
+           .Weight = xlThin
+           .ColorIndex = xlAutomatic
+         End With
+         With .Borders(xlEdgeBottom)
+           .LineStyle = xlContinuous
+           .Weight = xlThin
+           .ColorIndex = xlAutomatic
+         End With
+        .Borders(xlEdgeRight).LineStyle = xlNone
+      End With
+    Next sp
+'  fourth row
+   For Each sp In Underline_4
+      With .Range(sp)
+        .Borders(xlDiagonalDown).LineStyle = xlNone
+        .Borders(xlDiagonalUp).LineStyle = xlNone
+        .Borders(xlEdgeLeft).LineStyle = xlNone
+        With .Borders(xlEdgeTop)
+           .LineStyle = xlContinuous
+           .Weight = xlThin
+           .ColorIndex = xlAutomatic
+         End With
+         With .Borders(xlEdgeBottom)
+           .LineStyle = xlContinuous
+           .Weight = xlThin
+           .ColorIndex = xlAutomatic
+         End With
+         With .Borders(xlEdgeRight)
+            .LineStyle = xlNone
+            .Weight = xlThin
+            .ColorIndex = xlAutomatic
+          End With
+      End With
+    Next sp
+  End With
+End Sub
+
+
+Attribute VB_Name = "Modul12"
+Sub Makro1()
+Attribute Makro1.VB_Description = "Makro am 11.05.2009 von nzjp6z aufgezeichnet"
+Attribute Makro1.VB_ProcData.VB_Invoke_Func = " \n14"
+'
+' Makro1 Makro
+' Makro am 11.05.2009 von nzjp6z aufgezeichnet
+'
+
+'
+    Columns("A:C").Select
+    Selection.EntireColumn.Hidden = True
+End Sub
+Attribute VB_Name = "Modul2"
+Sub Read_Object(currobject, currange, currorder, MaxLines)
+  
+  Set shControl = Worksheets("CONTROL")
+  Set shResult = Worksheets("RESULT")
+  Set shtempwrk = Worksheets("TEMPWRK")
+  Set shtempimp = Worksheets("TEMPIMP")
+  Set shclassification = Worksheets("CLASSIFICATION")
+  
+  currange_cmp = currange & "_cmp"
+
+  If currobject <> "ADRS" And currobject <> "CLAS" Then
+    shControl.Range(currange).ClearContents
+    shControl.Range(currange_cmp).ClearContents
+  End If
+  
+' no order selected
+  If shControl.lst_orders.Value = "" Then
+    shControl.Range("current_order").ClearContents
+    shControl.Range("notification").ClearContents
+    Exit Sub
+  End If
+
+' update completion numbers
+  If currobject = "TIME" Then
+' set filter
+    lookupval = Str(shControl.lst_orders.Value) + "AFVC"
+    shtempimp.Select
+    Worksheets("TEMPIMP").Range("A:Z").AutoFilter _
+      Field:=2, Criteria1:=lookupval ', VisibleDropDown:=False
+' and copy the resulting values
+    shtempwrk.Range("A:Z").ClearContents
+    shtempimp.UsedRange.Copy Destination:=shtempwrk.Range("A1")
+    shtempwrk.Activate
+    shtempwrk.Rows("1:1").Select
+    Application.CutCopyMode = False
+    Selection.Delete Shift:=xlUp
+    shtempwrk.Range("A:Z").Sort Key1:=shtempwrk.Range("D1"), Header:=xlNo
+    shtempwrk.Range("D:G").Copy
+    shControl.Activate
+    shControl.Range("completion_numbers").Select
+    ActiveSheet.Paste Destination:=Worksheets("CONTROL").Range("AG:AJ")
+    Selection.EntireColumn.Hidden = True
+    Excel.SendKeys "{Esc}{Esc}{Esc}{Enter}"
+  End If
+' update meas. point numbers
+  If currobject = "MEAS" Then
+' set filter
+    lookupval = Str(shControl.lst_orders.Value) + "MEAS"
+    Worksheets("TEMPIMP").Range("B:B").AutoFilter _
+      Field:=2, Criteria1:=lookupval, VisibleDropDown:=False
+' and copy the resulting values
+    shtempwrk.Range("A:Z").ClearContents
+    shtempimp.UsedRange.Copy Destination:=shtempwrk.Range("A1")
+    shtempwrk.Activate
+' but the first one we never want (filter object header)
+    shtempwrk.Rows("1:1").Select
+    Application.CutCopyMode = False
+    Selection.Delete Shift:=xlUp
+        shtempwrk.Range("D:G").Copy
+    shControl.Activate
+    ActiveSheet.Paste Destination:=shControl.Range("measlookup")
+    shControl.Range("measlookup").Select
+    Selection.EntireColumn.Hidden = True
+    Excel.SendKeys "{Esc}{Esc}{Esc}{Enter}"
+  End If
+  
+  shControl.Activate
+  
+' read currently stored object
+' clear work area firt
+  shtempwrk.Range("A:Z").ClearContents
+' before carrying on check whether sheet is empy
+  If shResult.Cells(1, 1) = "" And shResult.Cells(2, 1) = "" Then
+    Exit Sub
+  End If
+
+' filter relevant values
+  lookupval = Str(currorder) + currobject
+  shResult.Range("B:B").AutoFilter _
+    Field:=1, Criteria1:=lookupval, VisibleDropDown:=False
+' and copy to work area
+  With shResult.AutoFilter
+    shResult.UsedRange.Copy Destination:=shtempwrk.Range("A1")
+  End With
+
+'enumerate result and write to input area
+  With shControl
+' clear current time entry area first
+    If currobject = "CLAS" Then
+      shclassification.Range(currange).ClearContents
+    Else
+      If currobject <> "ADRS" Then
+        .Range(currange).ClearContents
+      End If
+    End If
+    r = 1 ' source row
+    x = 1 ' destination row
+' loop selection and write currently stored data to data entry area in "control" sheet
+    Do
+      If shtempwrk.Cells(r, 3) <> "" Then
+        If shtempwrk.Cells(r, 3) = currobject And Str(shtempwrk.Cells(r, 1)) = Str(currorder) Then
+          Select Case currobject
+            Case "TIME"
+              .Range(currange).Cells(x, 1) = shtempwrk.Cells(r, 4) ' conf no
+              .Range(currange).Cells(x, 2) = shtempwrk.Cells(r, 5) ' work centre
+              If Not IsEmpty(shtempwrk.Cells(r, 9)) Then
+                wk_date = DateValue(Right(shtempwrk.Cells(r, 9), 2) & "/" & Mid(shtempwrk.Cells(r, 9), 5, 2) & "/" & Left(shtempwrk.Cells(r, 9), 4)) ' start date
+                .Range(currange).Cells(x, 3) = Format(wk_date, "DD/MM/YYYY")
+              End If
+              If Not IsEmpty(shtempwrk.Cells(r, 10)) Then
+                wk_time = Left(shtempwrk.Cells(r, 10), 2) & ":" & Right(shtempwrk.Cells(r, 10), 2) ' start time
+                .Range(currange).Cells(x, 4) = Format(wk_time, "HH:MM:SS")
+              End If
+              If Not IsEmpty(shtempwrk.Cells(r, 11)) Then
+                wk_date = DateValue(Right(shtempwrk.Cells(r, 11), 2) & "/" & Mid(shtempwrk.Cells(r, 11), 5, 2) & "/" & Left(shtempwrk.Cells(r, 11), 4)) ' end date
+                .Range(currange).Cells(x, 5) = Format(wk_date, "DD/MM/YYYY")
+              End If
+              If Not IsEmpty(shtempwrk.Cells(r, 12)) Then
+                wk_time = Left(shtempwrk.Cells(r, 12), 2) & ":" & Right(shtempwrk.Cells(r, 12), 2)  ' end time
+                .Range(currange).Cells(x, 6) = Format(wk_time, "HH:MM:SS")
+              End If
+              .Range(currange).Cells(x, 7) = shtempwrk.Cells(r, 6) ' actual work
+              .Range(currange).Cells(x, 8) = shtempwrk.Cells(r, 7) ' actual uom
+              Select Case shtempwrk.Cells(r, 8)
+                Case getLanguageText("CONTROL", "activity01", "EN")
+                  .Range(currange).Cells(x, 9) = getLanguageText("CONTROL", "activity01", Range("CurrentLanguage"))
+                Case getLanguageText("CONTROL", "activity02", "EN")
+                  .Range(currange).Cells(x, 9) = getLanguageText("CONTROL", "activity02", Range("CurrentLanguage"))
+                Case getLanguageText("CONTROL", "activity03", "EN")
+                  .Range(currange).Cells(x, 9) = getLanguageText("CONTROL", "activity03", Range("CurrentLanguage"))
+                Case getLanguageText("CONTROL", "activity04", "EN")
+                  .Range(currange).Cells(x, 9) = getLanguageText("CONTROL", "activity04", Range("CurrentLanguage"))
+                Case getLanguageText("CONTROL", "activity05", "EN")
+                  .Range(currange).Cells(x, 9) = getLanguageText("CONTROL", "activity05", Range("CurrentLanguage"))
+                Case getLanguageText("CONTROL", "activity06", "EN")
+                  .Range(currange).Cells(x, 9) = getLanguageText("CONTROL", "activity06", Range("CurrentLanguage"))
+                Case getLanguageText("CONTROL", "activity07", "EN")
+                  .Range(currange).Cells(x, 9) = getLanguageText("CONTROL", "activity07", Range("CurrentLanguage"))
+                Case Else
+                  .Range(currange).Cells(x, 9) = shtempwrk.Cells(r, 8) ' act. type
+              End Select
+            Case "NCAU"
+              .Range(currange).Cells(x, 1) = shtempwrk.Cells(r, 6) ' Cause code
+              .Range(currange).Cells(x, 2) = shtempwrk.Cells(r, 7) ' Cause description
+            Case "MEAS"
+              .Range(currange).Cells(x, 1) = shtempwrk.Cells(r, 4) ' meas point
+              If Not IsEmpty(shtempwrk.Cells(r, 5)) Then
+                wk_date = DateValue(Right(shtempwrk.Cells(r, 5), 2) & "/" & Mid(shtempwrk.Cells(r, 5), 5, 2) & "/" & Left(shtempwrk.Cells(r, 5), 4)) ' reading date
+                .Range(currange).Cells(x, 2) = Format(wk_date, "DD/MM/YYYY")
+              End If
+              .Range(currange).Cells(x, 3) = shtempwrk.Cells(r, 6) ' comp.version
+              .Range(currange).Cells(x, 4) = shtempwrk.Cells(r, 7) ' value
+              .Range(currange).Cells(x, 5) = shtempwrk.Cells(r, 8) ' value code
+            Case "NACT"
+              If Not IsEmpty(shtempwrk.Cells(r, 8)) Then
+                wk_date = DateValue(Right(shtempwrk.Cells(r, 8), 2) & "/" & Mid(shtempwrk.Cells(r, 8), 5, 2) & "/" & Left(shtempwrk.Cells(r, 8), 4)) ' activity date
+                .Range("longtext_date").Cells(x, 1) = Format(wk_date, "DD/MM/YYYY")
+              End If
+              shtempwrk.Select
+              Cells(r, 9).Select
+              Selection.Copy
+              .Select
+              .Range("longtext").Select
+              ActiveSheet.Paste
+              .Range("longtext") = getLongText(Range("longtext"))
+            Case "CTXT"
+              If Not IsEmpty(shtempwrk.Cells(r, 8)) Then
+                wk_date = DateValue(Right(shtempwrk.Cells(r, 8), 2) & "/" & Mid(shtempwrk.Cells(r, 8), 5, 2) & "/" & Left(shtempwrk.Cells(r, 8), 4)) ' activity date
+                .Range("confidential_text_date").Cells(x, 1) = Format(wk_date, "DD/MM/YYYY")
+              End If
+              shtempwrk.Select
+              Cells(r, 9).Select
+              Selection.Copy
+              .Select
+              .Range("confidential_text").Select
+              ActiveSheet.Paste
+              .Range("confidential_text") = getLongText(Range("confidential_text"))
+            Case "GMVT"
+              .Range(currange).Cells(x, 1) = shtempwrk.Cells(r, 4) ' material no
+              .Range(currange).Cells(x, 2) = shtempwrk.Cells(r, 8) ' quantity
+              .Range(currange).Cells(x, 3) = shtempwrk.Cells(r, 9) ' uom
+              .Range(currange).Cells(x, 4) = shtempwrk.Cells(r, 5) ' plant
+              .Range(currange).Cells(x, 5) = shtempwrk.Cells(r, 6) ' storage loc
+              .Range(currange).Cells(x, 6) = shtempwrk.Cells(r, 7) ' mvt type
+            Case "ADRS"
+              .Range(currange).Cells(x, 1) = shtempwrk.Cells(r, 4) ' customer number
+              .Range(currange).Cells(x, 2) = shtempwrk.Cells(r, 5) ' address number
+              .Range(currange).Cells(x, 3) = shtempwrk.Cells(r, 6) ' name
+              .Range(currange).Cells(x, 4) = shtempwrk.Cells(r, 7) ' street
+              .Range(currange).Cells(x, 5) = shtempwrk.Cells(r, 8) ' zip-code
+              .Range(currange).Cells(x, 6) = shtempwrk.Cells(r, 9) ' city
+              .Range(currange).Cells(x, 7) = shtempwrk.Cells(r, 10) ' phone
+              .Range(currange).Cells(x, 8) = shtempwrk.Cells(r, 11) ' fax
+              .Range(currange).Cells(x, 9) = shtempwrk.Cells(r, 12) ' service
+              .Range(currange).Cells(x, 10) = shtempwrk.Cells(r, 13) ' E-MAil
+            Case "CLAS"
+              shclassification.Range(currange).Cells(x, 1) = shtempwrk.Cells(r, 5) 'internal number
+              shclassification.Range(currange).Cells(x, 2) = shtempwrk.Cells(r, 6) 'name
+              shclassification.Range(currange).Cells(x, 3) = shtempwrk.Cells(r, 7) 'description
+              shclassification.Range(currange).Cells(x, 4) = shtempwrk.Cells(r, 8) 'value
+          End Select
+          x = x + 1
+        End If
+      Else
+        Exit Do
+      End If ' check for blank line
+      r = r + 1
+      If x > MaxLines Then
+        Exit Do
+      End If
+    Loop
+  End With
+
+  If currobject = "CLAS" Then
+    shclassification.Range(currange).Copy Destination:=shclassification.Range(currange_cmp)
+  Else
+' store current values so as to compare with next time
+    shControl.Range(currange).Copy Destination:=shControl.Range(currange_cmp)
+  End If
+
+End Sub
+
+Sub Save_Object(currobject, currange, maxentries)
+  
+  Set shControl = Worksheets("CONTROL")
+  Set shResult = Worksheets("RESULT")
+  Set shtempwrk = Worksheets("TEMPWRK")
+  Set shtempimp = Worksheets("TEMPIMP")
+  Set shclassification = Worksheets("CLASSIFICATION")
+  
+  currange_cmp = currange & "_cmp"
+  currorder = shControl.Range("current_order")
+' First delete the exiting ones
+  lookupval = currorder & currobject
+' before setting filter insert blank row on top first as first row is always deleted
+  shResult.AutoFilterMode = off
+  shResult.Activate
+ ' Excep 97
+  If shResult.Cells(1, 1) = "" Then
+  Else
+    shResult.Rows(1).Insert
+    shResult.Range("B:B").AutoFilter _
+      Field:=1, Criteria1:=lookupval, VisibleDropDown:=False
+    Application.DisplayAlerts = False
+    With shResult.AutoFilter
+      lookupval = .Range.Address
+      shResult.Range(lookupval).Delete
+    End With
+    Application.DisplayAlerts = True
+  End If
+  With shResult
+' determine first free row
+    r = 1
+    Do
+      If IsEmpty(.Cells(r, 1)) Then
+        Exit Do
+      Else
+        r = r + 1
+      End If
+    Loop
+' and now store the new ones
+    For x = 1 To maxentries
+      Select Case currobject
+        Case "TIME"
+          If Not (IsEmpty(shControl.Range(currange).Cells(x, 7)) _
+               Or IsEmpty(shControl.Range(currange).Cells(x, 9)) _
+               Or IsEmpty(shControl.Range(currange).Cells(x, 1))) _
+          Then
+            .Cells(r, 1) = currorder
+            .Cells(r, 2) = Trim(Str(currorder) + currobject)
+            .Cells(r, 3) = currobject
+            .Cells(r, 4) = shControl.Range(currange).Cells(x, 1) ' conf no
+            If IsEmpty((shControl.Range(currange).Cells(x, 2))) Then
+              .Cells(r, 5) = shControl.Range("def_workcentre") ' work centre
+            Else
+              .Cells(r, 5) = shControl.Range(currange).Cells(x, 2) ' work centre
+            End If
+            .Cells(r, 6) = shControl.Range(currange).Cells(x, 7) ' actual work
+            .Cells(r, 7) = shControl.Range(currange).Cells(x, 8) 'actual work unit
+            Select Case shControl.Range(currange).Cells(x, 9)  ' activity type
+              Case shControl.Range("activity01")
+                .Cells(r, 8) = getLanguageText("CONTROL", "activity01", "EN")
+              Case shControl.Range("activity02")
+                .Cells(r, 8) = getLanguageText("CONTROL", "activity02", "EN")
+              Case shControl.Range("activity03")
+                .Cells(r, 8) = getLanguageText("CONTROL", "activity03", "EN")
+              Case shControl.Range("activity04")
+                .Cells(r, 8) = getLanguageText("CONTROL", "activity04", "EN")
+              Case shControl.Range("activity05")
+                .Cells(r, 8) = getLanguageText("CONTROL", "activity05", "EN")
+              Case shControl.Range("activity06")
+                .Cells(r, 8) = getLanguageText("CONTROL", "activity06", "EN")
+              Case shControl.Range("activity07")
+                .Cells(r, 8) = getLanguageText("CONTROL", "activity07", "EN")
+              Case Else
+                .Cells(r, 8) = shControl.Range(currange).Cells(x, 9)
+            End Select
+            If Year(shControl.Range(currange).Cells(x, 3)) > 2000 Then ' only valid dates
+              .Cells(r, 9) = Format(Year(shControl.Range(currange).Cells(x, 3)), "0000") & Format(Str(Month(shControl.Range(currange).Cells(x, 3))), "00") & Format(Str(Day(shControl.Range(currange).Cells(x, 3))), "00") ' start date
+              .Cells(r, 10) = Format((Hour(shControl.Range(currange).Cells(x, 4))), "00") & Format((Minute(shControl.Range(currange).Cells(x, 4))), "00") ' start time
+              If Year(shControl.Range(currange).Cells(x, 5)) > 2000 Then ' only valid dates
+                .Cells(r, 11) = Format(Str(Year(shControl.Range(currange).Cells(x, 5))), "0000") & Format(Str(Month(shControl.Range(currange).Cells(x, 5))), "00") & Format(Str(Day(shControl.Range(currange).Cells(x, 5))), "00") ' end time
+                .Cells(r, 12) = Format(Str(Hour(shControl.Range(currange).Cells(x, 6))), "00") & Format(Str(Minute(shControl.Range(currange).Cells(x, 6))), "00") ' end time
+              End If
+            End If
+            r = r + 1
+          Else ' critical information missing - skip
+          End If
+        Case "NCAU"
+          If Not (IsEmpty(shControl.Range(currange).Cells(x, 1)) _
+              And IsEmpty(shControl.Range(currange).Cells(x, 2))) Then  ' at least one should be filled
+            .Cells(r, 1) = currorder
+            .Cells(r, 2) = Trim(Str(currorder) + currobject)
+            .Cells(r, 3) = currobject
+            .Cells(r, 4) = shControl.Range("notification") ' notification number
+            .Cells(r, 5) = "ZCAUSE" ' cause catalogue
+            .Cells(r, 6) = shControl.Range(currange).Cells(x, 1) ' cause code
+            .Cells(r, 7) = Left(shControl.Range(currange).Cells(x, 2), 40) ' cause short text
+            r = r + 1
+          End If
+        Case "MEAS"
+          If Not (IsEmpty(shControl.Range(currange).Cells(x, 1))) Then
+            If shControl.Range(currange).Cells(x, 6) = "M" _
+               And shControl.Range(currange).Cells(x, 4) > 0 Then ' classical measuring point must have record value
+              .Cells(r, 1) = currorder
+              .Cells(r, 2) = Trim(Str(currorder) + currobject)
+              .Cells(r, 3) = currobject
+              .Cells(r, 4) = shControl.Range(currange).Cells(x, 1) ' measurement point
+              If Year(shControl.Range(currange).Cells(x, 2)) > 2000 Then ' only valid dates
+                .Cells(r, 5) = Format(Year(shControl.Range(currange).Cells(x, 2)), "0000") & Format(Str(Month(shControl.Range(currange).Cells(x, 2))), "00") & Format(Str(Day(shControl.Range(currange).Cells(x, 2))), "00") ' date of reading
+              End If
+              .Cells(r, 7) = shControl.Range(currange).Cells(x, 4) ' value read
+              r = r + 1
+            End If ' end of classical measuring point
+      
+            If shControl.Range(currange).Cells(x, 6) = "R" _
+               And shControl.Range(currange).Cells(x, 3) <> "" _
+               And shControl.Range(currange).Cells(x, 5) <> "" Then ' component version must have new version and valuation code
+              .Cells(r, 1) = currorder
+              .Cells(r, 2) = Trim(Str(currorder) + currobject)
+              .Cells(r, 3) = currobject
+              .Cells(r, 4) = shControl.Range(currange).Cells(x, 1) ' measurement point
+              If Year(shControl.Range(currange).Cells(x, 2)) > 2000 Then ' only valid dates
+                .Cells(r, 5) = Format(Year(shControl.Range(currange).Cells(x, 2)), "0000") & Format(Str(Month(shControl.Range(currange).Cells(x, 2))), "00") & Format(Str(Day(shControl.Range(currange).Cells(x, 2))), "00") ' date of reading
+              End If
+              .Cells(r, 6) = Left(shControl.Range(currange).Cells(x, 3), 20) ' new version
+              .Cells(r, 8) = Left(shControl.Range(currange).Cells(x, 5), 4) ' valuation code
+              r = r + 1
+            End If ' end of component version
+          End If ' end of meas point
+        Case "NACT"
+          If shControl.Range(currange).Cells(x, 1) <> "" Then
+            .Cells(r, 1) = currorder
+            .Cells(r, 2) = Trim(Str(currorder) + currobject)
+            .Cells(r, 3) = currobject
+            .Cells(r, 4) = shControl.Range("notification") ' notification number
+            .Cells(r, 5) = "ZACT"
+            .Cells(r, 6) = "INT"
+            .Cells(r, 7) = setShortText(shControl.Range("longtext")) ' short text
+            If Year(shControl.Range("longtext_date")) > 2000 Then
+              .Cells(r, 8) = Format(Year(shControl.Range("longtext_date")), "0000") & Format(Str(Month(shControl.Range("longtext_date"))), "00") & Format(Str(Day(shControl.Range("longtext_date"))), "00") ' date of reading
+            End If
+            shControl.Activate
+            shControl.Range("longtext").Select
+            Selection.Copy
+            .Select
+            Cells(r, 9).Select
+            ActiveSheet.Paste
+            .Cells(r, 9) = setLongText(.Cells(r, 9))
+          End If
+        Case "CTXT"
+          If shControl.Range(currange).Cells(x, 1) <> "" Then
+            .Cells(r, 1) = currorder
+            .Cells(r, 2) = Trim(Str(currorder) + currobject)
+            .Cells(r, 3) = currobject
+            .Cells(r, 4) = shControl.Range("notification") ' notification number
+            .Cells(r, 5) = "CTXT"
+            .Cells(r, 6) = "INT"
+            .Cells(r, 7) = setShortText(shControl.Range("confidential_text")) ' confidential text
+            If Year(shControl.Range("confidential_text_date")) > 2000 Then
+              .Cells(r, 8) = Format(Year(shControl.Range("confidential_text_date")), "0000") & Format(Str(Month(shControl.Range("confidential_text_date"))), "00") & Format(Str(Day(shControl.Range("confidential_text_date"))), "00") ' date of reading
+            End If
+            shControl.Activate
+            shControl.Range("confidential_text").Select
+            Selection.Copy
+            .Select
+            Cells(r, 9).Select
+            ActiveSheet.Paste
+            .Cells(r, 9) = setLongText(.Cells(r, 9))
+          End If
+        Case "GMVT"
+          If Not (IsEmpty(shControl.Range(currange).Cells(x, 1)) _
+               Or IsEmpty(shControl.Range(currange).Cells(x, 2))) Then  ' must have mat no and quantity
+            .Cells(r, 1) = currorder
+            .Cells(r, 2) = Trim(Str(currorder) + currobject)
+            .Cells(r, 3) = currobject
+            .Cells(r, 4) = shControl.Range(currange).Cells(x, 1) ' material number
+            If shControl.Range(currange).Cells(x, 4) = "" Then ' plant. Get default if blank
+              .Cells(r, 5) = shControl.Range("def_plant")
+            Else
+              .Cells(r, 5) = shControl.Range(currange).Cells(x, 4)
+            End If
+            If shControl.Range(currange).Cells(x, 5) = "" Then ' stor.loc. Get default if blank
+              .Cells(r, 6) = shControl.Range("def_storageloc")
+            Else
+              .Cells(r, 6) = shControl.Range(currange).Cells(x, 5)
+            End If
+            If shControl.Range(currange).Cells(x, 6) >= 261 Then ' movement type. 261 if blank
+              .Cells(r, 7) = shControl.Range(currange).Cells(x, 6)
+            Else
+              .Cells(r, 7) = "261"
+            End If
+            .Cells(r, 8) = shControl.Range(currange).Cells(x, 2) ' quantity
+            .Cells(r, 9) = shControl.Range(currange).Cells(x, 3) ' UOM
+            .Cells(r, 10) = currorder ' service order
+            r = r + 1
+          End If
+        Case "ADRS"
+          shControl.Range(currange_cmp).Copy Destination:=shControl.Range(currange)
+          If Not (IsEmpty(shControl.Range(currange).Cells(x, 1))) Then
+            If shControl.Range(currange).Cells(x, 10) <> shControl.Range(currange_cmp).Cells(x, 10) Then
+              .Cells(r, 1) = currorder
+              .Cells(r, 2) = Trim(Str(currorder) + currobject)
+              .Cells(r, 3) = currobject
+              .Cells(r, 4) = shControl.Range(currange).Cells(x, 1) ' customer number
+              .Cells(r, 5) = shControl.Range(currange).Cells(x, 2) ' address number
+              .Cells(r, 6) = shControl.Range(currange).Cells(x, 3) ' name
+              .Cells(r, 7) = shControl.Range(currange).Cells(x, 4) ' street
+              .Cells(r, 8) = shControl.Range(currange).Cells(x, 5) ' zip-code
+              .Cells(r, 9) = shControl.Range(currange).Cells(x, 6) ' city
+              .Cells(r, 10) = shControl.Range(currange).Cells(x, 7) ' phone
+              .Cells(r, 11) = shControl.Range(currange).Cells(x, 8) ' fax
+              .Cells(r, 12) = shControl.Range(currange).Cells(x, 9) ' service
+              .Cells(r, 13) = shControl.Range(currange).Cells(x, 10) ' E-Mail
+              r = r + 1
+            End If
+          End If
+        Case "CLAS"
+          If Not (IsEmpty(shclassification.Range(currange).Cells(x, 1))) Then
+            .Cells(r, 1) = currorder
+            .Cells(r, 2) = Trim(Str(currorder) + currobject)
+            .Cells(r, 3) = currobject
+            .Cells(r, 4) = shControl.Range("equipment_number") ' equipment number
+            .Cells(r, 5) = shclassification.Range(currange).Cells(x, 1) ' number
+            .Cells(r, 6) = shclassification.Range(currange).Cells(x, 2) ' name
+            .Cells(r, 7) = shclassification.Range(currange).Cells(x, 3) ' description
+            .Cells(r, 8) = shclassification.Range(currange).Cells(x, 4) ' value
+            r = r + 1
+          End If
+      End Select
+    Next ' get ROW
+  End With
+End Sub
+
+Attribute VB_Name = "Modul3"
+Sub check_change(currange, check)
+Attribute check_change.VB_Description = "Makro am 13.11.2001 von EDS User aufgezeichnet"
+Attribute check_change.VB_ProcData.VB_Invoke_Func = " \n14"
+' check if there are any change to designated area
+  currange_cmp = currange & "_cmp"
+  For r = 1 To Range(currange).Rows.Count
+    For C = 1 To Range(currange).Columns.Count
+      If Range(currange).Cells(r, C).Value <> Range(currange_cmp).Cells(r, C).Value Then
+        check = True
+      End If
+      If check Then
+        Exit For
+      End If
+    Next
+    If check Then
+      Exit For
+    End If
+  Next
+End Sub
+Attribute VB_Name = "Modul4"
+Sub Translate(language)
+  
+  Set shControl = Worksheets("CONTROL")
+  Names("Langu").Value = language
+  shControl.Range("CurrentLanguage").Value = language
+  Call TranslateSheet(language, "CONTROL")
+  
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  Call TranslateSheet(language, CurrentServicereport)
+  Call TranslateSheet(language, "SHHISTORY")
+  Call TranslateSheet(language, "CLASSIFICATION")
+  Call TranslateSheet(language, "COMPONENTS")
+End Sub
+
+Sub TranslateSheet(language, ControlName)
+  
+  Set control = Worksheets(ControlName)
+  Set ShLookup = Worksheets("LOOKUP")
+  
+  aSheet = ActiveSheet.Name
+  
+  Names("Langu").Value = language
+  r = 1
+  With control
+    If ControlName = "SHHISTORY" Or ControlName = "CLASSIFICATION" Then
+      If IsEmpty(.Range("A2")) Then
+        Exit Sub
+      End If
+    End If
+    .Activate
+    Do
+      If ShLookup.Cells(r, 1) = "" Then
+        Exit Do
+      Else
+        If ShLookup.Cells(r, 1) = .Name And _
+           ShLookup.Cells(r, 3) = language Then
+          .Range(ShLookup.Cells(r, 2)).Value = ShLookup.Cells(r, 4)
+        Else
+          If ShLookup.Cells(r, 1) = .Name & "_OBJECTS" And _
+             ShLookup.Cells(r, 3) = language Then
+            objectName = ShLookup.Cells(r, 2)
+            Select Case TypeName(.OLEObjects(objectName).Object)
+              Case "CommandButton"
+                .OLEObjects(objectName).Object.Caption = ShLookup.Cells(r, 4)
+              Case "TextBox"
+                .OLEObjects(objectName).Object.Value = ShLookup.Cells(r, 4)
+              Case "CheckBox"
+                .OLEObjects(objectName).Object.Value = shinit.Cells(r, 4)
+              Case "ComboBox"
+                .OLEObjects(objectName).Object.Value = shinit.Cells(r, 4)
+            End Select
+          Else
+            If ShLookup.Cells(r, 1) = .Name & "_COMMENT" And _
+               ShLookup.Cells(r, 3) = language Then
+              .Range(ShLookup.Cells(r, 2)).Select
+              .Range(ShLookup.Cells(r, 2)).ClearComments
+              If ShLookup.Cells(r, 4).Value <> "" Then
+                .Range(ShLookup.Cells(r, 2)).AddComment ShLookup.Cells(r, 4).Value
+                .Range(ShLookup.Cells(r, 2)).Comment.Visible = False
+                If ShLookup.Cells(r, 5).Value <> "" And ShLookup.Cells(r, 6).Value <> "" Then
+                  .Shapes(.Range(ShLookup.Cells(r, 2)).Comment.Shape.Name).ScaleWidth ShLookup.Cells(r, 5).Value, msoFalse, msoScaleFromTopLeft
+                  .Shapes(.Range(ShLookup.Cells(r, 2)).Comment.Shape.Name).ScaleHeight ShLookup.Cells(r, 6).Value, msoFalse, msoScaleFromTopLeft
+                End If
+              End If
+            End If
+          End If
+        End If
+        r = r + 1
+      End If
+    Loop
+    Select Case ControlName
+      Case "SHHISTORY"
+        Call FormatHistory
+      Case "CLASSIFICATION"
+        Call FormatClassification
+    End Select
+  End With
+  
+  Set control = Worksheets(aSheet)
+  control.Activate
+
+End Sub
+Attribute VB_Name = "Modul5"
+Sub ResetAll()
+Attribute ResetAll.VB_Description = "Makro am 16.11.2001 von EDS User aufgezeichnet"
+Attribute ResetAll.VB_ProcData.VB_Invoke_Func = " \n14"
+
+  Set shControl = Worksheets("CONTROL")
+
+  Call NewHistory
+  Call NewClassification
+    
+  Call SortSheet("LOOKUP")
+  Call SortSheet("INIT")
+  Call SortSheet("DEFAULT_MILLING")
+  Call SortSheet("DEFAULT_EDM")
+    
+  Call InitSheet("CONTROL", "INIT")
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  Call InitSheet(CurrentServicereport, "INIT")
+  Call InitSheet("SHHISTORY", "INIT")
+  Call InitSheet("CLASSIFICATION", "INIT")
+  Call InitSheet("RESULT", "INIT")
+  Call InitSheet("TEMPIMP", "INIT")
+  Call InitSheet("TEMPWRK", "INIT")
+  Call InitSheet("COMPONENTS", "INIT")
+  
+  Call InitSheet("CONTROL", "DEFAULT_" & Worksheets("CONTROL").OLEObjects("cmd_Servicereport_Name").Object.Caption)
+  Call InitSheet(CurrentServicereport, "DEFAULT_" & Worksheets("CONTROL").OLEObjects("cmd_Servicereport_Name").Object.Caption)
+    
+  Call DeleteLongtext2
+    
+  shControl.Select
+  shControl.txt_longtext.Enabled = False
+  shControl.txt_confidential_text.Enabled = False
+  ActiveWindow.SmallScroll ToRight:=6
+  ActiveWindow.LargeScroll ToRight:=-2
+  Range("Cursor").Select
+  Application.CalculateFull
+  
+End Sub
+
+Sub InitSheet(ControlName, initName)
+  
+  Set control = Worksheets(ControlName)
+  Set shinit = Worksheets(initName)
+  
+  aSheet = ActiveSheet.Name
+  
+  r = 1
+  With control
+    .Activate
+    .AutoFilterMode = off
+    Do
+      If shinit.Cells(r, 1) = "" Then
+        Exit Do
+      Else
+        If shinit.Cells(r, 1) = .Name Then
+          If shinit.Cells(r, 2) = "" And initName = "INIT" Then
+            .Cells.ClearContents
+          Else
+            If shinit.Cells(r, 3) = "" Then
+              If .Range(shinit.Cells(r, 2)).MergeCells Then
+                .Range(shinit.Cells(r, 2)).Value = shinit.Cells(r, 3)
+              Else
+                .Range(shinit.Cells(r, 2)).ClearContents
+              End If
+            Else
+              .Range(shinit.Cells(r, 2)).Value = shinit.Cells(r, 3)
+            End If
+          End If
+        Else
+          If shinit.Cells(r, 1) = .Name & "_OBJECTS" Then
+            objectName = shinit.Cells(r, 2)
+            Select Case TypeName(.OLEObjects(objectName).Object)
+              Case "CommandButton"
+                .OLEObjects(objectName).Object.Caption = shinit.Cells(r, 3)
+              Case "TextBox"
+                .OLEObjects(objectName).Object.Value = shinit.Cells(r, 3)
+              Case "CheckBox"
+                .OLEObjects(objectName).Object.Value = shinit.Cells(r, 3)
+              Case "ComboBox"
+                If shinit.Cells(r, 3) = "" Then
+                  .OLEObjects(objectName).Object.Clear
+                Else
+                  .OLEObjects(objectName).Object.Value = shinit.Cells(r, 3)
+                End If
+            End Select
+          Else
+            If shinit.Cells(r, 1) = .Name & "_COMMENT" Then
+              .Range(shinit.Cells(r, 2)).Select
+              .Range(shinit.Cells(r, 2)).ClearComments
+              If shinit.Cells(r, 3).Value <> "" Then
+                .Range(shinit.Cells(r, 2)).AddComment shinit.Cells(r, 3).Value
+                .Range(shinit.Cells(r, 2)).Comment.Visible = False
+                If shinit.Cells(r, 4).Value <> "" And shinit.Cells(r, 5).Value <> "" Then
+                  .Shapes(.Range(shinit.Cells(r, 2)).Comment.Shape.Name).ScaleWidth shinit.Cells(r, 4).Value, msoFalse, msoScaleFromTopLeft
+                  .Shapes(.Range(shinit.Cells(r, 2)).Comment.Shape.Name).ScaleHeight shinit.Cells(r, 5).Value, msoFalse, msoScaleFromTopLeft
+                End If
+              End If
+            End If
+          End If
+        End If
+        r = r + 1
+      End If
+    Loop
+    .Range("A1").Select
+  End With
+  
+  Set control = Worksheets(aSheet)
+  control.Activate
+
+End Sub
+
+Sub SortSheet(ControlName)
+  
+  Set control = Worksheets(ControlName)
+  
+  aSheet = ActiveSheet.Name
+    
+  With control
+    .Activate
+    LastCell = .Cells.SpecialCells(xlCellTypeLastCell).Address
+    On Error Resume Next
+    .Range("A1:" & LastCell).Sort Key1:=Range("A2"), _
+                                Order1:=xlAscending, _
+                                Key2:=Range("B2"), _
+                                Order2:=xlAscending, _
+                                Key3:=Range("C2"), _
+                                Order3:=xlAscending, _
+                                Header:=xlGuess, _
+                                OrderCustom:=1, _
+                                MatchCase:=False, _
+                                Orientation:=xlTopToBottom, _
+                                DataOption1:=xlSortNormal, _
+                                DataOption2:=xlSortNormal, _
+                                DataOption3:=xlSortNormal
+    On Error GoTo 0
+  End With
+  
+  Set control = Worksheets(aSheet)
+  control.Activate
+
+End Sub
+Attribute VB_Name = "Modul6"
+Sub Set_DropDown(DropDown_Destination, Col)
+
+  Set shControl = Worksheets("CONTROL")
+  
+  shControl.Range(DropDown_Destination).Select
+  r = 0
+  Do
+    If shControl.Cells(r + 1, Col) = "" Then Exit Do
+    r = r + 1
+  Loop
+  If r = 0 Then Exit Sub
+  With Selection.Validation
+      .Delete
+      .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, Operator:= _
+      xlBetween, Formula1:="=" & Range(Cells(1, Col), Cells(r, Col)).Address
+      .IgnoreBlank = True
+      .InCellDropdown = True
+      .ShowInput = True
+      .ShowError = True
+  End With
+
+End Sub
+
+Attribute VB_Name = "Modul7"
+Function getLanguageText(wsheet, Text, language)
+Attribute getLanguageText.VB_Description = "Makro am 28.05.2004 von Ralf Otto aufgezeichnet"
+Attribute getLanguageText.VB_ProcData.VB_Invoke_Func = " \n14"
+  
+  Set ShLookup = Worksheets("LOOKUP")
+
+  getLanguageText = ""
+
+  With ShLookup.Range("A:A")
+    Set f = .Find(wsheet, LookIn:=xlValues)
+    If Not f Is Nothing Then
+      r = f.Row
+      C = f.Column + 1
+      Do
+        If .Cells(r, C).Value = Text And _
+           .Cells(r, C + 1).Value = language Then
+          getLanguageText = .Cells(r, C + 2)
+          Exit Do
+        End If
+        r = r + 1
+      Loop
+      
+    End If
+  End With
+  
+End Function
+
+Function setLongText(Text)
+
+  hText = Text
+  hText = Replace(hText, Chr(13), "{")  'CR
+  hText = Replace(hText, Chr(10), "}")  'LF
+  setLongText = hText
+
+End Function
+
+Function getLongText(Text)
+
+  hText = Text
+  hText = Replace(hText, "{", Chr(13))  'CR
+  hText = Replace(hText, "}", Chr(10))  'LF
+  getLongText = hText
+
+End Function
+
+Function ConvertLongText(Text, StartLine, EndLine)
+
+  hText1 = Text
+  hText1 = Replace(hText1, Chr(9), " ")  'LF
+  
+  Line = 1
+  pos = 1
+  hText2 = ""
+  Do
+    maxlen = 74
+    
+    If (pos + maxlen) > Len(hText1) Then
+      maxlen = (Len(hText1) - pos) + 2
+    End If
+    
+    If (maxlen - 1) <= 0 Or Mid(hText1, pos) = "" Then
+      Exit Do
+    End If
+    
+    chr13 = InStr(1, Mid(hText1, pos, maxlen), Chr(13), vbBinaryCompare)
+    If chr13 = 0 Then
+      If Line >= StartLine And Line <= EndLine Then
+        hText2 = hText2 & Mid(hText1, pos, maxlen - 1) & Chr(10)
+      End If
+      pos = pos + maxlen - 1
+    Else
+      If chr13 = 1 Then
+        If Line >= StartLine And Line <= EndLine Then
+          hText2 = hText2 + Chr(10)
+        End If
+        pos = pos + chr13 + 1
+      Else
+        If Line >= StartLine And Line <= EndLine Then
+          hText2 = hText2 & Mid(hText1, pos, chr13 - 1) & Chr(10)
+        End If
+        pos = pos + chr13 + 1
+      End If
+    End If
+    Line = Line + 1
+  Loop 'While Line <= EndLine
+  
+  If StartLine = 0 And EndLine = 0 Then
+    ConvertLongText = Line - 1
+  Else
+    ConvertLongText = hText2
+  End If
+
+End Function
+
+Function setShortText(Text)
+  
+  hText = Trim(Left(Text, 40))
+  If hText <> "" Then
+    hText = Split(hText, Chr(13), -1, vbBinaryCompare)(0)
+    hText = Split(hText, Chr(10), -1, vbBinaryCompare)(0)
+  End If
+  
+  setShortText = hText
+
+End Function
+    
+Sub SetLongtext2()
+    
+  Set shControl = Worksheets("CONTROL")
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  Set shsrvrep = Worksheets(CurrentServicereport)
+    
+  With shsrvrep.Range("Description2_Range")
+    .HorizontalAlignment = xlGeneral
+    .VerticalAlignment = xlTop
+    .WrapText = True
+    .Orientation = 0
+    .AddIndent = False
+    .IndentLevel = 0
+    .ShrinkToFit = False
+    .ReadingOrder = xlContext
+    .MergeCells = True
+  End With
+    
+End Sub
+
+Sub DeleteLongtext2()
+ 
+  Set shControl = Worksheets("CONTROL")
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  
+  Set shsrvrep = Worksheets(CurrentServicereport)
+
+  With shsrvrep.Range("Description2_Range")
+    .ClearContents
+    .HorizontalAlignment = xlGeneral
+    .VerticalAlignment = xlTop
+    .WrapText = True
+    .Orientation = 0
+    .AddIndent = False
+    .IndentLevel = 0
+    .ShrinkToFit = False
+    .ReadingOrder = xlContext
+    .MergeCells = False
+  End With
+
+End Sub
+Attribute VB_Name = "Modul8"
+Sub Read_History(rimport, cimport)
+  
+  Set shtempimp = Sheets("TEMPIMP")
+
+  oldStatusBar = Application.DisplayStatusBar
+  Application.DisplayStatusBar = True
+  Application.StatusBar = getLanguageText("STATUSBAR", "ReadHistory", Range("CurrentLanguage"))
+  
+  Call NewHistory
+  
+  Set shhistory = Worksheets("SHHISTORY")
+  
+  r = rimport + 1
+  C = cimport
+  x = 1
+  
+  With shhistory
+    Do
+      If shtempimp.Cells(r, C) = "" Then
+        Exit Do
+      End If
+      If shtempimp.Cells(r, C) = "AUFK" Then
+        Exit Do
+      End If
+      If shtempimp.Cells(r, C) = "HIST" Then
+        If x = 1 Then
+          .Cells(x, 1) = getLanguageText("SHHISTORY", "HIST_plant", Range("CurrentLanguage"))
+          .Cells(x, 2) = getLanguageText("SHHISTORY", "HIST_zipcode", Range("CurrentLanguage"))
+          .Cells(x, 3) = getLanguageText("SHHISTORY", "HIST_customer", Range("CurrentLanguage"))
+          .Cells(x, 4) = getLanguageText("SHHISTORY", "HIST_name", Range("CurrentLanguage"))
+          .Cells(x, 5) = getLanguageText("SHHISTORY", "HIST_serial", Range("CurrentLanguage"))
+          .Cells(x, 6) = getLanguageText("SHHISTORY", "HIST_material", Range("CurrentLanguage"))
+          .Cells(x, 7) = getLanguageText("SHHISTORY", "HIST_equipment", Range("CurrentLanguage"))
+          .Cells(x, 8) = getLanguageText("SHHISTORY", "HIST_guarantee", Range("CurrentLanguage"))
+          .Cells(x, 9) = getLanguageText("SHHISTORY", "HIST_account", Range("CurrentLanguage"))
+          .Cells(x, 10) = getLanguageText("SHHISTORY", "HIST_ordernumber", Range("CurrentLanguage"))
+          .Cells(x, 11) = getLanguageText("SHHISTORY", "HIST_notification", Range("CurrentLanguage"))
+          .Cells(x, 12) = getLanguageText("SHHISTORY", "HIST_notificationtext", Range("CurrentLanguage"))
+          .Cells(x, 13) = getLanguageText("SHHISTORY", "HIST_activitytype", Range("CurrentLanguage"))
+          .Cells(x, 14) = getLanguageText("SHHISTORY", "HIST_part_of_object", Range("CurrentLanguage"))
+          .Cells(x, 15) = getLanguageText("SHHISTORY", "HIST_codegroup", Range("CurrentLanguage"))
+          .Cells(x, 16) = getLanguageText("SHHISTORY", "HIST_problemcode", Range("CurrentLanguage"))
+          .Cells(x, 17) = getLanguageText("SHHISTORY", "HIST_problem", Range("CurrentLanguage"))
+          .Cells(x, 18) = getLanguageText("SHHISTORY", "HIST_problemtext", Range("CurrentLanguage"))
+          .Cells(x, 19) = getLanguageText("SHHISTORY", "HIST_causecode", Range("CurrentLanguage"))
+          .Cells(x, 20) = getLanguageText("SHHISTORY", "HIST_causetext", Range("CurrentLanguage"))
+          .Cells(x, 21) = getLanguageText("SHHISTORY", "HIST_labour", Range("CurrentLanguage"))
+          .Cells(x, 22) = getLanguageText("SHHISTORY", "HIST_unit_work", Range("CurrentLanguage"))
+          .Cells(x, 23) = getLanguageText("SHHISTORY", "HIST_traveltime", Range("CurrentLanguage"))
+          .Cells(x, 24) = getLanguageText("SHHISTORY", "HIST_unit_traveltime", Range("CurrentLanguage"))
+          .Cells(x, 25) = getLanguageText("SHHISTORY", "HIST_callouts", Range("CurrentLanguage"))
+          .Cells(x, 26) = getLanguageText("SHHISTORY", "HIST_breakdown", Range("CurrentLanguage"))
+          .Cells(x, 27) = getLanguageText("SHHISTORY", "HIST_value", Range("CurrentLanguage"))
+          .Cells(x, 28) = getLanguageText("SHHISTORY", "HIST_workcenter", Range("CurrentLanguage"))
+          .Cells(x, 29) = getLanguageText("SHHISTORY", "HIST_referencedate", Range("CurrentLanguage"))
+          .Cells(x, 30) = getLanguageText("SHHISTORY", "HIST_startdate", Range("CurrentLanguage"))
+          .Cells(x, 31) = getLanguageText("SHHISTORY", "HIST_enddate", Range("CurrentLanguage"))
+          x = x + 1
+        End If
+        .Cells(x, 1) = shtempimp.Cells(r, 4) ' plant
+        .Cells(x, 2) = shtempimp.Cells(r, 5) ' zip-code
+        .Cells(x, 3) = shtempimp.Cells(r, 6) ' customer number
+        .Cells(x, 4) = shtempimp.Cells(r, 7) ' name
+        .Cells(x, 5) = shtempimp.Cells(r, 8) ' Serial number
+        .Cells(x, 6) = shtempimp.Cells(r, 9) ' Material number
+        .Cells(x, 7) = shtempimp.Cells(r, 10) ' Equipment number
+        If Not IsEmpty(shtempimp.Cells(r, 11)) And shtempimp.Cells(r, 11) <> "0" Then
+          wk_date = DateValue(Right(shtempimp.Cells(r, 11), 2) & "/" & Mid(shtempimp.Cells(r, 11), 5, 2) & "/" & Left(shtempimp.Cells(r, 11), 4))
+          .Cells(x, 8) = Format(wk_date, "DD/MM/YYYY") ' Guarantee date
+        End If
+        .Cells(x, 9) = shtempimp.Cells(r, 12) ' Accounting indicator
+        .Cells(x, 10) = shtempimp.Cells(r, 13) ' Order Number
+        .Cells(x, 11) = shtempimp.Cells(r, 14) ' Notification Number
+        .Cells(x, 12) = shtempimp.Cells(r, 15) ' Notification Item Short Text
+        .Cells(x, 13) = shtempimp.Cells(r, 16) ' Maintenance activity type
+        .Cells(x, 14) = shtempimp.Cells(r, 17) ' Code Group - Object Parts
+        .Cells(x, 15) = shtempimp.Cells(r, 18) ' Part of Object
+        .Cells(x, 16) = shtempimp.Cells(r, 19) ' Code Group - Problem
+        .Cells(x, 17) = shtempimp.Cells(r, 20) ' Problem
+        .Cells(x, 18) = shtempimp.Cells(r, 21) ' Notification Item Short Text
+        .Cells(x, 19) = shtempimp.Cells(r, 22) ' Cause Code
+        .Cells(x, 20) = shtempimp.Cells(r, 23) ' Cause Text
+        .Cells(x, 21) = shtempimp.Cells(r, 24) ' labour
+        .Cells(x, 22) = shtempimp.Cells(r, 25) ' Unit for work
+        .Cells(x, 23) = shtempimp.Cells(r, 26) ' Travel time
+        .Cells(x, 24) = shtempimp.Cells(r, 27) ' Unit of Travel
+        .Cells(x, 25) = shtempimp.Cells(r, 28) ' sum of call-outs
+        .Cells(x, 26) = shtempimp.Cells(r, 29) ' breakdown duration
+        .Cells(x, 27) = shtempimp.Cells(r, 30) ' value
+        .Cells(x, 28) = shtempimp.Cells(r, 31) ' Work Center Text
+        If Not IsEmpty(shtempimp.Cells(r, 32)) And shtempimp.Cells(r, 32) <> "0" Then
+          wk_date = DateValue(Right(shtempimp.Cells(r, 32), 2) & "/" & Mid(shtempimp.Cells(r, 32), 5, 2) & "/" & Left(shtempimp.Cells(r, 32), 4))
+          .Cells(x, 29) = Format(wk_date, "DD/MM/YYYY") ' PM Order: Reference Date
+        End If
+        If Not IsEmpty(shtempimp.Cells(r, 30)) And shtempimp.Cells(r, 33) <> "0" Then
+          wk_date = DateValue(Right(shtempimp.Cells(r, 33), 2) & "/" & Mid(shtempimp.Cells(r, 33), 5, 2) & "/" & Left(shtempimp.Cells(r, 33), 4))
+          .Cells(x, 30) = Format(wk_date, "DD/MM/YYYY") ' Actual start date
+        End If
+        If Not IsEmpty(shtempimp.Cells(r, 31)) And shtempimp.Cells(r, 34) <> "0" Then
+          wk_date = DateValue(Right(shtempimp.Cells(r, 34), 2) & "/" & Mid(shtempimp.Cells(r, 34), 5, 2) & "/" & Left(shtempimp.Cells(r, 34), 4))
+          .Cells(x, 31) = Format(wk_date, "DD/MM/YYYY") ' Actual end date
+        End If
+        x = x + 1
+      End If
+      r = r + 1
+    Loop
+    
+  End With
+    
+  Call FormatHistory
+  
+  Application.StatusBar = False
+  Application.DisplayStatusBar = oldStatusBar
+
+End Sub
+
+Sub NewHistory()
+  
+  Application.DisplayAlerts = False
+  For I = 1 To Sheets.Count
+    If Sheets(I).Name = "SHHISTORY" Then
+      Sheets(I).Delete
+      Exit For
+    End If
+  Next I
+  Application.DisplayAlerts = True
+  
+  Set shhistory = Worksheets.Add(Before:=Worksheets("LOOKUP"))
+  
+  shhistory.Name = "SHHISTORY"
+  ActiveWorkbook.Names.Add Name:="HIST_plant", RefersTo:="=SHHISTORY!$A$1"
+  ActiveWorkbook.Names.Add Name:="HIST_zipcode", RefersTo:="=SHHISTORY!$B$1"
+  ActiveWorkbook.Names.Add Name:="HIST_customer", RefersTo:="=SHHISTORY!$C$1"
+  ActiveWorkbook.Names.Add Name:="HIST_name", RefersTo:="=SHHISTORY!$D$1"
+  ActiveWorkbook.Names.Add Name:="HIST_serial", RefersTo:="=SHHISTORY!$E$1"
+  ActiveWorkbook.Names.Add Name:="HIST_material", RefersTo:="=SHHISTORY!$F$1"
+  ActiveWorkbook.Names.Add Name:="HIST_equipment", RefersTo:="=SHHISTORY!$G$1"
+  ActiveWorkbook.Names.Add Name:="HIST_guarantee", RefersTo:="=SHHISTORY!$H$1"
+  ActiveWorkbook.Names.Add Name:="HIST_account", RefersTo:="=SHHISTORY!$I$1"
+  ActiveWorkbook.Names.Add Name:="HIST_ordernumber", RefersTo:="=SHHISTORY!$J$1"
+  ActiveWorkbook.Names.Add Name:="HIST_notification", RefersTo:="=SHHISTORY!$K$1"
+  ActiveWorkbook.Names.Add Name:="HIST_notificationtext", RefersTo:="=SHHISTORY!$L$1"
+  ActiveWorkbook.Names.Add Name:="HIST_activitytype", RefersTo:="=SHHISTORY!$M$1"
+  ActiveWorkbook.Names.Add Name:="HIST_part_of_object", RefersTo:="=SHHISTORY!$N$1"
+  ActiveWorkbook.Names.Add Name:="HIST_codegroup", RefersTo:="=SHHISTORY!$O$1"
+  ActiveWorkbook.Names.Add Name:="HIST_problemcode", RefersTo:="=SHHISTORY!$P$1"
+  ActiveWorkbook.Names.Add Name:="HIST_problem", RefersTo:="=SHHISTORY!$Q$1"
+  ActiveWorkbook.Names.Add Name:="HIST_problemtext", RefersTo:="=SHHISTORY!$R$1"
+  ActiveWorkbook.Names.Add Name:="HIST_causecode", RefersTo:="=SHHISTORY!$S$1"
+  ActiveWorkbook.Names.Add Name:="HIST_causetext", RefersTo:="=SHHISTORY!$T$1"
+  ActiveWorkbook.Names.Add Name:="HIST_labour", RefersTo:="=SHHISTORY!$U$1"
+  ActiveWorkbook.Names.Add Name:="HIST_unit_work", RefersTo:="=SHHISTORY!$V$1"
+  ActiveWorkbook.Names.Add Name:="HIST_traveltime", RefersTo:="=SHHISTORY!$W$1"
+  ActiveWorkbook.Names.Add Name:="HIST_unit_traveltime", RefersTo:="=SHHISTORY!$X$1"
+  ActiveWorkbook.Names.Add Name:="HIST_callouts", RefersTo:="=SHHISTORY!$Y$1"
+  ActiveWorkbook.Names.Add Name:="HIST_breakdown", RefersTo:="=SHHISTORY!$Z$1"
+  ActiveWorkbook.Names.Add Name:="HIST_value", RefersTo:="=SHHISTORY!$AA$1"
+  ActiveWorkbook.Names.Add Name:="HIST_workcenter", RefersTo:="=SHHISTORY!$AB$1"
+  ActiveWorkbook.Names.Add Name:="HIST_referencedate", RefersTo:="=SHHISTORY!$AC$1"
+  ActiveWorkbook.Names.Add Name:="HIST_startdate", RefersTo:="=SHHISTORY!$AD$1"
+  ActiveWorkbook.Names.Add Name:="HIST_enddate", RefersTo:="=SHHISTORY!$AE$1"
+
+End Sub
+
+Sub FormatHistory()
+  
+  Set shControl = Worksheets("CONTROL")
+  Set shhistory = Worksheets("SHHISTORY")
+  
+  shhistory.Activate
+  
+  With shhistory
+    LastRow = .Cells.SpecialCells(xlCellTypeLastCell).Row
+    LastColumn = .Cells.SpecialCells(xlCellTypeLastCell).Column
+    If LastRow > 1 And LastColumn > 1 Then
+      LastCell = .Cells.SpecialCells(xlCellTypeLastCell).Address
+      .Range(Cells(1, Range("HIST_plant").Column), Cells(LastRow, Range("HIST_plant").Column)).NumberFormat = "0000"
+      .Range(Cells(1, Range("HIST_material").Column), Cells(LastRow, Range("HIST_material").Column)).NumberFormat = "000-000-000"
+      .Range(Cells(1, 1), Cells(1, LastColumn)).Font.Bold = True
+      .Range(Cells(1, 1), LastCell).Columns.AutoFit
+      On Error Resume Next
+      .Range(LastCell).Sort _
+          Key1:=Range(Range("HIST_ordernumber").Address), Order1:=xlAscending, Header:=xlGuess, _
+          OrderCustom:=1, MatchCase:=False, Orientation:=xlTopToBottom, _
+          DataOption1:=xlSortNormal
+    End If
+  End With
+  
+  ' hide columms
+   With shhistory
+       Columns("A:C").Select
+       Selection.EntireColumn.Hidden = True
+       Columns("E:G").Select
+       Selection.EntireColumn.Hidden = True
+       Columns("K:K").Select
+       Selection.EntireColumn.Hidden = True
+       Columns("P:R").Select
+       Selection.EntireColumn.Hidden = True
+       Columns("V:V").Select
+       Selection.EntireColumn.Hidden = True
+       Columns("X:Y").Select
+       Selection.EntireColumn.Hidden = True
+       Columns("AD:AE").Select
+       Selection.EntireColumn.Hidden = True
+      
+   End With
+
+  
+  shControl.Activate
+  
+End Sub
+
+
+
+Attribute VB_Name = "Modul9"
+Sub Read_Classification(rimport, cimport)
+  
+  Set shtempimp = Worksheets("TEMPIMP")
+
+  oldStatusBar = Application.DisplayStatusBar
+  Application.DisplayStatusBar = True
+  Application.StatusBar = getLanguageText("STATUSBAR", "ReadClassification", Range("CurrentLanguage"))
+  
+  Call NewClassification
+  
+  Set shclassification = Worksheets("CLASSIFICATION")
+  
+  r = rimport + 1
+  C = cimport
+  x = 1
+  
+  With shclassification
+    Do
+      If shtempimp.Cells(r, C) = "" Then
+        Exit Do
+      End If
+      If shtempimp.Cells(r, C) = "AUFK" Then
+        Exit Do
+      End If
+      If shtempimp.Cells(r, C) = "CLAS" Then
+        If x = 1 Then
+          .Cells(x, 1) = getLanguageText("CLASSIFICATION", "CLAS_atinn", Range("CurrentLanguage"))
+          .Cells(x, 2) = getLanguageText("CLASSIFICATION", "CLAS_atnam", Range("CurrentLanguage"))
+          .Cells(x, 3) = getLanguageText("CLASSIFICATION", "CLAS_atbez", Range("CurrentLanguage"))
+          .Cells(x, 4) = getLanguageText("CLASSIFICATION", "CLAS_atwrt", Range("CurrentLanguage"))
+          
+          .Cells(x, 5) = getLanguageText("CLASSIFICATION", "CLAS_atinn", Range("CurrentLanguage"))
+          .Cells(x, 6) = getLanguageText("CLASSIFICATION", "CLAS_atnam", Range("CurrentLanguage"))
+          .Cells(x, 7) = getLanguageText("CLASSIFICATION", "CLAS_atbez", Range("CurrentLanguage"))
+          .Cells(x, 8) = getLanguageText("CLASSIFICATION", "CLAS_atwrt", Range("CurrentLanguage"))
+          x = x + 1
+        End If
+        .Cells(x, 1) = shtempimp.Cells(r, 5) ' number
+        .Cells(x, 2) = shtempimp.Cells(r, 6) ' name
+        .Cells(x, 3) = shtempimp.Cells(r, 7) ' description
+        .Cells(x, 4) = shtempimp.Cells(r, 8) ' value
+              
+        .Cells(x, 5) = shtempimp.Cells(r, 5) ' number
+        .Cells(x, 6) = shtempimp.Cells(r, 6) ' name
+        .Cells(x, 7) = shtempimp.Cells(r, 7) ' description
+        .Cells(x, 8) = shtempimp.Cells(r, 8) ' value
+        x = x + 1
+      End If
+      r = r + 1
+    Loop
+    
+  End With
+    
+  Call FormatClassification
+  
+  Application.StatusBar = False
+  Application.DisplayStatusBar = oldStatusBar
+
+End Sub
+
+Sub NewClassification()
+  
+  Application.DisplayAlerts = False
+  For I = 1 To Sheets.Count
+    If Sheets(I).Name = "CLASSIFICATION" Then
+      Sheets(I).Delete
+      Exit For
+    End If
+  Next I
+  Application.DisplayAlerts = True
+  
+  Set shclassification = Worksheets.Add(Before:=Worksheets("LOOKUP"))
+  
+  shclassification.Name = "CLASSIFICATION"
+  ActiveWorkbook.Names.Add Name:="CLAS_atinn", RefersTo:="=CLASSIFICATION!$A$1"
+  ActiveWorkbook.Names.Add Name:="CLAS_atnam", RefersTo:="=CLASSIFICATION!$B$1"
+  ActiveWorkbook.Names.Add Name:="CLAS_atbez", RefersTo:="=CLASSIFICATION!$C$1"
+  ActiveWorkbook.Names.Add Name:="CLAS_atwrt", RefersTo:="=CLASSIFICATION!$D$1"
+  
+  ActiveWorkbook.Names.Add Name:="CLAS_atinn_cmp", RefersTo:="=CLASSIFICATION!$E$1"
+  ActiveWorkbook.Names.Add Name:="CLAS_atnam_cmp", RefersTo:="=CLASSIFICATION!$F$1"
+  ActiveWorkbook.Names.Add Name:="CLAS_atbez_cmp", RefersTo:="=CLASSIFICATION!$G$1"
+  ActiveWorkbook.Names.Add Name:="CLAS_atwrt_cmp", RefersTo:="=CLASSIFICATION!$H$1"
+      
+  ActiveWorkbook.Names.Add Name:="classification", RefersTo:="=CLASSIFICATION!$A$1:$D$1"
+  ActiveWorkbook.Names.Add Name:="classification_cmp", RefersTo:="=CLASSIFICATION!$E$1:$H$1"
+  
+End Sub
+
+Sub FormatClassification()
+  
+  Set shControl = Worksheets("CONTROL")
+  Set shclassification = Worksheets("CLASSIFICATION")
+  
+  shclassification.Activate
+  
+  With shclassification
+    LastRow = .Cells.SpecialCells(xlCellTypeLastCell).Row
+    LastColumn = .Cells.SpecialCells(xlCellTypeLastCell).Column
+    If LastRow > 1 And LastColumn > 1 Then
+      LastCell = .Cells.SpecialCells(xlCellTypeLastCell).Address
+      .Range(Cells(1, 1), Cells(1, LastColumn)).Font.Bold = True
+      .Range(Cells(1, 1), LastCell).Columns.AutoFit
+      On Error Resume Next
+      .Range(LastCell).Sort _
+          Key1:=Range(Range("CLAS_atnam").Address), Order1:=xlAscending, Header:=xlGuess, _
+          OrderCustom:=1, MatchCase:=False, Orientation:=xlTopToBottom, _
+          DataOption1:=xlSortNormal
+      On Error GoTo 0
+      ActiveWorkbook.Names.Add Name:="classification", RefersTo:="=CLASSIFICATION!$A$2:$D$" & LastRow
+      ActiveWorkbook.Names.Add Name:="classification_cmp", RefersTo:="=CLASSIFICATION!$E$2:$H$" & LastRow
+      .Range("classification_cmp").EntireColumn.Hidden = True
+    End If
+  End With
+  
+  shControl.Activate
+  
+End Sub
+
+
+
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmd_import, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "cmd_Language, 123, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmd_ShowOps, 114, 2, MSForms, CommandButton"
+Attribute VB_Control = "cmd_ResetAll, 106, 3, MSForms, CommandButton"
+Attribute VB_Control = "cmd_currentmeas, 79, 4, MSForms, CommandButton"
+Attribute VB_Control = "cmd_Export, 100, 5, MSForms, CommandButton"
+Attribute VB_Control = "txt_longtext, 97, 6, MSForms, TextBox"
+Attribute VB_Control = "lst_orders, 14, 7, MSForms, ComboBox"
+Attribute VB_Control = "cmd_Servicereport_Name, 231, 8, MSForms, CommandButton"
+Attribute VB_Control = "txt_confidential_text, 241, 9, MSForms, TextBox"
+
+Private Sub cmd_currentmeas_Click()
+  
+  frm_measpoint.Show
+
+End Sub
+
+
+Private Sub cmd_Export_Click()
+  
+  Application.ScreenUpdating = False
+  Call Export
+  Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub cmd_import_Click()
+  
+  Application.ScreenUpdating = False
+  Call Import
+  Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub cmd_Language_Click()
+    
+  Application.ScreenUpdating = False
+  Select Case cmd_Language.Caption
+    Case "Italiano"
+      cmd_Language.Caption = "Deutsch"
+      Call Translate("DE")
+    Case "Fran|fffd|ais"
+      cmd_Language.Caption = "Italiano"
+      Call Translate("IT")
+    Case "English"
+      cmd_Language.Caption = "Fran|fffd|ais"
+      Call Translate("FR")
+    Case "Deutsch"
+      cmd_Language.Caption = "English"
+      Call Translate("EN")
+  End Select
+  Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub cmd_plantname_Click()
+  
+  Set shControl = Worksheets("CONTROL")
+  
+  Application.ScreenUpdating = False
+  Select Case cmd_plantname.Caption
+    Case "Agie"
+      cmd_plantname.Caption = "Charmilles"
+      shControl.Range("Current_Plantname").Value = "Charmilles"
+    Case "Charmilles"
+      cmd_plantname.Caption = "Mikron"
+      shControl.Range("Current_Plantname").Value = "Mikron"
+    Case "Mikron"
+      cmd_plantname.Caption = "Agie"
+      shControl.Range("Current_Plantname").Value = "Agie"
+  End Select
+  Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub cmd_ResetAll_Click()
+  Set shControl = Worksheets("CONTROL")
+  shControl.Range("FLAG_RESETALL").Value = 2
+  Application.ScreenUpdating = False
+  If MsgBox(getLanguageText("MSGBOX", "ResetAll", Range("CurrentLanguage")), vbYesNo, "Warning") = vbYes Then
+    Call ResetAll
+  End If
+  Application.ScreenUpdating = True
+  shControl.Range("FLAG_RESETALL").Value = 1
+End Sub
+
+Private Sub cmd_Servicereport_Name_Click()
+  Set shControl = Worksheets("CONTROL")
+  Application.ScreenUpdating = False
+  
+  Select Case cmd_Servicereport_Name.Caption
+    Case "Milling"
+      cmd_Servicereport_Name.Caption = "EDM"
+      shControl.Range("CurrentServicereport").Value = "SERVICEREPORT_EDM"
+      Call Servicereport_Rename("SERVICEREPORT_MILLING", "SERVICEREPORT_EDM")
+    Case "EDM"
+      cmd_Servicereport_Name.Caption = "Milling"
+      shControl.Range("CurrentServicereport").Value = "SERVICEREPORT_MILLING"
+      Call Servicereport_Rename("SERVICEREPORT_EDM", "SERVICEREPORT_MILLING")
+    Case "Mikron"
+      cmd_Servicereport_Name.Caption = "Milling"
+  End Select
+       
+  Call EDM_MILLING(Range("CurrentServicereport").Value)
+  Application.ScreenUpdating = True
+End Sub
+
+Private Sub cmd_ShowOps_Click()
+  
+  frm_ops.Show
+
+End Sub
+
+Private Sub lst_orders_Change()
+  
+  Set shControl = Worksheets("CONTROL")
+  Set shtempimp = Worksheets("TEMPIMP")
+  Set shtempwrk = Worksheets("TEMPWRK")
+  
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  Set shsrvrep = Worksheets(CurrentServicereport)
+  
+  scr_updating = Application.ScreenUpdating
+  
+  If scr_updating = True Then
+    Application.ScreenUpdating = False
+  End If
+  
+  shControl.Activate
+
+  currorder = Val(lst_orders)
+  rimport = 1
+  cimport = 3
+  shControl.Range("ORDER_LINK").Cells(1, 1) = currorder
+  With shControl
+' update descriptors
+    Do
+      If shtempimp.Cells(rimport, cimport) = "" Then
+        Exit Do
+      Else
+        If shtempimp.Cells(rimport, cimport) = "AUFK" And shtempimp.Cells(rimport, cimport + 1) = currorder Then
+          If Not IsEmpty(shtempimp.Cells(rimport, 5)) And shtempimp.Cells(rimport, 5) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 5), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 5), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 5), 4) 'date of service order
+            .Range("service_order_date") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          .Range("service_order_description") = shtempimp.Cells(rimport, 6) ' description
+          .Range("equipment_number") = shtempimp.Cells(rimport, 7) ' equipment number
+          .Range("serial_number") = shtempimp.Cells(rimport, 8) ' serial number
+          .Range("machine_type") = shtempimp.Cells(rimport, 10) ' machine type
+          .Range("notification") = shtempimp.Cells(rimport, 12) ' notification number
+          .Range("acc_indicator") = shtempimp.Cells(rimport, 13) ' accounting indicator
+          .Range("acc_indicator_txt") = shtempimp.Cells(rimport, 33) ' accounting indicator text
+          If Not IsEmpty(shtempimp.Cells(rimport, 14)) And shtempimp.Cells(rimport, 14) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 14), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 14), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 14), 4) 'installation date
+            .Range("installation") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          If Not IsEmpty(shtempimp.Cells(rimport, 15)) And shtempimp.Cells(rimport, 15) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 15), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 15), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 15), 4) 'Customer warranty date from
+            .Range("warranty_cust_from") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          If Not IsEmpty(shtempimp.Cells(rimport, 16)) And shtempimp.Cells(rimport, 16) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 16), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 16), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 16), 4) 'Customer warranty date to
+            .Range("warranty_cust_to") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          If Not IsEmpty(shtempimp.Cells(rimport, 17)) And shtempimp.Cells(rimport, 17) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 17), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 17), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 17), 4) 'Manufacturer warranty date from
+            .Range("warranty_manu_from") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          If Not IsEmpty(shtempimp.Cells(rimport, 18)) And shtempimp.Cells(rimport, 18) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 18), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 18), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 18), 4) 'Manufacturer warranty date to
+            .Range("warranty_manu_to") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          .Range("sales_order_number") = shtempimp.Cells(rimport, 19) 'sales order number
+          If Not IsEmpty(shtempimp.Cells(rimport, 20)) And shtempimp.Cells(rimport, 20) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 20), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 20), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 20), 4) 'sales order date
+            .Range("sales_order_date") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          .Range("delivery_number") = shtempimp.Cells(rimport, 21) 'delivery number
+          If Not IsEmpty(shtempimp.Cells(rimport, 22)) And shtempimp.Cells(rimport, 22) <> "0" Then
+            wk_date = Right(shtempimp.Cells(rimport, 22), 2) + "/" + _
+                      Mid(shtempimp.Cells(rimport, 22), 5, 2) + "/" + _
+                      Left(shtempimp.Cells(rimport, 22), 4) 'actual goods issue date
+            .Range("goods_issue_date") = Format(wk_date, "DD/MM/YYYY")
+          End If
+          
+          For C = 1 To Range("adress").Columns.Count
+            .Range("adress").Cells(1, C) = shtempimp.Cells(rimport, 23 + C - 1) ' adress
+          Next
+          shsrvrep.Range("kunnr") = shtempimp.Cells(rimport, 23) ' customer number
+          shsrvrep.Range("adrnr") = shtempimp.Cells(rimport, 24) ' address number
+          shsrvrep.Range("name1") = shtempimp.Cells(rimport, 25) ' name
+          shsrvrep.Range("stras") = shtempimp.Cells(rimport, 26) ' street
+          shsrvrep.Range("pstlz") = shtempimp.Cells(rimport, 27) ' zip-code
+          shsrvrep.Range("ort01") = shtempimp.Cells(rimport, 28) ' city
+          shsrvrep.Range("telf1") = shtempimp.Cells(rimport, 29) ' phone
+          shsrvrep.Range("telfx") = shtempimp.Cells(rimport, 30) ' fax
+          shsrvrep.Range("ktech") = shtempimp.Cells(rimport, 31) ' servicetechniker
+          shsrvrep.Range("adsmtp") = shtempimp.Cells(rimport, 32) ' E-Mail
+          shsrvrep.Range("bstnk") = shtempimp.Cells(rimport, 34) 'Customer purchase order number
+' disable longtext box if there is no notification
+          If IsEmpty(.Range("notification")) Then
+            txt_longtext.Enabled = False
+            txt_confidential_text.Enabled = False
+          Else
+            txt_longtext.Enabled = True
+            txt_confidential_text.Enabled = True
+          End If
+              
+          Call Read_History(rimport, cimport)
+          
+          Call Read_Classification(rimport, cimport)
+          
+          Exit Do
+        End If
+        rimport = rimport + 1
+      End If
+    Loop
+    .Range("Cursor").Select
+  End With
+' Filter in COMPONENTS
+ Set Target = Worksheets("COMPONENTS").Range("A:A")
+ If currorder <> 0 Then
+     With Target
+        .AutoFilter
+        .AutoFilter Field:=1, Criteria1:=currorder, Operator:=xlOr, Criteria2:="="
+     End With
+ End If
+
+  If scr_updating = True Then
+    Application.ScreenUpdating = True
+  End If
+  
+End Sub
+
+Private Sub lst_orders_DblClick(ByVal Cancel As msforms.ReturnBoolean)
+  
+  If IsEmpty(lst_orders) Then
+    Exit Sub
+  End If
+
+  Application.ScreenUpdating = False
+
+  check = False
+  Set shControl = Worksheets("CONTROL")
+  Set shResult = Worksheets("RESULT")
+  Set shtempwrk = Worksheets("TEMPWRK")
+  Set shtempimp = Worksheets("TEMPIMP")
+  
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  Set shsrvrep = Sheets(CurrentServicereport)
+  Set shclassification = Worksheets("CLASSIFICATION")
+  
+  shControl.Activate
+  currorder = lst_orders
+  shControl.Range("ORDER_LINK").Cells(1, 1) = currorder
+
+  shControl.Range("adress_cmp").Cells(1, 1) = shsrvrep.Range("kunnr") ' customer number
+  shControl.Range("adress_cmp").Cells(1, 2) = shsrvrep.Range("adrnr") ' address number
+  shControl.Range("adress_cmp").Cells(1, 3) = shsrvrep.Range("name1") ' name
+  shControl.Range("adress_cmp").Cells(1, 4) = shsrvrep.Range("stras") ' street
+  shControl.Range("adress_cmp").Cells(1, 5) = shsrvrep.Range("pstlz") ' zip-code
+  shControl.Range("adress_cmp").Cells(1, 6) = shsrvrep.Range("ort01") ' city
+  shControl.Range("adress_cmp").Cells(1, 7) = shsrvrep.Range("telf1") ' phone
+  shControl.Range("adress_cmp").Cells(1, 8) = shsrvrep.Range("telfx") ' fax
+  shControl.Range("adress_cmp").Cells(1, 9) = shsrvrep.Range("ktech") ' service
+  shControl.Range("adress_cmp").Cells(1, 10) = shsrvrep.Range("adsmtp") ' E-Mail
+
+' check if there are any changes to time tickets
+  check = False
+  Call check_change("time_tickets", check)
+  If check = False Then
+    Call check_change("cause_codes", check)
+  End If
+  If check = False Then
+    Call check_change("measpoint", check)
+  End If
+  If check = False Then
+    Call check_change("longtext", check)
+  End If
+  If check = False Then
+    Call check_change("confidential_text", check)
+  End If
+  If check = False Then
+    Call check_change("goodsmvt", check)
+  End If
+  If check = False Then
+    Call check_change("adress", check)
+  End If
+  If check = False Then
+    Call check_change("CLASSIFICATION", check)
+  End If
+
+' changes have been made. Ask user whether he wants to keep them
+  If check Then
+    response = MsgBox(getLanguageText("MSGBOX", "KeepChanges", Range("CurrentLanguage")), vbYesNoCancel, getLanguageText("MSGBOX", "SaveChanges", Range("CurrentLanguage")))
+    If response = vbYes Then
+      Call Save_Object("TIME", "time_tickets", 9)
+      If Not (IsEmpty(Range("notification"))) Then
+        Call Save_Object("NCAU", "cause_codes", 4)
+      End If
+      Call Save_Object("MEAS", "measpoint", 10)
+      Call Save_Object("NACT", "longtext", 1)
+      Call Save_Object("CTXT", "confidential_text", 1)
+      Call Save_Object("GMVT", "goodsmvt", 10)
+      Call Save_Object("ADRS", "adress", 1)
+      Call Save_Object("CLAS", "classification", shclassification.Cells.SpecialCells(xlCellTypeLastCell).Row)
+    End If ' end of response Yes
+    If response = vbCancel Then
+      Exit Sub
+    End If ' end of response cancel
+  End If ' end of check
+
+' read in the time tickets for the newcurrent order
+  Call Read_Object("TIME", "time_tickets", currorder, 9)
+' read in notifications cause codes for new current order
+  Call Read_Object("NCAU", "cause_codes", currorder, 4)
+' read mesurement point
+  Call Read_Object("MEAS", "measpoint", currorder, 10)
+' read long text
+  Call Read_Object("NACT", "longtext", currorder, 1)
+' read confidential text
+  Call Read_Object("CTXT", "confidential_text", currorder, 1)
+' read goods movements
+  Call Read_Object("GMVT", "goodsmvt", currorder, 10)
+' read E-Mail
+  Call Read_Object("ADRS", "adress", currorder, 1)
+' read classification
+  Call Read_Object("CLAS", "CLASSIFICATION", currorder, shclassification.Cells.SpecialCells(xlCellTypeLastCell).Row)
+  
+  Call Set_DropDown("DropDown_measpoint", 27)
+  Call Set_DropDown("DropDown_TimeTicket", 33)
+
+  shControl.Range("current_order") = currorder
+  shControl.Range("time_tickets").Cells(0, 0).Select
+  
+  Application.ScreenUpdating = True
+  
+End Sub
+
+Private Sub lst_orders_GotFocus()
+  
+  Application.StatusBar = getLanguageText("STATUSBAR", "SelectServiceOrder", Range("CurrentLanguage"))
+
+End Sub
+
+Private Sub lst_orders_LostFocus()
+  
+  Application.StatusBar = ""
+
+End Sub
+
+Private Sub txt_longtext_LostFocus()
+        
+  Dim shsrvrep As Worksheet
+        
+  Set shControl = Worksheets("CONTROL")
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  Set shsrvrep = Worksheets(CurrentServicereport)
+  
+  K3 = Range("longtext").Value
+  K4 = getLongText(K3)
+  shsrvrep.Range("Description_long").Value = K3
+  On Error GoTo ende
+  stringlen = Len(K4)
+' count chr(13)
+    K2 = 0
+    K1 = InStr(1, K4, Chr(13), vbBinaryCompare) + 1
+    While K1 > 0 And K1 < stringlen
+        K5 = InStr(K1, K4, Chr(13), vbBinaryCompare)
+        If K5 > 0 Then
+           K2 = K2 + 1
+           While (K5 - K1) > 80  ' Longtext without chr(13) count more the  1 times
+             K1 = K1 + 80
+             K2 = K2 + 1
+           Wend
+           K1 = K5 + 1
+        Else
+           K1 = 0
+        End If
+    Wend
+ende:
+
+   MaxRow = 17
+   If K2 >= MaxRow Then
+     check = MsgBox(getLanguageText("MSGBOX", "TextToLong", Range("CurrentLanguage")), vbOKOnly, getLanguageText("MSGBOX", "TextToLongTitle", Range("CurrentLanguage")))
+  End If
+ 
+Exit Sub
+'''''''''''
+  TxtLines = ConvertLongText(Range("longtext").Value, 0, 0)
+   MaxRow = 18
+  If TxtLines < MaxRow Then
+    Call DeleteLongtext2
+  End If
+  If TxtLines > 0 Then
+    Text = ConvertLongText(Range("longtext").Value, 1, MaxRow)
+    shsrvrep.Range("Description_long").Value = Text
+  End If
+  If TxtLines >= MaxRow Then
+    Text = ConvertLongText(Range("longtext").Value, 10, 75)
+    If Text <> Chr(10) And Text <> "" Then
+      Call SetLongtext2
+      shsrvrep.Range("Description_long2").Value = Text
+    End If
+  End If
+  If TxtLines >= MaxRow Then
+    check = MsgBox(getLanguageText("MSGBOX", "TextToLong", Range("CurrentLanguage")), vbOKOnly, getLanguageText("MSGBOX", "TextToLongTitle", Range("CurrentLanguage")))
+  End If
+  
+End Sub
+
+Private Sub txt_longtext_GotFocus()
+  
+  Set shControl = Worksheets("CONTROL")
+  
+  With shControl
+' if user does not enter specific date, enter today's date
+    If IsEmpty(shControl.Range("longtext_date")) Then
+      shControl.Range("longtext_date") = Date
+    End If
+  End With
+
+End Sub
+
+'Description_long
+Private Sub txt_confidential_text_GotFocus()
+  
+  Set shControl = Worksheets("CONTROL")
+  
+  With shControl
+' if user does not enter specific date, enter today's date
+    If IsEmpty(shControl.Range("confidential_text_date")) Then
+      shControl.Range("confidential_text_date") = Date
+    End If
+  End With
+
+End Sub
+
+Private Sub Worksheet_Activate()
+
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+  Set shControl = Worksheets("CONTROL")
+' Messpunkte Bewertungscode INIT eintragen f|fffd|r TYP R
+' Siehe CMD_RESETALL
+  On Error GoTo ende:
+  If shControl.Range("FLAG_RESETALL").Value = 1 Then
+    For r = 49 To 58
+      If shControl.Cells(r, 10) = "R" And IsEmpty(shControl.Cells(r, 9)) Then
+         shControl.Cells(r, 9) = shControl.Range("INIT_CONSTANTE").Value 'AE2
+      End If
+    Next r
+  End If
+ende:
+  On Error GoTo 0
+End Sub
+
+
+
+
+
+Attribute VB_Name = "Tabelle10"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle12"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Attribute VB_Name = "Tabelle3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+Attribute VB_Name = "Tabelle4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Attribute VB_Name = "Tabelle5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Attribute VB_Name = "Tabelle6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "BOX_IB, 1, 0, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Repair, 2, 1, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Modification, 3, 2, MSForms, CheckBox"
+Attribute VB_Control = "BOX_OTHER, 6, 5, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Internal_Clearing, 7, 6, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Warranty, 9, 8, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Computation, 10, 9, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Fair_trading, 11, 10, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Maintenance, 12, 11, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Yes1, 18, 17, MSForms, CheckBox"
+Attribute VB_Control = "BOX_No1, 19, 18, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Work_not_finally, 23, 19, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Work_finally, 24, 20, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Yes3, 25, 21, MSForms, CheckBox"
+Attribute VB_Control = "BOX_No3, 26, 22, MSForms, CheckBox"
+Attribute VB_Control = "BOX_Work_additional, 64, 30, MSForms, CheckBox"
+Attribute VB_Control = "TextBox1, 38, 31, MSForms, TextBox"
+Attribute VB_Control = "TextBox2, 39, 32, MSForms, TextBox"
+
+
+
+Public Sub Test_Setting_of_checkboxes_loesung()
+' Checkbox.Groupname : Group_01 top - Left  : IB ....
+'                      Group_02 top - Right : Warranty
+'                      Group_03 botton - left
+'                      Group_04 top - right "Yes-No"
+'                      Group_05 botton - right "Yes-No"
+  Dim Anzahl(1 To 5) As Integer
+  Dim K As Integer
+  Dim Mess As Boolean
+  
+  Dim oOle As OLEObject
+  Dim oOpt As msforms.CheckBox
+  For K = 1 To 5
+       Anzahl(K) = 0
+  Next K
+  K = 0
+  For Each oOle In OLEObjects
+     If TypeName(oOle.Object) = "CheckBox" Then
+        Set oOpt = oOle.Object
+        'Select Case oOpt.GroupName
+        '  Case "Group_01"
+        K = Mid(oOpt.GroupName, 8, 1)
+        If oOpt.Object.Value Then
+          Anzahl(K) = Anzahl(K) + 1
+        End If
+     End If
+  Next oOle
+  
+  Set shControl = Worksheets("CONTROL")
+  lang = shControl.Range("CurrentLanguage").Value
+  CurrentServicereport = shControl.Range("CurrentServicereport").Value
+  Set ShServicereport = Worksheets(CurrentServicereport)
+  ' Group_05 "Maschinenabnahme nach Inbetriebnahme" no check
+  Anzahl(5) = 1
+  '
+  ' Errormeldung im Sheet Servicereport
+  '
+  Mess = False
+  For K = 1 To 5
+     If Anzahl(K) = 0 Then
+       Mess = True
+     End If
+   Next K
+          
+  
+  If Mess = True Then
+      K3 = getLanguageText(CurrentServicereport, "TXT_E14", lang)
+      ShServicereport.Range("TXT_E14").Value = K3
+   Else
+      If Len(Trim(ShServicereport.Range("LOESUNG_C24").Value)) = 0 Then
+         K3 = getLanguageText(CurrentServicereport, "TXT_E14_LOESUNG", lang)
+         ShServicereport.Range("TXT_E14").Value = K3
+      Else
+         ShServicereport.Range("TXT_E14").Value = ""
+      End If
+   End If
+
+End Sub
+
+Private Sub BOX_Computation_Click()
+ Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Fair_trading_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+Private Sub BOX_IB_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+Private Sub BOX_Internal_Clearing_Click()
+   Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Maintenance_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Modification_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_No1_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_No3_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_OTHER_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Repair_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Warranty_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Work_additional_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Work_finally_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Work_not_finally_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Yes1_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub BOX_Yes3_Click()
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+
+Private Sub Worksheet_Activate()
+  Dim Sname As String
+  SWorksheet = ActiveSheet.Name
+
+  If InStr(1, SWorksheet, "EDM") Then
+      Sname = "EDM"
+  Else
+     Sname = "Milling"
+  End If
+  Call Fill_data_EDM_Milling(SWorksheet, Sname)
+  Call Test_Setting_of_checkboxes_loesung
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+
+End Sub
+Attribute VB_Name = "Tabelle7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+End Sub
+
+Attribute VB_Name = "Tabelle9"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "frm_intro"
+Attribute VB_Base = "0{C7C0F41D-24E8-4895-A747-3153E17C3B15}{6E0E6412-1C82-4C7B-90D9-A5FB5450A08E}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Attribute VB_Name = "frm_measpoint"
+Attribute VB_Base = "0{BDC3DB21-45FF-44A6-ACC9-17B3DA1EF19A}{6B21FC51-D989-4175-9A6C-266AC1A02F3D}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub cmd_closemeaspoint_Click()
+  frm_measpoint.Hide
+End Sub
+
+Private Sub UserForm_Activate()
+  Set shControl = Worksheets("CONTROL")
+  lst_measpoints.Clear
+  r = 1
+'set titles
+  lst_measpoints.AddItem getLanguageText("USERFORM", "Type", Range("CurrentLanguage"))
+  lst_measpoints.List(r - 1, 1) = getLanguageText("USERFORM", "MeasPoint", Range("CurrentLanguage"))
+  lst_measpoints.List(r - 1, 2) = getLanguageText("USERFORM", "Description", Range("CurrentLanguage"))
+  lst_measpoints.List(r - 1, 3) = getLanguageText("USERFORM", "Current", Range("CurrentLanguage"))
+        
+  Do
+    If shControl.Range("measlookup").Cells(r, 1) = "" Then
+      Exit Do
+    Else
+      lst_measpoints.AddItem shControl.Range("measlookup").Cells(r, 2)
+      lst_measpoints.List(r, 1) = shControl.Range("measlookup").Cells(r, 1)
+      lst_measpoints.List(r, 2) = shControl.Range("measlookup").Cells(r, 3)
+      lst_measpoints.List(r, 3) = shControl.Range("measlookup").Cells(r, 4)
+      r = r + 1
+    End If
+  Loop
+  lst_measpoints.ColumnWidths = 30 & ";" & 55 & ";" & 110 & ";" & 110
+End Sub
+
+Private Sub UserForm_Initialize()
+  Load frm_measpoint
+End Sub
+Attribute VB_Name = "frm_ops"
+Attribute VB_Base = "0{C466B156-FA74-45DF-8136-D5C3FA743E46}{20EDB23D-080B-456C-829C-F582495BAB12}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub cmd_closemeaspoint_Click()
+  frm_ops.Hide
+End Sub
+
+Private Sub UserForm_Activate()
+  Set shControl = Worksheets("CONTROL")
+  lst_ops.Clear
+  r = 1
+'set titles
+  lst_ops.AddItem getLanguageText("USERFORM", "ConfNo", Range("CurrentLanguage"))
+  lst_ops.List(r - 1, 3) = getLanguageText("USERFORM", "Date", Range("CurrentLanguage"))
+  lst_ops.List(r - 1, 1) = getLanguageText("USERFORM", "WorkCentre", Range("CurrentLanguage"))
+  lst_ops.List(r - 1, 2) = getLanguageText("USERFORM", "Description", Range("CurrentLanguage"))
+        
+  Do
+    If shControl.Range("Completion_numbers").Cells(r, 1) = "" Then
+      Exit Do
+    Else
+      lst_ops.AddItem shControl.Range("Completion_numbers").Cells(r, 1)
+      lst_ops.List(r, 1) = shControl.Range("Completion_numbers").Cells(r, 3)
+      lst_ops.List(r, 2) = shControl.Range("Completion_numbers").Cells(r, 4)
+      lst_ops.List(r, 3) = shControl.Range("Completion_numbers").Cells(r, 2)
+      r = r + 1
+    End If
+  Loop
+  lst_ops.ColumnWidths = 50 & ";" & 50 & ";" & 200 & ";" & 50
+End Sub
+
+
+
+
+INQUEST-PP=macro

@@ -1,0 +1,790 @@
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+Attribute VB_Name = "Vemas"
+Option Explicit
+
+Private Declare PtrSafe Function GetComputerName Lib "kernel32" Alias "GetComputerNameA" (ByVal lpBuffer As String, nSize As Long) As Long
+
+Public cnn As ADODB.Connection
+Public rs2 As ADODB.Recordset
+
+Public Const gcstrVemasUser As String = "vpDoku"   '  Anmeldenamen fuer Datenbank
+Public Const gcstrVemasPwd As String = "#vemas#"       '  Anmeldekennwort fuer Datenbank
+Public s As String
+
+Public gstrAgentur As String                 '  Agenturkuerzel
+Public gstrDatum As String                   '  Produktdatum
+
+'  Fuer Waehrungsfunktionalitaet erforderlich
+
+Public gstrBetriebswaehrung As String        '  Betriebswaehrung
+Public gsngKurs As Single                    '  Umrechnungsfaktor zur DM
+Public gstrZielwaehrung As String            '  Zielw|fffd|hrung
+
+'  Variablen, die Daten des Rechnungskopfes enthalten
+
+Public gstrRechnungsnummer As String            '  Rechnungsnummer
+Public gstrRechnungsadresse As String           '  Rechnungsadresse
+Public gstrRechnungsdatum As String             '  Rechnungsdatum als String
+Public gstrKundennummer As String               '  Kundennummer
+Public gstrBestellangaben As String             '  publice Bestellangabe
+Public gstrMwStSatz As String                   '  Mehrwertsteuersatz
+Public gstrZahlungsbedingungen As String        '  Zahlungsbedingungen
+Public gstrFaelligkeitsdatum As String          '  Faelligkeitsdatum
+Public gstrLieferanschrift As String            '  Lieferanschrift
+Public glngSatznummer As Long                   '  Satznummer der Rechnung
+Public gstrKunde As String
+Public gstrVorgangsnummer As String
+
+Public gstrProfitcenter As String
+
+
+Public Function Runden(dblZahl As Double, lAnzahlStellen As Long) As Double
+On Error Resume Next
+Dim dblZahlNeu As Double
+Dim lGanzeZahl As Long
+Dim dblAufschlag As Double
+Dim lStellenSchieben As Long
+Dim sBuffer As String
+Dim bIsNegativ As Boolean
+
+If Sgn(dblZahl) = -1 Then
+    bIsNegativ = True
+    dblZahl = dblZahl * -1
+Else
+    bIsNegativ = False
+End If
+
+dblZahlNeu = dblZahl
+lStellenSchieben = 10 ^ lAnzahlStellen
+dblAufschlag = 0.5 / lStellenSchieben
+
+dblZahlNeu = dblZahlNeu + dblAufschlag
+dblZahlNeu = dblZahlNeu * lStellenSchieben
+
+sBuffer = Trim$(Str$(dblZahlNeu))
+If InStr(1, sBuffer, ".") > 0 Then
+    sBuffer = Left$(sBuffer, InStr(sBuffer, "."))
+End If
+
+lGanzeZahl = CLng(sBuffer)
+dblZahlNeu = lGanzeZahl / lStellenSchieben
+
+If bIsNegativ Then dblZahlNeu = dblZahlNeu * -1
+Runden = dblZahlNeu
+
+End Function
+
+
+
+
+
+
+Sub Rechnung_Main()
+
+   On Error Resume Next
+   Dim strCon As String
+   Dim strServer As String
+   Dim strDatabase As String
+   
+'  +-----------------------------------------------------------+
+'  I  Basis fuer die weitere Bearbeitung ist die Rechnungs-    I
+'  I  nummer sowie die Datenbankbezeichnung. Diese Werte mues- I
+'  I  sen von Vemas aus uebergeben werden. Die Textmarke       I
+'  I  "Datenbank" wird danach automatisch geloescht, damit     I
+'  I  sie nicht im fertigen Dokument steht.                    I
+'  +-----------------------------------------------------------+
+
+   StatusBar = "Ermittle Textmarken"
+   
+   If ActiveDocument.Bookmarks.Exists("Kundennummer") = True Then
+      ActiveDocument.Bookmarks("Kundennummer").Select
+      gstrKundennummer = GetStr(Application.Selection.Text)
+      ActiveDocument.Bookmarks("Kundennummer").Select
+    Else
+      MsgBox "Textmarke Kundennummer wurde nicht gefunden!"
+      Exit Sub
+   End If
+   
+   If ActiveDocument.Bookmarks.Exists("Rechnungsnummer") = True Then
+      ActiveDocument.Bookmarks("Rechnungsnummer").Select
+      gstrRechnungsnummer = GetStr(Application.Selection.Text)
+    Else
+      MsgBox "Textmarke Rechnungsnummer wurde nicht gefunden!"
+      Exit Sub
+   End If
+   
+   
+'  |fffd|ffnen der Verbindung zur Datenbank. Es wird die aktuell verwendete Datenbank
+'  verwendet. Diese Informationen werden in der Registry gespeichert.
+
+   StatusBar = "Zugriff auf Datenbank erfolgt..."
+   strServer = "vemas02"
+   strDatabase = "Vemas"
+   Set cnn = CreateObject("ADODB.connection")
+   strCon = "Driver={SQL Server};Server=" & strServer & ";Database=" & strDatabase
+   cnn.Open strCon, gcstrVemasUser, gcstrVemasPwd
+
+'  +-----------------------------------------------------------+
+'  I  Einlesen des Rechnungskopfes                             I
+'  +-----------------------------------------------------------+
+
+   Call GetRechnungskopf
+
+'  +-----------------------------------------------------------+
+'  I  Einlesen und Verarbeiten der Rechnungspositionen         I
+'  +-----------------------------------------------------------+
+ 
+   Call Rechnungsdaten_SUB
+   
+'  +-----------------------------------------------------------+
+'  I  Rechnungskopfdaten in Word-Dokument setzen.              I
+'  +-----------------------------------------------------------+
+  
+   Call PutRechnungskopf
+   
+'  Verkn|fffd|pfung hinzuf|fffd|gen
+
+   Call AddRelation
+
+'  Wiedervorlage erstellen auf Rechnungsdatum+10 Monate
+
+   Call Wiedervorlage
+   
+
+'  +-----------------------------------------------------------+
+'  I  Schliessen der Datenbank und des Arbeitsbereiches.       I
+'  +-----------------------------------------------------------+
+      
+   StatusBar = "Schlie|fffd|e Datenbank ..."
+   cnn.Close: Set cnn = Nothing
+   
+'  Jetzt zaubern wir die Datei noch in ein anderes Verzeichnis rein
+
+   Dim s As String
+   s = "\\dmore04\Verwaltung\verwaltung\rechnungen\" & Year(Now) & "\" & gstrRechnungsnummer & "_" & gstrKunde & ".doc"
+   
+'   ActiveDocument.SaveAs s
+   
+   StatusBar = "Fertig, Sie k|fffd|nnen das Word-Dokument nun bearbeiten ..."
+   
+End Sub
+
+
+
+Private Sub GetRechnungskopf()
+
+'  +-----------------------------------------------------------+
+'  I  Liest Rechnungskopf ein und speichert die Datenbankwer-  I
+'  I  te in publicen Variablen ab                              I
+'  +-----------------------------------------------------------+
+
+   On Error Resume Next
+   StatusBar = "Frage Rechnungskopf ab..."
+   
+   s = "SELECT * "
+   s = s & "FROM [RECHNUNGEN] "
+   s = s & "WHERE [RECHNUNGSNUMMER] = " & gstrRechnungsnummer
+   
+   Dim rs2 As New ADODB.Recordset
+   rs2.Open s, cnn, adOpenDynamic, adLockOptimistic
+   rs2.MoveFirst
+   
+   gstrRechnungsnummer = GetStr(rs2![RECHNUNGSNUMMER])
+   gstrRechnungsdatum = Format(GetStr(rs2![RECHNUNGSDATUM]), "mmm d, yyyy")
+   gstrKundennummer = GetStr(rs2![Kundennummer])
+   gstrBestellangaben = GetStr(rs2![BESTELLANGABEN])
+   gstrMwStSatz = GetStr(Runden(rs2![MWSTSATZ] * 100, 2))
+   gstrZahlungsbedingungen = GetStr(rs2![ZAHLUNGSBEDINGUNGEN])
+   gstrFaelligkeitsdatum = GetStr(rs2![FAELLIGKEITSDATUM])
+   glngSatznummer = rs2![ID]
+   gstrBetriebswaehrung = GetStr(rs2![Betriebswaehrung])
+   gstrZielwaehrung = GetStr(rs2![Zielwaehrung])
+   gsngKurs = GetDbl(rs2![Kurs])
+   gstrKunde = GetStr(rs2!RAdresse1)
+   gstrProfitcenter = GetStr(rs2!Profitcenter)
+   gstrVorgangsnummer = GetStr(rs2!Vertragsnummer)
+   
+'  Bilden der Rechnungsadresse
+
+   gstrRechnungsadresse = ""
+   
+   If GetStr(rs2("RAdresse1")) <> "" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & rs2("RAdresse1") & vbNewLine
+   End If
+   If GetStr(rs2("RAdresse2")) <> "" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & rs2("RAdresse2") & vbNewLine
+   End If
+   If GetStr(rs2("RAdresse3")) <> "" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & rs2("RAdresse3") & vbNewLine
+   End If
+   If GetStr(rs2("RAdresse4")) <> "" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & rs2("RAdresse4") & vbNewLine
+   End If
+   If GetStr(rs2("RAdresse5")) <> "" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & rs2("RAdresse5") & vbNewLine
+   End If
+   If GetStr(rs2("PLZ")) <> "" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & rs2("PLZ") & " "
+   End If
+   If GetStr(rs2("Ort")) <> "" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & rs2("Ort") & vbNewLine
+   End If
+   If GetStr(rs2("RLand")) <> "DE" Then
+      gstrRechnungsadresse = gstrRechnungsadresse & GetLaendername(rs2("RLand"))
+   End If
+      
+'  Aufbereiten einer abweichenden Lieferanschrift
+
+   gstrLieferanschrift = ""
+   If GetStr(rs2!LAnschrift1) <> "" Then
+      gstrLieferanschrift = gstrLieferanschrift & rs2!LAnschrift1 & vbNewLine
+   End If
+   If GetStr(rs2!LAnschrift2) <> "" Then
+      gstrLieferanschrift = gstrLieferanschrift & rs2!LAnschrift2 & vbNewLine
+   End If
+   If GetStr(rs2!LAnschrift3) <> "" Then
+      gstrLieferanschrift = gstrLieferanschrift & rs2!LAnschrift3 & vbNewLine
+   End If
+   If GetStr(rs2!LAnschrift4) <> "" Then
+      gstrLieferanschrift = gstrLieferanschrift & rs2!LAnschrift4 & vbNewLine
+   End If
+   If GetStr(rs2!LAnschrift5) <> "" Then
+      gstrLieferanschrift = gstrLieferanschrift & rs2!LAnschrift5 & vbNewLine
+   End If
+   If GetStr(rs2!LPlz) <> "" Then
+      gstrLieferanschrift = gstrLieferanschrift & rs2!LPlz & " "
+   End If
+   If GetStr(rs2!LOrt) <> "" Then
+      gstrLieferanschrift = gstrLieferanschrift & rs2!LOrt
+   End If
+   If GetStr(rs2!LLand) <> "DE" Then
+      gstrLieferanschrift = gstrLieferanschrift & GetLaendername(rs2!LLand)
+   End If
+      
+   rs2.Close
+   Set rs2 = Nothing
+   
+   '  Rechnungsnummer ersetzen
+   
+   ReplaceBookmarks "@Rechnungsnummer2@", Right(gstrRechnungsnummer, Len(gstrRechnungsnummer) - 2)
+   
+
+End Sub
+
+
+Private Function GetStr(C As Variant) As String
+
+'  +-----------------------------------------------------------+
+'  I  Funktion gibt einen Stringwert zurueck.                  I
+'  +-----------------------------------------------------------+
+
+   On Error Resume Next
+
+   If IsNull(C) Then
+      GetStr = ""
+   Else
+      GetStr = C
+   End If
+
+End Function
+Private Function ConvertCurrency(vntInput As Single) As Single
+
+   On Error Resume Next
+   
+'  Es muss nur konvertiert werden, wenn Betriebswaehrung und
+'  Waehrung unterschiedlich sind. Ist keine Waehrung in den Produkt-
+'  daten eingetragen, wird ebenfalls nicht konvertiert
+
+   Select Case gstrZielwaehrung
+      Case gstrBetriebswaehrung, ""    '  Es muss nicht umgerechnet werden
+      ConvertCurrency = GetDbl(vntInput)
+      Case Else
+      ConvertCurrency = GetDbl(vntInput) * gsngKurs!
+   End Select
+
+End Function
+
+Private Sub PutRechnungskopf()
+
+'  +-----------------------------------------------------------+
+'  I  Abarbeiten aller Kopfdaten wie z.B. Agentur, Datum und   I
+'  I  Zahlungsbedingungen. Diese angebotsspezifischen Werte    I
+'  I  stehen in entsprechendne Variablen                       I
+'  +-----------------------------------------------------------+
+
+   On Error Resume Next
+   StatusBar = "F|fffd|ge Daten aus Rechnungskopf ein ..."
+  
+'  W|fffd|hrung einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("W|fffd|hrung") = True Then
+      ActiveDocument.Bookmarks("W|fffd|hrung").Select
+      Application.Selection.Text = gstrZielwaehrung
+   End If
+  
+'  Rechnungsadresse einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("Rechnungsadresse") = True Then
+      ActiveDocument.Bookmarks("Rechnungsadresse").Select
+      Application.Selection.Text = gstrRechnungsadresse
+   End If
+   
+'  Rechnungsnummer einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("Rechnungsnummer") = True Then
+      ActiveDocument.Bookmarks("Rechnungsnummer").Select
+      Application.Selection.Text = gstrRechnungsnummer
+   End If
+   
+'  Rechnungsdatum einf|fffd|gen
+   
+   If ActiveDocument.Bookmarks.Exists("Rechnungsdatum") = True Then
+      ActiveDocument.Bookmarks("Rechnungsdatum").Select
+      Application.Selection.Text = gstrRechnungsdatum
+   End If
+   
+'  Kundennummer einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("Kundennummer") = True Then
+      ActiveDocument.Bookmarks("Kundennummer").Select
+      Application.Selection.Text = gstrKundennummer
+   End If
+
+'  Mehrwertsteuersatz einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("MwStSatz") = True Then
+      ActiveDocument.Bookmarks("MwStSatz").Select
+      Application.Selection.Text = gstrMwStSatz
+   End If
+   
+'  Bestellangaben einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("Bestellangaben") = True Then
+      ActiveDocument.Bookmarks("Bestellangaben").Select
+      Application.Selection.Text = gstrBestellangaben
+   End If
+
+'  Zahlungsbedingungen einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("Zahlungsbedingungen") = True Then
+      ActiveDocument.Bookmarks("Zahlungsbedingungen").Select
+      Application.Selection.Text = gstrZahlungsbedingungen
+   End If
+ 
+'  Faelligkeitsdatum einf|fffd|gen
+
+   If ActiveDocument.Bookmarks.Exists("Faelligkeitsdatum") = True Then
+      ActiveDocument.Bookmarks("Faelligkeitsdatum").Select
+      Application.Selection.Text = gstrFaelligkeitsdatum
+   End If
+   
+   If ActiveDocument.Bookmarks.Exists("Profitcenter") = True Then
+      ActiveDocument.Bookmarks("Profitcenter").Select
+      Application.Selection.Text = gstrProfitcenter
+   End If
+   
+   
+   
+   '  Lieferanschrift einf|fffd|gen
+   
+   If gstrLieferanschrift <> "" Then
+      If ActiveDocument.Bookmarks.Exists("Lieferanschrift") Then
+         ActiveDocument.Bookmarks("Lieferanschrift").Select
+         Application.Selection.Text = gstrLieferanschrift
+      End If
+   End If
+
+End Sub
+
+Private Sub Rechnungsdaten_SUB()
+
+   On Error Resume Next
+   
+   Dim intRow As Integer
+   Dim strArtikel As String
+   Dim sngVK As Single: sngVK = 0
+   Dim sngVK_GES As Single: sngVK_GES = 0
+   Dim sngSummeVKGES As Single: sngSummeVKGES = 0
+   Dim sngSummeMwSt As Single: sngSummeMwSt = 0
+   Dim sngSummeGESAMT As Single: sngSummeGESAMT = 0
+   Dim sngSummeRabatt As Single: sngSummeRabatt = 0
+   Dim strKostenstelle As String
+   Dim strArtikelnummer As String
+              
+'  +-----------------------------------------------------------+
+'  I  Bilden des SQL-Statements zur Abfrage der Positionen     I
+'  +-----------------------------------------------------------+
+   
+   s = ""
+   s = "SELECT * "
+   s = s & "FROM [RECHNUNGEN_SUB] "
+   s = s & "WHERE [R_ID] = " & glngSatznummer
+   s = s & " ORDER BY [POSITION] ASC"
+   
+'  +-----------------------------------------------------------+
+'  I  Oeffnen des Recordsets mit dem SQL-Statement             I
+'  +-----------------------------------------------------------+
+   
+   StatusBar = "Ermittle Rechnungspositionen ..."
+   Set rs2 = New ADODB.Recordset
+   rs2.Open s, cnn, adOpenDynamic, adLockOptimistic
+
+'  +-----------------------------------------------------------+
+'  I  Positionieren auf den ersten Datensatz, Einstellen von   I
+'  I  Variablenwerten fuer die Aufbereitung der Tabelle        I
+'  +-----------------------------------------------------------+
+   
+   rs2.MoveFirst
+   intRow = 2
+   sngSummeVKGES = 0
+
+'  +-----------------------------------------------------------+
+'  I  Abarbeiten aller Rechnungspositionen                     I
+'  I  -------------------------------------------------------  I
+'  I  01. Variable strArtikel enthaelt den zusammengesetzten   I
+'  I      Produktnamen aus den Feldern PRODUKT und MODUL       I
+'  I  02. Variable sngSummeVKGES wird pro Position addiert und I
+'  I      enthaelt zum Schluss Gesamtsumme der Rechnung        I
+'  I  03. Das Feld KOMMENTAR enthaelt den Artikellangtext, der I
+'  I      in der zweiten Spalte (intRow, 2) angezeigt wird.    I
+'  I  04. Ueber Format(xxx, "##,#0.00 DM") werden Waehrungs-   I
+'  I      werte fuer die Anzeige formatiert.                   I
+'  I  05. Feld VK enthaelt den Einzelverkaufspreis             I
+'  I  06. Feld VK_GES enthaelt Gesamtpreis (VK * MENGE)        I
+'  I  07. ActiveDocument.Tables(2) verweist auf die erste Ta-  I
+'  I      belle im Dokument. Dies ist die Rechnungstabelle     I
+'  +-----------------------------------------------------------+
+   
+   Do Until rs2.EOF
+      strArtikel = GetStr(rs2![PRODUKT]) & " " & GetStr(rs2![MODUL])
+      sngVK = Runden(ConvertCurrency(rs2![VK]), 2)
+      sngVK_GES = Runden(sngVK * rs2![MENGE], 2)
+      sngSummeVKGES = sngSummeVKGES + sngVK_GES
+      With ActiveDocument.Tables(2)
+         StatusBar = "Bearbeite Rechnungspositionen " & rs2![Position]
+         .Cell(intRow, 1).Range.InsertAfter Format(rs2![Position], "000")
+         .Cell(intRow, 2).Range.InsertAfter rs2![MENGE] & " x"
+         .Cell(intRow, 3).Range.InsertAfter strArtikel
+         .Cell(intRow, 4).Range.InsertAfter Format(sngVK, "##,##0.00 ")
+         .Cell(intRow, 4).Range.InsertAfter gstrZielwaehrung
+         .Cell(intRow, 5).Range.InsertAfter Format(sngVK_GES, "##,##0.00 ")
+         .Cell(intRow, 5).Range.InsertAfter gstrZielwaehrung
+         '  Beschreibung beruecksichtigen
+         If Not GetStr(rs2![BESCHREIBUNG]) = "" Then
+            intRow = intRow + 1
+            .Rows.Add
+            .Cell(intRow, 3).Range.InsertAfter rs2![BESCHREIBUNG]
+         End If
+         '  Kommentar als Artikellangtext beruecksichtigen
+         If Not GetStr(rs2![KOMMENTAR]) = "" Then
+            intRow = intRow + 1
+            .Rows.Add
+            .Cell(intRow, 3).Range.InsertAfter rs2![KOMMENTAR]
+         End If
+         '  Ggf. Bestellangaben ber|fffd|cksichtigen
+         If Not GetStr(rs2![BESTELLANGABEN]) = "" Then
+            .Rows.Add
+            intRow = intRow + 1
+            .Cell(intRow, 3).Range.InsertAfter rs2![BESTELLANGABEN]
+            intRow = intRow + 1
+            .Rows.Add
+         End If
+         '  Ggf. Rabatt pro Position ausweisen
+         If Not (rs2![VK_RABATT]) = 0 Then '  Aufschlag oder Rabatt
+            intRow = intRow + 1
+            sngSummeRabatt = Runden(sngVK_GES / 100 * rs2![VK_RABATT], 2)
+            sngSummeVKGES = sngSummeVKGES - sngSummeRabatt
+            .Rows.Add
+            If rs2![VK_RABATT] > 0 Then '   Rabatt gegeben
+               .Cell(intRow, 3).Range.InsertAfter rs2![VK_RABATT] & " % Rabatt"
+               .Cell(intRow, 5).Range.InsertAfter Format(sngSummeRabatt, "-##,##0.00 ")
+               .Cell(intRow, 5).Range.InsertAfter gstrZielwaehrung
+            Else  ' Aufschlag!!!
+               .Cell(intRow, 3).Range.InsertAfter (rs2![VK_RABATT] * -1) & " % Aufschlag"
+               .Cell(intRow, 5).Range.InsertAfter Format((sngSummeRabatt * -1), "##,##0.00 ")
+               .Cell(intRow, 5).Range.InsertAfter gstrZielwaehrung
+            End If
+         End If
+         '  Vorgangsnummer
+         If Not GetStr(gstrVorgangsnummer) = "" Then
+            intRow = intRow + 1
+            .Rows.Add
+            .Cell(intRow, 3).Range.InsertAfter "Our quote: " & gstrVorgangsnummer
+         End If
+         '  Bearbeitungszeitraum
+         .Rows.Add
+         intRow = intRow + 1
+         .Cell(intRow, 3).Range.InsertAfter "Period: "
+         .Rows.Add
+      End With
+      intRow = intRow + 1
+      rs2.MoveNext
+   Loop
+  
+'  +-----------------------------------------------------------+
+'  I  Alle Positionen wurden verarbeitet                       I
+'  I  -------------------------------------------------------  I
+'  I  Einfuegen von Netto-, MwSt- und Gesamtsumme              I
+'  +-----------------------------------------------------------+
+
+'  Fritz!!!!! Hier bitte die Texte |fffd|ndern!!!!!!!!!!
+
+    
+   StatusBar = "Ermittle Rechnungssumme ..."
+    
+   sngSummeMwSt = GetMwSt(glngSatznummer)
+   sngSummeGESAMT = sngSummeVKGES + sngSummeMwSt
+      
+   
+   ActiveDocument.Tables(2).Rows.Add
+   ActiveDocument.Tables(2).Cell(intRow + 2, 3).Range.InsertAfter "Total hors TVA"
+   ActiveDocument.Tables(2).Cell(intRow + 2, 5).Range.InsertAfter Format(sngSummeVKGES, "##,##0.00 ")
+   ActiveDocument.Tables(2).Cell(intRow + 2, 5).Range.InsertAfter gstrZielwaehrung
+   ActiveDocument.Tables(2).Cell(intRow + 2, 3).Range.Bold = True
+   ActiveDocument.Tables(2).Cell(intRow + 2, 5).Range.Bold = True
+   ActiveDocument.Tables(2).Cell(intRow + 2, 3).Range.Italic = True
+   ActiveDocument.Tables(2).Cell(intRow + 2, 5).Range.Italic = True
+      
+   ActiveDocument.Tables(2).Rows.Add
+   ActiveDocument.Tables(2).Cell(intRow + 3, 3).Range.InsertAfter gstrMwStSatz & "% TVA (20%)"
+   ActiveDocument.Tables(2).Cell(intRow + 3, 5).Range.InsertAfter Format(sngSummeMwSt, "##,##0.00 ")
+   ActiveDocument.Tables(2).Cell(intRow + 3, 5).Range.InsertAfter gstrZielwaehrung
+   ActiveDocument.Tables(2).Cell(intRow + 3, 3).Range.Italic = True
+   ActiveDocument.Tables(2).Cell(intRow + 3, 5).Range.Italic = True
+   
+   ActiveDocument.Tables(2).Rows.Add
+   ActiveDocument.Tables(2).Cell(intRow + 4, 3).Range.InsertAfter "Total TTC"
+   ActiveDocument.Tables(2).Cell(intRow + 4, 5).Range.InsertAfter Format(sngSummeGESAMT, "##,##0.00 ")
+   ActiveDocument.Tables(2).Cell(intRow + 4, 5).Range.InsertAfter gstrZielwaehrung
+   ActiveDocument.Tables(2).Cell(intRow + 4, 3).Range.Italic = True
+   ActiveDocument.Tables(2).Cell(intRow + 4, 5).Range.Italic = True
+   
+'  Linie |fffd|ber der Summe ...
+
+   ActiveDocument.Tables(2).Rows(intRow).Select
+   With Selection.Borders(wdBorderTop)
+      .LineStyle = Options.DefaultBorderLineStyle
+      .LineWidth = Options.DefaultBorderLineWidth
+      .Color = Options.DefaultBorderColor
+   End With
+   
+   rs2.Close: Set rs2 = Nothing
+   
+'  Ermitteln Kostenstelle aus dem ersten Artikel der ersten Rechnungsposition
+
+   s = "SELECT TOP 1 tkeyModule.Kostenstelle, tkeyModule.Artikelnummer_Intern FROM tkeyModule Inner Join Rechnungen_Sub On "
+   s = s & "tkeyModule.Modul_ID = Rechnungen_Sub.Modul_ID Where Rechnungen_Sub.R_ID = " & glngSatznummer
+   
+   Set rs2 = New ADODB.Recordset
+   rs2.Open s, cnn, adOpenKeyset, adLockOptimistic
+   
+   If Not rs2.EOF Then
+      strKostenstelle = GetStr(rs2("Kostenstelle"))
+      strArtikelnummer = GetStr(rs2("Artikelnummer_Intern"))
+      ReplaceBookmarks "@Kostenstelle@", strKostenstelle
+      ReplaceBookmarks "@A@", strArtikelnummer
+      ReplaceBookmarks "@J@", Year(Now)
+   End If
+   
+   rs2.Close: Set rs2 = Nothing
+
+   
+End Sub
+
+Private Function ComputerName() As String
+    
+   On Error Resume Next
+   Dim NBuffer As String
+   Dim Buffsize As Long
+   Dim Wok As Long
+   Dim atcnames As String
+   Dim uorc: uorc = 2
+       
+   Buffsize = 256
+   NBuffer = Space$(Buffsize)
+    
+   Wok = GetComputerName(NBuffer, Buffsize)
+   atcnames = Trim$(NBuffer)
+   If Right(atcnames, 1) = Chr(0) Then
+      atcnames = Left(atcnames, Len(atcnames) - 1)
+   End If
+
+   ComputerName = atcnames
+   Exit Function
+
+End Function
+
+Private Sub AddRelation()
+
+'  Erstellt eine Verkn|fffd|pfung Dokument -> Produktdaten
+   
+   On Error Resume Next
+   StatusBar = "Erstelle Verkn|fffd|pfung..."
+   s = "insert into tblverknuepfungen (v1_typ, v1_id, v2_typ, v2_id, typ, bemerkungen, aufnahmebenutzer)"
+   s = s & " values(3,-1,13," & glngSatznummer & ", 'Autolink', 'Automatische Verkn|fffd|pfung'," & Chr(39) & ComputerName & Chr(39) & ")"
+   cnn.Execute s
+   
+End Sub
+
+Sub Wiedervorlage()
+
+   On Error Resume Next
+   Dim strCon As String
+   Dim strServer As String
+   Dim strDatabase As String
+   Dim rs As ADODB.Recordset
+   Dim s As String
+   Dim lngNummer As Long
+   
+'  Wir brauchen eine Kundennummer, damit wir eine Akquisemassnahme bilden k|fffd|nnen
+
+   StatusBar = "Ermittle Textmarken"
+    
+'  |fffd|ffnen der Verbindung zur Datenbank. Es wird die aktuell verwendete Datenbank
+'  verwendet. Diese Informationen werden in der Registry gespeichert. Zum Zugriff
+'  auf die Datenbank werden f|fffd|r das Login (Name und Kennwort) Konstanten verwendet.
+'  Der Zugriff kann dabei mit beliebigen Methoden, z.B. NT-Authentifizierung, er-
+'  folgen, wenn der SQL Server entsprechend eingerichtet ist.
+
+   StatusBar = "Zugriff auf Datenbank erfolgt..."
+   strServer = GetSetting("Vemas", "Login", "Server", "(local)")
+   strDatabase = GetSetting("Vemas", "Login", "Database", "VEMAS")
+   Set cnn = CreateObject("ADODB.connection")
+   strCon = "Driver={SQL Server};Server=" & strServer & ";Database=" & strDatabase
+   cnn.Open strCon, gcstrVemasUser, gcstrVemasPwd
+   
+'  Wir brauchen die Nummer der Adresse f|fffd|r die Akquise
+
+   s = "Select Nummer From Adressen Where Kundennummer = " & gstrKundennummer
+   Set rs = New ADODB.Recordset
+   rs.Open s, cnn
+   lngNummer = rs("Nummer")
+   rs.Close: Set rs = Nothing
+
+'  Wir sollten nun eine Verbindung zur Datenbank haben. Jetzt schreiben wir in die Akquise einfach
+'  eine neue Akquisemassnahme rein.
+'  WV-Datum ist Rechnungsdatum+11 Monate
+
+   Set rs = New ADODB.Recordset
+   rs.Open "Akquisition", cnn, adOpenKeyset, adLockOptimistic
+   
+   With rs
+      .AddNew
+      !Kundennummer = gstrKundennummer
+      !nummer = lngNummer
+      !Datum = Date
+      !Zeit = Time()
+      !Kontaktart = "Verl|fffd|ngerung"
+      !Wiedervorlage = DateAdd("m", 11, Date)
+      !Wiedervorlagezeit = Time
+      !Akquisition = "Kunden auf Vertragsverl|fffd|ngerung ansprechen!!!!!"
+      !Person = "UG"
+      !Auftraggeber = "UG"
+      .Update
+   End With
+   
+   rs.Close: Set rs = Nothing
+   
+'  Verarbeitung beenden und Verbindung zur Datenbank schliessen
+
+   StatusBar = "Schlie|fffd|e Datenbank ..."
+   cnn.Close: Set cnn = Nothing
+   StatusBar = "Sie k|fffd|nnen das Word-Dokument nun bearbeiten ..."
+   
+End Sub
+Private Function GetLaendername(ByVal strLand As String) As String
+
+   On Error Resume Next
+   Dim s As String
+   Dim rs As ADODB.Recordset
+   
+   s = "SELECT Laendername FROM tkeyLaenderkennzeichen Where Land Like '" & strLand & "'"
+   Set rs = New ADODB.Recordset
+   rs.Open s, cnn, adOpenKeyset, adLockOptimistic
+   
+   If Not rs.EOF Then
+      GetLaendername = UCase(GetStr(rs("Laendername")))
+   Else
+      GetLaendername = strLand
+   End If
+   
+   rs.Close: Set rs = Nothing
+   
+End Function
+Private Function GetMwSt(ByVal lngRID As Long) As Double
+
+   On Error Resume Next
+   Dim s As String
+   Dim m As ADODB.Recordset
+   Dim dblSumme As Double: dblSumme = 0
+   
+   s = "SELECT Produkt, Modul, Modul_ID, MwStSatz, MwSt_ID, MwSt, VK_GES FROM Rechnungen_Sub Where R_ID = " & lngRID & " Order By [Position]"
+   Set m = New ADODB.Recordset
+   m.Open s, cnn, adOpenKeyset, adLockOptimistic
+   
+   Do Until m.EOF
+      '  Wenn die MwSt_ID 0 ist, haben wir ein Problem ...
+      If GetDbl(m("MwSt_ID")) = 0 Then
+         MsgBox "F|fffd|r die Position '" & GetStr(m("Produkt")) & "', '" & GetStr(m("Modul")) & "' existiert keine Steuerzuordnung. Die Mehrwertsteuer wird nicht stimmen!!!", vbOKOnly + vbCritical, "Vemas"
+      End If
+      dblSumme = dblSumme + Runden(GetDbl(m("MwSt")), 2)
+      m.MoveNext
+   Loop
+   
+   m.Close: Set m = Nothing
+   
+   GetMwSt = dblSumme
+   
+End Function
+
+
+Private Function GetDbl(C As Variant) As Double
+
+'  Umwandlung in Double
+
+   On Error Resume Next
+
+   If IsNull(C) Then
+      GetDbl = 0
+   Else
+      GetDbl = CDbl(C)
+   End If
+
+End Function
+Private Sub ReplaceBookmarks(ByVal strOldValue As String, ByVal strNewValue As String)
+
+'  Prozedur sucht Text in der Vorlage und ersetzt diesen
+
+   On Error Resume Next
+   Selection.Find.ClearFormatting
+   Selection.Find.Replacement.ClearFormatting
+   With Selection.Find
+      .Text = strOldValue
+      .Replacement.Text = strNewValue
+      .Forward = True
+      .Wrap = wdFindContinue
+      .Format = False
+      .MatchCase = False
+      .MatchWholeWord = False
+      .MatchWildcards = False
+      .MatchSoundsLike = False
+      .MatchAllWordForms = False
+   End With
+   Selection.Find.Execute Replace:=wdReplaceAll
+
+End Sub
+
+
+
+
+' InQuest injected base64 decoded content
+' z'!z
+
+INQUEST-PP=macro

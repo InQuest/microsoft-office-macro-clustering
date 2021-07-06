@@ -1,0 +1,1376 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+Public Const l_xlOpenXMLWorkbookMacroEnabled  As Long = 52 'ara 12.6.12
+
+'ara 15.11.14 s
+'reference:
+'   http://msdn.microsoft.com/en-us/library/office/ff192913.aspx
+'ara 6.12.14 s
+'When running in 64-bit versions of Office Declare statements must include the PtrSafe keyword.
+'The PtrSafe keyword asserts that a Declare statement is safe to run in 64-bit development environments.
+'Adding the PtrSafe keyword to a Declare statement only signifies the Declare statement explicitly targets 64-bits,
+'    all data types within the statement that need to store 64-bits (including return values and parameters)
+'    must still be modified to hold 64-bit quantities using either LongLong for 64-bit integrals or LongPtr for pointers and handles.
+
+
+'Declare statements that include PtrSafe work correctly in the VBA7 development environment
+'    on both 32-bit and 64-bit platforms only after all data types in the Declare statement (parameters and return values)
+'    that need to store 64-bit quantities are updated to use LongLong for 64-bit integrals or LongPtr for pointers and handles.
+'    To ensure backwards compatibility with VBA version 6 and earlier use the following construct:
+#If VBA7 Then
+    Declare PtrSafe Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) _
+        As LongPtr 'LongPtr is not a true data type because it transforms to a Long in 32-bit environments, or a LongLong in 64-bit environments. Using LongPtr enables writing portable code that can run in both 32-bit and 64-bit environments. Use LongPtr for pointers and handles.
+    Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) _
+       As LongPtr
+    Declare PtrSafe Function GlobalAlloc Lib "kernel32" (ByVal wFlags As LongPtr, _
+       ByVal dwBytes As LongPtr) As LongPtr
+    Declare PtrSafe Function CloseClipboard Lib "User32" () As LongPtr
+    Declare PtrSafe Function OpenClipboard Lib "User32" (ByVal hwnd As LongPtr) _
+       As LongPtr
+    Declare PtrSafe Function EmptyClipboard Lib "User32" () As LongPtr
+    Declare PtrSafe Function lstrcpy Lib "kernel32" (ByVal lpString1 As Any, _
+       ByVal lpString2 As Any) As LongPtr
+    Declare PtrSafe Function SetClipboardData Lib "User32" (ByVal wFormat _
+       As LongPtr, ByVal hMem As LongPtr) As LongPtr
+#Else
+'ara 6.12.14
+    Declare Function GlobalUnlock Lib "kernel32" (ByVal hMem As Long) _
+       As Long
+    Declare Function GlobalLock Lib "kernel32" (ByVal hMem As Long) _
+       As Long
+    Declare Function GlobalAlloc Lib "kernel32" (ByVal wFlags As Long, _
+       ByVal dwBytes As Long) As Long
+    Declare Function CloseClipboard Lib "User32" () As Long
+    Declare Function OpenClipboard Lib "User32" (ByVal hwnd As Long) _
+       As Long
+    Declare Function EmptyClipboard Lib "User32" () As Long
+    Declare Function lstrcpy Lib "kernel32" (ByVal lpString1 As Any, _
+       ByVal lpString2 As Any) As Long
+    Declare Function SetClipboardData Lib "User32" (ByVal wFormat _
+       As Long, ByVal hMem As Long) As Long
+#End If 'ara 6.12.14
+ 
+Public Const GHND = &H42
+Public Const CF_TEXT = 1
+'Public Const MAXSIZE = 4096
+'ara 15.11.14
+'
+Public CurrCellPrevVal As String 'ara 4.11.17
+
+Public Sub CommonCopy(SheetName As String)
+On Error GoTo CommonCopy_EH
+
+'    Dim obj As New DataObject 'ara 15.11.14
+    
+    If Trim(ThisWorkbook.Path) = "" Then 'if file is not saved then give message and show SaveAs dialog box
+        MsgBox "Please save the file and then click on 'Copy' button.", vbOKOnly + vbInformation, "Winman's Saral Tax"
+        Call Workbook_BeforeSave_event(True) 'ara 12.6.12 'Application.Dialogs(xlDialogSaveAs).Show
+    Else
+        Call Workbook_BeforeSave_event(False) 'ara 12.6.12 'ThisWorkbook.Save
+        'ara 15.11.14 s
+'        obj.Clear
+'        obj.SetText "|fffd|XLPATH|fffd|" & ThisWorkbook.Path & "\" & ThisWorkbook.Name & "|fffd|XLPATH|fffd|" & "|fffd|XLSHEET|fffd|" & SheetName & "|fffd|XLSHEET|fffd|"
+'        obj.PutInClipboard
+        Call CheckAndCopy2Clipboard("|fffd|XLPATH|fffd|" & ThisWorkbook.Path & "\" & ThisWorkbook.Name & "|fffd|XLPATH|fffd|" & "|fffd|XLSHEET|fffd|" & SheetName & "|fffd|XLSHEET|fffd|")
+        'ara 15.11.14
+    End If
+    
+'    Set obj = Nothing 'ara 15.11.14
+
+Exit Sub
+CommonCopy_EH:
+MsgBox Err.Description & Space(5) & "CommonCopy"
+End Sub
+
+'ara 12.6.12
+Public Sub WorkBook_HideSheets()
+On Error GoTo WorkBook_HideSheets_EH
+
+Dim iSheet As Worksheet
+
+'if macros are disabled,
+'unhide "Enable Macros" sheet
+'hide all the data entry sheets and help sheet
+
+'uhide "Enable Macros" sheet
+If shInstructionsMacros.Visible <> xlSheetVisible Then shInstructionsMacros.Visible = xlSheetVisible
+
+'hide "Help" sheet
+If shHelp.Visible <> xlSheetHidden Then shHelp.Visible = xlSheetHidden
+
+'hide all data entry sheets
+For Each iSheet In ThisWorkbook.Sheets
+    If InStr(1, iSheet.CodeName, "SHDATA", vbTextCompare) = 1 Then
+        'if iSheet.Cells(1,1).Value = "" then the sheet is not in use in this workbook
+        If Trim(iSheet.Cells(1, 1).value) <> "" Then
+            If iSheet.Visible <> xlSheetHidden Then iSheet.Visible = xlSheetHidden
+        End If
+    End If
+Next iSheet
+
+Exit Sub
+WorkBook_HideSheets_EH:
+MsgBox Err.Description & Space(10) & "WorkBook_HideSheets"
+End Sub
+
+'ara 12.6.12
+Public Sub WorkBook_UnhideSheets()
+On Error GoTo WorkBook_UnhideSheets_EH
+
+Dim iSheet As Worksheet
+'if macros are enabled,
+'unhide all the data entry sheets and help sheet
+'hide "Enable Macros" sheet
+
+'unhide all data entry sheets
+For Each iSheet In ThisWorkbook.Sheets
+    If InStr(1, iSheet.CodeName, "SHDATA", vbTextCompare) = 1 Then
+        'if iSheet.Cells(1,1).Value = "" then the sheet is not in use in this workbook
+        If Trim(iSheet.Cells(1, 1).value) <> "" Then
+            If iSheet.Visible <> xlSheetVisible Then iSheet.Visible = xlSheetVisible
+        End If
+    End If
+Next iSheet
+
+'unhide "Help" sheet
+If shHelp.Visible <> xlSheetVisible Then shHelp.Visible = xlSheetVisible
+
+'hide "Enable Macros" sheet
+If shInstructionsMacros.Visible <> xlSheetHidden Then shInstructionsMacros.Visible = xlSheetHidden
+
+Exit Sub
+WorkBook_UnhideSheets_EH:
+MsgBox Err.Description & Space(10) & "WorkBook_UnhideSheets"
+End Sub
+
+'ara 12.6.12
+Public Sub Workbook_BeforeSave_event(ByVal SaveAsUI As Boolean, Optional Cancel As Boolean)
+On Error GoTo Workbook_BeforeSave_event_EH
+
+Dim tmpSheet As Worksheet
+Dim SaveAsResult As Boolean
+
+Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+If SaveAsUI = True Then
+    If Application.Version >= 12 Then
+        SaveAsResult = Application.Dialogs(xlDialogSaveAs).Show(arg1:=ThisWorkbook.Name, arg2:=l_xlOpenXMLWorkbookMacroEnabled)
+    Else
+        SaveAsResult = Application.Dialogs(xlDialogSaveAs).Show
+    End If
+    If SaveAsResult = False Then
+        Cancel = True
+        Application.ScreenUpdating = True
+        Application.EnableEvents = True
+        Exit Sub
+    End If
+End If
+
+Set tmpSheet = ActiveSheet 'to active the currently activesheet back after hiding and unhiding sheets
+
+Call WorkBook_HideSheets
+
+ThisWorkbook.Save
+
+Call WorkBook_UnhideSheets
+
+'dummy code to make the last user-interface action as unhiding row instead of hiding sheet as in the above procedure WorkBook_UnhideSheets
+'which would have made the active sheet to get hidden on F4 key press after save event or workbook open event
+shInter.Rows(1).Hidden = False
+
+tmpSheet.Activate
+
+Cancel = True
+
+Set tmpSheet = Nothing
+
+ThisWorkbook.Saved = True
+
+Application.EnableEvents = True
+Application.ScreenUpdating = True
+
+Exit Sub
+Workbook_BeforeSave_event_EH:
+Application.EnableEvents = True
+Application.ScreenUpdating = True
+MsgBox Err.Description & Space(5) & "Workbook_BeforeSave_event"
+End Sub
+
+'ara 15.11.14
+Public Sub CheckAndCopy2Clipboard(ByVal copystr As String)
+On Error GoTo CheckAndCopy2Clipboard_EH
+
+Dim strtemp As String
+'ara 6.12.14 s
+#If VBA7 Then
+    Dim hGlobalMemory As LongPtr, lpGlobalMemory As LongPtr
+    Dim hClipMemory As LongPtr, X As LongPtr
+#Else
+'ara 6.12.14
+    Dim hGlobalMemory As Long, lpGlobalMemory As Long
+    Dim hClipMemory As Long, X As Long
+#End If 'ara 6.12.14
+
+Dim newmethod As Boolean
+Dim datobj As DataObject
+
+If Application.Version >= 15 Then 'Excel Version >= 2013
+    newmethod = True
+Else
+    'get OS version
+    'Application.OperatingSystem = "Windows (32-bit) NT 6.02"
+    strtemp = Application.OperatingSystem
+    If InStrRev(strtemp, " ") > 0 Then _
+        strtemp = Mid(strtemp, InStrRev(strtemp, " ") + 1)
+    If IsNumeric(strtemp) = False Then strtemp = "0"
+    If Val(strtemp) >= 6.02 Then newmethod = True 'Windows 8 and above version
+End If
+
+If newmethod = False Then
+    Set datobj = New DataObject
+    datobj.Clear
+    datobj.SetText copystr
+    datobj.PutInClipboard
+    Set datobj = Nothing
+Else
+    'reference:
+    '   http://msdn.microsoft.com/en-us/library/office/ff192913.aspx
+
+
+    ' Allocate moveable global memory.
+    '-------------------------------------------
+    hGlobalMemory = GlobalAlloc(GHND, Len(copystr) + 1)
+    
+    ' Lock the block to get a far pointer
+    ' to this memory.
+    lpGlobalMemory = GlobalLock(hGlobalMemory)
+    
+    ' Copy the string to this global memory.
+    lpGlobalMemory = lstrcpy(lpGlobalMemory, copystr)
+    
+    ' Unlock the memory.
+    If GlobalUnlock(hGlobalMemory) <> 0 Then
+       'MsgBox "Could not unlock memory location. Copy aborted."
+       MsgBox "Could not unlock memory location. Copy aborted." & Space(10) & "CheckAndCopy2Clipboard"
+       GoTo OutOfHere2
+    End If
+    
+    ' Open the Clipboard to copy data to.
+    If OpenClipboard(0&) = 0 Then
+       'MsgBox "Could not open the Clipboard. Copy aborted."
+       MsgBox "Could not open the Clipboard. Copy aborted." & Space(10) & "CheckAndCopy2Clipboard"
+       Set datobj = Nothing
+       Exit Sub
+    End If
+    
+    ' Clear the Clipboard.
+    X = EmptyClipboard()
+    
+    ' Copy the data to the Clipboard.
+    hClipMemory = SetClipboardData(CF_TEXT, hGlobalMemory)
+                 
+OutOfHere2:
+     
+    If CloseClipboard() = 0 Then
+       'MsgBox "Could not close Clipboard."
+        MsgBox "Could not close Clipboard." & Space(10) & "CheckAndCopy2Clipboard"
+    End If
+    
+End If
+
+Exit Sub
+CheckAndCopy2Clipboard_EH:
+MsgBox Err.Description & Space(10) & "CheckAndCopy2Clipboard"
+End Sub
+
+'ara 4.11.17
+Public Sub Worksheet_SelectionChange_Event(Target As Range)
+On Error GoTo Worksheet_SelectionChange_Event_EH
+
+Dim sh1 As Worksheet
+Set sh1 = Target.Parent
+
+CurrCellPrevVal = ""
+If InStr(1, sh1.Cells(1, 10).value, "$%RECONCILE$%", vbTextCompare) > 0 Then
+    If Target.Count = 1 Then
+        If Val(sh1.Cells(1, 3).value) > 2 Then 'start data entry row
+            If Target.Row >= Val(sh1.Cells(1, 3).value) Then
+                CurrCellPrevVal = Target.value
+            End If
+        End If
+    End If
+End If
+
+Exit Sub
+Worksheet_SelectionChange_Event_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange_Event"
+End Sub
+
+'ara 4.11.17
+Public Sub Worksheet_Change_Event(Target As Range)
+On Error GoTo Worksheet_Change_Event_EH
+
+Dim sh1 As Worksheet
+Dim str_tmp As String
+Dim iRow As Range
+Dim OriginInterCol As Integer
+Dim iCol As Integer
+Dim flg1 As Boolean
+
+Set sh1 = Target.Parent
+If InStr(1, sh1.Cells(1, 10).value, "$%RECONCILE$%", vbTextCompare) > 0 Then
+    
+    If Val(sh1.Cells(1, 3).value) > 2 Then
+        If Target.Row >= Val(sh1.Cells(1, 3).value) Then
+            For iCol = 1 To sh1.UsedRange.Column + sh1.UsedRange.Columns.Count - 1
+                If UCase(Trim(sh1.Cells(Val(sh1.Cells(1, 3).value) - 2, iCol).value)) = "ORIGININTER" Then
+                    OriginInterCol = iCol: Exit For
+                End If
+            Next iCol
+            If OriginInterCol > 0 Then
+                str_tmp = Mid(sh1.Cells(1, 10).value, InStr(1, sh1.Cells(1, 10).value, "$%RECONCILE$%", vbTextCompare) + Len("$%RECONCILE$%"))
+                str_tmp = Mid(str_tmp, 1, InStr(1, str_tmp, "$%RECONCILE$%", vbTextCompare) + Len("$%RECONCILE$%") - 1)
+                str_tmp = getArgColVal("OriginForm", str_tmp)
+                
+                For Each iRow In Target.Rows
+                    If sh1.Cells(iRow.Row, OriginInterCol).value = str_tmp Then
+                        flg1 = True: Exit For
+                    End If
+                Next iRow
+                If Target.Count = 1 Then
+                    If Target.value = CurrCellPrevVal Then flg1 = False
+                Else
+                    If Target.Column > OriginInterCol Then flg1 = False
+                End If
+                If flg1 = True Then
+                    'ara 6.11.17 (1) s
+'                    MsgBox "Please note that '" & str_tmp & "' rows will not be taken to the software. " & vbNewLine & "Therefore the changes you have made will be ignored.", vbExclamation
+                    MsgBox "GSTR-" & str_tmp & " row is modified. However, GSTR-" & str_tmp & " rows will not be imported to software. Please make necessary changes in matching Books row."
+                    'ara 6.11.17 (1)
+                End If
+            End If
+        End If
+    End If
+End If
+
+Exit Sub
+Worksheet_Change_Event_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change_Event"
+End Sub
+
+'ara 4.11.17 'from CA-ERP
+Public Function getArgColVal(ByRef key As String, ByVal col As String) As String
+On Error GoTo getArgColVal_eh
+getArgColVal = ""
+If InStr(1, col, "#" & key & "$", vbTextCompare) > 0 Then
+    col = Mid(col, InStr(1, col, "#" & key & "$", vbTextCompare))
+    getArgColVal = midstr("MIDSTR(" & col & ",,$,,|,,0)")
+End If
+
+Exit Function
+getArgColVal_eh:
+MsgBox Err.Description & Space(10) & "getArgColVal"
+End Function
+
+'ara 4.11.17 'from CA-ERP
+''FORMAT: MIDSTR(value,, startstring,, endstring,,startposition)
+''MIDSTR(255599599,,5,,9,,1)
+Public Function midstr(ByVal ipstr As String) As String
+On Error GoTo midstr_EH
+
+Dim startposition As Integer
+Dim value As String
+Dim startstring As String
+Dim endstring As String
+Dim strt As Integer
+Dim lnth As Long 'ara 16.8.10 (error occured for large string) 'Dim lnth As Integer
+Dim SpecialCase As Boolean
+Const seprtor As String = ",,"
+Dim seprtorlenth As Integer
+seprtorlenth = Len(seprtor)
+
+If ipstr = "" Then
+    midstr = ""
+    Exit Function
+End If
+
+'*******************************
+'removing brackets
+ipstr = Mid(ipstr, InStr(1, ipstr, "(") + 1)
+ipstr = Mid(ipstr, 1, Len(ipstr) - 1)
+'*******************************
+
+startposition = Val(Trim(Mid(ipstr, InStrRev(ipstr, seprtor) + seprtorlenth)))
+If startposition = 0 Then SpecialCase = True: startposition = 1
+ipstr = Mid(ipstr, 1, InStrRev(ipstr, seprtor) - 1)
+
+endstring = Trim(Mid(ipstr, InStrRev(ipstr, seprtor) + seprtorlenth))
+ipstr = Mid(ipstr, 1, InStrRev(ipstr, seprtor) - 1)
+
+startstring = Trim(Mid(ipstr, InStrRev(ipstr, seprtor) + seprtorlenth))
+ipstr = Mid(ipstr, 1, InStrRev(ipstr, seprtor) - 1)
+
+value = Trim(ipstr)
+
+If InStr(startposition, value, startstring, vbTextCompare) > 0 Then
+    If SpecialCase = True Then
+        strt = InStr(startposition, value, startstring, vbTextCompare) + Len(startstring)
+        If InStr(strt, value, endstring, vbTextCompare) > 0 Then
+            lnth = InStr(strt, value, endstring, vbTextCompare) - strt
+            midstr = Mid(value, strt, lnth)
+        End If
+    Else
+        strt = InStr(startposition, value, startstring, vbTextCompare)
+        If InStr(strt + Len(startstring), value, endstring, vbTextCompare) > 0 Then
+            lnth = InStr(strt + Len(startstring), value, endstring, vbTextCompare) - strt + Len(endstring)
+            midstr = Mid(value, strt, lnth)
+        End If
+    End If
+End If
+
+Exit Function
+midstr_EH:
+MsgBox Err.Description & Space(10) & "midstr"
+End Function
+
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+'ara 12.6.12
+Private Sub Workbook_Open()
+On Error GoTo Workbook_Open_EH
+
+Dim iSheet As Worksheet
+
+Application.EnableEvents = False
+Application.ScreenUpdating = False
+
+Call WorkBook_UnhideSheets
+
+'dummy code to make the last user-interface action as unhiding row instead of hiding sheet as in the above procedure WorkBook_UnhideSheets
+'which would have made the active sheet to get hidden on F4 key press after save event or workbook open event
+shInter.Rows(1).Hidden = False
+
+'acivate the first data entry sheet when the workbook is opened.
+For Each iSheet In ThisWorkbook.Worksheets
+    If InStr(1, iSheet.CodeName, "SHDATA", vbTextCompare) = 1 Then
+        If iSheet.Visible = xlSheetVisible Then
+            'if iSheet.Cells(1,1).Value = "" then the sheet is not in use in this workbook
+            If Trim(iSheet.Cells(1, 1).value) <> "" Then
+                iSheet.Activate
+                Exit For
+            End If
+        End If
+    End If
+Next iSheet
+
+Application.EnableEvents = True
+Application.ScreenUpdating = True
+
+Exit Sub
+Workbook_Open_EH:
+Application.EnableEvents = True
+Application.ScreenUpdating = True
+MsgBox Err.Description & Space(10) & "Workbook_Open"
+End Sub
+
+'ara 12.6.12
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+On Error GoTo Workbook_BeforeClose_EH
+
+Dim msgRes As Long
+Dim SaveAsResult As Boolean
+
+If ThisWorkbook.Saved = False Then
+    msgRes = MsgBox("Do you want to save the changes you made to '" & ThisWorkbook.Name & "'?", vbExclamation + vbYesNoCancel + vbDefaultButton1)
+    If msgRes = vbYes Then
+        Application.ScreenUpdating = False
+        Application.EnableEvents = False
+        If ThisWorkbook.Path = "" Then
+            If Application.Version >= 12 Then
+                SaveAsResult = Application.Dialogs(xlDialogSaveAs).Show(arg1:=ThisWorkbook.Name, arg2:=l_xlOpenXMLWorkbookMacroEnabled)
+            Else
+                SaveAsResult = Application.Dialogs(xlDialogSaveAs).Show
+            End If
+            If SaveAsResult = False Then
+                Cancel = True
+                Application.ScreenUpdating = True
+                Application.EnableEvents = True
+                Exit Sub
+            End If
+        End If
+        Call WorkBook_HideSheets
+        ThisWorkbook.Save
+        Application.ScreenUpdating = True
+        Application.EnableEvents = True
+    ElseIf msgRes = vbNo Then
+        ThisWorkbook.Saved = True
+    Else
+        Cancel = True
+    End If
+End If
+
+Exit Sub
+Workbook_BeforeClose_EH:
+Application.ScreenUpdating = True
+Application.EnableEvents = True
+MsgBox Err.Description & Space(10) & "Workbook_BeforeClose"
+End Sub
+
+'ara 12.6.12
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+On Error GoTo Workbook_BeforeSave_EH
+
+Call Workbook_BeforeSave_event(SaveAsUI, Cancel)
+
+Exit Sub
+Workbook_BeforeSave_EH:
+MsgBox Err.Description & Space(5) & "Workbook_BeforeSave"
+End Sub
+
+
+Attribute VB_Name = "shData1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+Attribute VB_Name = "shData10"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData11"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData12"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData13"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData14"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData15"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData8"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shData9"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+'
+Public Sub cmdCopy_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdCopy_Click()
+On Error GoTo cmdCopy_Click_EH
+
+Call CommonCopy(Me.Name)
+
+Exit Sub
+cmdCopy_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdCopy_Click", vbCritical
+End Sub
+
+'ara 12.6.12
+Public Sub cmdHelp_Click() 'ara 19.5.15 (1) 'activex control removed, form control added and this macro assigned to it 'Private Sub cmdHelp_Click()
+On Error GoTo cmdHelp_Click_EH
+
+'activate "Help" sheet
+If shHelp.Visible = xlSheetVisible Then shHelp.Activate
+
+Exit Sub
+cmdHelp_Click_EH:
+MsgBox Err.Description & Space(5) & Me.Name & Space(5) & "cmdHelp_Click", vbCritical
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo Worksheet_Change_EH
+
+Call Worksheet_Change_Event(Target)
+
+Exit Sub
+Worksheet_Change_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_Change"
+End Sub
+
+'ara 4.11.17
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+On Error GoTo Worksheet_SelectionChange_EH
+
+Call Worksheet_SelectionChange_Event(Target)
+
+Exit Sub
+Worksheet_SelectionChange_EH:
+MsgBox Err.Description & Space(10) & "Worksheet_SelectionChange"
+End Sub
+
+
+Attribute VB_Name = "shHelp"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shInstructionsMacros"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shInter"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

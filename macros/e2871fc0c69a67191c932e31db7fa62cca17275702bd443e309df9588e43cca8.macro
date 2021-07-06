@@ -1,0 +1,797 @@
+Attribute VB_Name = "COI_CUB_PT"
+' COI_CUB_PT module
+' This module contains Subs/Functions that help us manage CUB files and Pivot Tables with CUB files.
+' It is not aware of GP-isms (like the existing of specific dimension names); for that, see COI_GP_CUB_PT module.
+Sub UpdateConnections()
+    
+    UpdateConnectionsWithMode (False)
+    EnableCalculatedDimensionMembersAllWorksheets
+    
+End Sub
+Sub UpdatePivotTables()
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    Dim updateanswer As String
+    Dim warningmessageanswer As String
+    Dim warningmessage As String
+    Dim oktoupdate As Boolean
+    
+    ' Ask the user if he/she wants to update reports
+    updateanswer = MsgBox("Do you want your reports to re-read their data from the InfoStream?", vbYesNo, "Update data?")
+    ' If yes...
+    If updateanswer = vbYes Then
+        ' Resume even if we can't execute an Update, keep going
+        On Error Resume Next
+        ' Walk through worksheets
+        For Each ws In Application.Worksheets
+            ' MsgBox (ws.Name)
+            ' Check to see if this worksheet has an Update Warning. It will return "" if there's no warning.
+            warningmessage = CheckForUpdateWarning(ws)
+            oktoupdate = False
+            ' If a message is returned, then prompt the user to see if he/she wants to proceed with updating the PTs in this worksheet.
+            If warningmessage = "" Then
+                oktoupdate = True
+            Else
+                ' Pass the message to the user, and see if the user wants to proceed with updating the reports in this worksheet.
+                warningmessageanswer = MsgBox("Worksheet (" + ws.Name + ") says:" + Chr(13) + Chr(13) + warningmessage + Chr(13) + Chr(13) + "Are you sure you want to proceed with updating this worksheet's pivot tables?", vbYesNo, "Update Warning")
+                ' If yes...
+                If warningmessageanswer = vbYes Then
+                    oktoupdate = True
+                Else
+                    oktoupdate = False
+                End If
+            End If
+            
+            ' If we're ok to update, do it
+            If oktoupdate = True Then
+                For Each pt In ws.PivotTables
+                        Application.DisplayStatusBar = True
+                        Application.StatusBar = "Updating [" + ws.Name + "].[" + pt.Name + "] from InfoStream " + GetCubeFileNameFromConnectionString(pt.PivotCache.Connection)
+                        pt.Update
+                        Application.StatusBar = False
+                Next pt
+            End If
+        Next ws
+        
+        Application.StatusBar = False
+        
+    End If
+    
+    BeepMultipleTimes 3, 1
+    
+    
+End Sub
+' This function walks through the 1st 10x10 cells to see if any of them start with "Update Warning:".
+' If it finds such a cell, it returns the warning mesages. Otherwise, it returns ""
+Function CheckForUpdateWarning(ws As Worksheet)
+
+    Dim warningstring As String
+    Dim c As Integer
+    Dim r As Integer
+    
+    CheckForUpdateWarning = ""
+    
+    For c = 1 To 10
+        If CheckForUpdateWarning <> "" Then
+            Exit For
+        End If
+        For r = 1 To 10
+            If InStr(1, ws.Cells(r, c), "Update Warning:") = 1 Then
+                warningstring = ws.Cells(r, c)
+                CheckForUpdateWarning = warningstring
+                Exit For
+            End If
+        Next r
+    Next c
+    
+
+End Function
+Sub EnableCalculatedDimensionMembersAllWorksheets()
+
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    
+    ' Resume even if we can't set the ViewCalculatedMembers option.
+    ' This will happen if there are extraneous non-SSAS pivot tables in the workbook,
+    '   and possibly if there are SSAS pivot tables that have no calc measures.
+    On Error Resume Next
+    For Each ws In Application.Worksheets
+        ' MsgBox (ws.Name)
+        For Each pt In ws.PivotTables
+            EnableCalculatedDimensionMembersOneTable pt
+        Next pt
+    Next ws
+End Sub
+Sub EnableCalculatedDimensionMembersOneTable(pt As PivotTable)
+    On Error Resume Next
+    
+    Application.DisplayStatusBar = True
+    Application.StatusBar = "PivotTable (" + pt.Name + ") Enabling Calculated Members"
+    
+    ' If we can't find the cube file, don't try to update the pivottable properties, because you'll get an error anyway.
+    If CanPTCubeFileBeFound(pt) Then
+        If pt.ViewCalculatedMembers = False Then
+            pt.ViewCalculatedMembers = True
+        End If
+    End If
+
+    Application.StatusBar = False
+
+End Sub
+Function CanPTCubeFileBeFound(pt As PivotTable) As Boolean
+
+    Dim cxString As String
+    
+    cxString = pt.PivotCache.Connection
+    CanPTCubeFileBeFound = CanCxStringCubeFileBeFound(cxString)
+
+End Function
+Function CanCxStringCubeFileBeFound(cxString As String) As Boolean
+    Dim oldCubeFilename As String
+    
+    oldCubeFilename = GetCubeFileNameFromConnectionString(cxString)
+    CanCxStringCubeFileBeFound = DoesFileExist(oldCubeFilename)
+
+End Function
+Function GetCubeFileNameFromConnectionString(cxString As String) As String
+    Dim oldCubeFilename As String
+    Dim cxStringCutPoint1 As Integer
+    Dim cxStringCutPoint2 As Integer
+    cxStringCutPoint1 = InStr(1, cxString, "Data Source=") - 1
+    cxStringCutPoint2 = InStr(cxStringCutPoint1 + 1, cxString, ";")
+    If cxStringCutPoint2 = 0 Then '0 means the string was not found
+        cxStringCutPoint2 = Len(cxString) + 1
+    End If
+    oldCubeFilename = Mid(cxString, cxStringCutPoint1 + 1 + 12, cxStringCutPoint2 - (cxStringCutPoint1 + 1 + 12))
+
+    GetCubeFileNameFromConnectionString = oldCubeFilename
+End Function
+Function CreateNewConnectionStringFromOldWithNewFilename(cxString As String, filename As String) As String
+    Dim cxStringCutPoint1 As Integer
+    Dim cxStringCutPoint2 As Integer
+    Dim cxStringNew As String
+    cxStringCutPoint1 = InStr(1, cxString, "Data Source=") - 1
+    cxStringCutPoint2 = InStr(cxStringCutPoint1 + 1, cxString, ";")
+    If cxStringCutPoint2 = 0 Then '0 means the string was not found
+        cxStringCutPoint2 = Len(cxString) + 1
+    End If
+
+    cxStringNew = Mid(cxString, 1, cxStringCutPoint1)
+    cxStringNew = cxStringNew & "Data Source=" & filename
+    cxStringNew = cxStringNew & Mid(cxString, cxStringCutPoint2)
+
+    CreateNewConnectionStringFromOldWithNewFilename = cxStringNew
+End Function
+' silentmode=true -> only prompts for workbooks that don't have a valid cube file.
+Sub UpdateConnectionsWithMode(silentmode As Boolean)
+    Dim wb As Workbook
+    Dim cx As WorkbookConnection
+    Dim cxString As String
+    Dim cxStringNew As String
+    Dim oldCubeFilename As String
+    Dim cxStringCutPoint1 As Integer
+    Dim cxStringCutPoint2 As Integer
+    Dim DataSourcesPath As String
+    Dim filename As Variant
+    Dim CnxnsFoundCount As Integer
+    
+    ' Assign these when we identify a user-specified replacement that we want to use repeatedly
+    Dim prevCxString As String
+    Dim prevFilename As Variant
+    
+    CnxnsFoundCount = 0
+    
+
+    Set wb = Application.ThisWorkbook
+    
+        'MsgBox ("Workbook: " & wb.Name)
+        For Each cx In wb.Connections
+            'MsgBox ("Connection Name: " & cx.Name)
+            If cx.Type = xlConnectionTypeOLEDB Then
+            
+                CnxnsFoundCount = CnxnsFoundCount + 1
+            
+                cxString = cx.OLEDBConnection.Connection
+                'MsgBox ("Connection Info: " & cxString)
+                'DataSourcesPath = Environ("USERPROFILE") + "\My Documents\My Data Sources"
+                ' GETS the data source directory 'MsgBox (GetAttr(DataSourcesPath))
+                'If GetAttr(DataSourcesPath) And vbDirectory Then
+                '    ChDir DataSourcesPath
+                'End If
+                oldCubeFilename = GetCubeFileNameFromConnectionString(cxString)
+                If (Not CanCxStringCubeFileBeFound(cxString)) Or (Not silentmode) Then
+                    If cxString = prevCxString Then ' If prevCxString = cxString, then let's just reuse the
+                                                    '   replacement values instead of asking the user to re-input it.
+                        filename = prevFilename
+                    Else
+                        If Not CanCxStringCubeFileBeFound(cxString) Then
+                            MsgBox ("The Cube file (" & oldCubeFilename _
+                                & ") could not be found." & Chr(13) & Chr(13) _
+                                & "In the next dialog box, please select the Cube file you would like to use. " _
+                                & Chr(13) & "(If you do not have a cube file, simply click the Cancel button in the next dialog box to use the report in non-interactive mode.)")
+                        Else
+                            MsgBox ("The next dialog box will let you select a new cube file to use in place of " _
+                                & oldCubeFilename & "." & Chr(13) & Chr(13) _
+                                & "Select the new cube file in the next dialog box." & Chr(13) _
+                                & "(If you would like to continue using " _
+                                & oldCubeFilename & ", then click the Cancel button in the next dialog box.)")
+                        End If
+                        filename = Application.GetOpenFilename("Local Cube file (*.cub),*.cub", 1, "Select Cube file")
+                    End If
+                    If filename = False Then
+                        MsgBox ("You did not select a file. No changes will be made.")
+                    Else
+                        'cx.SourceConnectionFile = Filename
+                        cxStringNew = CreateNewConnectionStringFromOldWithNewFilename(cxString, CStr(filename))
+                        cx.OLEDBConnection.Connection = cxStringNew
+                        ' set these to indicate that the user selected a file, and so that we can reuse them
+                        prevCxString = cxString
+                        prevFilename = filename
+                        ' Change the AlwaysUseConnectionFile property, or else it will keep going back to the
+                        '   cnxn file and overriding the .Connection setting.
+                        cx.OLEDBConnection.AlwaysUseConnectionFile = False
+                    End If
+                End If
+                
+                
+            End If
+            
+        Next cx
+    
+    If (CnxnsFoundCount = 0) And (Not silentmode) Then
+        MsgBox ("No connections found for update.")
+    End If
+
+End Sub
+' Turns off the MaintainConnection property on our pivot tables.
+' This appears to allow more than 5 connections to the same CUB file.
+' CAVEAT: It makes it slower each time you manipulate the table, because it needs to re-open the connection each time.
+Sub DisableMaintainConnectionOnPivotCaches()
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    Dim pc As PivotCache
+        
+    On Error Resume Next
+    ' Walk through worksheets
+    For Each ws In Application.Worksheets
+        
+        For Each pt In ws.PivotTables
+            pt.PivotCache.MaintainConnection = False
+        Next pt
+    
+    Next ws
+    
+        
+    
+End Sub
+
+
+
+Attribute VB_Name = "COI_GP_CUB_PT"
+' COI_GP_CUB_PT module
+' This module contains functions that are GP-specific.
+' For example, Subs/Functions that manipulate GP-specific pivot-table filters
+Sub ChangeFiltersMQ_MultifilterAutomaticQuarterCount()
+    ChangeFiltersMQ 0
+End Sub
+Sub ChangeFiltersMQ_MultifilterStatedQuarterCount()
+    Dim numOfQs As Integer
+    
+    numOfQs = CInt(InputBox(Prompt:="Enter the number of quarters you want the multi-period-filtered reports to show." & vbCrLf & "(0 means automatic)", _
+                      Title:="Number of Quarters to show in multi-period reports", Default:=0))
+    If numOfQs < 0 Then
+        numOfQs = 0
+    End If
+    
+    ChangeFiltersMQ numOfQs
+End Sub
+Sub ChangeFiltersMQ(numOfQsForMultiFilterReports As Integer)
+    Dim qormval As Integer
+    Dim fnval As Integer
+    Dim datetext As String
+    Dim qm As String
+    
+    fnval = vbNo
+    If GetYQMfromFileName() <> "" Then
+        fnval = MsgBox("Shall I refresh as " & IIf(Left(GetYQMfromFileName(), 1) = "M", "Monthly", IIf(Left(GetYQMfromFileName(), 1) = "Q", "Quarterly", IIf(Left(GetYQMfromFileName(), 1) = "F", "Federal Year", "XXX"))) & " with start date " & Right(GetYQMfromFileName(), 10) & "?", vbYesNo, "Use date?")
+        If fnval = vbYes Then
+            ChangeYQMDDateFilterWithInputs Right(GetYQMfromFileName(), 10), IIf(Left(GetYQMfromFileName(), 1) = "M", "m", IIf(Left(GetYQMfromFileName(), 1) = "Q", "q", IIf(Left(GetYQMfromFileName(), 1) = "F", "nfampy", "XXX"))), numOfQsForMultiFilterReports
+            Exit Sub
+        End If
+    End If
+    
+    ' If user declined the file-extracted default, then prompt
+    If fnval = vbNo Then
+        qormval = MsgBox("This macro lets you set the [Time].[Year -  Quarter -  Month -  Date] filter on all PivotTables in this Workbook to a Quarter or a Month. Click YES for Quarter, NO for Month.", vbYesNoCancel, "Quarter or Month?")
+        If qormval = vbCancel Then
+            Exit Sub
+        End If
+        
+            If qormval = vbYes Then
+                qm = "q"
+            End If
+            If qormval = vbNo Then
+                qm = "m"
+            End If
+    
+                datetext = InputBox(Prompt:="Enter the date of the beginning of the period that you want to set all of your [Time].[Year -  Quarter -  Month -  Date] filters to. (Use the format YYYY-MM-DD)", _
+                          Title:="Date for filter", Default:=GetPriorPeriodStartDate(qm))
+        
+        
+        
+        ChangeYQMDDateFilterWithInputs datetext, qm, numOfQsForMultiFilterReports
+    End If
+    
+End Sub
+Sub ChangeFiltersNFAMPYear()
+    Dim fnval As Integer
+    Dim datetext As String
+    Dim qm As String
+    
+    fnval = vbNo
+    If GetYQMfromFileName() <> "" Then
+        fnval = MsgBox("Shall I refresh as " & IIf(Left(GetYQMfromFileName(), 1) = "M", "Monthly", IIf(Left(GetYQMfromFileName(), 1) = "Q", "Quarterly", IIf(Left(GetYQMfromFileName(), 1) = "F", "Federal Year", "XXX"))) & " with start date " & Right(GetYQMfromFileName(), 10) & "?", vbYesNo, "Use date?")
+        If fnval = vbYes Then
+            ChangeYQMDDateFilterWithInputs Right(GetYQMfromFileName(), 10), IIf(Left(GetYQMfromFileName(), 1) = "M", "m", IIf(Left(GetYQMfromFileName(), 1) = "Q", "q", IIf(Left(GetYQMfromFileName(), 1) = "F", "nfampy", "XXX"))), numOfQsForMultiFilterReports
+            Exit Sub
+        End If
+    End If
+        
+        
+    ' If user declined the file-extracted default, then prompt
+    If fnval = vbNo Then
+        qm = "nfampy"
+
+            datetext = InputBox(Prompt:="Enter the date of the beginning of the period that you want to set all of your [Time].[NFAMP Year -  Quarter -  Month -  Date] filters to. Reminder: for recurring calcs, you want YYYY-10-01 of the previous CALENDAR year. (Use the format YYYY-MM-DD)", _
+                      Title:="Date for filter", Default:=GetPriorPeriodStartDate(qm))
+    
+    
+    
+        ChangeYQMDDateFilterWithInputs datetext, qm, 0
+    End If
+    
+End Sub
+
+Sub ChangeYQMDDateFilterWithInputs(Optional ByVal datetext As String = "", Optional ByVal qm As String = "", Optional ByVal numOfQsForMultiFilterReports As Integer = 0)
+' datetext: YYYY-MM-DD format, or ""
+' qm: "q" means quarter, "m" means month, "nfampy" means NFAMP Annual
+' numOfQsForMultiFilterReports: <=0 means use as many as are already in the fiter, but adjust dates. >0 means explicitly display this many Qs.
+'
+' Handles normal and NFAMP time hierarchies, monthly and quarterly.
+' If a PivotTable has a YQMD date filter, prompt the user for input, then change it.
+'
+
+'
+    'Dim datetext As String
+    
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    Dim qormtext As String
+    Dim qormNFAMPtext As String
+    Dim ptRefreshed As Boolean
+    Dim y As Integer
+    Dim m As Integer
+    Dim datedate As Date
+    Dim quarterdatedate As Date ' The beginning of datedate''s quarter
+    Dim ApplicationStatusBarMessage As String
+    Dim executeRefresh As Boolean
+    Dim vilArrQL As Integer
+    Dim vilArrQU As Integer
+    Dim vilTargetArr() As Variant
+    
+    ' If we get a useless qm value, we will just exit.
+    If qm <> "m" And qm <> "q" And qm <> "nfampy" Then
+        Exit Sub
+    End If
+    
+    ' Set this to false if you do not want to actually execute the pivottable refresh (like if you are testing logic but do not want to wait for tables to refresh)
+    executeRefresh = True
+    
+    
+    If qm <> "" Then
+        If qm = "q" Then
+            qormtext = "Quarter"
+            qormNFAMPtext = "NFAMP Quarter"
+        End If
+        If qm = "m" Then
+            qormtext = "Month"
+            qormNFAMPtext = "Month"
+        End If
+        If qm = "nfampy" Then
+            qormtext = "Year" ' not useful for NFAMP
+            qormNFAMPtext = "NFAMP Year"
+        End If
+        
+        ' convert datetext to real date
+        datedate = CDate(datetext)
+        ' set y/m values from datedate
+        y = Year(datedate)
+        If qm = "q" Then
+            m = Month(datedate) + 2
+        ElseIf qm = "nfampy" Then ' For NFAMP year, we need to add 11 months, which is effectively what this does
+            y = y + 1
+            m = Month(datedate) - 1
+        Else
+            m = Month(datedate)
+        End If
+        
+        quarterdatedate = CDate(Year(datedate) & "-" & Right("00" & 1 + 3 * ((Month(datedate) - 1) \ 3), 2) & "-01")
+        
+        ' datetext will be "" if the user clicked cancel, so we bypass the rest.
+        If datetext <> "" Then
+            For Each ws In ActiveWorkbook.Worksheets
+                For Each pt In ws.PivotTables
+                    ptRefreshed = False
+                    Application.DisplayStatusBar = True
+                    ApplicationStatusBarMessage = "Updating [" + ws.Name + "].[" + pt.Name + "] from InfoStream " + GetCubeFileNameFromConnectionString(pt.PivotCache.Connection)
+                    
+                    ' Loop through the PageFields - the filters at the top of the report.
+                    For Each pf In pt.PageFields
+                        ' And (ws.Name = "AMP Period Comparisons" Or ws.Name = "Record Counts")
+                        
+                        ' "Normal" AMP reports
+                        If qm <> "nfampy" And pf.Name = "[Time].[Year -  Quarter -  Month -  Date].[Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating Time filter"
+                            pt.PivotFields( _
+                                "[Time].[Year -  Quarter -  Month -  Date].[Year]").CurrentPageName = _
+                                "[Time].[Year -  Quarter -  Month -  Date].[" & qormtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        ' NFAMP reports
+                        If pf.Name = "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time filter"
+                            pt.PivotFields( _
+                                "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                                "[Time].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        ' NFAMP-P reports
+                        If qm <> "nfampy" And pf.Name = "[NFAMP-P End of First Full Quarter of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP-P Time filter"
+                            pt.PivotFields( _
+                                "[NFAMP-P End of First Full Quarter of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                                "[NFAMP-P End of First Full Quarter of Sales].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        ' NFAMP-T reports
+                        If qm <> "nfampy" And pf.Name = "[NFAMP-T 30th Day of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP-T Time filter"
+                            pt.PivotFields( _
+                                "[NFAMP-T 30th Day of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                                "[NFAMP-T 30th Day of Sales].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        
+                        If pf.Name = "[12 Month Filters].[Month].[Month]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating 12mo filter"
+                            pt.PivotFields( _
+                                "[12 Month Filters].[Month].[Month]").CurrentPageName = _
+                                "[12 Month Filters].[Month].&[" & y & "]&[" & m & "]"
+                            ptRefreshed = True
+                        End If
+                        
+                        ' NFAMP-filter on multi-select filters on quarter or month
+                        ' (If it is set to months, we set it back to quarterly-boundaries.)
+                        If qm <> "nfampy" And pf.Name = "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = True And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter"
+                            
+                            ' If numOfQsForMultiFilterReports > 0, use it. Otherwise, count how many periods are in existing report.
+                            If numOfQsForMultiFilterReports > 0 Then
+                                numOfQs = numOfQsForMultiFilterReports
+                            Else
+                                numOfQs = getNumberOfQuartersInMultiSelectNFAMP(pt)
+                            End If
+                            
+                            vilSrcArrQ = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter]").VisibleItemsList
+                            vilArrQL = LBound(vilSrcArrQ)
+                            vilArrQU = vilArrQL + numOfQs - 1
+                            ' NumOfQs should not likely be <= 0, but if it is, then we are just going to skip updating.
+                            If numOfQs > 0 Then
+                                ' Replace items
+                                ReDim vilTargetArr(vilArrQL To vilArrQU)
+                                ' Step through the array, and enter dQates back from the datedate value.
+                                ' While counting quarters [via the getNumberOfQuartersinMultiSelectNFAMP() function] has to count years and convert to quarters,
+                                '   we can seemingly simply set quarters here. (If we were to run getNumberOfQuartersinMultiSelectNFAMP() on the resulting report and the quarters we selected here
+                                '   were to yield a whole year, it would still count after the fact as 1 year + 1 qtr. Peculiar, but it works and makes it easier for us to set here.
+                                For arrPosition = vilArrQU To vilArrQL Step -1
+                                    ' Walks through array and deposits values from the selected quarter backwards
+                                    vilTargetArr(arrPosition) = "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter].&[" & Trim(Format(DateAdd("q", arrPosition - vilArrQU, quarterdatedate), "YYYY-MM-DD")) & "T00:00:00]"
+                                Next arrPosition
+                            End If
+                            
+                            'pt.PivotFields(pf.Name).CubeField.EnableMultiplePageItems = True
+                            
+                            ' Clear year, month filters.
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter - clearing Year"
+                            ClearFilters pt, "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]"
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter - clearing Month"
+                            ClearFilters pt, "[Time].[NFAMP Year -  Quarter -  Month -  Date].[Month]"
+                            
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter - " + CStr(numOfQs) + " quarters"
+                            pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter]").VisibleItemsList = vilTargetArr
+                            'pt.PivotFields( _
+                            '    "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                            '    "[Time].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+
+                        
+                        
+                    Next pf
+                    
+                    ' If no PageField filter was found, loop through PivotFields to look for Time filters that we want to handle.
+                    For Each pf In pt.PivotFields
+                        ' Look for reports with a single quarter filter on the rows or columns.
+                        ' EnableMultiplePageItems does not appear to be a useful thing to look at when looking at row/column filters.
+                        ' one extra condition here: We check to see if ptRefreshed is false. If it is true, we do not want to do anything here because the top-of-report filter [already refreshed when ptRefreshed = True] is probably the one we wanted.
+                        If qm <> "nfampy" And pf.Name = "[Time].[Year -  Quarter -  Month -  Date].[Quarter]" And (pf.Orientation = xlColumnField Or pf.Orientation = xlRowField) And ptRefreshed = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            vilSrcArrQ = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Quarter]").VisibleItemsList
+                            vilSrcArrM = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Month]").VisibleItemsList
+                            vilSrcArrY = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Year]").VisibleItemsList
+                            vilSrcArrD = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Date]").VisibleItemsList
+                            If UBound(vilSrcArrQ) = LBound(vilSrcArrQ) And UBound(vilSrcArrM) = LBound(vilSrcArrM) And UBound(vilSrcArrY) = LBound(vilSrcArrY) And UBound(vilSrcArrD) = LBound(vilSrcArrD) Then
+                                Application.StatusBar = ApplicationStatusBarMessage + " - updating inline filter"
+                                ' When in monthly mode and only the month filter has a value, update that filter
+                                If qm = "m" And vilSrcArrQ(LBound(vilSrcArrQ)) = "" And vilSrcArrM(LBound(vilSrcArrM)) <> "" And vilSrcArrY(LBound(vilSrcArrY)) = "" And vilSrcArrD(LBound(vilSrcArrD)) = "" Then
+                                    ' update month
+                                    ReDim vilTargetArr(LBound(vilSrcArrM) To LBound(vilSrcArrM))
+                                    vilSrcArrM(LBound(vilSrcArrM)) = "[Time].[Year -  Quarter -  Month -  Date].[Month].&[" & Trim(datetext) & "T00:00:00]"
+                                    pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Month]").VisibleItemsList = vilSrcArrM
+                                    ptRefreshed = True
+                                End If
+                                ' When quarterly mode and only the quarter filter has a value, update that filter
+                                If qm = "q" And vilSrcArrQ(LBound(vilSrcArrQ)) <> "" And vilSrcArrM(LBound(vilSrcArrM)) = "" And vilSrcArrY(LBound(vilSrcArrY)) = "" And vilSrcArrD(LBound(vilSrcArrD)) = "" Then
+                                    ' update quarter
+                                    ReDim vilTargetArr(LBound(vilSrcArrQ) To LBound(vilSrcArrQ))
+                                    vilSrcArrM(LBound(vilSrcArrQ)) = "[Time].[Year -  Quarter -  Month -  Date].[Quarter].&[" & Trim(datetext) & "T00:00:00]"
+                                    pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Quarter]").VisibleItemsList = vilSrcArrM
+                                    ptRefreshed = True
+                                End If
+                                
+                            End If
+                        End If
+
+                    Next pf
+                    
+                    ' If no PageField nor PivotField filter was found, then just refresh the PT without updating any filters.
+                    If ptRefreshed = False And executeRefresh = True Then
+                        Application.StatusBar = ApplicationStatusBarMessage + " - refreshing without filter change"
+                        pt.Update
+                        ptRefreshed = True
+                    End If
+                    
+                    Application.StatusBar = False
+                    
+                    ' Allow for other events to be processed after each pivot table is updated
+                    DoEvents
+                
+                Next pt
+            Next ws
+        End If
+    End If
+    Application.StatusBar = False
+    
+    BeepMultipleTimes 3, 1
+
+
+End Sub
+Function getNumberOfQuartersInMultiSelectNFAMP(pt As PivotTable)
+    
+    Dim vilArrML As Integer
+    Dim vilArrMU As Integer
+    Dim vilArrQL As Integer
+    Dim vilArrQU As Integer
+    Dim vilArrYL As Integer
+    Dim vilArrYU As Integer
+    
+    Dim numOfQs As Integer
+    
+    numOfQs = 0
+
+    vilSrcArrM = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[Month]").VisibleItemsList
+    vilSrcArrQ = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter]").VisibleItemsList
+    vilSrcArrY = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").VisibleItemsList
+    vilArrMU = UBound(vilSrcArrM)
+    vilArrML = LBound(vilSrcArrM)
+    vilArrQU = UBound(vilSrcArrQ)
+    vilArrQL = LBound(vilSrcArrQ)
+    vilArrYU = UBound(vilSrcArrY)
+    vilArrYL = LBound(vilSrcArrY)
+    ' VisibleItems list is the list of filtered items.
+    ' When there are useful values in this list, it will either be of length 1 with a non-"" value in the one entry, or it will have >1 entry.
+    ' And we want to create an identically-structured array with new values.
+    
+    ' Why do we count quarters, then years * 4 - and why does that not double-count?
+    ' Because if a whole year is selected, the individual Quarters in those years do not appear in vilSrcA
+    If vilArrQU - vilArrQL >= 0 Then
+        If (vilSrcArrQ(vilArrQL) <> "") Then
+            numOfQs = numOfQs + vilArrQU - vilArrQL + 1
+        End If
+    End If
+    If vilArrYU - vilArrYL >= 0 Then
+        If (vilSrcArrY(vilArrYL) <> "") Then
+            numOfQs = numOfQs + ((vilArrYU - vilArrYL + 1) * 4)
+        End If
+    End If
+    If vilArrMU - vilArrML >= 0 Then
+        If (vilSrcArrM(vilArrML) <> "") Then
+            If (vilArrMU - vilArrML + 1) < 4 Then ' outer IFs imply that there is at least one valid item
+                numOfQs = numOfQs + 1 ' If there are 1-3 months, we will count that as 1 quarter
+            Else
+                numOfQs = numOfQs + 2 ' If there are 4 months, we will count that as 2 quarters.
+            End If ' In theory, there should not be more than 4 months, because there can only be 2 months each flanking the selected years/quarters before the flanking months would get rolled into an already-counted quarter, assuming selections are sequential (which is a fair assumption for our use case of multi-select in GP reports)
+        End If
+    End If
+    
+    getNumberOfQuartersInMultiSelectNFAMP = numOfQs
+
+End Function
+Sub ClearFilters(pt As PivotTable, dimensionName As String)
+    ' If we just set the filter to nothing, it actually executes a query.
+    ' So this function checks first to see if the filter is already set to nothing (i.e. 1-length array with a empty string) so we can avoid unnecessary queries.
+    Dim villArrU As Integer
+    Dim villArrL As Integer
+    
+    vilSrcArr = pt.PivotFields(dimensionName).VisibleItemsList
+    vilArrU = UBound(vilSrcArr)
+    vilArrL = LBound(vilSrcArr)
+    
+    ' When there are useful values in this list, it will either be of length 1 with a non-"" value in the one entry, or it will have >1 entry.
+    ' And we want to create an identically-structured array with new values.
+    If vilArrU - vilArrL >= 0 Then
+        If (vilSrcArr(vilArrL) <> "") Then ' Clear the filter if it is not already clear.
+            pt.PivotFields(dimensionName).VisibleItemsList = Array("")
+        End If
+    End If
+    
+    
+End Sub
+Attribute VB_Name = "COI_General_Utility"
+' COI_General_Utility module
+' This module is for functions here that are truly general in utility - i.e. no Pivot-Table-specific modules, no assumption of existing of CUB file, etc.
+Sub BeepMultipleTimes(numberOfTimes As Integer, numberOfSecondsToPauseBetweenEach As Integer)
+    For i = 1 To numberOfTimes
+        Beep
+        For j = 1 To numberOfSecondsToPauseBetweenEach
+            Application.Wait (Now + TimeValue("0:00:01"))
+        Next j
+        DoEvents
+    Next i
+    
+End Sub
+
+Function DoesFileExist(FilePathAndName As String) As Boolean
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    DoesFileExist = fso.FileExists(FilePathAndName)
+End Function
+Function GetPriorPeriodStartDate(qm As String)
+    ' This function gets the default date to use, based on today''s date.
+    ' Acceptable values for qm: "m" (month), "q" (quarter), "nfampy" (nfamp year)
+    ' This function will return the start date of the previous period type specified in "qm".
+    ' Example: if qm = "m", it will return last month''s start date.
+    ' Example: if "q", it will return last quarter''s start date.
+    ' Example: if "nfampy", it will return last federal-fiscal year start date.
+    If qm = "m" Then
+        GetPriorPeriodStartDate = Format(DateAdd("m", -1, CDate(Year(Now()) & "-" & Right("00" & Month(Now()), 2) & "-01")), "YYYY-MM-DD")
+    End If
+    If qm = "q" Then
+        GetPriorPeriodStartDate = Format(DateAdd("q", -1, CDate(Year(Now()) & "-" & Right("00" & 1 + 3 * ((Month(Now()) - 1) \ 3), 2) & "-01")), "YYYY-MM-DD")
+    End If
+    If qm = "nfampy" Then ' Fiscal year starts 10/1 of previous calendar year
+        If Month(Now()) >= 10 Then ' If we are in Q4, we probably want to run fiscal year that just ended, which starts 10/1 last year.
+            GetPriorPeriodStartDate = Format(CDate(Year(Now()) - 1 & "-10-01"), "YYYY-MM-DD")
+        Else ' If we are not in Q4, we probably want to run fiscal year that ended last 10/1, which started current calendar year minus 2
+            GetPriorPeriodStartDate = Format(CDate(Year(Now()) - 2 & "-10-01"), "YYYY-MM-DD")
+        End If
+    End If
+
+End Function
+Function GetYQMfromFileName() As String
+' Hunts filename andlooks for pattern at end of filename (after "." suffix is stripped)
+' Returns value of the form N##/##/####, where N is a "M","Q",or "F" (federal year) to indicate what kind of period is represented in the filename, and a date.
+' Returns "" if no period-type/date can be parsed.
+    Dim outstr As String
+    outstr = ""
+    workbookNameWithoutExtension = Left(ThisWorkbook.Name, (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1))
+    If Right(workbookNameWithoutExtension, 7) Like "####M##" Then
+        outstr = "M" & Left(Right(workbookNameWithoutExtension, 7), 4) & "-" & Right(workbookNameWithoutExtension, 2) & "-01"
+    End If
+    If Right(workbookNameWithoutExtension, 6) Like "####Q#" Then
+        outstr = "Q" & Left(Right(workbookNameWithoutExtension, 6), 4) & "-" & Format((CInt(Right(workbookNameWithoutExtension, 1)) * 3) - 2, "00") & "-01"
+    End If
+    If workbookNameWithoutExtension Like "*NFAMP*####" Then
+        outstr = "F" & CStr(CInt(Right(workbookNameWithoutExtension, 4)) - 1) & "-10-01"
+    End If
+    
+    GetYQMfromFileName = outstr
+    
+    
+    
+End Function
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+    
+    UpdateConnectionsWithMode (True)
+    EnableCalculatedDimensionMembersAllWorksheets
+    UpdatePivotTables
+    DisableMaintainConnectionOnPivotCaches
+    
+End Sub
+
+Private Sub Workbook_PivotTableOpenConnection(ByVal Target As PivotTable)
+    EnableCalculatedDimensionMembersOneTable Target
+End Sub
+
+
+
+
+' InQuest injected base64 decoded content
+' ]Z+a5
+' ,x*'
+' Z+a"zn
+
+INQUEST-PP=macro

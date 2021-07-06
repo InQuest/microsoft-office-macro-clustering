@@ -1,0 +1,1939 @@
+Attribute VB_Name = "CRC32"
+Option Explicit
+ 
+' Polynom-Tabelle
+Dim bCRC32Init As Boolean
+Dim nCRC32LookUp() As Long
+
+
+' Polynom-Tabelle erstellen
+Public Sub CRC32_Init()
+  
+  ' Falls die LookUp-Tabelle bereits existiert
+  If bCRC32Init Then Exit Sub
+ 
+  Const nPolynom = &HEDB88320
+ 
+  Dim i As Long
+  Dim u As Long
+ 
+  ReDim nCRC32LookUp(255)
+  Dim nCRC32 As Long
+ 
+  For i = 0 To 255
+    nCRC32 = i
+    For u = 0 To 7
+      If (nCRC32 And 1) Then
+        nCRC32 = (((nCRC32 And &HFFFFFFFE) \ 2&) And &H7FFFFFFF) _
+          Xor nPolynom
+      Else
+        nCRC32 = ((nCRC32 And &HFFFFFFFE) \ 2&) And &H7FFFFFFF
+      End If
+    Next u
+    nCRC32LookUp(i) = nCRC32
+  Next i
+  bCRC32Init = True
+End Sub
+
+
+' Der optionale Parameter "nResult" sollte nur von CRC32_File verwendet werden!
+Public Function CRC32(ByRef bytes() As Byte, _
+  Optional ByVal nResult As Long = &HFFFFFFFF) As Long
+ 
+  Dim i As Long
+  Dim Index As Long
+  Dim nSize As Long
+ 
+  'LookUp-Tabelle erstellen...
+  If Not bCRC32Init Then CRC32_Init
+ 
+  nSize = UBound(bytes)
+  For i = 0 To nSize
+    Index = (nResult And &HFF) Xor bytes(i)
+    nResult = (((nResult And &HFFFFFF00) \ &H100) And 16777215) _
+      Xor nCRC32LookUp(Index)
+  Next i
+ 
+  CRC32 = Not (nResult)
+End Function
+
+
+' CRC32-Checksumme einer Datei berechnen
+Public Function CRC32FromFile(ByVal sFile As String) As Long
+  
+  Const BlockSize As Long = 4096
+ 
+  Dim FileSize As Long
+  Dim FilePos As Long
+  Dim BytesToRead As Long
+  Dim nResult As Long
+  Dim bytes() As Byte
+  Dim F As Integer
+ 
+  On Error GoTo ErrHandler
+ 
+  ' Datei bin|fffd|r |fffd|ffnen
+  F = FreeFile
+  Open sFile For Binary Access Read Shared As #F
+ 
+  ' Dateigr|fffd||fffd|e
+  FileSize = LOF(F)
+ 
+  ' Datei blockweise einlesen und verarbeiten
+  nResult = &HFFFFFFFF
+  ReDim bytes(BlockSize - 1)
+  While FilePos < FileSize
+    If FilePos + BlockSize > FileSize Then
+      BytesToRead = FileSize - FilePos
+      ReDim bytes(BytesToRead - 1)
+    Else
+      BytesToRead = BlockSize
+    End If
+ 
+    Get #F, , bytes()
+    nResult = Not (CRC32(bytes, nResult))
+ 
+    FilePos = FilePos + BytesToRead
+  Wend
+  Close #F
+ 
+  CRC32FromFile = Not (nResult)
+  On Error GoTo 0
+  Exit Function
+ 
+ErrHandler:
+  If F > 0 Then Close #F
+  CRC32FromFile = -1
+End Function
+
+
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+  
+  'Suchpfad einstellen, damit bei der Deklaration der Dll kein Pfad angegeben werden muss.
+  '(Dll muss sich im selben Ordner befinden wie die xls-Datei)
+  ChDrive (ThisWorkbook.Path)
+  ChDir (ThisWorkbook.Path)
+  
+  'Blattschutz f|fffd|r "Database" aktivieren
+  Worksheets("Database").Protect WriteProtectPw, True, True
+  
+  'Erster Datensatz von Database (falls vorhanden) lesen und in UserForm abf|fffd|llen
+  If Worksheets("Database").Cells(Rows.Count, 1).End(xlUp).Row >= FirstRowData Then
+  
+    ActRowReadData = FirstRowData
+    Call UserForm.ShowDatabaseDataInUserform(ActRowReadData)
+    UserForm.lblDbActDatabaseEntryNr.Caption = ActRowReadData - 1
+    
+    If Worksheets("Database").Cells(Rows.Count, 1).End(xlUp).Row > FirstRowData Then
+      UserForm.btnFirst.Enabled = False
+      UserForm.btnNext.Enabled = True
+      UserForm.btnPrevious.Enabled = False
+      UserForm.btnLast.Enabled = True
+    End If
+    
+  End If
+  
+  'UserForm-Titelzeile gem|fffd|ss dem Dateinamen setzen
+  UserForm.Caption = ActiveWorkbook.Name
+  
+  'UserForm anzeigen
+  UserForm.Show
+  
+End Sub
+
+
+Attribute VB_Name = "Main"
+Option Explicit
+
+Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+ 
+ 
+'--------------------------------------------------------------------------
+'Hauptschleife: Daten zyklisch von ComPort lesen und auswerten
+'--------------------------------------------------------------------------
+Public Sub MainLoop()
+
+    Do While bolMainLoopEnable
+      Call ReadData
+      Warten (1000)
+    Loop
+
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Daten von ComPort oder PseudoComPort(USB) lesen und auswerten
+'--------------------------------------------------------------------------
+Public Function ReadData()
+
+    Dim Result As Long
+    Dim lngLastRowWithData As Long
+    Dim xsdPathAndFile As String
+  
+    'Name und Pfad von Xml-Schema
+    xsdPathAndFile = ActiveWorkbook.Path & "\" & XsdSchemaName
+
+    'Daten von ComPort lesen und XML-Telegramm extrahieren
+    Result = LabMasterCom.ReadComportAndExtractTelegram(True)
+    
+    'XML-Telegramm in XMLDom-Dokument laden
+    If Result = 0 Then
+      Result = LabMasterXml.LoadXmlStringToMSXmlDom(LabMasterCom.XMLTelegramString, xsdPathAndFile, True)
+    ElseIf Result = -1 Then
+      UserForm.ListBox1_AddItem_WithScroll ("Attention: The received XML-Telegram was invalid!")
+      Exit Function
+    Else
+      Exit Function
+    End If
+    
+    'Elemente vom MSXMLDom-Dokument in LabMasterXml-Datenstruktur abf|fffd|llen
+    If Result = 0 Then
+      Result = LabMasterXml.LoadXmlElementsToDataStruct(True)
+    Else
+      UserForm.ListBox1_AddItem_WithScroll ("Attention: Error while validating the XML-Data!")
+      Exit Function
+    End If
+    
+    'XML-Daten in Userform und Worksheet |fffd|bertragen
+    If Result = 0 Then
+      Call UserForm.ShowLastRecDataInUserForm
+      Worksheets("Database").Unprotect WriteProtectPw  'Blattschutz f|fffd|r "Database" deaktivieren
+      lngLastRowWithData = Worksheets("Database").Cells(Rows.Count, 1).End(xlUp).Row
+      Call UserForm.WriteLastRecDataToDatabase(lngLastRowWithData + 1)
+      Worksheets("Database").Protect WriteProtectPw, True, True  'Blattschutz f|fffd|r "Database" aktivieren
+      UserForm.lblSavedInDatabaseEntryNr.Caption = lngLastRowWithData
+      UserForm.ListBox1_AddItem_WithScroll ("XML-Data saved in entry nr.: " & lngLastRowWithData)
+    Else
+      Exit Function
+    End If
+    
+    'Beim ersten Datensatz die Daten in UserForm (Register "DatabaseData") abf|fffd|llen
+    If lngLastRowWithData + 1 = FirstRowData Then
+      ActRowReadData = FirstRowData
+      Call UserForm.ShowDatabaseDataInUserform(ActRowReadData)
+      UserForm.lblDbActDatabaseEntryNr.Caption = ActRowReadData - 1
+    End If
+    
+    'Beim zweiten Datensatz die die Buttons freischalten
+    If lngLastRowWithData + 1 = FirstRowData + 1 Then
+      UserForm.btnFirst.Enabled = False
+      UserForm.btnNext.Enabled = True
+      UserForm.btnPrevious.Enabled = False
+      UserForm.btnLast.Enabled = True
+    End If
+    
+    'Fokus auf btnOpenCloseCom bzw. OpenCloseUSBDevice
+    If LabMasterCom.ComPortNr = LabMasterCom.PseudoComPortNr Then
+      UserForm.btnOpenCloseUSBDevice.SetFocus
+    Else
+      UserForm.btnOpenCloseCom.SetFocus
+    End If
+    
+    'Excel-Workbook speichern (ohne R|fffd|ckfrage)
+    Application.DisplayAlerts = False
+    ActiveWorkbook.Save
+    Application.DisplayAlerts = True
+    
+End Function
+
+
+'--------------------------------------------------------------------------
+'Hilfsfunktion f|fffd|r die Hauptschleife
+'--------------------------------------------------------------------------
+Private Sub Warten(ByVal ms As Double)
+ 
+    Dim i As Double
+    Dim Ende As Double
+    
+    Ende = ms / 100
+    
+    Do While i < Ende
+       Sleep 100
+       DoEvents
+       i = i + 1
+    Loop
+ 
+End Sub
+Attribute VB_Name = "Publics"
+Option Explicit
+
+'Allgemeine Objekte erzeugen und initialisieren
+Public LabMasterCom As New classLabMasterCom
+Public LabMasterXml As New classLabMasterXML
+
+'Schreibschutz f|fffd|r Worksheet "Database"
+Public Const WriteProtectPw As String = "novasina"
+
+'XsdSchemaName
+Public Const XsdSchemaName As String = "XmlLimsSchema V1.50.xsd"
+
+'Statusvariable
+Public bolMainLoopEnable As Boolean
+
+'Allgemeine Konstanten/Variablen f|fffd|r den Bezug zum Tabellenblatt "Database"
+Public Const FirstRowData As Long = 2
+Public ActRowReadData As Long
+
+Public Const ColumnEntryNr As Integer = 1
+Public Const ColumnUser As Integer = 2
+Public Const ColumnLab As Integer = 3
+Public Const ColumnProduct As Integer = 4
+Public Const ColumnBatch As Integer = 5
+Public Const ColumnNr As Integer = 6
+Public Const ColumnStabMode As Integer = 7
+Public Const ColumnKind As Integer = 8
+Public Const ColumnTimeStamp As Integer = 9
+Public Const ColumnDuration As Integer = 10
+Public Const ColumnTemperature As Integer = 11
+Public Const ColumnAw As Integer = 12
+Public Const ColumnInstrument As Integer = 13
+Public Const ColumnMasterFw As Integer = 14
+Public Const ColumnChamber As Integer = 15
+Public Const ColumnChamberSnr As Integer = 16
+Public Const ColumnChamberFw As Integer = 17
+Public Const ColumnHumSens As Integer = 18
+Public Const ColumnHumSensSnr As Integer = 19
+Public Const ColumnHumSensFw As Integer = 20
+Public Const ColumnIrSensFw As Integer = 21
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "UserForm"
+Attribute VB_Base = "0{827D97F0-2EC4-46D1-8DF3-96B289D059BA}{56C904CA-3C0F-4A51-B548-717E65EBD3A8}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+
+'--------------------------------------------------------------------------
+'AddItem To ListBox mit automatischem Scrollen
+'--------------------------------------------------------------------------
+Public Sub ListBox1_AddItem_WithScroll(ByVal ItemText As String)
+
+    ListBox1.AddItem ItemText
+    ListBox1.ListIndex = UserForm.ListBox1.ListCount - 1
+    ListBox1.Selected(UserForm.ListBox1.ListIndex) = False
+    
+End Sub
+
+
+'--------------------------------------------------------------------------
+'ComPort-Combo-Boxen mit verf|fffd|gbaren ComPorts f|fffd|llen
+'--------------------------------------------------------------------------
+Public Function FillAviableComPortsInComboBox(ByRef cB As ComboBox, Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim i As Integer
+    
+    If cB.Enabled Then
+    
+      'Combo-Box leeren
+      cB.Clear
+    
+      'Combo-Box mit verf|fffd|gbaren ComPorts f|fffd|llen
+      For i = 1 To LabMasterCom.MaxComPortNr
+        If LabMasterCom.AviableComPort(i) <> 0 Then
+          cB.AddItem LabMasterCom.AviableComPort(i)
+        End If
+        If i > 1 And LabMasterCom.AviableComPort(i) = 0 Then Exit For
+      Next i
+    
+      'Kein Element selektieren
+      cB.ListIndex = -1
+      
+      FillAviableComPortsInComboBox = 0
+    
+    Else
+    
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The ComboBox is disabled!")
+      FillAviableComPortsInComboBox = 1
+        
+    End If
+  
+End Function
+
+
+'--------------------------------------------------------------------------
+'NeoSN-Combo-Boxen mit verf|fffd|gbaren Neo-Serienummern f|fffd|llen
+'--------------------------------------------------------------------------
+Public Function FillAviableNeoSNInComboBox(ByRef cB As ComboBox, Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim Result As Long
+    Dim i As Integer
+    Dim NeoSerNumList() As String
+
+    If cB.Enabled Then
+
+      'Combo-Box leeren
+      cB.Clear
+      
+      'Pr|fffd|fen, ob NeoSerNumPathList vorhanden ist
+      NeoSerNumList = LabMasterCom.NeoDevSerNumList
+      On Error Resume Next
+      Result = UBound(NeoSerNumList)
+      If CBool(Err.Number <> 0) Then
+        FillAviableNeoSNInComboBox = 0
+        Exit Function
+      End If
+
+      'Die Serienummern von den Neo's in die ComboBox abf|fffd|llen
+      For i = 0 To UBound(NeoSerNumList)
+        cB.AddItem NeoSerNumList(i)
+      Next i
+
+      'Kein Element selektieren
+      cB.ListIndex = -1
+
+      FillAviableNeoSNInComboBox = 0
+
+    Else
+
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The ComboBox is disabled!")
+      FillAviableNeoSNInComboBox = 1
+
+    End If
+  
+End Function
+
+
+'--------------------------------------------------------------------------
+'ComboBox "ComPorts": Bei |fffd|nderung des Inhalts Fokus auf btnOpenCloseCom
+'--------------------------------------------------------------------------
+Private Sub CobComPort_Change()
+    UserForm.btnOpenCloseCom.SetFocus
+End Sub
+
+
+'--------------------------------------------------------------------------
+'ComboBox "NeoSN": Bei |fffd|nderung des Inhalts Fokus auf btnOpenCloseUSBDevice
+'--------------------------------------------------------------------------
+Private Sub cobNeoSN_Change()
+    UserForm.btnOpenCloseUSBDevice.SetFocus
+End Sub
+
+
+'--------------------------------------------------------------------------
+'ComboBox "ComPorts" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub cobComPort_Enter()
+    Application.Cursor = xlWait  'Cursor Sanduhr
+    Call LabMasterCom.GetAvailableComPorts
+    Call FillAviableComPortsInComboBox(CobComPort)
+    Application.Cursor = xlDefault
+End Sub
+
+
+'--------------------------------------------------------------------------
+'ComboBox "NeoSN" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub cobNeoSN_Enter()
+    Application.Cursor = xlWait  'Cursor Sanduhr
+    Call LabMasterCom.GetNeoUSBDevices
+    Call FillAviableNeoSNInComboBox(cobNeoSN)
+    Application.Cursor = xlDefault
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Button "First" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub btnFirst_Click()
+
+  If Worksheets("Database").Cells(Rows.Count, 1).End(xlUp).Row >= FirstRowData Then
+
+    ActRowReadData = FirstRowData
+    
+    Call UserForm.ShowDatabaseDataInUserform(ActRowReadData)
+    UserForm.lblDbActDatabaseEntryNr.Caption = ActRowReadData - 1
+    
+    UserForm.btnFirst.Enabled = False
+    UserForm.btnNext.Enabled = True
+    UserForm.btnPrevious.Enabled = False
+    UserForm.btnLast.Enabled = True
+    
+  End If
+    
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Button "Last" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub btnLast_Click()
+
+    ActRowReadData = Worksheets("Database").Cells(Rows.Count, 1).End(xlUp).Row
+  
+    Call UserForm.ShowDatabaseDataInUserform(ActRowReadData)
+    UserForm.lblDbActDatabaseEntryNr.Caption = ActRowReadData - 1
+    
+    UserForm.btnFirst.Enabled = True
+    UserForm.btnNext.Enabled = False
+    UserForm.btnPrevious.Enabled = True
+    UserForm.btnLast.Enabled = False
+
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Button "Previous" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub btnPrevious_Click()
+
+    ActRowReadData = ActRowReadData - 1
+  
+    Call UserForm.ShowDatabaseDataInUserform(ActRowReadData)
+    UserForm.lblDbActDatabaseEntryNr.Caption = ActRowReadData - 1
+    
+    UserForm.btnFirst.Enabled = True
+    UserForm.btnNext.Enabled = True
+    UserForm.btnPrevious.Enabled = True
+    UserForm.btnLast.Enabled = True
+    
+    If ActRowReadData = FirstRowData Then
+      UserForm.btnFirst.Enabled = False
+      UserForm.btnPrevious.Enabled = False
+    End If
+    
+    If ActRowReadData = Worksheets("Database").Cells(Rows.Count, 1).End(xlUp).Row Then
+      UserForm.btnNext.Enabled = False
+      UserForm.btnLast.Enabled = False
+    End If
+         
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Button "Next" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub btnNext_Click()
+
+    ActRowReadData = ActRowReadData + 1
+  
+    Call UserForm.ShowDatabaseDataInUserform(ActRowReadData)
+    UserForm.lblDbActDatabaseEntryNr.Caption = ActRowReadData - 1
+    
+    UserForm.btnFirst.Enabled = True
+    UserForm.btnNext.Enabled = True
+    UserForm.btnPrevious.Enabled = True
+    UserForm.btnLast.Enabled = True
+    
+    If ActRowReadData = FirstRowData Then
+      UserForm.btnFirst.Enabled = False
+      UserForm.btnPrevious.Enabled = False
+    End If
+    
+    If ActRowReadData = Worksheets("Database").Cells(Rows.Count, 1).End(xlUp).Row Then
+      UserForm.btnNext.Enabled = False
+      UserForm.btnLast.Enabled = False
+    End If
+
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Button "Open/Close Com Port" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub btnOpenCloseCom_Click()
+    
+  Dim Result As Long
+  
+  If Not LabMasterCom.ComPortIsOpen Then
+    
+    'ComPort |fffd|ffnen
+    If CobComPort.Text = "" Then
+      Exit Sub
+    Else
+      Result = LabMasterCom.OpenCom(CobComPort.Value, True)
+      If Result <> 0 Then Exit Sub
+    End If
+    
+    'RecEventTimer ausschalten
+    Call LabMasterCom.DisableRecEventTimer(False)
+        
+    'Button Text anpassen
+    btnOpenCloseCom.Caption = "Close Com Port"
+        
+    'Button gr|fffd|n einf|fffd|rben
+    btnOpenCloseCom.BackColor = RGB(0, 255, 0)
+    
+    'Button & ComboBoxen sperren
+    btnOpenCloseUSBDevice.Enabled = False
+    CobComPort.Enabled = False
+    cobNeoSN.Enabled = False
+    
+    'MainLoop starten
+    bolMainLoopEnable = True
+    Call MainLoop
+        
+  Else
+    
+    'Empfangsbuffer l|fffd|schen
+    Result = LabMasterCom.ClearReceiveBuffer
+  
+    'ComPort schliessen
+    Result = LabMasterCom.CloseCom(True)
+    If Result <> 0 Then Exit Sub
+    
+    'Button Text anpassen
+    btnOpenCloseCom.Caption = "Open Com Port"
+        
+    'Button grau einf|fffd|rben
+    btnOpenCloseCom.BackColor = &H8000000F
+    
+    'Button & ComboBoxen freigeben
+    btnOpenCloseUSBDevice.Enabled = True
+    CobComPort.Enabled = True
+    cobNeoSN.Enabled = True
+    
+    'MainLoop beenden
+    bolMainLoopEnable = False
+  
+  End If
+  
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Button "Open/Close USB Device" wurde gedr|fffd|ckt
+'--------------------------------------------------------------------------
+Private Sub btnOpenCloseUSBDevice_Click()
+ 
+  Dim Result As Long
+  
+  If Not LabMasterCom.ComPortIsOpen Then
+    
+    'USB-Device |fffd|ffnen
+    If cobNeoSN.Text = "" Then
+      Exit Sub
+    Else
+      Result = LabMasterCom.OpenUSBDev(cobNeoSN.ListIndex, True)
+      If Result <> 0 Then Exit Sub
+    End If
+    
+    'RecEventTimer ausschalten
+    Call LabMasterCom.DisableRecEventTimer(False)
+        
+    'Button Text anpassen
+    btnOpenCloseUSBDevice.Caption = "Close USB Device"
+        
+    'Button gr|fffd|n einf|fffd|rben
+    btnOpenCloseUSBDevice.BackColor = RGB(0, 255, 0)
+    
+    'Button & ComboBoxen sperren
+    btnOpenCloseCom.Enabled = False
+    cobNeoSN.Enabled = False
+    CobComPort.Enabled = False
+    
+    'MainLoop starten
+    bolMainLoopEnable = True
+    Call MainLoop
+        
+  Else
+    
+    'Empfangsbuffer l|fffd|schen
+    Result = LabMasterCom.ClearReceiveBuffer
+    
+    'USB-Device schliessen
+    Result = LabMasterCom.CloseUSBDev
+    If Result <> 0 Then Exit Sub
+    
+    'Button Text anpassen
+    btnOpenCloseUSBDevice.Caption = "Open USB Device"
+        
+    'Button grau einf|fffd|rben
+    btnOpenCloseUSBDevice.BackColor = &H8000000F
+    
+    'Button & ComboBoxen freigeben
+    btnOpenCloseCom.Enabled = True
+    cobNeoSN.Enabled = True
+    CobComPort.Enabled = True
+    
+    'MainLoop beenden
+    bolMainLoopEnable = False
+  
+  End If
+  
+End Sub
+
+
+'--------------------------------------------------------------------------
+'Zuletzt empfangene XML-Daten in UserForm abf|fffd|llen
+'--------------------------------------------------------------------------
+Public Sub ShowLastRecDataInUserForm()
+
+    UserForm.lblInstrument.Caption = LabMasterXml.Instrument
+    UserForm.lblMasterFw.Caption = LabMasterXml.MasterFw
+    UserForm.lblChamber.Caption = LabMasterXml.Chamber
+    UserForm.lblChamberSnr.Caption = LabMasterXml.ChamberSnr
+    UserForm.lblChamberFw.Caption = LabMasterXml.ChamberFw
+    UserForm.lblHumSens.Caption = LabMasterXml.HumSens
+    UserForm.lblHumSensSnr.Caption = LabMasterXml.HumSensSnr
+    UserForm.lblHumSensFw.Caption = LabMasterXml.HumSensFw
+    UserForm.lblIrSensFw.Caption = LabMasterXml.IrSensFw
+    UserForm.lblUser.Caption = LabMasterXml.User
+    UserForm.lblLab.Caption = LabMasterXml.Lab
+    UserForm.lblProduct.Caption = LabMasterXml.Product
+    UserForm.lblBatch.Caption = LabMasterXml.Batch
+    UserForm.lblNr.Caption = Format(LabMasterXml.Nr, "0")
+    UserForm.lblStabMode.Caption = LabMasterXml.StabMode
+    UserForm.lblKind.Caption = LabMasterXml.Kind
+    UserForm.lblTimeStamp.Caption = LabMasterXml.TimeStamp
+    UserForm.lblDuration.Caption = Format(LabMasterXml.Duration, "0")
+    UserForm.lblTemperature.Caption = Format(LabMasterXml.Temperature, "0.00")
+    UserForm.lblAw.Caption = Format(LabMasterXml.Aw, "0.0000")
+
+End Sub
+
+
+
+'--------------------------------------------------------------------------
+'XML-Daten von Worksheet in UserForm abf|fffd|llen
+'--------------------------------------------------------------------------
+Public Sub ShowDatabaseDataInUserform(ByVal Row As Long)
+
+    UserForm.lblDbInstrument.Caption = Worksheets("Database").Cells(Row, ColumnInstrument).Value
+    UserForm.lblDbMasterFw.Caption = Worksheets("Database").Cells(Row, ColumnMasterFw).Value
+    UserForm.lblDbChamber.Caption = Worksheets("Database").Cells(Row, ColumnChamber).Value
+    UserForm.lblDbChamberSnr.Caption = Worksheets("Database").Cells(Row, ColumnChamberSnr).Value
+    UserForm.lblDbChamberFw.Caption = Worksheets("Database").Cells(Row, ColumnChamberFw).Value
+    UserForm.lblDbHumSens.Caption = Worksheets("Database").Cells(Row, ColumnHumSens).Value
+    UserForm.lblDbHumSensSnr.Caption = Worksheets("Database").Cells(Row, ColumnHumSensSnr).Value
+    UserForm.lblDbHumSensFw.Caption = Worksheets("Database").Cells(Row, ColumnHumSensFw).Value
+    UserForm.lblDbIrSensFw.Caption = Worksheets("Database").Cells(Row, ColumnIrSensFw).Value
+    UserForm.lblDbUser.Caption = Worksheets("Database").Cells(Row, ColumnUser).Value
+    UserForm.lblDbLab.Caption = Worksheets("Database").Cells(Row, ColumnLab).Value
+    UserForm.lblDbProduct.Caption = Worksheets("Database").Cells(Row, ColumnProduct).Value
+    UserForm.lblDbBatch.Caption = Worksheets("Database").Cells(Row, ColumnBatch).Value
+    UserForm.lblDbNr.Caption = Format(Worksheets("Database").Cells(Row, ColumnNr).Value, "0")
+    UserForm.lblDbStabMode.Caption = Worksheets("Database").Cells(Row, ColumnStabMode).Value
+    UserForm.lblDbKind.Caption = Worksheets("Database").Cells(Row, ColumnKind).Value
+    UserForm.lblDbTimeStamp.Caption = Worksheets("Database").Cells(Row, ColumnTimeStamp).Value
+    UserForm.lblDbDuration.Caption = Format(Worksheets("Database").Cells(Row, ColumnDuration).Value, "0")
+    UserForm.lblDbTemperature.Caption = Format(Worksheets("Database").Cells(Row, ColumnTemperature).Value, "0.00")
+    UserForm.lblDbAw.Caption = Format(Worksheets("Database").Cells(Row, ColumnAw).Value, "0.0000")
+
+End Sub
+
+
+
+'--------------------------------------------------------------------------
+'Zuletzt empfangene XML-Daten in Worksheet abf|fffd|llen
+'--------------------------------------------------------------------------
+Public Sub WriteLastRecDataToDatabase(ByVal Row As Long)
+
+    Worksheets("Database").Cells(Row, ColumnEntryNr).Value = Row - 1
+    Worksheets("Database").Cells(Row, ColumnInstrument).Value = LabMasterXml.Instrument
+    Worksheets("Database").Cells(Row, ColumnMasterFw).Value = LabMasterXml.MasterFw
+    Worksheets("Database").Cells(Row, ColumnChamber).Value = LabMasterXml.Chamber
+    Worksheets("Database").Cells(Row, ColumnChamberSnr).Value = LabMasterXml.ChamberSnr
+    Worksheets("Database").Cells(Row, ColumnChamberFw).Value = LabMasterXml.ChamberFw
+    Worksheets("Database").Cells(Row, ColumnHumSens).Value = LabMasterXml.HumSens
+    Worksheets("Database").Cells(Row, ColumnHumSensSnr).Value = LabMasterXml.HumSensSnr
+    Worksheets("Database").Cells(Row, ColumnHumSensFw).Value = LabMasterXml.HumSensFw
+    Worksheets("Database").Cells(Row, ColumnIrSensFw).Value = LabMasterXml.IrSensFw
+    Worksheets("Database").Cells(Row, ColumnUser).Value = LabMasterXml.User
+    Worksheets("Database").Cells(Row, ColumnLab).Value = LabMasterXml.Lab
+    Worksheets("Database").Cells(Row, ColumnProduct).Value = LabMasterXml.Product
+    Worksheets("Database").Cells(Row, ColumnBatch).Value = LabMasterXml.Batch
+    Worksheets("Database").Cells(Row, ColumnNr).Value = Format(LabMasterXml.Nr, "0")
+    Worksheets("Database").Cells(Row, ColumnStabMode).Value = LabMasterXml.StabMode
+    Worksheets("Database").Cells(Row, ColumnKind).Value = LabMasterXml.Kind
+    Worksheets("Database").Cells(Row, ColumnTimeStamp).Value = LabMasterXml.TimeStamp
+    Worksheets("Database").Cells(Row, ColumnDuration).Value = Format(LabMasterXml.Duration, "0")
+    Worksheets("Database").Cells(Row, ColumnTemperature).Value = Format(LabMasterXml.Temperature, "0.00")
+    Worksheets("Database").Cells(Row, ColumnAw).Value = Format(LabMasterXml.Aw, "0.0000")
+
+End Sub
+
+
+'********************************************************************************************
+'*** Aktionen beim Schliessen des UserForms *************************************************
+'********************************************************************************************
+Private Sub UserForm_Terminate()
+  'ComPort schliessen
+  If LabMasterCom.ComPortIsOpen Then Call LabMasterCom.CloseCom
+End Sub
+
+
+'********************************************************************************************
+'*** Schliessen des UserForm mit dem "x" verhindern *****************************************
+'********************************************************************************************
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = vbFormControlMenu Then Cancel = True
+End Sub
+
+Attribute VB_Name = "classLabMasterCom"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+'******************************************************************************
+'Deklaration von "kernel32" ***************************************************
+'******************************************************************************
+Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (pDest As Any, pSrc As Any, ByVal ByteLen As Long)
+
+
+'******************************************************************************
+'Deklaration von "NovaxComDll.dll" ********************************************
+'******************************************************************************
+'---------------------------------------------------------------------------------------------------------------------------------
+'function IsComAviable
+Private Declare Function NovaxIsComAvailable Lib "NovaxComdll" Alias "IsComAvailable" _
+(ByVal comport As Long) As Byte
+'     (comport : s32)   : u8;
+'---------------------------------------------------------------------------------------------------------------------------------
+'function OpenComEx             // Makes a none standard connection to Instrument
+Private Declare Function NovaxOpenComEx Lib "NovaxComdll" Alias "OpenComEx" _
+(ByVal comport As Long, ByVal maxevent As Long, ByVal maxeventdata As Long, ByVal Baudrate As Long, ByVal rxqueuesize As Long, ByVal nibblemode As Byte) As Long
+'     (comport : s32;         maxevent : s32;         maxeventdata : s32;         baudrate : s32;         rxqueuesize: u32;          nibblemode : bool ) : s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function CloseCom              // Closes connection to Instrument
+Private Declare Function NovaxCloseCom Lib "NovaxComdll" Alias "CloseCom" _
+(ByVal comport As Long) As Long
+'     (comport : s32)   : s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function GetDevicePathList         // Liste aller vorhandenen USB Ger|fffd|te ermitteln
+Private Declare Function NovaxGetDevicePathList Lib "NovaxComdll" Alias "GetDevicePathListGuidByPtr" _
+(ByRef classGuid As T_GUID, ByRef PpathList As T_String_2048, ByRef PlistSize As Long) As Long
+'     (classGuid: TGUID;          PpathList: T_u8Ptr;               PlistSize: T_u32Ptr): s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function OpenUSBDevice             // DeviceHandle von USB Ger|fffd|t erzeugen
+Private Declare Function NovaxOpenUSBDevice Lib "NovaxComdll" Alias "OpenUSBDevice" _
+(ByRef PdevicePath As T_String_128, ByRef hDev As Long) As Long
+'     (PdevicePath: PAnsiChar;        var hDev: THandle):  s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function USBInitialize             // WinUSB Handle erzeugen
+Private Declare Function NovaxUSBInitialize Lib "NovaxComdll" Alias "USBInitialize" _
+(ByVal hDev As Long, ByRef hIntfc As Long) As Long
+'     (hDev: THandle;  var hIntfc: THandle):  s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function InitializeDevice          // WinUSB NovaProt Device erzeugen
+Private Declare Function NovaxInitializeDevice Lib "NovaxComdll" Alias "InitializeDevice" _
+(ByVal hDev As Long, ByVal hIntfc As Long, ByRef pseudocom As Long, ByVal maxevent As Long, ByVal maxeventdata As Long, ByRef PdevicePath As T_String_128, ByVal length As Long) As Long
+'     (hDev: THandle;      hIntfc: THandle;  var pseudocom : s32;         maxevent : s32;         maxeventdata : s32;         PdevicePath: T_u8Ptr;              length: Cardinal): s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function CloseUSBDevice            //USB Ger|fffd|t schliesen
+Private Declare Function NovaxCloseUSBDevice Lib "NovaxComdll" Alias "CloseUSBDevice" _
+(ByVal pseudocom As Long) As Long
+'     (pseudocom: s32)     : s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function GetSerNumFromDevicePath   // Serienummer aus Devicepath extrahieren
+Private Declare Function NovaxGetSerNumFromDevicePath Lib "NovaxComdll" Alias "GetSerNumFromDevicePath" _
+(ByRef Ppath As Any) As Long
+'     (Ppath: T_u8Ptr): s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function GetPIDFromDevicePath      // PID aus Devicepath extrahieren
+Private Declare Function NovaxGetPIDFromDevicePath Lib "NovaxComdll" Alias "GetPIDFromDevicePath" _
+(ByRef Ppath As Any) As Integer
+'     (Ppath: T_u8Ptr): u16;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function SetRecEventTimer      //EventTimer ein-/ausschalten (f|fffd|r RawWriteRead)
+Private Declare Function NovaxSetRecEventTimer Lib "NovaxComdll" Alias "SetRecEventTimer" _
+(ByVal comport As Long, ByVal on_ As Byte) As Long
+'     (comport : s32;    on_ : boolean) : s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+'function RawWriteRead          //Schreibt und liest Bytes auf den Comport
+Private Declare Function NovaxRawWriteRead Lib "NovaxComdll" Alias "RawWriteRead" _
+(ByVal comport As Long, ByRef Pdataout As Any, ByVal sizeout As Long, ByRef Pdatain As Any, ByVal sizein As Long, ByRef Precvbytes As Long, ByVal waitmsonresponse As Long) As Long
+'     (comport : s32;         Pdataout : T_u8Ptr;    sizeout : s32;         Pdatain : T_u8Ptr;    sizein : s32;         Precvbytes : T_s32Ptr;    waitmsonresponse: Integer) : s32;
+'----------------------------------------------------------------------------------------------------------------------------------
+
+
+'*******************************************************************************
+'*** Konstanten in Klasse ******************************************************
+'*******************************************************************************
+
+'Konstanten f|fffd|r USB-Schnittstelle
+Private Const PSEUDOCOMPORT As Integer = 300
+Private Const NEO_PID As Integer = &H3E9C
+
+'Konstante f|fffd|r GetAvailableComPorts
+Private Const MAX_COM_PORT_NR As Integer = 256
+
+'Konstanten f|fffd|r OpenComBEx und USB-Device
+Private Const Baudrate As Long = 19200
+Private Const RX_QUEUE_SIZE As Long = 0
+Private Const NIBBLE_MODE As Byte = 0
+Private Const MAX_EVENT_DATA As Long = 1
+Private Const MAX_EVENT As Long = 1
+
+'Konstante f|fffd|r RawWriteRead
+Private Const MAX_COM_REC_DATA As Long = 10240
+
+'Konstanten f|fffd|r Lesen und Pr|fffd|fen des XML-Telegrammes
+Private Const BOT As String = "<?xml"
+Private Const EOT As String = "<!--EOT:"
+Private Const CRC As String = "<!--CRC32:"
+Private Const EOPD As String = "<!--EOPD:"
+
+
+
+'*******************************************************************************
+'*** Typen in Klasse ***********************************************************
+'*******************************************************************************
+
+'Datentyp f|fffd|r GUID
+Private Type T_GUID
+    bytes(15) As Byte
+End Type
+
+'Datentyp f|fffd|r DevicePathList
+Private Type T_String_2048
+  strString As String * 2048
+End Type
+
+'Datentyp f|fffd|r DevicePath
+Private Type T_String_128
+  strString As String * 128
+End Type
+
+
+'*******************************************************************************
+'*** Variablen in Klasse *******************************************************
+'*******************************************************************************
+
+Private lngAvailableComPorts(1 To MAX_COM_PORT_NR) As Long
+Private lngComPortNr As Long
+Private lngComRecNumOfBytes As Long
+Private bytComRecDataArray() As Byte
+Private strComRecBuffer As String
+Private strXmlTelegram As String
+
+Private typNeoGUID As T_GUID
+Private strNeoDevSerNumList() As String
+Private typNeoDevPathList() As T_String_128
+
+
+
+'*******************************************************************************
+'*** Properties ****************************************************************
+'*******************************************************************************
+
+Public Property Get NeoDevSerNumList() As String()
+    NeoDevSerNumList = strNeoDevSerNumList
+End Property
+
+Public Property Get AviableComPorts() As Long()
+    AviableComPorts = lngAvailableComPorts
+End Property
+
+Public Property Get AviableComPort(ByVal i As Integer) As Long
+    AviableComPort = lngAvailableComPorts(i)
+End Property
+
+Public Property Get PseudoComPortNr() As Integer
+    PseudoComPortNr = PSEUDOCOMPORT
+End Property
+
+Public Property Get MaxComPortNr() As Integer
+    MaxComPortNr = MAX_COM_PORT_NR
+End Property
+
+Public Property Get ComPortIsOpen() As Boolean
+    If lngComPortNr >= 0 Then
+      ComPortIsOpen = True
+    Else
+      ComPortIsOpen = False
+    End If
+End Property
+
+Public Property Get ComPortNr() As Long
+    ComPortNr = lngComPortNr
+End Property
+
+Public Property Get ComRecNumOfBytes() As Long
+    ComRecNumOfBytes = lngComRecNumOfBytes
+End Property
+
+Public Property Get ComRecBufferString() As String
+    ComRecBufferString = strComRecBuffer
+End Property
+
+Public Property Get XMLTelegramString() As String
+    XMLTelegramString = strXmlTelegram
+End Property
+
+
+'*******************************************************************************
+'*** Initialisierungen beim Erzeugen des Klassen-Objektes **********************
+'*******************************************************************************
+
+Private Sub Class_Initialize()
+
+    lngComPortNr = -1
+    
+    'Neo-GUID {ab245463-f67a-40ec-b096-2a37f30793c5}
+    typNeoGUID.bytes(3) = &HAB
+    typNeoGUID.bytes(2) = &H24
+    typNeoGUID.bytes(1) = &H54
+    typNeoGUID.bytes(0) = &H63
+    '-----------------------
+    typNeoGUID.bytes(5) = &HF6
+    typNeoGUID.bytes(4) = &H7A
+    '-----------------------
+    typNeoGUID.bytes(7) = &H40
+    typNeoGUID.bytes(6) = &HEC
+    '-----------------------
+    typNeoGUID.bytes(8) = &HB0
+    typNeoGUID.bytes(9) = &H96
+    typNeoGUID.bytes(10) = &H2A
+    typNeoGUID.bytes(11) = &H37
+    typNeoGUID.bytes(12) = &HF3
+    typNeoGUID.bytes(13) = &H7
+    typNeoGUID.bytes(14) = &H93
+    typNeoGUID.bytes(15) = &HC5
+    
+End Sub
+
+
+
+'*******************************************************************************
+'*** |fffd|ffentliche Funktionen ****************************************************
+'*******************************************************************************
+
+'Sucht nach LabMasterNeo USB-Devices und gibt die Anzahl zur|fffd|ck (-1: Error, 0: kein Device, >0: Anzahl Devices)
+Public Function GetNeoUSBDevices(Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim Result As Long
+    Dim i As Integer
+    Dim n As Integer
+    Dim typDevPathList As T_String_2048
+    Dim lngPathListSize As Long
+    Dim intLastArrayIndex As Integer
+    Dim strNeoDevPathList() As String
+    
+    'Array's l|fffd|schen
+    Erase strNeoDevPathList
+    Erase typNeoDevPathList
+    Erase strNeoDevSerNumList
+    
+    'Device-Path-List ermitteln
+    lngPathListSize = Len(typDevPathList.strString)
+    Result = NovaxGetDevicePathList(typNeoGUID, typDevPathList, lngPathListSize)
+    If Result <> 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error in 'GetDevicePathList', Result: " & Result)
+      GetNeoUSBDevices = -1
+      Exit Function
+    End If
+
+    'Wenn Devices in der Liste vorhanden sind
+    If lngPathListSize > 0 Then
+    
+          'DevicePathList in DevicePathListArray aufsplitten
+          strNeoDevPathList = Split(typDevPathList.strString, vbCrLf)
+          intLastArrayIndex = UBound(strNeoDevPathList)
+          ReDim typNeoDevPathList(intLastArrayIndex)
+          For i = 0 To intLastArrayIndex
+            typNeoDevPathList(i).strString = strNeoDevPathList(i)
+            typNeoDevPathList(i).strString = Replace(typNeoDevPathList(i).strString, Chr(32), Chr(0)) 'Leerzeichen durch Null-Zeichen ersetzen
+          Next i
+          
+          'Alle Nicht-Neo's aus dem DevicePathListArray l|fffd|schen
+          i = 0
+          Do While i <= intLastArrayIndex
+            If NovaxGetPIDFromDevicePath(typNeoDevPathList(i)) <> NEO_PID Then
+              If i < intLastArrayIndex Then
+                For n = i To intLastArrayIndex - 1
+                  typNeoDevPathList(n) = typNeoDevPathList(n + 1)
+                Next n
+              End If
+              intLastArrayIndex = intLastArrayIndex - 1
+              If intLastArrayIndex >= 0 Then
+                ReDim Preserve typNeoDevPathList(intLastArrayIndex)
+              Else
+                Erase typNeoDevPathList
+                Exit Do
+              End If
+            End If
+            i = i + 1
+          Loop
+      
+    End If
+    
+    'R|fffd|ckgabewert: Anzahl Neo-Devices
+    On Error Resume Next
+    GetNeoUSBDevices = UBound(typNeoDevPathList) + 1
+    If CBool(Err.Number <> 0) Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: No LabMasterNeo USB-Devices found!")
+      GetNeoUSBDevices = 0
+    Else
+      'Serie-Nr. Liste erstellen
+      ReDim strNeoDevSerNumList(UBound(typNeoDevPathList))
+      For i = 0 To UBound(typNeoDevPathList)
+        strNeoDevSerNumList(i) = CStr(NovaxGetSerNumFromDevicePath(typNeoDevPathList(i)))
+      Next i
+    End If
+         
+End Function
+
+
+'USB-Device |fffd|ffnen
+Public Function OpenUSBDev(ByVal DevPathListIndex As Integer, Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim Result As Long
+    Dim lngDevUSBHandle As Long
+    Dim lngWinUSBHandle As Long
+    
+    'Pr|fffd|fen, ob NeoDeviceSerNumList vorhanden ist
+    On Error Resume Next
+    Result = UBound(strNeoDevSerNumList)
+    If CBool(Err.Number <> 0) Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("OpenUSBDev: Die 'strNeoDevSerNumList' ist leer!")
+      OpenUSBDev = 1
+      Exit Function
+    End If
+    
+    'Pr|fffd|fen, ob der DevPathListIndex in der NeoDevSerNumList vorhanden ist
+    If DevPathListIndex > UBound(strNeoDevSerNumList) Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("OpenUSBDev: Invalid parameter 'DevPathListIndex'!")
+      OpenUSBDev = 1
+      Exit Function
+    End If
+    
+    'USB-Device |fffd|ffen (Handle von USB-Device erzeugen)
+    Result = NovaxOpenUSBDevice(typNeoDevPathList(DevPathListIndex), lngDevUSBHandle)
+    If Result <> 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("OpenUSBDev: Error in 'NovaxOpenUSBDevice'!")
+      OpenUSBDev = 1
+      Exit Function
+    End If
+    
+    'USB-Device initialisieren (WinUSB Handle erzeugen)
+    Result = NovaxUSBInitialize(lngDevUSBHandle, lngWinUSBHandle)
+    If Result <> 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("OpenUSBDev: Error in 'NovaxUSBInitialize'!")
+      OpenUSBDev = 1
+      Exit Function
+    End If
+    
+    'NovaProt-Device erzeugen (WinUSB Device)
+    lngComPortNr = PSEUDOCOMPORT
+    Result = NovaxInitializeDevice(lngDevUSBHandle, lngWinUSBHandle, lngComPortNr, MAX_EVENT, MAX_EVENT_DATA, typNeoDevPathList(DevPathListIndex), Len(typNeoDevPathList(DevPathListIndex).strString))
+    If Result <> 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("OpenUSBDev: Error in 'NovaxInitializeDevice'!")
+      OpenUSBDev = 1
+    Else
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Open USB-Device: " & strNeoDevSerNumList(DevPathListIndex))
+      OpenUSBDev = 0
+    End If
+
+End Function
+
+
+'USB-Device schliessen
+Public Function CloseUSBDev(Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim Result As Long
+    
+    Result = NovaxCloseUSBDevice(lngComPortNr)
+    
+    If Result = 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Close USB-Device")
+      lngComPortNr = -1
+    Else
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: USB-Device could not be closed!")
+    End If
+    
+    CloseUSBDev = Result
+
+End Function
+
+
+'Alle verf|fffd|gbaren ComPorts ermitteln
+Public Sub GetAvailableComPorts()
+
+    Dim Result As Byte
+    Dim i As Long
+    Dim ArrayCounter As Byte
+    
+    ArrayCounter = 1
+    Erase lngAvailableComPorts
+    
+    For i = 1 To MAX_COM_PORT_NR
+    
+      Result = NovaxIsComAvailable(i)
+      
+      If Result <> 0 Then
+        lngAvailableComPorts(ArrayCounter) = i
+        ArrayCounter = ArrayCounter + 1
+      End If
+    
+    Next i
+  
+End Sub
+
+
+'ComPort |fffd|ffnen
+Public Function OpenCom(ByVal ComPortNr As Variant, Optional ByVal MessageInListBox As Boolean = True) As Long
+
+  Dim Result As Long
+  
+  If Not IsNumeric(ComPortNr) Then
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The ComPort number ist not a number!")
+    OpenCom = 1
+    Exit Function
+  ElseIf Not (CInt(ComPortNr) = CDbl(ComPortNr)) Then
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The ComPort number is not an integer!")
+    OpenCom = 1
+    Exit Function
+  End If
+  
+  Result = NovaxOpenComEx(ComPortNr, MAX_EVENT, MAX_EVENT_DATA, Baudrate, RX_QUEUE_SIZE, NIBBLE_MODE)
+
+  If Result = 0 Then
+    lngComPortNr = ComPortNr
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Open ComPort Nr.: " & lngComPortNr)
+  Else
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The ComPort could not be opened!")
+    lngComPortNr = -1
+  End If
+
+  OpenCom = Result
+
+End Function
+
+
+'ComPort schliessen
+Public Function CloseCom(Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim Result As Long
+    
+    Result = NovaxCloseCom(lngComPortNr)
+    
+    If Result = 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Close ComPort Nr.: " & lngComPortNr)
+      lngComPortNr = -1
+    Else
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The ComPort could not be closed!")
+    End If
+    
+    CloseCom = Result
+
+End Function
+
+
+'RecEventTimer ausschalten
+Public Function DisableRecEventTimer(Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim Result As Long
+    
+    Result = NovaxSetRecEventTimer(lngComPortNr, 0)
+    
+    If Result <> 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The RecEventTimer could not be switched off!")
+    Else
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("RecEventTimer switched off")
+    End If
+    
+    DisableRecEventTimer = Result
+
+End Function
+
+
+'Empfangsbuffer l|fffd|schen
+Public Function ClearReceiveBuffer(Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    strComRecBuffer = ""
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Receive data buffer was cleared")
+    ClearReceiveBuffer = 0
+
+End Function
+
+
+'Daten von ComPort einlesen und XML-Telegramm extrahieren
+'R|fffd|ckgabewerte:
+'-4: Error bei Read ComPortBuffer
+'-3: Keine neuen Daten im ComPort-Empfangsbuffer
+'-2: Daten empfangen, jedoch noch kein EOT gefunden, bzw. Daten nach EOT nicht komplett
+'-1: Daten empfangen und EOT gefunden, jedoch Validiereung des XML-Telegrammes gescheitert
+' 0: G|fffd|ltiges XML-Telegramm empfangen
+'*****************************************************************************************
+Public Function ReadComportAndExtractTelegram(Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim i As Integer
+    Dim Result As Long
+    Dim TempString As String
+    
+    Dim EOT_Pos As Long
+    Dim EOT_TotNumOfChar As Long
+    
+    Dim TotCharInklEOT As Long
+    Dim FirstPosRestBufferString As Long
+    
+    Dim CRC_Pos As Long
+    Dim CRCBytesInXMLTelegram(3) As Byte
+    Dim CRC_InTelegram As Long
+    Dim CRC_Calculated As Long
+    
+    Dim EOPD_Pos As Long
+    Dim EOPD_TotNumOfChar As Long
+  
+  
+    '------------------------------------------------------------------------------
+    'Empfangsbuffer auslesen und die Zeichen am ComRecBufferString anh|fffd|ngen
+    '------------------------------------------------------------------------------
+    ReDim bytComRecDataArray(MAX_COM_REC_DATA - 1)  'Byte-Array als Empfangsbuffer bereitstellen
+    Result = NovaxRawWriteRead(lngComPortNr, ByVal 0&, ByVal 0&, bytComRecDataArray(0), UBound(bytComRecDataArray) + 1, lngComRecNumOfBytes, 0)
+    
+    
+    'Wenn beim Datenempfang ein Fehler aufgetreten ist
+    If Result <> 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The ComPort buffer could not be read!")
+      ReadComportAndExtractTelegram = -4
+      lngComRecNumOfBytes = 0
+      strXmlTelegram = ""
+      Exit Function
+    End If
+        
+        
+    'Wenn keine Daten empfangen wurden
+    If lngComRecNumOfBytes = 0 Then
+      ReadComportAndExtractTelegram = -3
+      lngComRecNumOfBytes = 0
+      strXmlTelegram = ""
+      Exit Function
+    End If
+      
+      
+    'Die neu empfangenen Daten dem ComRecBuffer-String anh|fffd|ngen
+    ReDim Preserve bytComRecDataArray(lngComRecNumOfBytes - 1)  'Array auf Anzahl effektiv empfangener Bytes verkleinern
+    strComRecBuffer = strComRecBuffer + StrConv(bytComRecDataArray, vbUnicode)  'Die neu empfangenen Zeichen am BufferString anh|fffd|ngen
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Number of bytes received: " & lngComRecNumOfBytes)
+      
+      
+    'Im ComRecBuffer-String nach EOT suchen
+    EOT_Pos = InStr(strComRecBuffer, EOT)
+    If EOT_Pos = 0 Then
+      ReadComportAndExtractTelegram = -2
+      strXmlTelegram = ""
+      Exit Function
+    End If
+  
+  
+    'Zahl nach EOT (Anzahl |fffd|bertragene Zeichen) aus ComRecBuffer-String auslesen
+    i = Len(EOT)
+    Do
+      TempString = Mid(strComRecBuffer, EOT_Pos + i, 1)
+      'Wenn Zahl nach EOT_Pos nicht komplett
+      If TempString = "" Then
+        ReadComportAndExtractTelegram = -2
+        strXmlTelegram = ""
+        'MsgBox ("Zahl nicht komplett nach EOT bis '-'") '*******Debug**********
+        Exit Function
+      End If
+      i = i + 1
+    Loop Until TempString = "-"
+    
+    
+    'Wenn Daten nach EOT_Pos nicht komplett (Am Ende nochmals "-" & ">")
+    TempString = Mid(strComRecBuffer, EOT_Pos + i, 2)
+    If TempString <> "->" Then
+      ReadComportAndExtractTelegram = -2
+      strXmlTelegram = ""
+      'MsgBox ("Daten nicht komplett nach EOT '->'")  '*******Debug**********
+      Exit Function
+    End If
+    
+    
+    'EOT-Zahl extrahieren
+    TempString = Mid(strComRecBuffer, EOT_Pos + Len(EOT), i - 1 - Len(EOT))
+    EOT_TotNumOfChar = CLng(TempString)
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("End of transmission (EOT): " & EOT_TotNumOfChar)
+    
+    
+    'XML-Telegramm exkl. EOT aus BufferString kopieren (mit Hilfe von EOT)
+    If EOT_Pos > EOT_TotNumOfChar Then
+      strXmlTelegram = Mid(strComRecBuffer, EOT_Pos - EOT_TotNumOfChar, EOT_TotNumOfChar)
+    Else
+      ReadComportAndExtractTelegram = -1
+      strXmlTelegram = ""
+      Exit Function
+    End If
+
+
+    'XML-Telegramm inkl. EOT in Textbox ausgeben
+    TotCharInklEOT = EOT_TotNumOfChar + i + 2 '+ i + "-" + ">"
+    If MessageInListBox Then
+      UserForm.txtLastRecData.Text = Mid(strComRecBuffer, EOT_Pos - EOT_TotNumOfChar, TotCharInklEOT)
+      UserForm.txtLastRecData.SelStart = (Len(UserForm.txtLastRecData.Text))
+    End If
+        
+        
+    'XML-Telegramm aus Bufferstring l|fffd|schen (Alle Zeichen vor EOT)
+    FirstPosRestBufferString = EOT_Pos + i + 2  '+ i + "-" + ">"
+    TempString = Mid(strComRecBuffer, FirstPosRestBufferString)
+    strComRecBuffer = TempString
+      
+      
+    'Pr|fffd|fen ob das XML-Telegramm mit BOT beginnt
+    If Left(strXmlTelegram, Len(BOT)) <> BOT Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: The XML-Telegram does not start with '<?xml'!")
+      ReadComportAndExtractTelegram = -1
+      strXmlTelegram = ""
+      Exit Function
+    End If
+       
+       
+    'Zahl nach EOPD (Anzahl Zeichen im CRC-gesch|fffd|tzten Bereich) aus ComRecBufferString auslesen
+    EOPD_Pos = InStr(strXmlTelegram, EOPD)
+    If EOPD_Pos = 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: Characters '<!--EOPD:' were not found in the XML-Telegram!")
+      ReadComportAndExtractTelegram = -1
+      strXmlTelegram = ""
+      Exit Function
+    End If
+    i = Len(EOPD)
+    Do
+      TempString = Mid(strXmlTelegram, EOPD_Pos + i, 1)
+      i = i + 1
+    Loop Until TempString = "-"
+    TempString = Mid(strXmlTelegram, EOPD_Pos + Len(EOPD), i - 1 - Len(EOPD))
+    EOPD_TotNumOfChar = CLng(TempString)
+    'If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("XML-Data was received")
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("End of protected data (EOPD): " & EOPD_TotNumOfChar)
+      
+      
+    'CRC-Werte aus dem XML-Telegramm auslesen
+    CRC_Pos = InStr(strXmlTelegram, CRC)
+    If CRC_Pos = 0 Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: Characters '<!--CRC32:' were not found in the XML-Telegram!")
+      ReadComportAndExtractTelegram = -1
+      strXmlTelegram = ""
+      Exit Function
+    End If
+    CRCBytesInXMLTelegram(0) = CDec("&H" & Mid(strXmlTelegram, CRC_Pos + Len(CRC), 2))
+    CRCBytesInXMLTelegram(1) = CDec("&H" & Mid(strXmlTelegram, CRC_Pos + Len(CRC) + 3, 2))
+    CRCBytesInXMLTelegram(2) = CDec("&H" & Mid(strXmlTelegram, CRC_Pos + Len(CRC) + 6, 2))
+    CRCBytesInXMLTelegram(3) = CDec("&H" & Mid(strXmlTelegram, CRC_Pos + Len(CRC) + 9, 2))
+    CopyMemory CRC_InTelegram, CRCBytesInXMLTelegram(0), 4  'CRC-Byte-Array in Long konvertieren
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("CRC32 in XML-Telegram: &H" & Hex$(CRC_InTelegram))
+        
+        
+    'CRC-Checksum von XML-Telegramm bis zu EOPD berechnen
+    TempString = Left(XMLTelegramString, EOPD_TotNumOfChar)
+    CRC_Calculated = CRC32.CRC32(StrConv(TempString, vbFromUnicode))
+    If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Calculated CRC32: &H" & Hex$(CRC_Calculated))
+      
+      
+    'CRC-Check durchf|fffd|hren
+    If CRC_InTelegram = CRC_Calculated Then
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("CRC-Check o.k.")
+      ReadComportAndExtractTelegram = 0
+    Else
+      If MessageInListBox Then UserForm.ListBox1_AddItem_WithScroll ("Error: CRC-Check failed!")
+      ReadComportAndExtractTelegram = -1
+      strXmlTelegram = ""
+    End If
+
+
+End Function
+
+
+Attribute VB_Name = "classLabMasterXML"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+
+'*******************************************************************************
+'*** Konstanten in Klasse ******************************************************
+'*******************************************************************************
+
+Private Const NodePathInstrument As String = "LimsXmlData/Instrument/Instrument"
+Private Const NodePathMasterFw As String = "LimsXmlData/Instrument/MasterFw"
+Private Const NodePathChamber As String = "LimsXmlData/Instrument/Chamber/Chamber"
+Private Const NodePathChamberSnr As String = "LimsXmlData/Instrument/Chamber/ChamberSnr"
+Private Const NodePathChamberFw As String = "LimsXmlData/Instrument/Chamber/ChamberFw"
+Private Const NodePathHumSens As String = "LimsXmlData/Instrument/Chamber/HumSens"
+Private Const NodePathHumSensSnr As String = "LimsXmlData/Instrument/Chamber/HumSensSnr"
+Private Const NodePathHumSensFw As String = "LimsXmlData/Instrument/Chamber/HumSensFw"
+Private Const NodePathIrSensFw As String = "LimsXmlData/Instrument/Chamber/IrSensFw"
+'-------------------------------------------------------------------------------
+Private Const NodePathUser As String = "LimsXmlData/Lab/User"
+Private Const NodePathLab As String = "LimsXmlData/Lab/Lab"
+'-------------------------------------------------------------------------------
+Private Const NodePathProduct As String = "LimsXmlData/Sample/Product"
+Private Const NodePathBatch As String = "LimsXmlData/Sample/Batch"
+Private Const NodePathNr As String = "LimsXmlData/Sample/Nr"
+'-------------------------------------------------------------------------------
+Private Const NodePathStabMode As String = "LimsXmlData/Settings/StabMode"
+'-------------------------------------------------------------------------------
+Private Const NodePathAttributeKind As String = "LimsXmlData/Measure"
+Private Const NodePathTimeStamp As String = "LimsXmlData/Measure/TimeStamp"
+Private Const NodePathDuration As String = "LimsXmlData/Measure/Duration"
+Private Const NodePathTemperature As String = "LimsXmlData/Measure/Temperature"
+Private Const NodePathAw As String = "LimsXmlData/Measure/aw"
+    
+
+'*******************************************************************************
+'*** Typen in Klasse ***********************************************************
+'*******************************************************************************
+
+Private Type TInstrument
+    strInstrument As String
+    strMasterFw As String
+    strChamber As String
+    strChamberSnr As String
+    strChamberFw As String
+    strHumSens As String
+    strHumSensSnr As String
+    strHumSensFw As String
+    strIrSensFw As String
+End Type
+
+Private Type TLab
+    strUser As String
+    strLab As String
+End Type
+
+Private Type TSample
+    strProduct As String
+    strBatch As String
+    intNr As Integer
+End Type
+
+Private Type TSettings
+    strStabMode As String
+End Type
+
+Private Type TMeasure
+    strKind As String
+    strTimeStamp As String
+    lngDuration As Long
+    dblTemperature As Double
+    dblAw As Double
+End Type
+
+Private Type TXmlData
+    Instrument As TInstrument
+    Lab As TLab
+    Sample As TSample
+    Settings As TSettings
+    Measure As TMeasure
+End Type
+
+
+'*******************************************************************************
+'*** Variablen in Klasse *******************************************************
+'*******************************************************************************
+
+Private LMneoXmlData As TXmlData
+Private xmldom As MSXML2.DOMDocument60
+
+
+
+'*******************************************************************************
+'*** Properties "Get" **********************************************************
+'*******************************************************************************
+
+Public Property Get Instrument() As String
+    Instrument = LMneoXmlData.Instrument.strInstrument
+End Property
+
+Public Property Get MasterFw() As String
+    MasterFw = LMneoXmlData.Instrument.strMasterFw
+End Property
+
+Public Property Get Chamber() As String
+    Chamber = LMneoXmlData.Instrument.strChamber
+End Property
+
+Public Property Get ChamberSnr() As String
+    ChamberSnr = LMneoXmlData.Instrument.strChamberSnr
+End Property
+
+Public Property Get ChamberFw() As String
+    ChamberFw = LMneoXmlData.Instrument.strChamberFw
+End Property
+
+Public Property Get HumSens() As String
+    HumSens = LMneoXmlData.Instrument.strHumSens
+End Property
+
+Public Property Get HumSensSnr() As String
+    HumSensSnr = LMneoXmlData.Instrument.strHumSensSnr
+End Property
+
+Public Property Get HumSensFw() As String
+    HumSensFw = LMneoXmlData.Instrument.strHumSensFw
+End Property
+
+Public Property Get IrSensFw() As String
+    IrSensFw = LMneoXmlData.Instrument.strIrSensFw
+End Property
+
+Public Property Get User() As String
+    User = LMneoXmlData.Lab.strUser
+End Property
+
+Public Property Get Lab() As String
+    Lab = LMneoXmlData.Lab.strLab
+End Property
+
+Public Property Get Product() As String
+    Product = LMneoXmlData.Sample.strProduct
+End Property
+
+Public Property Get Batch() As String
+    Batch = LMneoXmlData.Sample.strBatch
+End Property
+
+Public Property Get Nr() As Integer
+    Nr = LMneoXmlData.Sample.intNr
+End Property
+
+Public Property Get StabMode() As String
+    StabMode = LMneoXmlData.Settings.strStabMode
+End Property
+
+Public Property Get Kind() As String
+    Kind = LMneoXmlData.Measure.strKind
+End Property
+
+Public Property Get TimeStamp() As String
+    TimeStamp = LMneoXmlData.Measure.strTimeStamp
+End Property
+
+Public Property Get Duration() As Long
+    Duration = LMneoXmlData.Measure.lngDuration
+End Property
+
+Public Property Get Temperature() As Double
+    Temperature = LMneoXmlData.Measure.dblTemperature
+End Property
+
+Public Property Get Aw() As Double
+    Aw = LMneoXmlData.Measure.dblAw
+End Property
+
+
+
+'*******************************************************************************
+'*** Initialisierungen beim Erzeugen des Klassen-Objektes **********************
+'*******************************************************************************
+
+Private Sub Class_Initialize()
+
+    Set xmldom = New MSXML2.DOMDocument60
+    
+End Sub
+
+
+'*******************************************************************************
+'*** Initialisierungen beim Aufheben des Klassen-Objektes **********************
+'*******************************************************************************
+
+Private Sub Class_Terminate()
+    
+    xmldom = Null
+
+End Sub
+
+
+'*******************************************************************************
+'*** |fffd|ffentliche Funktionen ****************************************************
+'*******************************************************************************
+
+Public Function LoadXmlFileToMSXmlDom(ByVal strXMLPath As String, ByVal strXSDPath As String, Optional ByVal MessageInListBox As Boolean = True) As Long
+    
+    Dim xmlschema As MSXML2.XMLSchemaCache60
+    Set xmlschema = New MSXML2.XMLSchemaCache60
+     
+    'Mit XSD-Schema validieren, wenn strXSDPath <> ""
+    If strXSDPath <> "" Then
+         xmlschema.Add "", strXSDPath
+         Set xmldom.Schemas = xmlschema
+         xmldom.async = False
+         xmldom.Load strXMLPath
+    Else
+         xmldom.Load strXMLPath
+    End If
+
+    If xmldom.parseError.ErrorCode <> 0 And MessageInListBox = True Then
+        UserForm.ListBox1_AddItem_WithScroll ("Validation Error: " & xmldom.parseError.ErrorCode & " " & xmldom.parseError.reason)
+        UserForm.ListBox1_AddItem_WithScroll (xmldom.parseError.srcText)
+    End If
+    
+    LoadXmlFileToMSXmlDom = xmldom.parseError.ErrorCode
+    
+End Function
+
+
+Public Function LoadXmlFileToString(ByVal strXMLPath As String) As String
+
+    Dim FSO As Object: Set FSO = CreateObject("Scripting.FileSystemObject")
+    LoadXmlFileToString = FSO.OpenTextFile(strXMLPath).ReadAll
+
+End Function
+
+
+Public Function LoadXmlStringToMSXmlDom(ByVal strXMLString As String, ByVal strXSDPath As String, Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim xmlschema As MSXML2.XMLSchemaCache60
+    Set xmlschema = New MSXML2.XMLSchemaCache60
+
+    'Mit XSD-Schema validieren, wenn strXSDPath <> ""
+    If strXSDPath <> "" Then
+    
+         xmlschema.Add "", strXSDPath
+         Set xmldom.Schemas = xmlschema
+         xmldom.async = False
+         xmldom.LoadXML (strXMLString)
+         
+    Else
+         xmldom.LoadXML (strXMLString)
+         
+    End If
+    
+    If xmldom.parseError.ErrorCode <> 0 And MessageInListBox = True Then
+        UserForm.ListBox1_AddItem_WithScroll ("Validation Error: " & xmldom.parseError.ErrorCode & " " & xmldom.parseError.reason)
+        UserForm.ListBox1_AddItem_WithScroll (xmldom.parseError.srcText)
+    End If
+         
+    LoadXmlStringToMSXmlDom = xmldom.parseError.ErrorCode
+
+End Function
+
+
+Public Function LoadXmlElementsToDataStruct(Optional ByVal MessageInListBox As Boolean = True) As Long
+
+    Dim xmlelement As MSXML2.IXMLDOMElement
+
+    'XMLElemente auslesen und in Datenstruktur abf|fffd|llen
+    
+    'Instrument ------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathInstrument)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathInstrument & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strInstrument = xmlelement.nodeTypedValue
+    End If
+    'MasterFw --------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathMasterFw)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathMasterFw & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strMasterFw = xmlelement.nodeTypedValue
+    End If
+    'Chamber ---------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathChamber)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathChamber & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strChamber = xmlelement.nodeTypedValue
+    End If
+    'ChamberSnr -------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathChamberSnr)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathChamberSnr & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strChamberSnr = xmlelement.nodeTypedValue
+    End If
+    'ChamberFw --------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathChamberFw)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathChamberFw & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strChamberFw = xmlelement.nodeTypedValue
+    End If
+    'HumSens ----------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathHumSens)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathHumSens & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strHumSens = xmlelement.nodeTypedValue
+    End If
+    'HumSensSnr -------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathHumSensSnr)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathHumSensSnr & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strHumSensSnr = xmlelement.nodeTypedValue
+    End If
+    'HumSensFw --------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathHumSensFw)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathHumSensFw & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strHumSensFw = xmlelement.nodeTypedValue
+    End If
+    'IrSensFw ---------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathIrSensFw)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathIrSensFw & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Instrument.strIrSensFw = xmlelement.nodeTypedValue
+    End If
+    'User -------------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathUser)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathUser & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Lab.strUser = xmlelement.nodeTypedValue
+    End If
+    'Lab --------------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathLab)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathLab & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Lab.strLab = xmlelement.nodeTypedValue
+    End If
+    'Product ----------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathProduct)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathProduct & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Sample.strProduct = xmlelement.nodeTypedValue
+    End If
+    'Batch ------------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathBatch)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathBatch & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Sample.strBatch = xmlelement.nodeTypedValue
+    End If
+    'Nr ----------------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathNr)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathNr & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Sample.intNr = xmlelement.nodeTypedValue
+    End If
+    'StabMode ----------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathStabMode)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathStabMode & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Settings.strStabMode = xmlelement.nodeTypedValue
+    End If
+    'Kind ---------------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathAttributeKind)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathAttributeKind & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Measure.strKind = xmlelement.getAttribute("Kind")  'Attribute
+    End If
+    'TimeStamp ----------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathTimeStamp)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathTimeStamp & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Measure.strTimeStamp = xmlelement.nodeTypedValue   'TimeStamp as String
+    End If
+    'Duration -----------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathDuration)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathDuration & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      LMneoXmlData.Measure.lngDuration = xmlelement.nodeTypedValue
+    End If
+    'Temperature --------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathTemperature)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathTemperature & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      If Application.International(xlDecimalSeparator) = "," Then     'Wenn in L|fffd|ndereinstellung Dezimaltrennzeichen ","
+        LMneoXmlData.Measure.dblTemperature = Replace(xmlelement.nodeTypedValue, ".", ",")
+      Else
+        LMneoXmlData.Measure.dblTemperature = xmlelement.nodeTypedValue
+      End If
+    End If
+    'Aw ------------------------------------------------------------
+    Set xmlelement = xmldom.SelectSingleNode(NodePathAw)
+    If xmlelement Is Nothing Then
+      If MessageInListBox = True Then UserForm.ListBox1_AddItem_WithScroll ("XML Error: " & NodePathAw & " not found!")
+      LoadXmlElementsToDataStruct = -1
+      Exit Function
+    Else
+      If Application.International(xlDecimalSeparator) = "," Then     'Wenn in L|fffd|ndereinstellung Dezimaltrennzeichen ","
+        LMneoXmlData.Measure.dblAw = Replace(xmlelement.nodeTypedValue, ".", ",")
+      Else
+        LMneoXmlData.Measure.dblAw = xmlelement.nodeTypedValue
+      End If
+    End If
+    
+    LoadXmlElementsToDataStruct = 0
+
+End Function
+
+
+
+' InQuest injected base64 decoded content
+' Z"u,z
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+' ^iCj
+
+INQUEST-PP=macro

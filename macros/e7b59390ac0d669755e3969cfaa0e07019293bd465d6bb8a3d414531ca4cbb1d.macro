@@ -1,0 +1,461 @@
+Attribute VB_Name = "AutoOpenMacro"
+Sub AutoOpen()
+'
+' AutoOpen Makro
+'
+'
+'    MsgBox ("AutoOpen")
+End Sub
+Attribute VB_Name = "GinaSaveForm"
+Attribute VB_Base = "0{D346D443-229C-4BA9-8781-847D6D22D306}{E30FD10D-790A-455D-A066-88C2F6DACB09}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub btnCancel_Click()
+    Me.Hide
+End Sub
+
+Private Sub btnLocal_Click()
+    If Not (isFile Or isTemplate) Then
+        ThisDocument.Save
+        dummy = MsgBox("Datei wurde lokal gespeichert", vbOKOnly + vbInformation, "Information")
+    Else
+        MsgBox (doSave())
+    End If
+    
+    If ThisDocument.Saved Then Me.Hide
+End Sub
+
+Private Function GetGinaXml() As Object
+    Dim I As Integer
+    I = ThisDocument.CustomXMLParts.Count
+    Do While ThisDocument.CustomXMLParts.Item(I).SelectSingleNode("/Gina") Is Nothing
+        I = I - 1
+    Loop
+    Set GetGinaXml = ThisDocument.CustomXMLParts.Item(I)
+End Function
+
+Private Function readDateiEntity()
+    Set Node = GetGinaXml.SelectSingleNode("//Datei/entity")
+    If Not Node Is Nothing Then
+        readDateiEntity = Node.Text
+    Else
+        readDateiEntity = "Kein Status zugewiesen"
+    End If
+End Function
+
+Private Function isFile()
+    isFile = StrComp(readDateiEntity(), "DateiVerbindet") = 0
+End Function
+
+Public Function isTemplate()
+    isTemplate = StrComp(readDateiEntity(), "Interaktivdatei") = 0
+End Function
+
+Private Sub initEntity()
+    lblEntity.Caption = "Fehler"
+    If isFile Then
+        lblEntity.Caption = "Dokument"
+    End If
+    If isTemplate Then
+        lblEntity.Caption = "Neues Dokument"
+    End If
+    
+    If lblEntity.Caption = "Fehler" Then
+       lblEntity.Caption = "Fehler : " + readDateiEntity
+    End If
+End Sub
+
+Private Sub initMode()
+    cbMode.Clear
+    cbMode.AddItem ("Ersetzen")
+    cbMode.AddItem ("Einf|fffd|gen")
+    
+    If isFile Then
+        cbMode.ListIndex = 0
+        cbMode.Locked = False
+    End If
+    If isTemplate Then
+        cbMode.ListIndex = 1
+        cbMode.Locked = True
+    End If
+    
+End Sub
+
+Private Sub btnSaveAs_Click()
+    Dialogs(wdDialogFileSaveAs).Show
+End Sub
+
+Private Function isDocumentEdited()
+    
+    Set Node = GetGinaXml.SelectSingleNode("//Request/letzteaenderung")
+    If Not Node Is Nothing Then
+        letzteaenderungThis = Node.Text
+    Else
+        letzteaenderungThis = 0
+    End If
+        
+    sURL = GetGinaXml.SelectSingleNode("//DateimanagerUrl").Text + "/Upload?nothing=nothing" + paramDateiId()
+    Set objHTTP = CreateObject("MSXML2.ServerXMLHTTP")
+    objHTTP.SetOption(2) = (objHTTP.GetOption(2) - SXH_SERVER_CERT_IGNORE_ALL_SERVER_ERRORS)
+    objHTTP.Open "GET", sURL, False
+    objHTTP.setRequestHeader "Content-Type", "text/plain; charset=iso-8859-1; boundary=" & STR_BOUNDARY
+    objHTTP.send
+    letzteaenderungRemote = objHTTP.responseText
+    If letzteaenderungThis <> "" And letzteaenderungRemote > letzteaenderungThis Then
+        isDocumentEdited = True
+    Else
+        isDocumentEdited = False
+    End If
+End Function
+
+
+
+Private Sub UserForm_Initialize()
+    tbName = ThisDocument.Name
+
+    initEntity
+    initMode
+End Sub
+
+Private Function isDocumentNameAlreadyInDateiVerbindet()
+    
+    Set Node_dateiName = GetGinaXml.SelectSingleNode("//Datei/name")
+    Set Node_idUnique = GetGinaXml.SelectSingleNode("//Request/target")
+    
+    If Not Node_dateiName Is Nothing Then
+        dateiName = Node_dateiName.Text
+    End If
+    
+    If Not Node_idUnique Is Nothing Then
+        idUnique = Node_idUnique.Text
+    End If
+        
+    sURL = GetGinaXml.SelectSingleNode("//DateimanagerUrl").Text + "/Upload?target=" + idUnique + "&dateiName=" + dateiName
+    Set objHTTP = CreateObject("MSXML2.ServerXMLHTTP")
+    objHTTP.SetOption(2) = (objHTTP.GetOption(2) - SXH_SERVER_CERT_IGNORE_ALL_SERVER_ERRORS)
+    objHTTP.Open "GET", sURL, False
+    objHTTP.setRequestHeader "Content-Type", "text/plain; charset=iso-8859-1; boundary=" & STR_BOUNDARY
+    objHTTP.send
+    response = objHTTP.responseText
+    If response <> "" And response > 0 Then
+        isDocumentNameAlreadyInDateiVerbindet = True
+    Else
+        isDocumentNameAlreadyInDateiVerbindet = False
+    End If
+End Function
+
+Private Function uploadThisFile(sURL As String, sFileName As String, Optional ByVal bAsync As Boolean) As String
+    Const STR_BOUNDARY  As String = "3fbd04f5-b1ed-4060-99b9-fca7ff59c113"
+    Dim nFile           As Integer
+    Dim baBuffer()      As Byte
+    Dim sPostData       As String
+ 
+    '--- read file
+    nFile = FreeFile
+    Open sFileName For Binary Access Read As nFile
+    If LOF(nFile) > 0 Then
+        ReDim baBuffer(0 To LOF(nFile) - 1) As Byte
+        Get nFile, , baBuffer
+        sPostData = StrConv(baBuffer, vbUnicode)
+    End If
+    Close nFile
+    '--- prepare body
+    sPostData = "--" & STR_BOUNDARY & vbCrLf & _
+        "Content-Disposition: form-data; name=""uploadfile""; filename=""" & tbName.Text & """" & vbCrLf & _
+        "Content-Type: application/octet-stream" & vbCrLf & vbCrLf & _
+        sPostData & vbCrLf & _
+        "--" & STR_BOUNDARY & "--"
+    '--- post
+    Set objHTTP = CreateObject("MSXML2.ServerXMLHTTP")
+    'objHTTP.SetOption(2, objHTTP.GetOption(2) - SXH_SERVER_CERT_IGNORE_ALL_SERVER_ERRORS)
+    objHTTP.SetOption(2) = (objHTTP.GetOption(2) - SXH_SERVER_CERT_IGNORE_ALL_SERVER_ERRORS)
+    objHTTP.Open "POST", sURL, bAsync
+    objHTTP.setRequestHeader "Content-Type", "multipart/form-data; charset=iso-8859-1; boundary=" & STR_BOUNDARY
+    objHTTP.send (pvToByteArray(sPostData))
+    
+    If Not bAsync Then
+        uploadThisFile = objHTTP.responseText
+    End If
+End Function
+
+Private Function pvToByteArray(sText As String) As Byte()
+    pvToByteArray = StrConv(sText, vbFromUnicode)
+End Function
+
+Private Function paramDateiTarget()
+    Set Node = GetGinaXml.SelectSingleNode("//Datei/target")
+    paramDateiTarget = "?target=" + Node.Text
+End Function
+
+
+Private Function paramRequestTarget()
+    Set Node = GetGinaXml.SelectSingleNode("//Request/target")
+    paramRequestTarget = "?target=" + Node.Text
+End Function
+
+Private Function paramDateiId()
+    Set Node = GetGinaXml.SelectSingleNode("//Datei/id")
+    If Not Node Is Nothing Then
+        paramDateiId = "&id=" + Node.Text
+    Else
+        paramDateiId = ""
+    End If
+End Function
+
+Private Function paramUsername()
+    Set Node = GetGinaXml.SelectSingleNode("//Request/username")
+    If Not Node Is Nothing Then
+        paramUsername = "&username=" + Node.Text
+    Else
+        paramUsername = "?"
+    End If
+End Function
+
+Private Function deleteHoursBack()
+    Set Node = GetGinaXml.SelectSingleNode("//deleteHoursBack")
+    If Not Node Is Nothing Then
+        deleteHoursBack = Node.Text
+    Else
+        deleteHoursBack = "-12"
+    End If
+End Function
+
+Private Function readParams()
+    readParams = "Error"
+    
+    If isTemplate Then
+        readParams = paramRequestTarget() + "&id=-1" + paramUsername
+    End If
+    If isFile Then
+        If cbMode.ListIndex = 0 Then
+            'Update
+            readParams = paramDateiTarget() + paramDateiId() + paramUsername
+        Else
+            'Insert
+            readParams = paramDateiTarget() + "&id=-1" + paramUsername
+        End If
+    End If
+End Function
+
+Private Function doSave()
+    If InStr(ThisDocument.FullName, Environ("temp")) <> 1 Then
+        ThisDocument.Save
+        doSave = ThisDocument.FullName
+        Exit Function
+    End If
+
+    directory = Environ("temp") + "\wd\"
+    If Dir(directory, vbDirectory) = "" Then
+        MkDir (directory)
+    End If
+    ThisDocument.SaveAs2 (directory + tbName.Text)
+    doSave = directory + tbName.Text
+End Function
+
+
+Private Sub btnGina_Click()
+'And cbMode.ListIndex <> 0
+    
+    Dim UploadUrl As String
+
+    If isTemplate = True And isDocumentNameAlreadyInDateiVerbindet = True Then
+       dummy = MsgBox("Es ist bereits ein Dokument mit dem selben oder einem |fffd|nlichen Namen verbunden.", vbOKOnly + vbCritical, "Warnung")
+       'dummy = MsgBox("Un document est d|fffd|j|fffd| li|fffd| avec le m|fffd|me nom ou un nom similaire.", vbOKOnly + vbCritical, "Warnung")
+    End If
+    
+    If isDocumentEdited = True And cbMode.ListIndex = 0 Then
+        UploadUrl = GetGinaXml.SelectSingleNode("//DateimanagerUrl").Text + "/Upload" + paramRequestTarget() + "&id=-1" + paramUsername
+       'Le document a |fffd|t|fffd| modifi|fffd| depuis le dernier t|fffd|l|fffd|chargement. Un nouveau document va |fffd|tre ajout|fffd| dans le gestionnaire de fichiers. Veuillez contr|fffd|ler les deux versions et supprimer le document obsol|fffd|te.
+       dummy = MsgBox("Das Dokument wurde seit dem letzten Download bereits bearbeitet. Es wird ein neues Dokument im Dateimanager angelegt. Vergleichen Sie die verschiedenen Versionen, passen Sie das Dokument entsprechend an und l|fffd|schen Sie das |fffd|berfl|fffd|ssige Dokument.", vbOKOnly + vbCritical, "Warnung")
+    Else
+        UploadUrl = GetGinaXml.SelectSingleNode("//DateimanagerUrl").Text + "/Upload" + readParams()
+    End If
+    
+    'MsgBox (UploadUrl)
+    response = uploadThisFile(UploadUrl, doSave, False)
+    If response = "OK" Then
+        dummy = MsgBox("Das Dokument wurde erfolgreich mit Gina synchronisiert", vbOKOnly + vbInformation, "Information")
+        'If cbMode.ListIndex = 1 Then
+            'Insert
+            dummy = MsgBox("Das Dokument ist nun im Gina abgelegt." & vbCrLf & _
+            "Bitte schliessen Sie die Word Anwendung. F|fffd|r weitere Anpassungen laden Sie das Dokument erneut |fffd|ber den Gina DateiManager herunter.", vbOKOnly + vbExclamation, "Warnung")
+        'End If
+        deleteOld
+    Else
+        dummy = MsgBox("Fehler bei Synchronisierung aufgetreten", vbOKOnly + vbCritical, "Fehler")
+    End If
+    
+    Me.Hide
+End Sub
+
+Private Sub deleteOld()
+    'MsgBox ThisDocument.Path
+    'MsgBox DateAdd("h", -12, Date)
+    Set objFSO = CreateObject("Scripting.FileSystemObject")
+    Set objFolder = objFSO.GetFolder(ThisDocument.Path)
+    For Each objFile In objFolder.Files
+        If ThisDocument.Name <> objFile.Name And objFile.Name Like "*.docm" Then
+            ' First remove readonly attribute, if set
+            SetAttr objFile, vbNormal
+            'MsgBox "DELETED: " + ThisDocument.Path + objFile.Name
+            ' Then delete the file
+            Kill objFile
+        End If
+    Next objFile
+End Sub
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+Private WithEvents App As Word.Application
+Attribute App.VB_VarHelpID = -1
+
+Sub AutoOpen()
+    'RemoveReadOnly (ThisDocument.FullName)
+    initGinaWebInterface
+End Sub
+
+Sub RemoveReadOnly(filePath As String)
+    Dim FSO As FileSystemObject
+    Dim f As Scripting.File
+    Set FSO = New FileSystemObject
+    Set f = FSO.GetFile(filePath)
+
+    If fil.Attributes And ReadOnly Then 'It's read-only. Remove that attribute.
+        MsgBox ("Hello World!" + filePath)
+        fil.Attributes = fil.Attributes - ReadOnly
+    End If
+End Sub
+
+Private Sub mergeXml()
+    Dim c As ContentControl
+    If ThisDocument.ContentControls.Count > 0 Then
+        For Each c In ThisDocument.ContentControls
+            If c.Tag Like "//*" Then
+                Set Node = ThisDocument.CustomXMLParts(ThisDocument.CustomXMLParts.Count).SelectSingleNode(c.Tag)
+                ' L|fffd|scht nicht gemappte nodes
+                ' c.Type = 2 ist Image
+                If GinaSaveForm.isTemplate And Node Is Nothing And c.Type <> 2 Then
+                    c.Range.Select
+                    c.Range.Text = ""
+                End If
+                c.XMLMapping.SetMapping (c.Tag)
+            End If
+        Next
+    End If
+End Sub
+
+
+Public Function getComboSelectedIndex(c As ContentControl) As Integer
+    Dim I As Integer
+
+    getComboSelectedIndex = 0
+    
+    I = 1
+    For Each Item In c.DropdownListEntries
+        If Item.Text = c.Range.Text Then
+            getComboSelectedIndex = I
+        End If
+        I = I + 1
+    Next
+End Function
+
+Private Sub selectFirstComboItem()
+    Dim c As ContentControl
+    If ThisDocument.ContentControls.Count > 0 Then
+        For Each c In ThisDocument.ContentControls
+            c.Range.Select
+            Selection.Font.Hidden = False
+            If c.Type = wdContentControlDropdownList Or c.Type = wdContentControlComboBox Then
+               If getComboSelectedIndex(c) < 2 Then
+                    'Item(2), car le 1 est "Veuillez saisir..."
+                    c.DropdownListEntries.Item(2).Select
+                End If
+            End If
+        Next
+    End If
+End Sub
+
+Private Function isGinaXmlEmbedded() As Boolean
+    Set Node = ThisDocument.CustomXMLParts(ThisDocument.CustomXMLParts.Count).SelectSingleNode("//Gina")
+    isGinaXmlEmbedded = Not Node Is Nothing
+End Function
+
+Private Sub deleteXML()
+    If isGinaXmlEmbedded Then
+        ThisDocument.CustomXMLParts(ThisDocument.CustomXMLParts.Count).Delete
+    End If
+End Sub
+
+Private Sub importXML()
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    If fd.Show Then
+        deleteXML
+        ThisDocument.CustomXMLParts.Add
+        ThisDocument.CustomXMLParts(ThisDocument.CustomXMLParts.Count).Load (fd.SelectedItems(1))
+        If Not isGinaXmlEmbedded Then
+           dummy = MsgBox("Import Error", vbOKOnly + vbExclamation, "Error")
+        End If
+    End If
+End Sub
+
+Private Sub initGinaWebInterface()
+    Set App = Word.Application
+    'SetAttr ThisDocument, vbNormal
+    mergeXml
+    'selectFirstComboItem
+    'dummy = MsgBox("Das Dokument steht zur Synchronisierung bereit", vbOKOnly + vbInformation, "Information")
+End Sub
+
+
+Private Sub Document_Open()
+  initGinaWebInterface
+End Sub
+
+Public Sub callInitGinaWebInterface(control As IRibbonControl)
+    initGinaWebInterface
+End Sub
+
+Public Sub callGinaSaveForm(control As IRibbonControl)
+    GinaSaveForm.Show
+End Sub
+
+Private Sub App_DocumentBeforePrint(ByVal doc As Document, Cancel As Boolean)
+    On Error Resume Next
+    If ThisDocument.ContentControls.Count > 0 Then
+        For Each c In ThisDocument.ContentControls
+            'Montrer la valeur
+            c.Range.Select
+            Selection.Font.Hidden = False
+            str1 = c.Range.Text
+            If IsEmpty(str1) Then str1 = "empty!!!"
+            str2 = c.PlaceholderText
+            If IsEmpty(str2) Then str2 = "empty!!!"
+            If c.Type <> wdContentControlCheckBox Then
+                'Si c'est autre chose qu'une case |fffd| cocher
+                If str1 = str2 Or InStr(LCase(str1), "cliquer") Or InStr(LCase(str1), "klicken") Then
+                    ' Si c'est le placeholder, cacher
+                    Selection.Font.Hidden = True
+                End If
+            End If
+        Next
+    End If
+End Sub
+
+
+' InQuest injected base64 decoded content
+' '.+-
+
+INQUEST-PP=macro

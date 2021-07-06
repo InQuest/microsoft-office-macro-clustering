@@ -1,0 +1,2775 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+Public FocusName As String
+Public VictimWarned As Boolean
+Sub AutoOpen()
+'
+' AutoOpen Macro
+' New version for April/May MR1
+' 21/03/2013 - CMD
+' 25/06/2013 - SH - additional modification to remove nDeliusInitialDownload flags as stopped saves occurring more than once to ND folder
+
+'''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''Prepare Variables'''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''
+Dim SaveLocation As String
+Dim NDAFolder As String
+Dim doc As Document
+Dim NDeliusViewReadOnly As Variable
+Dim b_NDeliusViewReadOnly As Boolean
+Dim wshShell As Variant
+Dim Counter As Integer
+
+Set doc = ActiveDocument
+'HS 29/7/16 removed doc versioning with Firefox
+'''''''''''''''''''''''''''''''''''''''''''
+'''''Do Not Save if this is a template'''''
+'''''''''''''''''''''''''''''''''''''''''''
+If LCase(Right(doc.Name, 4)) = ".dot" Then Exit Sub
+Call MoveDeliusBookmarks
+
+'''''''''''''''''''''''''''''''''''''''''''
+'''''Try to check for DocVar :            '
+'''''    If found        (use it)         '
+'''''     else         (new document)     '
+'''''''''''''''''''''''''''''''''''''''''''
+On Error Resume Next
+b_NDeliusViewReadOnly = doc.Variables.Item("NDeliusViewReadOnly").Value
+If Err.Number <> 0 Then
+   b_NDeliusViewReadOnly = False
+End If
+
+'''''''''''''''''''''''''''''''''''''''''''
+'''Debug error handler- disabled for live''
+'''''''''''''''''''''''''''''''''''''''''''
+On Error GoTo ErrHandler
+
+'''''''''''''''''''''''''''''''''''''''''''
+'''''If view mode, do not save document''''
+'''''''''''''''''''''''''''''''''''''''''''
+If b_NDeliusViewReadOnly = True Then
+    Call MessageUpdate
+    Exit Sub
+End If
+
+'''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''Find ND Folder'''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''
+Set wshShell = CreateObject("Wscript.Shell")
+NDAFolder = wshShell.SpecialFolders("MyDocuments") & "\ND\"
+
+'''''''''''''''''''''''''''''''''''''''''''
+'''Create folder for ND if does not exist''
+'''''''''''''''''''''''''''''''''''''''''''
+If Len(Dir(NDAFolder, vbDirectory)) = 0 Then
+    MkDir (NDAFolder)
+End If
+
+'SH 05/07/2013
+'Bug around Windows where [n] is added to the filename
+'Causes confusion as numbering isn't consistently increased each time
+'Can result in trusts uploading the wrong version of the document
+'from the ND folder
+Dim strFileName As String, strFileType As String, strChars As String
+Dim intFileNameChanged As Integer, intPos As Integer, strStrippedName As String
+
+'get file name parts
+strFileName = Left(ActiveDocument.Name, Len(ActiveDocument.Name) - 4)  'Left("NAT RM2000_10052016_132349_BAST_k_D015731[1].doc", Len("NAT RM2000_10052016_132349_BAST_k_D015731[1].doc") - 4) '
+strFileType = Right(ActiveDocument.Name, 4)
+
+'Find where the "[" starts working backwards from end of string
+intPos = InStrRev(strFileName, "[")
+
+If intPos <> 0 Then  'In case we leave Firefox
+    'strip out the [n] value(s)
+    strStrippedName = Left(strFileName, intPos - 1)
+    strFileName = strStrippedName + strFileType
+Else
+    'This is new code to handle the -n issue introduced via Firefox
+    For Counter = Len(strFileName) To 1 Step -1
+        Select Case Mid(strFileName, Counter, 1)
+            Case "-"   'dash;We have a version
+                strFileName = Left(strFileName, Counter - 1) + strFileType
+                Exit For
+            Case "_"  'underscore; There is no version
+                strFileName = ActiveDocument.Name
+                Exit For
+        End Select
+    Next
+End If
+
+
+'''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''Save the document'''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''
+SaveLocation = NDAFolder & strFileName
+Options.BackgroundSave = False
+doc.SaveAs SaveLocation
+Call MessageUpdate
+If GetBM("txtAuthor") = "" Then
+    Call Start
+End If
+Exit Sub
+
+ErrHandler:
+    Resume Next
+     
+End Sub
+Sub SaveDocument(StartState As String, EndState As String)
+    If StartState = EndState Then Exit Sub
+    Call Unprotect(0)
+    Call InsertToBookmark("AuditTrail", ActiveDocument.Name + " " + CStr(Now))
+    Call Protect(0)
+    frmSaving.Show (0)
+    Options.BackgroundSave = False
+    Call ActiveDocument.Save
+    Call Unload(frmSaving)
+    MsgBox "Your short format report has been saved.  Remember to upload it to Delius" _
+        , vbOKOnly + vbInformation, "Short Format Report Saved"
+End Sub
+
+Sub CreateCourtPortalVersion(Nonsense As Integer)
+Attribute CreateCourtPortalVersion.VB_Description = "Creates a copy of the short format report which can be loaded to the court portal."
+Attribute CreateCourtPortalVersion.VB_ProcData.VB_Invoke_Func = "Short_Format_Report.Module1.CreateCourtPortalVersion"
+    'This macro creates a new document without any macros.  This can be loaded to the
+    'court portal.
+    Dim SFRDoc As Document
+    Dim PortalDoc As Document
+    Dim Filename As String
+    Dim NDAFolder As String
+    Dim wshShell As Variant
+    Dim Path As String
+    If GetBM("txtAuthor") = "" Then
+        MsgBox "The short format report is not complete.  Please complete and sign the report before producing the court portal version", _
+        vbInformation + vbOKOnly, "Report Incomplete"
+        Exit Sub
+    End If
+    Set SFRDoc = ActiveDocument
+    If IsReadOnly(SFRDoc) Then
+        'We need to save this in the My Documents\ND directory!  Check it exists and create
+        Set wshShell = CreateObject("Wscript.Shell")
+        NDAFolder = wshShell.SpecialFolders("MyDocuments") & "\ND\"
+        If Len(Dir(NDAFolder, vbDirectory)) = 0 Then
+            MkDir (NDAFolder)  'Created
+        End If
+    End If
+    Documents.Add DocumentType:=wdNewBlankDocument  'Create blank
+    Selection.Font.Name = "Calibri"  'Set the font
+    Set PortalDoc = ActiveDocument  'Get a handle on new doc
+    SFRDoc.Activate  'Focus back on SFR
+    Selection.WholeStory  'select all
+    Selection.Copy  'Clipboard
+    PortalDoc.Activate  'Back to portal
+    Selection.PasteAndFormat (wdFormatOriginalFormatting)
+    PortalDoc.Protect wdAllowOnlyReading, Password:="Cr1m1nal"
+    'Paste
+    If IsReadOnly(SFRDoc) Then
+        Filename = NDAFolder + Left(SFRDoc.Name, Len(SFRDoc.Name) - 4) + "CP"
+    Else
+        Filename = Left(SFRDoc.FullName, Len(SFRDoc.FullName) - 4) + "CP"
+    End If
+    PortalDoc.SaveAs (Filename)  'Save new doc
+    PortalDoc.Close  'Close it
+    MsgBox "A file called " + Chr(10) + Mid(Filename, InStr(UCase(Filename), "MY DOCUMENTS\")) + ".doc" + Chr(10) _
+        + "Has been created without any Visual Basic macros for uploading to the court portal"
+    SFRDoc.Activate
+    Selection.GoTo what:=wdGoToBookmark, Name:="CRN"
+    
+End Sub
+
+Private Sub MoveDeliusBookmarks()
+    Dim FullName As String
+    If GetBM("CRN") = "" Then Exit Sub  'No need to run again.
+    If DeliusLock Then Exit Sub  'A delius lock is on.  the bookmark is being viewed - don't auto populate
+    Call Unprotect(0)
+    Call InsertToBookmark("txtCRN", GetBM("CRN"))
+    FullName = Trim(GetBM("OFFENDERTITLE"))
+    If FullName <> "" Then FullName = FullName + " "
+    If Trim(GetBM("FORENAME")) <> "" Then FullName = FullName + Trim(GetBM("FORENAME"))
+    If Trim(GetBM("FORENAME2")) <> "" Then FullName = FullName + " " + Trim(GetBM("FORENAME2"))
+    If Trim(GetBM("SURNAME")) <> "" Then FullName = FullName + " " + Trim(GetBM("SURNAME"))
+    Call InsertToBookmark("txtName", FullName)
+    Call InsertToBookmark("txtDOB", GetBM("DOB"))
+    Call InsertToBookmark("txtAge", GetBM("OFFENDERAGE"))
+    Call InsertToBookmark("txtAddress", GetBM("MAINADDRESS"))
+    Call InsertToBookmark("txtCourt", GetBM("LATESTCOURTAPPEARANCECOURT"))
+    Call InsertToBookmark("txtHearingDate", GetBM("LATESTCOURTAPPEARANCEDATE"))
+    Call InsertToBookmark("txtMainOffence", GetBM("MAINOFFENCE"))
+    Call InsertToBookmark("CRN", "")
+    Call InsertToBookmark("OFFENDERTITLE", "")
+    Call InsertToBookmark("FORENAME", "")
+    Call InsertToBookmark("FORENAME2", "")
+    Call InsertToBookmark("SURNAME", "")
+    Call InsertToBookmark("DOB", "")
+    Call InsertToBookmark("OFFENDERAGE", "")
+    Call InsertToBookmark("MAINADDRESS", "")
+    Call InsertToBookmark("LATESTCOURTAPPEARANCECOURT", "")
+    Call InsertToBookmark("LATESTCOURTAPPEARANCEDATE", "")
+    Call InsertToBookmark("MAINOFFENCE", "")
+    ActiveWindow.View.ShowBookmarks = False
+    Call Protect(0)
+    Call NoIssues
+End Sub
+Public Sub InsertToBookmark(ByVal BName As String, ByVal inhalt As String)
+    If ActiveDocument.Bookmarks.Exists(BName) Then
+        Dim R As Range
+        Set R = ActiveDocument.Bookmarks(BName).Range
+        R.Text = inhalt
+        ActiveDocument.Bookmarks.Add BName, R
+    Else
+        Debug.Print "Bookmark not found: " & BName
+    End If
+End Sub
+
+
+Private Sub ClearDown()
+    Dim BMNames() As String
+    Dim Book As Bookmark
+    Dim Counter As Integer
+    ReDim BMNames(ActiveDocument.Bookmarks.Count - 1)
+    For Each Book In ActiveDocument.Bookmarks
+        BMNames(Counter) = Book.Name
+        Counter = Counter + 1
+    Next Book
+    Call Unprotect(0)
+    For Counter = 0 To UBound(BMNames())
+        Call InsertToBookmark(BMNames(Counter), "")
+    Next
+    Call InsertToBookmark("txtName", "Joe Bloggs")
+    Call InsertToBookmark("txtCRN", "1234567")
+    Call InsertToBookmark("txtNoIssues", "Accommodation" + Chr(10) + "Employment" + Chr(10) + "Finance" + Chr(10) + _
+    "Drugs" + Chr(10) + "Thinking and Behaviour" + Chr(10) + "Alcohol" + Chr(10) + "Physical and Mental Health" + "Relationships")
+    Call Protect(0)
+    
+End Sub
+
+
+Public Sub SpellCheckHide(Text As String, Contr As Control)
+    If Text = "" Then
+        Contr.Visible = False
+    Else
+        Contr.Visible = True
+    End If
+End Sub
+
+Sub Protect(Nonsense As Integer)
+    If ActiveDocument.ProtectionType <> 3 Then
+        ActiveDocument.Protect Type:=wdAllowOnlyReading, Password:="Cr1m1nal"
+    End If
+End Sub
+
+Sub Unprotect(Nonsense As Integer)
+    If ActiveDocument.ProtectionType = 3 Then
+        ActiveDocument.Unprotect Password:="Cr1m1nal"
+    End If
+End Sub
+
+Function DeliusLock() As Boolean
+    DeliusLock = False
+    On Error GoTo ErrHandler:
+    ActiveDocument.Unprotect Password:="Cr1m1nal"
+    Call Protect(0)
+    Exit Function
+ErrHandler:
+    If Err = 5485 Then
+        DeliusLock = True
+        Resume Next
+    Else
+        MsgBox "An unexpected error occurred (" + CStr(Err) + ") when checking for a delius lock"
+        DeliusLock = True
+    End If
+End Function
+
+Public Sub SpellCheckDisplay(btnSpellCheck As CommandButton, CurrentValue As String)
+    If CurrentValue <> "" Then
+        btnSpellCheck.Visible = True
+    Else
+        btnSpellCheck.Visible = False
+    End If
+End Sub
+
+Public Sub SpellChecker(UnCheckedText As String)
+    Dim varWords
+    Dim SpellingErrors As String
+    Dim Counter As Integer
+    Dim n As Long, lngLen As Long
+    varWords = Split(UnCheckedText, " ")
+    For n = LBound(varWords) To UBound(varWords)
+        If Not Application.CheckSpelling(varWords(n)) Then
+            Counter = Counter + 1
+            SpellingErrors = SpellingErrors + varWords(n) + Chr(10)
+        Else
+            lngLen = lngLen + Len(varWords(n)) + 1
+        End If
+    Next n
+    If Counter = 1 Then
+        MsgBox "The following word might be spelt wrongly" + Chr(10) + Chr(10) + SpellingErrors, vbOKOnly, "Potential Spelling Error"
+    ElseIf Counter > 1 Then
+        MsgBox "The following words might be spelt wrongly" + Chr(10) + Chr(10) + SpellingErrors, vbOKOnly, "Potential Spelling Error"
+    Else
+        MsgBox "No Spelling Errors found", vbOKOnly, "Spelling Looks Good"
+    End If
+End Sub
+
+Sub SpellCheck(Nonsense As Integer)
+    Dim BM As Bookmark
+    Dim Counter As Integer
+    Dim BookMarkNames(9)
+    BookMarkNames(0) = "txtOther"
+    BookMarkNames(1) = "txtMainOffence"
+    BookMarkNames(2) = "txtOtherOffences"
+    BookMarkNames(3) = "txtOffenceSummary"
+    BookMarkNames(4) = "txtOffenceAnalysis"
+    BookMarkNames(5) = "txtOffenderAssessment"
+    BookMarkNames(6) = "txtOffendingPattern"
+    BookMarkNames(7) = "txtLikelihoodOfReoffending"
+    BookMarkNames(8) = "txtRiskOfSeriousHarm"
+    BookMarkNames(9) = "txtProposal"
+    
+    For Counter = 0 To 9
+        Set BM = ActiveDocument.Bookmarks(BookMarkNames(Counter))
+        Call Module1.Unprotect(0)
+        BM.Range.SpellingChecked = False
+        If BM.Range.SpellingErrors.Count > 0 Then
+            BM.Range.CheckSpelling
+        End If
+        Call Module1.Protect(0)
+    Next
+        
+End Sub
+
+Function SetCaption() As String
+    SetCaption = GetBM("txtName") + " CRN:" + GetBM("txtCRN") + " PNC:" + GetBM("txtPNC") + " Date of birth:" + GetBM("txtDOB")
+End Function
+
+
+Function GetBM(BookmarkName As String) As String
+    GetBM = ActiveDocument.Bookmarks(BookmarkName).Range.Text
+End Function
+Function GlobalExit(Ctrl As Control) As Boolean
+    GlobalExit = False
+    If Ctrl.Value <> "" Then
+        If Not Ctrl.MatchFound Then
+            Ctrl.Value = Null
+            GlobalExit = True
+        End If
+    End If
+End Function
+
+Sub GlobalKeyDown(Ctrl As Control, KeyCode As MSForms.ReturnInteger)
+    If KeyCode = 8 Then
+        Ctrl.Value = ""
+    End If
+End Sub
+
+Function EditSFR() As Boolean
+    Dim Response As VbMsgBoxResult
+    EditSFR = False
+    If DeliusLock Then
+        MsgBox "You can't view the input screens or roll back the report because " + Chr(10) _
+        + "the document has been viewed from Delius as read only", vbOKOnly, "Read Only"
+        Exit Function
+    End If
+    If GetBM("txtAuthor") <> "" Then
+        Response = MsgBox("This short format report has already been completed.  Do you wish to roll it back?", vbQuestion + vbYesNo + vbDefaultButton1, "Roll Back?")
+        If Response = vbYes Then
+            Call Module1.Unprotect(0)
+            Call InsertToBookmark("txtAuthor", "")
+            Call InsertToBookmark("txtDate", "")
+            Call Module1.Protect(0)
+            EditSFR = True
+        End If
+    Else
+        EditSFR = True
+    End If
+End Function
+
+
+Function WorkOutAge(Optional Birthday As String, Optional HearingDate As String) As String
+    Dim intAge As Integer
+    Dim CurrentDate As Date
+    Dim datBirthday As Date
+    Dim HearingUsed As Boolean
+    
+    If HearingDate = "" Then 'No hearing date passed through - go see if you can find it off the doc
+        If IsDate(GetBM("txtHearingDate")) Then
+            CurrentDate = CDate(GetBM("txtHearingDate"))
+            HearingUsed = True
+        Else
+            CurrentDate = Now
+        End If
+    ElseIf IsDate(HearingDate) Then
+        CurrentDate = CDate(HearingDate)
+        HearingUsed = True
+    Else
+        CurrentDate = Now
+    End If
+    
+    If Birthday = "" Then
+        If IsDate(GetBM("txtDOB")) Then
+            datBirthday = CDate(GetBM("txtDOB"))
+        Else
+            WorkOutAge = ""
+            Exit Function  'We can't work out the age without a date of birth
+        End If
+    ElseIf IsDate(Birthday) Then
+        datBirthday = CDate(Birthday)
+    Else
+        WorkOutAge = ""
+        Exit Function   'We can't work out the age without a date of birth
+    End If
+        
+    
+        
+    intAge = DateDiff("yyyy", datBirthday, CurrentDate)
+    If CurrentDate < DateSerial(Year(CurrentDate), Month(datBirthday), Day(datBirthday)) Then
+        intAge = intAge - 1
+    End If
+    WorkOutAge = CStr(intAge)
+    If intAge > 110 Then
+        If HearingUsed Then
+            MsgBox "The offender appears to be too old (" + WorkOutAge + ")." + Chr(10) + "Check the hearing date and birth date for accuracy", vbCritical, "Invalid Age"
+            WorkOutAge = ""
+            Exit Function
+        Else
+            MsgBox "The offender appears to be too old (" + WorkOutAge + ")." + Chr(10) + "Check the birth date for accuracy", vbCritical, "Invalid Age"
+            WorkOutAge = ""
+            Exit Function
+        End If
+    ElseIf intAge < 16 Then
+        If HearingUsed Then
+            MsgBox "The offender appears to be too young (" + WorkOutAge + ")" + Chr(10) + "Check the hearing date and birth date for accuracy", vbCritical, "Invalid Age"
+            WorkOutAge = ""
+            Exit Function
+        Else
+            MsgBox "The offender appears to be too young (" + WorkOutAge + ")" + Chr(10) + "Check the birth date for accuracy", vbCritical, "Invalid Age"
+            WorkOutAge = ""
+            Exit Function
+        End If
+    End If
+End Function
+
+Function GetValues(Form As UserForm) As String
+    Dim Ctrl As Control
+    For Each Ctrl In Form.Controls
+        Select Case LCase(Left(Ctrl.Name, 3))
+            Case "cmb", "txt"
+                GetValues = GetValues + Ctrl.Value
+            Case "lbl", "btn", "cmd"
+            
+            Case Else
+                MsgBox Ctrl.Name
+        End Select
+    Next
+End Function
+
+Sub PopulateForm(Form As UserForm)
+    Dim Ctrl As Control
+    For Each Ctrl In Form.Controls
+        Select Case Left(Ctrl.Name, 3)
+            Case "txt", "cmb"
+            Ctrl.Value = GetBM(Ctrl.Name)
+        Case "cmd", "btn", "lbl"
+        Case Else
+            MsgBox Ctrl.Name
+        End Select
+    Next
+End Sub
+
+Sub SaveForm(Form As UserForm)
+    Dim Ctrl As Control
+    Call Unprotect(0)
+    For Each Ctrl In Form.Controls
+        Select Case Left(Ctrl.Name, 3)
+            Case "txt", "cmb"
+            Call InsertToBookmark(Ctrl.Name, Ctrl.Value)
+        Case "cmd", "btn", "lbl"
+        Case Else
+            MsgBox Ctrl.Name
+        End Select
+    Next
+    Call Protect(0)
+    ActiveDocument.UndoClear
+End Sub
+
+
+Sub CloseAllForms(CurrentFormName As String)
+    Dim TotalForms As Integer
+    Dim Counter As Integer
+    Do Until UserForms.Count - 1 = 0  'Until there is one
+        If CurrentFormName <> UserForms(Counter).Name Then
+            Call Unload(UserForms(Counter))
+            Counter = 0
+        Else
+            Counter = Counter + 1
+        End If
+    Loop
+    Call Unload(UserForms(0))
+    Selection.GoTo what:=wdGoToBookmark, Name:="CRN"
+End Sub
+
+
+Sub ComboYN(Ctrl As ComboBox)
+    If Ctrl.ListCount = 0 Then
+        Ctrl.AddItem "Yes"
+        Ctrl.AddItem "No"
+    End If
+End Sub
+Private Sub ClearSOI()
+    Dim SOI(8) As String
+    Dim Counter As Integer
+    SOI(0) = "cmbInterview"
+    SOI(1) = "cmbServiceRecords"
+    SOI(2) = "cmbCPS"
+    SOI(3) = "cmbOASys"
+    SOI(4) = "cmbPrevConv"
+    SOI(5) = "cmbVictim"
+    SOI(6) = "cmbChildChecks"
+    SOI(7) = "cmbPolice"
+    SOI(8) = "cmbOther"
+    Call Unprotect(0)
+    For Counter = 0 To 8
+        Call InsertToBookmark(SOI(Counter), "")
+    Next
+    Call Protect(0)
+End Sub
+
+Private Sub NoIssues()
+    Call Unprotect(0)
+    Call InsertToBookmark("txtNoIssues", "Accommodation" + Chr(10) + "Employment" + Chr(10) + "Finance" + Chr(10) + _
+"Drugs" + Chr(10) + "Alcohol" + Chr(10) + "Physical and Mental Health" + Chr(10) + _
+"Relationships" + Chr(10) + "Thinking and Behaviour")
+    Call Protect(0)
+End Sub
+
+Private Sub SetHeaderForTestPurposes()
+    Call Unprotect(0)
+    If GetBM("txtName") = "" Then
+        Call InsertToBookmark("txtName", "Joe Bloggs")
+        Call InsertToBookmark("txtCRN", "123456")
+        Call InsertToBookmark("txtDOB", "15/04/1966")
+        Call InsertToBookmark("txtPNC", "33/993399H")
+    Else
+        Call InsertToBookmark("txtName", "")
+        Call InsertToBookmark("txtCRN", "")
+        Call InsertToBookmark("txtDOB", "")
+        Call InsertToBookmark("txtPNC", "")
+    End If
+End Sub
+Sub Start()
+Attribute Start.VB_Description = "Invokes main menu"
+Attribute Start.VB_ProcData.VB_Invoke_Func = "TemplateProject.Module1.Start"
+'Call the main menu and is invoked from the toolbar
+'
+    frmStartNavigation.Show
+End Sub
+
+
+Function IsReadOnly(doc As Document) As Boolean
+    Dim MyVar As Variable
+    For Each MyVar In doc.Variables
+        If MyVar.Name = "NDeliusViewReadOnly" Then
+            IsReadOnly = True
+            Exit Function
+        End If
+    Next
+    IsReadOnly = False
+End Function
+
+Sub WriteUserInfo(Key As String, Value As String)
+    Dim FilePath As String
+    Dim FileNum As Integer
+    Dim wshShell As Variant
+    Dim FileEntry() As String
+    Dim LineContent As String
+    Dim ValueNotFound As Boolean
+    Dim NDAFolder As String
+    Dim FileDoesExist As Boolean
+    Dim Counter As Integer
+    Set wshShell = CreateObject("Wscript.Shell")
+    NDAFolder = wshShell.SpecialFolders("MyDocuments")
+
+'Create folder for ND if does not exist''
+    ValueNotFound = True
+    If Len(Dir(NDAFolder, vbDirectory)) = 0 Then
+        MkDir (NDAFolder)
+    End If
+    FileNum = FreeFile()
+    FileDoesExist = True
+    On Error GoTo NoFile
+    Open NDAFolder + "\Userinfo.ini" For Input As #FileNum
+    On Error GoTo 0
+    If FileDoesExist Then
+        Do Until EOF(FileNum)
+            Line Input #FileNum, LineContent
+            ReDim Preserve FileEntry(Counter)
+            If Left(LineContent, InStr(1, LineContent, ":=") - 1) = Key Then
+                FileEntry(Counter) = Key + ":=" + Value
+                ValueNotFound = False
+            Else
+                FileEntry(Counter) = LineContent
+            End If
+            Counter = Counter + 1
+        Loop
+    End If
+    If ValueNotFound Then
+        ReDim Preserve FileEntry(Counter)
+        FileEntry(Counter) = Key + ":=" + Value
+    End If
+    Close #FileNum
+    
+    Open NDAFolder + "\Userinfo.ini" For Output As #FileNum
+    For Counter = 0 To UBound(FileEntry())
+        Print #FileNum, FileEntry(Counter)
+    Next
+    Close #FileNum
+    Exit Sub
+NoFile:
+    If Err = 53 Then
+        FileDoesExist = False
+        Resume Next
+    End If
+End Sub
+
+Function ReadUserInfo(Key As String) As String
+    Dim FilePath As String
+    Dim FileNum As Integer
+    Dim wshShell As Variant
+    Dim LineContent As String
+    Dim Position As Integer
+    Dim NDAFolder As String
+    Set wshShell = CreateObject("Wscript.Shell")
+    NDAFolder = wshShell.SpecialFolders("MyDocuments")
+
+    ReadUserInfo = "0"
+'Create folder for ND if does not exist''
+    
+    If Len(Dir(NDAFolder, vbDirectory)) = 0 Then
+        MkDir (NDAFolder)
+    End If
+    
+    FileNum = FreeFile()
+    On Error GoTo FileDoesNotExist
+    Open NDAFolder + "\Userinfo.ini" For Input As #FileNum
+    On Error GoTo 0
+    Do Until EOF(FileNum)
+        Line Input #FileNum, LineContent
+        'Format HelpVersion:=12.2
+        Position = InStr(1, LineContent, Key)
+        If Position > 0 Then  'We have that key
+            LineContent = Mid(LineContent, 2, Len(LineContent) - 1)
+            Position = InStr(1, LineContent, ":=") + 2
+            ReadUserInfo = Mid(LineContent, Position, Len(LineContent) - 1)
+            Exit Do
+        End If
+    Loop
+    Close #FileNum
+    Exit Function
+FileDoesNotExist:
+    If Err = 53 Then
+        Exit Function
+    Else
+        MsgBox "Odd error when trying to read userinfo.ini ( " + CStr(Err()) + " Please report this "
+        Exit Function
+    End If
+End Function
+
+Sub MessageUpdate()
+    Dim Response
+    Dim Text As String
+    Select Case CSng(ReadUserInfo("SFRVersion"))
+        Case Is < 1.08
+            Text = "Based on user feedback, version 1.08 has some new features you may wish to be aware of: -" + vbCrLf + vbCrLf + _
+            "When the document is opened, the menu invokes automatically (if the report is work in progress), removing the need to " + _
+            "open the menu up manually.  " + _
+            "Note you can open the menu at anytime from the 'Short Format Report - Main Menu' button on the toolbar" + vbCrLf + vbCrLf + _
+            "The ability to create a report for loading into the court portal now works when using 'Update' or 'View" + _
+            " from Delius." + vbCrLf + vbCrLf + _
+            "A Delius defect around file versioning has been resolved." + vbCrLf + vbCrLf + _
+            "If you have read this and don't want to be bothered by it again, click Yes (otherwise No)" + vbCrLf
+    End Select
+    If Text <> "" Then
+    Response = MsgBox(Text, vbYesNo, "Application Update")
+    End If
+    If Response = vbYes Then
+        Call WriteUserInfo("SFRVersion", "1.08")
+    End If
+End Sub
+
+Function RollBack() As Boolean
+    If GetBM("txtAuthor") <> "" Then
+        If MsgBox("The report has already been signed and locked." + Chr(10) _
+                + "Do you want to roll it back?", vbYesNo + vbQuestion, "Rollback?") = vbYes Then
+            Call Module1.Unprotect(0)
+            Call InsertToBookmark("txtAuthor", "")
+            Call InsertToBookmark("txtDate", "")
+            Call Module1.Protect(0)
+            RollBack = True
+        Else
+            RollBack = False
+        End If
+    Else
+        RollBack = True
+    End If
+End Function
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+Attribute VB_Name = "frmAssIssues"
+Attribute VB_Base = "0{48FBCD09-82CF-4DA5-A38E-34A8D1F77D4B}{7325F476-8752-4492-956B-B7B2C515BB3F}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+Dim OriginalValue As String
+Dim Activating As Boolean
+Dim SelfSet As Boolean
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(EndState, StartState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmOffenderAssessment.Show
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    'Call SaveDocument(StartState, GetValues(Me))
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmOffenceAnalysis.Show
+End Sub
+
+Private Sub cmbAccommodation_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbAccommodation_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbAlcohol_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbAlcohol_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbDrugs_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbDrugs_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbEmployment_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbEmployment_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbFinance_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbFinance_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbHealth_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbHealth_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbRelationships_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbRelationships_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbThinking_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbThinking_Enter()
+   Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Sub SaveData()
+    Dim Contr As Control
+    Dim Text As String
+    Call Unprotect(0)
+    For Each Contr In Controls
+        If Left(Contr.Name, 3) = "cmb" Then
+            If Contr.Value = "N" Or Contr.Value = "" Then
+                Text = Text + GetIssue(Contr.Name) + Chr(10)
+            End If
+        End If
+    Next
+    Call InsertToBookmark("txtNoIssues", Text)
+    Call Protect(0)
+End Sub
+
+Function GetIssue(FieldName As String) As String
+    Select Case FieldName
+        Case "cmbAccommodation"
+            GetIssue = "Accommodation"
+        Case "cmbEmployment"
+            GetIssue = "Employment"
+        Case "cmbFinance"
+            GetIssue = "Finance"
+        Case "cmbDrugs"
+            GetIssue = "Drugs"
+        Case "cmbAlcohol"
+            GetIssue = "Alcohol"
+        Case "cmbHealth"
+            GetIssue = "Physical and Mental Health"
+        Case "cmbRelationships"
+            GetIssue = "Relationships"
+        Case "cmbThinking"
+            GetIssue = "Thinking and Behaviour"
+    End Select
+        
+End Function
+
+
+Private Sub SetBooleanValue()
+    Dim NewValue As String
+    If Not Activating And Not SelfSet Then
+    'If Me.ActiveControl.Value = "" Then
+        If OriginalValue = "N" Then
+            NewValue = Me.ActiveControl.Value
+            SelfSet = True
+            Me.ActiveControl.Value = "Y"
+            SelfSet = False
+            If NewValue = "" Then
+                Call SetNextFocus(Me.ActiveControl.Name)  'if they input nothing then they will need a push
+            End If
+        Else
+            NewValue = Me.ActiveControl.Value
+            SelfSet = True
+            Me.ActiveControl.Value = "N"
+            SelfSet = False
+            If NewValue = "" Then
+                Call SetNextFocus(Me.ActiveControl.Name)  'push them to next field
+            End If
+        End If
+    End If
+End Sub
+
+
+Private Sub SetNextFocus(ControlName As String)
+    Select Case ControlName
+            Case "cmbAccommodation"
+                cmbAlcohol.SetFocus
+            Case "cmbAlcohol"
+                cmbEmployment.SetFocus
+            Case "cmbEmployment"
+                cmbHealth.SetFocus
+            Case "cmbHealth"
+                cmbFinance.SetFocus
+            Case "cmbFinance"
+                cmbRelationships.SetFocus
+            Case "cmbRelationships"
+                cmbDrugs.SetFocus
+            Case "cmbDrugs"
+                cmbThinking.SetFocus
+            Case "cmbThinking"
+                btnNext.SetFocus
+        End Select
+End Sub
+
+
+Private Sub GlobalEntry(Ctrl As Control)
+    OriginalValue = Ctrl.Value
+End Sub
+
+Private Sub UserForm_Activate()
+    Dim Contr As Control
+    Dim NonIssues As String
+    Activating = True
+    Call AutoTab(Me.Controls, False)
+    For Each Contr In Controls
+        If Left(Contr.Name, 3) = "cmb" Then
+            With Contr
+                .AddItem "Y"
+                .AddItem "N"
+            End With
+       End If
+    Next
+    
+    NonIssues = ActiveDocument.Bookmarks("txtNoIssues").Range.Text
+    If InStr(1, NonIssues, "Accommodation") Then
+        cmbAccommodation.Value = "N"
+        OriginalValue = "N"
+    Else
+        cmbAccommodation.Value = "Y"
+        OriginalValue = "Y"
+    End If
+    If InStr(1, NonIssues, "Employment") Then
+        cmbEmployment.Value = "N"
+    Else
+        cmbEmployment.Value = "Y"
+    End If
+    If InStr(1, NonIssues, "Finance") Then
+        cmbFinance.Value = "N"
+    Else
+        cmbFinance.Value = "Y"
+    End If
+    If InStr(1, NonIssues, "Drugs") Then
+        cmbDrugs.Value = "N"
+    Else
+        cmbDrugs.Value = "Y"
+    End If
+    If InStr(1, NonIssues, "Alcohol") Then
+        cmbAlcohol.Value = "N"
+    Else
+        cmbAlcohol.Value = "Y"
+    End If
+    If InStr(1, NonIssues, "Physical and Mental Health") Then
+        cmbHealth.Value = "N"
+    Else
+        cmbHealth.Value = "Y"
+    End If
+    If InStr(1, NonIssues, "Relationships") Then
+        cmbRelationships.Value = "N"
+    Else
+        cmbRelationships.Value = "Y"
+    End If
+    If InStr(1, NonIssues, "Thinking and Behaviour") Then
+        cmbThinking.Value = "N"
+    Else
+        cmbThinking.Value = "Y"
+    End If
+    Activating = False
+    StartState = GetValues(Me)
+    Me.Caption = "Offender Assessment Issues for - " + SetCaption
+    cmbAccommodation.SetFocus
+    cmbAccommodation.SelStart = 0
+    cmbAccommodation.SelLength = 1
+    Call AutoTab(Me.Controls, True)
+
+End Sub
+
+
+
+Private Sub AutoTab(Contr As Controls, AutoTabState As Boolean)
+    Dim Ctrl As Control
+     For Each Ctrl In Controls
+        If Left(Ctrl.Name, 3) = "cmb" Then
+            Ctrl.AutoTab = AutoTabState
+       End If
+    Next
+
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+    
+End Sub
+Attribute VB_Name = "frmOffenceAnalysis"
+Attribute VB_Base = "0{698827A3-95D9-4115-9490-8732AFB5A1F2}{24D5C0C7-CB45-42E9-8318-5AA7616BE019}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnCancel_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    If VictimDetailsRequired(txtOffenceAnalysis.Value) Then
+        txtOffenceAnalysis.SetFocus
+        Exit Sub
+    End If
+    Me.Hide
+    frmAssIssues.Show
+End Sub
+
+Private Sub btnNext_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    If VictimDetailsRequired(txtOffenceAnalysis.Value) Then
+        txtOffenceAnalysis.SetFocus
+        Exit Sub
+    End If
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnOK_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    If VictimDetailsRequired(txtOffenceAnalysis.Value) Then
+        txtOffenceAnalysis.SetFocus
+        Exit Sub
+    End If
+    Me.Hide
+    frmOffenceDetails.Show
+End Sub
+
+Private Sub btnPrevious_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSpellCheck_Click()
+    Call SpellChecker(Me.txtOffenceAnalysis.Text)
+    txtOffenceAnalysis.SetFocus
+End Sub
+
+Private Sub UserForm_Activate()
+    Call PopulateForm(Me)
+    Call SpellCheckHide(Me.txtOffenceAnalysis, btnSpellCheck)
+    StartState = GetValues(Me)
+    Me.Caption = "Offence Analysis for - " + SetCaption
+End Sub
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+
+Private Sub btnOffenceAnalysisHint_Click()
+    frmOffenceAnalysisHint.Show 1
+    txtOffenceAnalysis.SetFocus
+End Sub
+
+Private Sub txtOffenceAnalysis_Change()
+        lblCharCountOffenceAnalysis.Caption = CStr(4000 - txtOffenceAnalysis.TextLength) + " remaining of 4000."
+        lblCharCountOffenceAnalysis.ControlTipText = CStr(4000 - txtOffenceAnalysis.TextLength) + " remaining of 4000."
+        VictimWarned = False
+        Call SpellCheckHide(Me.txtOffenceAnalysis, btnSpellCheck)
+End Sub
+
+Private Sub txtOffenceAnalysis_Enter()
+    lblCharCountOffenceAnalysis.Visible = True
+    lblCharCountOffenceAnalysis.Caption = CStr(4000 - txtOffenceAnalysis.TextLength) + " remaining of 4000."
+        lblCharCountOffenceAnalysis.ControlTipText = CStr(4000 - txtOffenceAnalysis.TextLength) + " remaining of 4000."
+End Sub
+
+Private Sub txtOffenceAnalysis_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountOffenceAnalysis.Visible = False
+End Sub
+
+Private Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+Function VictimDetailsRequired(Txt As String) As Boolean
+    Dim Response As Integer
+    VictimDetailsRequired = False
+    If VictimWarned <> True Then
+        If InStr(1, UCase(Txt), "VICTIM") = 0 Then
+            Response = MsgBox("Do you need to add victim details to your offence analysis?", vbYesNo + vbInformation, "Victim Information")
+            VictimWarned = True
+            If Response = vbYes Then
+                VictimDetailsRequired = True
+            End If
+        End If
+    End If
+End Function
+Attribute VB_Name = "frmOffenceAnalysisHint"
+Attribute VB_Base = "0{F2E881C7-FBCA-462B-9771-FC1B677AEAE7}{18506290-42C3-4E7C-A0CD-4ECD2D11888D}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Private Sub btnOK_Click()
+    Call Unload(Me)
+End Sub
+
+Attribute VB_Name = "frmOffenceDetails"
+Attribute VB_Base = "0{6F7C5B9B-45F1-4258-A592-CB056F27565B}{9D3C0591-B34A-4AEF-AD14-43E538ADA382}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+
+
+Private Sub btnCancel_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmOffenceAnalysis.Show
+End Sub
+
+
+
+Private Sub btnNext_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnOK_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmSOI.Show
+End Sub
+
+
+
+
+
+Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+
+
+Private Sub btnPrevious_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSpellCheck_Click()
+    Call SpellChecker(Me.txtOffenceSummary.Text)
+    txtOffenceSummary.SetFocus
+End Sub
+
+Private Sub txtMainOffence_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub txtOffenceSummary_Change()
+    lblCharCountOffenceSummary.Caption = CStr(1000 - Len(txtOffenceSummary.Value)) + "Characters remaining of 1000"
+    Call SpellCheckHide(Me.txtOffenceSummary, btnSpellCheck)
+End Sub
+
+Private Sub txtOffenceSummary_Enter()
+    lblCharCountOffenceSummary.Visible = True
+    lblCharCountOffenceSummary.Caption = CStr(1000 - Len(txtOffenceSummary.Value)) + "Characters remaining of 1000"
+        If txtOffenceSummary.Value = "" Then
+            btnSpellCheck.Visible = False
+        Else
+            btnSpellCheck.Visible = True
+        End If
+End Sub
+
+Private Sub txtOffenceSummary_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountOffenceSummary.Visible = False
+End Sub
+
+Private Sub txtOtherOffences_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub UserForm_Activate()
+    Call PopulateForm(Me)
+    StartState = GetValues(Me)
+    Call SpellCheckHide(Me.txtOffenceSummary, btnSpellCheck)
+    Me.Caption = "Offence Details for - " + SetCaption
+    If FocusName = "txtMainOffence" Then
+        txtMainOffence.SetFocus
+        FocusName = ""
+    End If
+End Sub
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+Attribute VB_Name = "frmOffenderAssHint"
+Attribute VB_Base = "0{4E680FA8-4E93-4F49-BC44-9DE568F28F8F}{A29CCDE0-E219-45AE-B571-CC7B5D2E4E45}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Private Sub btnOK_Click()
+    Call Unload(Me)
+End Sub
+Attribute VB_Name = "frmOffenderAssessment"
+Attribute VB_Base = "0{447FE790-BC17-4819-887F-AAAFE9C600D0}{7A3FD642-8407-4B48-9CD5-416D6DEAA1DD}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnCancel_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmOffendingPattern.Show
+End Sub
+
+Private Sub btnNext_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOffenderAssessementHint_Click()
+    Dim Contr As Control
+    Dim Hint As String
+    Call Load(frmOffenderAssHint)
+    Hint = "These are the areas you identified as being an issue:-" + Chr(10)
+    For Each Contr In frmAssIssues.Controls
+        Debug.Print Contr.Name
+        If Left(Contr.Name, 3) = "cmb" Then
+            If Contr.Value = "Y" Then
+                Hint = Hint + frmAssIssues.GetIssue(Contr.Name) + Chr(10)
+            End If
+        End If
+    Next
+    frmOffenderAssHint.lblHint.Caption = Hint
+    frmOffenderAssHint.Show 1
+    txtOffenderAssessment.SetFocus
+End Sub
+
+Private Sub btnOffenderAssessementHint_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnOK_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmAssIssues.Show
+End Sub
+
+Private Sub btnPrevious_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSpellCheck_Click()
+    Call SpellChecker(Me.txtOffenderAssessment.Text)
+    txtOffenderAssessment.SetFocus
+End Sub
+
+Private Sub txtOffenderAssessment_Change()
+    lblCharCountOffenderAss.Caption = CStr(4000 - txtOffenderAssessment.TextLength) + " remaining of 4000."
+    lblCharCountOffenderAss.ControlTipText = CStr(4000 - txtOffenderAssessment.TextLength) + " remaining of 4000."
+    Call SpellCheckHide(Me.txtOffenderAssessment, btnSpellCheck)
+End Sub
+
+Private Sub txtOffenderAssessment_Enter()
+    lblCharCountOffenderAss.Visible = True
+    lblCharCountOffenderAss.Caption = CStr(4000 - txtOffenderAssessment.TextLength) + " remaining of 4000."
+    lblCharCountOffenderAss.ControlTipText = CStr(4000 - txtOffenderAssessment.TextLength) + " remaining of 4000."
+End Sub
+
+Private Sub txtOffenderAssessment_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountOffenderAss.Visible = False
+End Sub
+
+Private Sub UserForm_Activate()
+    Call PopulateForm(Me)
+    StartState = GetValues(Me)
+    Call SpellCheckHide(Me.txtOffenderAssessment, btnSpellCheck)
+    Me.Caption = "Offender Assessment for - " + SetCaption
+End Sub
+
+Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+Attribute VB_Name = "frmOffenderAssessmentHint"
+Attribute VB_Base = "0{0E0B3827-E453-44B5-AEFB-1A362B99F6CD}{3D8CC1DD-1E07-42A7-BEC2-E1D7042752DE}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Private Sub btnOK_Click()
+      Call Unload(Me)
+End Sub
+Attribute VB_Name = "frmOffenderDetails"
+Attribute VB_Base = "0{5337733B-D147-4B87-9D04-CAA68D01194F}{AE5CC86D-8247-4639-8441-E74DC13CF53A}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+
+
+
+
+Private Sub btnCancel_Click()
+Dim EndState As String
+EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmSentenceCourtDetails.Show
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+End Sub
+
+
+Private Sub txtDOB_Change()
+    Me.Caption = LocalNameDetails
+End Sub
+
+Private Sub txtDOB_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    If Not IsDate(txtDOB) Then
+        MsgBox "Please provide a valid birth date", vbOKOnly, "Invalid Date of Birth"
+        Cancel = True
+        Exit Sub
+    End If
+    If IsDate(txtDOB.Value) Then
+        txtAge.Value = WorkOutAge(txtDOB.Value)
+    End If
+End Sub
+
+Private Sub txtName_Change()
+    Me.Caption = LocalNameDetails
+End Sub
+
+Function LocalNameDetails() As String
+    LocalNameDetails = "Offender Details for - " + txtName.Value + " CRN:" + txtCRN.Value + " PNC:" + txtPNC.Value + " Date of birth:" + txtDOB.Value
+End Function
+
+Private Sub txtPNC_Change()
+    Me.Caption = LocalNameDetails
+End Sub
+
+Private Sub UserForm_Activate()
+    Dim Contr As Control
+    Dim Response As Integer
+    Call PopulateForm(Me)
+    StartState = GetValues(Me)  'Make of note of initial values
+    Me.Caption = "Offender Details for - " + SetCaption
+    If FocusName = "txtName" Then
+        txtName.SetFocus
+    ElseIf FocusName = "txtDOB" Then
+        txtDOB.SetFocus
+    End If
+    FocusName = ""
+End Sub
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+
+Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+Attribute VB_Name = "frmOffendingPattern"
+Attribute VB_Base = "0{0C4EE537-639B-4449-9757-6230A19E348F}{3D56AB0F-37AF-4FEB-9714-BBBCAA1E0352}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnCancel_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmRiskAssessment1.Show
+End Sub
+
+Private Sub btnNext_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnOK_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmOffenderAssessment.Show
+End Sub
+
+Private Sub btnPrevious_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSpellCheck_Click()
+    Call SpellChecker(Me.txtOffendingPattern.Text)
+End Sub
+
+Private Sub txtOffendingPattern_Change()
+    Call SpellCheckDisplay(btnSpellCheck, txtOffendingPattern.Value)
+    lblCharCountROffendingPattern.Caption = CStr(500 - Len(txtOffendingPattern.Value)) + "Characters remaining of 500"
+    Call SpellCheckHide(Me.txtOffendingPattern, btnSpellCheck)
+End Sub
+
+Private Sub txtOffendingPattern_Enter()
+    Call SpellCheckDisplay(btnSpellCheck, txtOffendingPattern.Value)
+    lblCharCountROffendingPattern.Visible = True
+End Sub
+
+Private Sub txtOffendingPattern_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountROffendingPattern.Visible = False
+End Sub
+
+Private Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+Private Sub UserForm_Activate()
+    Call PopulateForm(Me)
+    StartState = GetValues(Me)
+    Me.Caption = "Patterns of Offending for - " + SetCaption
+End Sub
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+Attribute VB_Name = "frmProposal"
+Attribute VB_Base = "0{B7A42127-E112-49AF-97BB-38087A46346F}{C01C2DC3-8C0C-4BE0-97AF-D7F63EB5F395}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnCancel_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnConclusionHint_Click()
+    frmProposalHint.Show 1
+    txtProposal.SetFocus
+End Sub
+
+
+
+
+
+Private Sub btnConclusionHint_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnOK_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmRiskAssessment2.Show
+End Sub
+
+Private Sub btnPrevious_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSign_Click()
+    Call SaveForm(Me)
+    If GetBM("txtname") = "" Then
+        MsgBox "The PSR needs an offender name before being signed.  Please provide.", vbCritical, "Missing Name"
+        FocusName = "txtName"
+        Me.Hide
+        frmOffenderDetails.Show
+        Exit Sub
+    End If
+    
+    If GetBM("txtDOB") = "" Then
+        MsgBox "The PSR needs an offender date of birth before being signed.  Please provide.", vbCritical, "Missing Date of Birth"
+        FocusName = "txtDOB"
+        Me.Hide
+        frmOffenderDetails.Show
+        Exit Sub
+    End If
+    
+    If GetBM("txtMainOffence") = "" Then
+        MsgBox "The PSR needs a main offence before being signed.  Please provide.", vbCritical, "Missing Main Offence"
+        FocusName = "txtMainOffence"
+        Me.Hide
+        frmOffenceDetails.Show
+        Exit Sub
+    End If
+    Me.Hide
+    frmSigning.Show 1
+    If GetBM("txtDate") <> "" Then
+        Call CloseAllForms(Me.Name)
+    Else
+    Me.Show
+    End If
+    
+    
+End Sub
+
+Private Sub btnSign_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSpellCheck_Click()
+    Call SpellChecker(Me.txtProposal.Text)
+    txtProposal.SetFocus
+End Sub
+
+Private Sub txtProposal_Change()
+    lblCharCountProposal.Caption = CStr(2000 - Len(txtProposal.Value)) + " Characters remaining of 2000"
+    Call SpellCheckHide(Me.txtProposal, btnSpellCheck)
+End Sub
+
+Private Sub txtProposal_Enter()
+    lblCharCountProposal.Visible = True
+End Sub
+
+Private Sub txtProposal_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountProposal.Visible = False
+End Sub
+
+Private Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+
+Private Sub UserForm_Activate()
+    Call PopulateForm(Me)
+    StartState = GetValues(Me)
+    Call SpellCheckHide(Me.txtProposal, btnSpellCheck)
+    Me.Caption = "Report Conclusion for - " + SetCaption
+End Sub
+
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+Attribute VB_Name = "frmProposalHint"
+Attribute VB_Base = "0{515A04FE-EE6A-4086-8A98-192B7D343DBD}{409E1107-D2B0-43AE-ADC6-8050A7FBF884}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Private Sub btnOK_Click()
+    Call Unload(Me)
+End Sub
+
+Attribute VB_Name = "frmRiskAssessment1"
+Attribute VB_Base = "0{E53F2C6C-5A44-4344-9B1A-1D70C8524F64}{D371784E-F7AB-4768-908B-5790F1DA835D}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmRiskAssessment2.Show
+End Sub
+
+
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmOffendingPattern.Show
+End Sub
+
+Private Sub btnRiskAssHint_Click()
+    frmOffenderAssessmentHint.Show 1
+    txtSupervisionResponse.SetFocus
+End Sub
+
+Private Sub btnSpellCheck1_Click()
+    Call SpellChecker(Me.txtSupervisionResponse.Text)
+    txtSupervisionResponse.SetFocus
+End Sub
+
+Private Sub btnSpellCheck2_Click()
+    Call SpellChecker(Me.txtLikelihoodOfReoffending.Text)
+    txtLikelihoodOfReoffending.SetFocus
+End Sub
+
+Private Sub Label2_Click()
+
+End Sub
+
+
+Private Sub cmbResponse_Change()
+    Call ShowHide
+End Sub
+
+Private Sub cmbResponse_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    Call GlobalExit(Me.ActiveControl)
+End Sub
+
+Private Sub cmbResponse_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Call GlobalKeyDown(Me.ActiveControl, KeyCode)
+End Sub
+
+Private Sub txtLikelihoodOfReoffending_Change()
+    lblCharCountRiskAssessment.Caption = CStr(500 - Len(txtLikelihoodOfReoffending.Value)) + " Characters remaining of 500"
+    Call SpellCheckHide(Me.txtLikelihoodOfReoffending, btnSpellCheck2)
+End Sub
+
+Private Sub txtLikelihoodOfReoffending_Enter()
+    lblCharCountRiskAssessment.Visible = True
+    btnSpellCheck1.Visible = False
+    If txtLikelihoodOfReoffending.Value = "" Then
+        btnSpellCheck2.Visible = False
+    Else
+        btnSpellCheck2.Visible = True
+    End If
+End Sub
+
+Private Sub txtLikelihoodOfReoffending_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountRiskAssessment.Visible = False
+End Sub
+
+
+Private Sub txtSupervisionResponse_Change()
+    lblCharCountSupervisionResponse.Caption = CStr(300 - Len(txtSupervisionResponse.Value)) + " Characters remaining of 300"
+    Call SpellCheckHide(Me.txtSupervisionResponse, btnSpellCheck1)
+End Sub
+
+Private Sub txtSupervisionResponse_Enter()
+    If txtSupervisionResponse.Value = "" Then
+        btnSpellCheck1.Visible = False
+    Else
+        btnSpellCheck1.Visible = True
+    End If
+    lblCharCountSupervisionResponse.Visible = True
+    btnSpellCheck2.Visible = False
+End Sub
+
+Private Sub txtSupervisionResponse_Error(ByVal Number As Integer, ByVal Description As MSForms.ReturnString, ByVal SCode As Long, ByVal Source As String, ByVal HelpFile As String, ByVal HelpContext As Long, ByVal CancelDisplay As MSForms.ReturnBoolean)
+    lblCharCountSupervisionResponse.Visible = False
+End Sub
+
+
+
+Private Sub UserForm_Activate()
+    
+    If cmbResponse.ListCount = 0 Then
+        cmbResponse.AddItem "Good."
+        cmbResponse.AddItem "Satisfactory."
+        cmbResponse.AddItem "Poor."
+        cmbResponse.AddItem "Not Applicable."
+    End If
+    Call PopulateForm(Me)
+    StartState = GetValues(Me)
+    lblCharCountRiskAssessment.Caption = CStr(500 - Len(txtLikelihoodOfReoffending.Value)) + " Characters remaining of 500"
+    'Call SpellCheckHide(Me.txtLikelihoodOfReoffending, btnSpellCheck2)
+    Me.Caption = "Risk Assessment 1 for - " + SetCaption
+    Call ShowHide
+End Sub
+
+Private Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+
+Private Sub ShowHide()
+    If cmbResponse.Value = "Not Applicable" Or cmbResponse.Value = "" Then
+        txtSupervisionResponse.Enabled = False
+        lblSupervisionResponse.Enabled = False
+        btnRiskAssHint.Enabled = False
+    Else
+        txtSupervisionResponse.Enabled = True
+        lblSupervisionResponse.Enabled = True
+        btnRiskAssHint.Enabled = True
+    End If
+
+End Sub
+
+Attribute VB_Name = "frmRiskAssessment2"
+Attribute VB_Base = "0{0915A579-26A2-467D-9D29-9D2DE4FB3F5A}{E5C7CA2A-A52A-4310-9F3A-8F63D9B346A3}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnCancel_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmProposal.Show
+End Sub
+
+Private Sub btnNext_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnOK_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmRiskAssessment1.Show
+End Sub
+
+Private Sub btnPrevious_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSpellCheck_Click()
+    Call SpellChecker(Me.txtRiskOfSeriousHarm.Text)
+    txtRiskOfSeriousHarm.SetFocus
+End Sub
+
+Private Sub txtRiskOfSeriousHarm_Change()
+    lblCharCountRiskHarmAssessment.Caption = CStr(1000 - Len(txtRiskOfSeriousHarm.Value)) + "Characters remaining of 1000"
+    Call SpellCheckHide(Me.txtRiskOfSeriousHarm, btnSpellCheck)
+End Sub
+
+Private Sub txtRiskOfSeriousHarm_Enter()
+    lblCharCountRiskHarmAssessment.Visible = True
+End Sub
+
+Private Sub txtRiskOfSeriousHarm_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountRiskHarmAssessment.Visible = False
+End Sub
+
+Private Sub UserForm_Activate()
+    Call PopulateForm(Me)
+    StartState = GetValues(Me)
+    Call SpellCheckHide(Me.txtRiskOfSeriousHarm, btnSpellCheck)
+    Me.Caption = "Risk Assessment 2 for - " + SetCaption
+End Sub
+
+Private Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+Attribute VB_Name = "frmSOI"
+Attribute VB_Base = "0{935C3324-6E08-4C6C-930F-FF5C2E7B070A}{E048289D-B1F9-4AE4-96D9-045E78D7F0DE}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim SOI(8) As String
+Dim StartState As String
+Dim OriginalValue As String
+Dim Activating As Boolean
+Dim SelfSet As Boolean
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnCancel_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmOffenceDetails.Show
+End Sub
+
+Private Sub btnNext_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnOK_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmSentenceCourtDetails.Show
+End Sub
+Sub SaveData()
+    Dim Counter As Integer
+    Dim Contr As Control
+    Call Unprotect(0)
+    'Let's do the checkboxes first
+    For Counter = 0 To UBound(SOI())
+        For Each Contr In Controls
+            If Contr.Name = SOI(Counter) Then
+                If Contr.Value = "Y" Then
+                    Call InsertToBookmark(SOI(Counter), Contr.Value)
+                Else
+                    Call InsertToBookmark(SOI(Counter), "")
+                End If
+            End If
+        Next
+    Next
+    'Now do the other option
+    If cmbOther.Value = "N" Then
+        Call InsertToBookmark("txtOther", "")
+    Else
+        Call InsertToBookmark("txtOther", txtOther.Value)
+    End If
+    Call Protect(0)
+End Sub
+
+
+Private Sub btnPrevious_Enter()
+    btnSpellCheck.Visible = False
+End Sub
+
+Private Sub btnSpellCheck_Click()
+    Call SpellChecker(Me.txtOther.Text)
+End Sub
+
+Private Sub cmbChildChecks_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbChildChecks_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbCPS_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbCPS_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbInterview_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub SetNextFocus(ControlName As String)
+    Select Case ControlName
+            Case "cmbInterview"
+                cmbServiceRecords.SetFocus
+            Case "cmbServiceRecords"
+                cmbCPS.SetFocus
+            Case "cmbCPS"
+                cmbOASys.SetFocus
+            Case "cmbOASys"
+                cmbPrevConv.SetFocus
+            Case "cmbPrevConv"
+                cmbVictim.SetFocus
+            Case "cmbVictim"
+                cmbChildChecks.SetFocus
+            Case "cmbChildChecks"
+                cmbPolice.SetFocus
+            Case "cmbPolice"
+                cmbOther.SetFocus
+            Case "cmbOther"
+                btnNext.SetFocus
+        End Select
+End Sub
+
+Private Sub cmbInterview_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub GlobalEntry(Ctrl As Control)
+    OriginalValue = Ctrl.Value
+    btnSpellCheck.Visible = False
+    'Ctrl.SelStart = 0
+    'Ctrl.SelLength = 1
+    'Ctrl.SelText = Ctrl.Value
+End Sub
+Private Sub cmbOASys_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbOASys_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbOther_Change()
+    Call ShowHide
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbOther_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+
+Private Sub cmbPolice_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbPolice_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbPrevConv_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbPrevConv_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+
+Private Sub SetBooleanValue()
+    Dim NewValue As String
+    If Not Activating And Not SelfSet Then
+    'If Me.ActiveControl.Value = "" Then
+        If OriginalValue = "N" Then
+            NewValue = Me.ActiveControl.Value
+            SelfSet = True
+            Me.ActiveControl.Value = "Y"
+            SelfSet = False
+            If NewValue = "" Then
+                Call SetNextFocus(Me.ActiveControl.Name)  'if they input nothing then they will need a push
+            End If
+        Else
+            NewValue = Me.ActiveControl.Value
+            SelfSet = True
+            Me.ActiveControl.Value = "N"
+            SelfSet = False
+            If NewValue = "" Then
+                Call SetNextFocus(Me.ActiveControl.Name)  'push them to next field
+            End If
+        End If
+    End If
+End Sub
+
+
+Private Sub cmbServiceRecords_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbServiceRecords_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+Private Sub cmbVictim_Change()
+    Call SetBooleanValue
+End Sub
+
+Private Sub cmbVictim_Enter()
+    Call GlobalEntry(Me.ActiveControl)
+End Sub
+
+
+Private Sub txtOther_Change()
+    Call SpellCheckHide(Me.txtOther, btnSpellCheck)
+    lblCharCountOther.Caption = CStr(500 - Len(txtOther.Value)) + " Characters remaining of 500"
+End Sub
+
+Private Sub txtOther_Enter()
+    Call SpellCheckHide(Me.txtOther, btnSpellCheck)
+    lblCharCountOther.Visible = True
+End Sub
+
+
+Private Sub txtOther_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    lblCharCountOther.Visible = False
+    Call SpellCheckHide(Me.txtOther, btnSpellCheck)
+End Sub
+
+Private Sub UserForm_Activate()
+    Dim Contr As Control
+    
+    Dim Counter As Integer
+    SOI(0) = "cmbInterview"
+    SOI(1) = "cmbServiceRecords"
+    SOI(2) = "cmbCPS"
+    SOI(3) = "cmbOASys"
+    SOI(4) = "cmbPrevConv"
+    SOI(5) = "cmbVictim"
+    SOI(6) = "cmbChildChecks"
+    SOI(7) = "cmbPolice"
+    SOI(8) = "cmbOther"
+    For Each Contr In Controls
+        If Left(Contr.Name, 3) = "cmb" Then
+            Contr.AutoTab = False
+            If Contr.ListCount = 0 Then
+                Contr.AddItem "Y"
+                Contr.AddItem "N"
+            End If
+        End If
+    Next
+    'Get the values from the sheet
+    Activating = True
+    For Counter = 0 To 8
+        For Each Contr In Controls
+            If Contr.Name = SOI(Counter) Then
+                Contr.Value = "N"
+                If ActiveDocument.Bookmarks(SOI(Counter)).Range.Text = "Y" Then
+                    Contr.Value = "Y"
+                    Exit For
+                End If
+            End If
+        Next
+    Next
+    OriginalValue = cmbInterview.Value
+    If cmbOther.Value = "Y" Then
+        txtOther.Visible = True
+    End If
+    txtOther.Value = GetBM("txtOther")
+    'Now make a note of all the values
+    StartState = GetValues(Me)
+    Call SpellCheckHide(Me.txtOther, btnSpellCheck)
+    Me.Caption = "Sources of Information for - " + SetCaption
+    Activating = False
+    With cmbInterview
+        .SetFocus
+        .SelStart = 0
+        .SelLength = 1
+    End With
+    For Each Contr In Controls
+        If Left(Contr.Name, 3) = "cmb" Then
+            Contr.AutoTab = True
+        End If
+    Next
+    Call ShowHide
+    
+End Sub
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+Sub ShowHide()
+    If cmbOther.Value = "Y" Then
+        txtOther.Enabled = True
+        If txtOther.Value <> "" Then
+            btnSpellCheck.Visible = True
+        End If
+        'txtOther.SetFocus
+    Else
+        txtOther.Enabled = False
+        btnSpellCheck.Visible = False
+        'btnNext.SetFocus
+    End If
+End Sub
+Attribute VB_Name = "frmSaving"
+Attribute VB_Base = "0{60D62B5B-6A67-432F-9740-FB324D5D4DEC}{6552F8A5-DD17-43FE-B97D-0F2E551A5FC5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Attribute VB_Name = "frmSentenceCourtDetails"
+Attribute VB_Base = "0{64F05697-F99E-4F76-9DFA-6CD8C985424D}{0043F6F2-1741-42C8-B3FE-10E6935A3220}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    'Call SaveDocument(StartState, EndState)
+    Call CloseAllForms(Me.Name)
+End Sub
+Sub SaveData()
+    Dim Age As String
+    Call SaveForm(Me)
+    Age = WorkOutAge(, txtHearingDate.Value)
+    If Age <> "" Then
+        Call Unprotect(0)
+        Call InsertToBookmark("txtAge", Age)
+        Call Protect(0)
+    End If
+End Sub
+
+Private Sub btnNext_Click()
+    Call SaveData
+    Me.Hide
+    frmSOI.Show
+End Sub
+
+Private Sub btnOK_Click()
+    Call SaveData
+    StartState = GetValues(Me)
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmOffenderDetails.Show
+End Sub
+
+Private Sub txtHearingDate_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    If Not IsDate(txtHearingDate.Value) And txtHearingDate <> "" Then
+        MsgBox "Please provide a valid hearing date", vbOKOnly, "Invalid Hearing Date"
+        Cancel = True
+        Exit Sub
+    End If
+End Sub
+
+Private Sub UserForm_Activate()
+    With cmbLJA
+        .AddItem "Avon and Somerset"
+        .AddItem "Bedfordshire"
+        .AddItem "Cambridgeshire"
+        .AddItem "Cheshire"
+        .AddItem "Cleveland"
+        .AddItem "Cumbria"
+        .AddItem "Derbyshire"
+        .AddItem "Devon and Cornwall"
+        .AddItem "Dorset"
+        .AddItem "Durham"
+        .AddItem "Dyfed Powys"
+        .AddItem "Essex"
+        .AddItem "Gloucestershire"
+        .AddItem "Greater Manchester"
+        .AddItem "Gwent"
+        .AddItem "Hampshire"
+        .AddItem "Hertfordshire"
+        .AddItem "Humberside"
+        .AddItem "Kent"
+        .AddItem "Lancashire"
+        .AddItem "LCJB Not Known"
+        .AddItem "Leicestershire"
+        .AddItem "Lincolnshire"
+        .AddItem "London - Central"
+        .AddItem "London - East"
+        .AddItem "London - North"
+        .AddItem "London - North East"
+        .AddItem "London - North West"
+        .AddItem "London - South"
+        .AddItem "London - South East"
+        .AddItem "London - South West"
+        .AddItem "London - West"
+        .AddItem "Merseyside"
+        .AddItem "Norfolk"
+        .AddItem "North Wales"
+        .AddItem "North Yorkshire"
+        .AddItem "Northamptonshire"
+        .AddItem "Northumbria"
+        .AddItem "Nottinghamshire"
+        .AddItem "South Wales"
+        .AddItem "South Yorkshire"
+        .AddItem "Staffordshire"
+        .AddItem "Suffolk"
+        .AddItem "Surrey"
+        .AddItem "Sussex"
+        .AddItem "Thames Valley"
+        .AddItem "Warwickshire"
+        .AddItem "West Mercia"
+        .AddItem "West Midlands"
+        .AddItem "West Yorkshire"
+        .AddItem "Wiltshire"
+    End With
+    
+    'Put the values in
+    Call PopulateForm(Me)
+    Me.Caption = "Sentence Court Details for - " + SetCaption
+    
+    StartState = GetValues(Me)
+End Sub
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+Attribute VB_Name = "frmSigning"
+Attribute VB_Base = "0{89790AF3-3B39-4DEA-80F0-8F4BB7B336F7}{315920C0-E399-4C47-8885-D7D02383680B}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+Dim StartState As String
+
+Private Sub btnCancel_Click()
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If EndState <> StartState Then
+        If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+            Exit Sub
+        End If
+    End If
+    Me.Hide
+    Call CloseAllForms(Me.Name)
+End Sub
+
+Private Sub btnOK_Click()
+    If txtAuthor.Value = "" Then
+        MsgBox "You have to provide the author for this report.  Please provide", vbCritical, "Missing Author"
+        txtAuthor.SetFocus
+        Exit Sub
+    End If
+    Me.Hide
+    If GetBM("cmbOther") = "Yes" Then
+        Call InsertToBookmark("txtOther", "")
+    End If
+    
+    Call SaveForm(Me)
+    Call SaveDocument("One Value", "Another Value")
+    'Call CloseAllForms(Me.Name)
+    Me.Hide  'hide it so you go back to proposal
+End Sub
+
+Private Sub btnPrevious_Click()
+    Call SaveData
+    Me.Hide
+    frmProposal.Show
+End Sub
+
+Private Sub cmbDistCPS_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    Cancel = GlobalExit(Me.ActiveControl)
+End Sub
+
+Private Sub cmbDistCPS_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Call GlobalKeyDown(Me.ActiveControl, KeyCode)
+End Sub
+
+Private Sub cmbDistDefence_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    Cancel = GlobalExit(Me.ActiveControl)
+End Sub
+
+Private Sub cmbDistDefence_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Call GlobalKeyDown(Me.ActiveControl, KeyCode)
+End Sub
+
+
+Private Sub cmbDistProbation_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    Cancel = GlobalExit(Me.ActiveControl)
+End Sub
+
+Private Sub cmbDistProbation_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Call GlobalKeyDown(Me.ActiveControl, KeyCode)
+End Sub
+
+
+Private Sub cmbDistSentencer_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    Cancel = GlobalExit(Me.ActiveControl)
+End Sub
+
+Private Sub cmbDistSentencer_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Call GlobalKeyDown(Me.ActiveControl, KeyCode)
+End Sub
+
+Private Sub UserForm_Activate()
+    Call PopulateForm(Me)
+    If txtDate.Value = "" Then txtDate.Value = Format(Now(), "dd/MM/yy")
+    If txtAuthor.Value = "" Then txtAuthor.Value = Application.UserName
+    StartState = GetValues(Me)
+    Me.Caption = "SDR Signing for - " + SetCaption
+End Sub
+
+Private Sub SaveData()
+    Call SaveForm(Me)
+End Sub
+
+
+
+ Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    Dim EndState As String
+    EndState = GetValues(Me)
+    If CloseMode = vbFormControlMenu Then
+        If EndState <> StartState Then
+            If MsgBox("There is unsaved data.  Are you sure?", vbYesNo) = vbNo Then
+                Cancel = True
+                Exit Sub
+            End If
+        End If
+    Call CloseAllForms(Me.Name)
+    End If
+End Sub
+
+Attribute VB_Name = "frmStartNavigation"
+Attribute VB_Base = "0{80B97B99-84BE-4B3C-964A-C4BC79A17F8A}{0C77AF39-72E4-4323-A173-FB842C4D66E1}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+
+Private Sub cmdCancel_Click()
+    Call Unload(Me)
+    Exit Sub
+End Sub
+
+Private Sub cmdCancel_Enter()
+    lsbSelection.SetFocus
+End Sub
+
+Private Sub lsbSelection_Change()
+    Select Case Left(Me.ActiveControl.Value, 1)
+        Case "A"
+            Call Unload(Me)
+            If RollBack Then
+                frmOffenderDetails.Show
+            End If
+        Case "B"
+            Call Unload(Me)
+            If RollBack Then
+                frmSentenceCourtDetails.Show
+            End If
+        Case "C"
+            Call Unload(Me)
+            If RollBack Then
+                frmSOI.Show
+            End If
+        Case "D"
+            Call Unload(Me)
+            If RollBack Then
+                frmOffenceDetails.Show
+            End If
+        Case "E"
+            Call Unload(Me)
+            If RollBack Then
+                frmOffenderAssessment.Show
+            End If
+        Case "F"
+            Call Unload(Me)
+            If RollBack Then
+                frmOffendingPattern.Show
+            End If
+        Case "G"
+            Call Unload(Me)
+            If RollBack Then
+                frmRiskAssessment1.Show
+            End If
+        Case "H"
+            Call Unload(Me)
+            If RollBack Then
+                frmProposal.Show
+            End If
+        Case "I"
+            Call Unload(Me)
+            If RollBack Then
+                frmSigning.Show
+            End If
+        Case "J"
+            Call Unload(Me)
+            Call CreateCourtPortalVersion(0)
+        Case "K"
+            Me.Hide
+            If GetBM("txtAuthor") <> "" Then
+                If MsgBox("The report has already been signed and locked." + Chr(10) _
+                + "Do you want to roll it back?", vbYesNo + vbQuestion, "Rollback?") = vbNo Then
+                    Exit Sub
+                Else
+                    Call Module1.Unprotect(0)
+                    Call InsertToBookmark("txtAuthor", "")
+                    Call InsertToBookmark("txtDate", "")
+                    Call Module1.Protect(0)
+                End If
+            End If
+            'Go ahead
+            Call SpellCheck(0)
+            'frmSigning.Show
+            Call Unload(Me)
+        Case "Z"
+            Call Unload(Me)
+    End Select
+        
+End Sub
+
+
+
+
+Private Sub lsbSelection_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    Call GlobalKeyDown(Me.ActiveControl, KeyCode)
+End Sub
+
+Private Sub UserForm_Activate()
+    With lsbSelection
+        .AddItem "A. Offender Details"
+        .AddItem "B. Sentence Court Details"
+        .AddItem "C. Sources of Information"
+        .AddItem "D. Offence Details"
+        .AddItem "E. Offender Assessment"
+        .AddItem "F. Pattern of Offending"
+        .AddItem "G. Risk Assessment"
+        .AddItem "H. Proposal"
+        .AddItem "I. Completion Details"
+        .AddItem "J. Create Court Portal Copy"
+        .AddItem "K. Full Spell Check"
+        .AddItem "Z. None of these"
+    End With
+End Sub
+
+
+
+' InQuest injected base64 decoded content
+' +bjP
+
+INQUEST-PP=macro

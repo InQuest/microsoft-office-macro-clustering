@@ -1,0 +1,811 @@
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "mdlCallBack"
+'=======================================================
+' VBA Interface For C
+'
+' 2009.06 WZH
+'=======================================================
+Option Explicit
+
+#If Win64 Then
+Type VBA_CELLFUNC
+    pGetCell As Longlong
+    pSetCell As Longlong
+    pGetValues As Longlong
+    pSetValues As Longlong
+End Type
+#Else
+Type VBA_CELLFUNC
+    pGetCell As Long
+    pSetCell As Long
+    pGetValues As Long
+    pSetValues As Long
+End Type
+#End If
+
+Function ConvertString(ByVal strVal As Variant) As String
+    Dim i As Long
+    Dim ascVal As Long
+    Dim tmpstr As String
+    Dim maxVal As Long, minVal As Long
+    Dim b() As Byte
+    If strVal = vbNullString Then
+        ConvertString = vbNullString
+        Exit Function
+    End If
+    maxVal = Abs(AscW(Mid(strVal, 1, 1)))
+    For i = 1 To Len(strVal)
+        ascVal = Abs(AscW(Mid(strVal, i, 1)))
+        If ascVal > maxVal Then
+            maxVal = ascVal
+        End If
+        If maxVal > 255 Then
+            ConvertString = StrConv(strVal, vbUnicode)
+            Exit Function
+        End If
+    Next i
+    tmpstr = vbNullString
+    If maxVal > 127 Then
+        b = strVal
+        For i = LBound(b) To UBound(b)
+            tmpstr = tmpstr & Chr(b(i))
+        Next i
+    Else
+        tmpstr = strVal
+    End If
+    ConvertString = tmpstr
+End Function
+
+Private Function bUnicodeInString(ByVal key As String) As Boolean
+    Dim i As Long
+    For i = 1 To Len(key)
+        If Abs(AscW(Mid(key, i, 1))) > 128 Then     '2010.01.19 mdf: > 255
+            bUnicodeInString = True
+            Exit Function
+        End If
+    Next i
+    bUnicodeInString = False
+End Function
+
+Function bValidString(ByVal key As Variant) As Boolean
+#If 1 Then
+    bValidString = (Trim(key) <> vbNullString And Not IsNumeric(key) And Not IsEmpty(key) And Not IsNull(key) And VarType(key) = vbString)
+#Else
+    bValidString = (Not IsEmpty(key) And Not IsNull(key))
+#End If
+End Function
+
+Function GetCellStr(ByVal row As Long, ByVal col As Long) As Variant
+    GetCellStr = "{" & ActiveSheet.Name & "!R" & row + 1 & "C" & col + 1 & "}"
+End Function
+
+Function subGetCellStr(ByVal strRef As String) As String
+    Dim rgeRef As Range
+    Dim shtRef As Worksheet
+    Dim strFmt As String, strSht As String
+    Dim ref As Variant
+    On Error GoTo err_handler
+    If InStr(1, strRef, "!") > 0 Then
+        ref = Split(strRef, "!")
+        strSht = ref(0)
+        strFmt = ref(1)
+        Set shtRef = Worksheets(strSht)
+    Else
+        strFmt = strRef
+        Set shtRef = ActiveSheet
+    End If
+    strFmt = toXlA1str(strFmt)
+    Set rgeRef = shtRef.Range(strFmt)
+    subGetCellStr = rgeRef.Value
+exit_function:
+    On Error GoTo 0
+    Exit Function
+err_handler:
+    subGetCellStr = strRef
+    Resume exit_function
+End Function
+
+Function SetCellStr(ByVal strRef As String, ByVal row As Long, ByVal col As Long) As Boolean
+    Dim i As Integer, j As Integer
+    Dim str As String, setStr As String
+    Dim refs As Variant, ref As Variant
+    str = strRef
+    refs = Split(str, "{")
+    setStr = vbNullString
+    For i = LBound(refs) To UBound(refs)
+        If refs(i) <> vbNullString Then
+            ref = Split(refs(i), "}")
+            setStr = setStr & subGetCellStr(ref(0))
+            For j = LBound(ref) + 1 To UBound(ref)
+                setStr = setStr & ref(j)
+            Next j
+        End If
+    Next i
+    Cells(row + 1, col + 1) = setStr
+    SetCellStr = True
+End Function
+
+Function GetCellString(ByVal row As Long, ByVal col As Long) As Variant
+    Static var As Variant
+    Dim key As Variant
+    Dim cnt As Long
+    var = Cells(row + 1, col + 1)
+    key = CStr(var)
+    If bUnicodeInString(key) Then var = AddKey(key)
+    GetCellString = CStr(var)
+End Function
+
+Function SetCellString(strVal As Variant, ByVal row As Long, ByVal col As Long) As Long
+    Dim key As Variant, keys As Variant, items As Variant
+    Dim i As Long
+    'key = CStr(strVal)
+    key = ConvertString(strVal)
+    'If bValidString(key) Then
+        If IsPartTextInCollection(key) Then
+            If IsTextInCollection(key) Then
+                Cells(row + 1, col + 1) = GetTextFromCollection(key)
+            Else
+                key = ReplaceTextInCollection(key)
+                Cells(row + 1, col + 1) = key
+            End If
+        Else
+            'If bUnicode(strVal) Then
+                Cells(row + 1, col + 1) = ConvertString(strVal)
+            'Else
+            '    Cells(row + 1, col + 1) = strVal
+            'End If
+        End If
+    'Else
+    '    Cells(row + 1, col + 1) = strVal
+    'End If
+End Function
+
+#If Win64 Then
+Private Function GetAddr(ByVal addr As Longlong) As Longlong
+    GetAddr = addr
+End Function
+#Else
+Private Function GetAddr(ByVal addr As Long) As Long
+    GetAddr = addr
+End Function
+#End If
+
+Function NU_GetValues(strBook As Variant, strSheet As Variant, strRge As Variant) As Variant
+    Dim rge As Range
+    Set rge = Workbooks(strBook).Worksheets(strSheet).Range(strRge)
+    NU_GetValues = rge
+End Function
+
+Function GetValues(strRge As Variant) As Variant
+    Dim rge As Range
+    Dim str As String
+    Static var As Variant
+    Dim key As Variant
+    Dim i As Long, j As Long
+    str = strRge
+    str = toXlA1str(str)
+    Set rge = Range(str)
+    var = rge.Value
+    If rge.Count = 1 Then
+        key = CStr(var)
+        If bUnicodeInString(key) Then var = AddKey(key)
+    Else
+        For i = 1 To rge.Rows.Count
+            For j = 1 To rge.Columns.Count
+                key = CStr(var(i, j))
+                If bUnicodeInString(key) Then var(i, j) = AddKey(key)
+            Next j
+        Next i
+    End If
+    GetValues = var
+End Function
+
+Function SetValues(strRge As Variant, vData As Variant) As Long
+    Dim rge As Range
+    Dim str As String
+    Dim var As Variant
+    Dim i As Long, j As Long
+    Dim minRow, maxRow
+    Dim minCol, maxCol
+    
+    str = strRge
+    str = toXlA1str(str)
+    Set rge = Range(str)
+    If Not IsEmpty(vData) Then
+        If IsArray(vData) Then
+            minRow = LBound(vData, 1)
+            maxRow = UBound(vData, 1)
+            minCol = LBound(vData, 2)
+            maxCol = UBound(vData, 2)
+            For i = minRow To maxRow
+                For j = minCol To maxCol
+                    'var = CStr(vData(i, j))
+                    var = ConvertString(vData(i, j))
+                    'If bValidString(var) Then
+                        If IsTextInCollection(var) Then
+                            vData(i, j) = GetTextFromCollection(var)
+                        ElseIf IsPartTextInCollection(var) Then
+                            vData(i, j) = ReplaceTextInCollection(var)
+                        End If
+                    'End If
+                Next j
+            Next i
+        Else
+            'var = CStr(vData)
+            var = ConvertString(vData)
+            If IsTextInCollection(var) Then
+                vData = GetTextFromCollection(var)
+            ElseIf IsPartTextInCollection(var) Then
+                vData = ReplaceTextInCollection(var)
+            End If
+        End If
+    End If
+    rge = vData
+    SetValues = 1
+End Function
+
+#If Win64 Then
+Function GetVbaInterface() As Longlong
+    Static pFunc As VBA_CELLFUNC    '09.6.11 LSQ mdf
+    Call InitCollection
+    pFunc.pGetCell = GetAddr(AddressOf GetCellString)
+    pFunc.pSetCell = GetAddr(AddressOf SetCellString)
+    pFunc.pGetValues = GetAddr(AddressOf GetValues)
+    pFunc.pSetValues = GetAddr(AddressOf SetValues)
+    GetVbaInterface = VarPtr(pFunc)
+End Function
+
+Static Function GetThisXL() As Longlong
+    Static pApp As Longlong
+    pApp = ObjPtr(Application)
+    GetThisXL = pApp
+End Function
+
+#Else
+Function GetVbaInterface() As Long
+    Static pFunc As VBA_CELLFUNC    '09.6.11 LSQ mdf
+    Call InitCollection
+    pFunc.pGetCell = GetAddr(AddressOf GetCellString)
+    pFunc.pSetCell = GetAddr(AddressOf SetCellString)
+    pFunc.pGetValues = GetAddr(AddressOf GetValues)
+    pFunc.pSetValues = GetAddr(AddressOf SetValues)
+    GetVbaInterface = VarPtr(pFunc)
+End Function
+
+Static Function GetThisXL() As Long
+    Static pApp As Long
+    pApp = ObjPtr(Application)
+    GetThisXL = pApp
+End Function
+#End If
+
+Sub ReleaseInterface()
+    Call ReleaseCollection
+End Sub
+
+'===== EOF =====
+
+Attribute VB_Name = "mdlGraph"
+
+Attribute VB_Name = "mdlInfoSht"
+'=================================================
+' Info Sheet Management Functions
+'
+' Date: 2007.1.30 -- 2007.2.7 LSQ
+' Mdf : 10.6.1 LSQ, 11.5.26 LSQ
+'=================================================
+Option Explicit
+Option Private Module 'Can be run as in Application.Run
+
+'Public Const INFO_CallCnt As Integer = 1   '11.5.26 LSQ cmt; not used
+
+'
+'get cell position in sheet "Info"
+'
+'flg : 1 = Called Count (A3)
+'      2 = Version Number (A4)
+'
+Function getRgeObj(ByVal flg As Integer) As Range
+    Set getRgeObj = Nothing
+    
+    If flg = 1 Then
+        Set getRgeObj = ThisWorkbook.Worksheets("Info").Range("A3") 'should not write as "stObj.Range("A3")", error in "TaikouKsk.xls", 10.6.1 LSQ
+    End If
+    
+    If flg = 2 Then
+        Set getRgeObj = ThisWorkbook.Worksheets("Info").Range("A4")
+    End If
+
+End Function
+'
+'10.6.1 LSQ add
+'
+Private Function AddOne_or_DecOne(ByVal bAdd As Boolean) As Integer
+    Dim cnt As Integer, cel As Range
+    Set cel = getRgeObj(1)
+    cnt = CInt(cel)
+    cnt = IIf(bAdd, cnt + 1, cnt - 1)
+    cel = cnt
+    '
+    AddOne_or_DecOne = cnt
+End Function
+'
+'count + 1
+Function CallNum_AddOne() As Integer
+    CallNum_AddOne = AddOne_or_DecOne(True)
+End Function
+
+'count - 1
+Function CallNum_DecOne() As Integer
+    CallNum_DecOne = AddOne_or_DecOne(False)
+End Function
+
+'=== EOF ===
+
+
+Attribute VB_Name = "mdlPrvA"
+'=================================================
+' VBA Common Functions
+'
+' Date : 2007.2 - 2007.3 LSQ, WZH
+'=================================================
+Option Explicit
+Option Private Module
+
+Function decNumKeta(ByVal diff As Double) As Integer
+    diff = Abs(diff)
+    
+    If (diff >= 10) Then decNumKeta = 0: Exit Function
+    If (diff >= 1) Then decNumKeta = 1: Exit Function
+    If (diff >= 0.1) Then decNumKeta = 2: Exit Function
+    If (diff >= 0.01) Then decNumKeta = 3: Exit Function
+    If (diff >= 0.001) Then decNumKeta = 4: Exit Function
+    decNumKeta = 5
+End Function
+
+Function vbaRound(dblValue As Double, intDecimals As Integer, _
+    Optional RoundingOption As Integer = 0) As Double
+    Dim dblPlacesFactor As Double
+    Dim dlbRoundFactor As Double
+     
+    If intDecimals < 0 Then
+        vbaRound = 0
+        Exit Function
+    End If
+     
+    dblPlacesFactor = 10 ^ intDecimals
+     
+    Select Case RoundingOption
+    Case 0 'Round to Nearest
+        dlbRoundFactor = 0.5
+    Case 1 'Round UP
+        dlbRoundFactor = 1
+    Case 2 'Round DOWN
+        dlbRoundFactor = 0
+    End Select
+     
+    vbaRound = Int(dblValue * dblPlacesFactor + dlbRoundFactor) / dblPlacesFactor
+End Function
+'=== EOF ===
+
+
+Attribute VB_Name = "mdlPubA"
+'=================================================
+' VBA Common Functions : Public Module
+'
+' Date : 2007.2.1 LSQ
+'=================================================
+Option Explicit
+
+'07.1.28
+Function getExcelVerNo() As Integer
+    getExcelVerNo = Val(Application.Version) 'VerNo = 10.1, 12.2 etc exists
+    '12 = Excel2007
+    '11 = Excel2003
+    '10 = Excel2002 (or XP)
+    '9  = Excel2000
+End Function
+
+'Set data labels for a series
+'Based on SonyStat_3P6\subhsk.xla
+Sub SetDataLabel(ByVal ser As Series, ByVal namerge As Range, _
+                 Optional ByVal fontsize As Integer = 10, _
+                 Optional ByVal charcnt As Integer = 32)
+    Dim i As Integer
+    On Error Resume Next
+    ser.ApplyDataLabels Type:= _
+            xlDataLabelsShowLabel, AutoText:=True, LegendKey:=False
+    ser.DataLabels.Font.Size = fontsize
+    For i = 1 To ser.Points.Count
+        If CInt(Application.Version) < 12 Then
+            ser.Points(i).DataLabel.Characters.text = Mid(namerge(i, 1).Value, 1, charcnt) '10.11.10 LSQ mdf : old use "MidB"
+        Else
+            ser.Points(i).DataLabel.text = Mid(namerge(i, 1).Value, 1, charcnt) '10.11.10 LSQ mdf : old use "MidB"
+        End If
+    Next i
+    On Error GoTo 0
+End Sub
+
+'|fffd|}|fffd||308||292|u|fffd||183|T|fffd|C|fffd|Y
+'07.1.30 copied from SSSMCTH1.xls (\MAC04)
+'2007.03.05 modified for revising the position in a zoomed worksheet
+Sub setChartPosSize(ByVal chartObj As ChartObject, ByVal outGrp As Range, _
+    Optional ByVal rownum As Integer = 0, Optional ByVal colnum As Integer = 0)
+    Dim oldzoom As Integer
+    If rownum <= 0 Then rownum = 16
+    If colnum <= 0 Then colnum = 8
+    On Error Resume Next
+    chartObj.Parent.Activate
+    oldzoom = ActiveWindow.Zoom
+    ActiveWindow.Zoom = 100
+    chartObj.Left = outGrp.Left   '+ 10
+    chartObj.Top = outGrp.Top     '+ 10
+    chartObj.Width = outGrp.Offset(0, colnum).Left - outGrp.Left
+    chartObj.Height = outGrp.Offset(rownum, 0).Top - outGrp.Top
+    
+    '10.12.7 LSQ add; for XL07, XL10, plotArea not adjusted acorrding to ChartObject
+    If getExcelVerNo >= 12 Then 'for Excel2007, Excel2010
+        Dim wdCht As Double, wdObj As Double
+        
+        wdCht = chartObj.Chart.PlotArea.Width
+        wdObj = chartObj.Width
+        If wdObj <= wdCht + 10 Then
+            chartObj.Chart.PlotArea.Width = wdObj - 10
+        End If
+    End If
+    '10.12.7 LSQ add end
+    
+#If 0 Then '10.10.4 LSQ cmt : error if no chartTitle, not good for |fffd|U|fffd|z|fffd|}
+    '10.10.01 DZH add
+    'adjust the Chart size in Excel2007 or Excel2010
+    If getExcelVerNo >= 12 Then
+        ActiveChart.ChartArea.Select
+        With ActiveChart.PlotArea
+            .Top = ActiveChart.ChartTitle.Top + 20
+            .Height = chartObj.Height - ActiveChart.PlotArea.Top * 1.3
+        End With
+    End If
+#End If
+
+    ActiveWindow.Zoom = oldzoom
+    On Error GoTo 0
+End Sub
+
+'Copy a template chart from a worksheet to defined cell
+'Nothing will be returned if failure occurs
+Function GetTmplGrp(ByVal outrge As Range, ByVal strBkName As String, _
+                    ByVal strShtName As String, ByVal strGrpName As String) As Chart
+    Dim wrksht As Worksheet
+    
+    Set GetTmplGrp = Nothing
+    On Error GoTo ExitIt
+    Set wrksht = outrge.Worksheet
+
+#If 0 Then  '10.10.4 LSQ mdf
+'Note: |fffd|C|fffd||fffd||fffd||fffd||fffd|R
+'1. ChartObject.Copy may not work in Excel2010 (10.09.07 DZH)
+'2. ChartObject.Copy,  the result Chart's 2nd axis can't be selected (TaikouV5!SR2! 2|fffd|Q DotPlot)
+'
+    Workbooks(strBkName).Worksheets(strShtName).ChartObjects(strGrpName).Copy
+#Else
+    Workbooks(strBkName).Worksheets(strShtName).Activate
+    ActiveSheet.ChartObjects(strGrpName).Activate
+    ActiveChart.ChartArea.Copy
+#End If '10.10.4 end
+    
+    wrksht.Activate
+    outrge.Select
+    wrksht.Paste
+    Set GetTmplGrp = Selection.Parent
+ExitIt:
+    On Error GoTo 0
+End Function
+
+'Set a dictionary for parameters string whick is divided by '&', e.g. 'GrpType=2&FontSize=10'
+Function SetDict(ByVal strPara As String) As Object
+    Dim arys() As String, subarys() As String
+    Dim s As String
+    Dim i As Integer, j As Integer
+    Dim dict As Object
+    Set SetDict = Nothing
+    On Error Resume Next
+    arys = Split(strPara, "&")
+    Set dict = CreateObject("Scripting.dictionary")
+    For i = 0 To UBound(arys)
+        subarys = Split(arys(i), "=")
+        dict(subarys(0)) = subarys(1)
+    Next i
+    Set SetDict = dict
+ExitIt:
+    Set dict = Nothing
+    On Error GoTo 0
+End Function
+
+'Copied from commMdl in SSS_STAT.xla
+'H12.8.28 mdf LSQ : on error added
+'
+Function toXlRCstr(inputFormula As String) As String
+    Dim inx As Long
+    Dim str As String, tmpFormula As String
+    tmpFormula = Replace(inputFormula, "'", "")
+    inx = InStr(1, tmpFormula, "!")
+    str = Mid(tmpFormula, inx + 1)
+    
+    On Error Resume Next
+    
+    toXlRCstr = Application.ConvertFormula( _
+                Formula:=str, _
+                fromReferenceStyle:=xlA1, _
+                toReferenceStyle:=xlR1C1)
+    
+    If Err.Number <> 0 Then
+        toXlRCstr = inputFormula
+        Err.Clear
+        Exit Function
+    End If
+    
+    If inx > 1 And InStr(1, toXlRCstr, "!") < 1 Then
+        toXlRCstr = "'" & Mid(tmpFormula, 1, inx - 1) & "'!" & toXlRCstr
+    End If
+    
+    On Error GoTo 0
+End Function
+
+'Copied from commMdl in SRKV2P5(SRKMAIN.xla)
+Function toXlA1str(inputFormula As String) As String
+    Dim inx As Long
+    Dim str As String, tmpFormula As String
+    tmpFormula = Replace(inputFormula, "'", "")
+    inx = InStr(1, tmpFormula, "!")
+    str = Mid(tmpFormula, inx + 1)
+    On Error Resume Next
+    toXlA1str = Application.ConvertFormula( _
+                Formula:=str, _
+                fromReferenceStyle:=xlR1C1, _
+                toReferenceStyle:=xlA1)
+    If Err.Number <> 0 Then
+        toXlA1str = inputFormula
+        Err.Clear
+        Exit Function
+    End If
+    If inx > 1 And InStr(1, toXlA1str, "]") < 1 Then
+        toXlA1str = "'" & Mid(tmpFormula, 1, inx - 1) & "'!" & toXlA1str
+    End If
+    On Error GoTo 0
+End Function
+
+Sub AdjustMinMax(ByRef minV As Double, ByRef maxV As Double, Optional ByVal MaxDecimalNum As Integer = -1)
+    Dim keta As Integer
+    Dim tmpd As Double, min As Double, max As Double
+    
+    tmpd = (maxV - minV) / 20
+    keta = decNumKeta(maxV - minV)
+    If MaxDecimalNum >= 0 And keta > MaxDecimalNum Then
+        keta = MaxDecimalNum
+    End If
+    max = maxV + tmpd
+    min = minV - tmpd
+    maxV = vbaRound(max, keta, 1)
+    minV = vbaRound(min, keta, 2)
+End Sub
+
+Sub SetAxisMinMax(ByVal axisObj As Axis, ByVal minV As Double, ByVal maxV As Double, Optional ByVal DecimalPlaces As Integer = -1)
+    Call AdjustMinMax(minV, maxV, DecimalPlaces)
+    axisObj.MinimumScaleIsAuto = False
+    axisObj.MinimumScale = minV
+    axisObj.MaximumScaleIsAuto = False
+    axisObj.MaximumScale = maxV
+End Sub
+
+Function MatchWorkbookFont()
+    On Error Resume Next
+    
+    Selection.Font.Name = ActiveWorkbook.Styles("Normal").Font.Name
+    Selection.Font.Size = ActiveWorkbook.Styles("Normal").Font.Size
+    Selection.AutoScaleFont = True
+    
+    On Error GoTo 0
+End Function
+
+Sub SetTicks(ByVal cht As Chart, ByVal strTicks As String)
+    Dim i As Integer, j As Integer
+    Dim Ticks() As String
+    Dim bRevStatus As Boolean
+    Dim xSeries As Series
+    Dim CateCnt As Integer
+    Dim CateNum As Integer
+    Dim cates() As Integer
+    Dim MaxScale As Double, MinScale As Double
+    Dim bScreenUpdating As Boolean
+    On Error Resume Next
+    bScreenUpdating = Application.ScreenUpdating
+    Application.ScreenUpdating = False
+    bRevStatus = cht.Axes(xlCategory).ReversePlotOrder
+    If bRevStatus Then
+        cht.Axes(xlCategory).ReversePlotOrder = False
+        strTicks = StrReverse(strTicks)
+    End If
+    Ticks = Split(strTicks, ",")
+    CateNum = 0
+    CateCnt = UBound(Ticks)
+    ReDim cates(1 To CateCnt)
+    For i = 1 To CateCnt
+        CateNum = CateNum + CInt(Ticks(i - 1))
+        cates(i) = CInt(Ticks(i - 1))
+        For j = 1 To i - 1
+            cates(i) = cates(i) + CInt(Ticks(j - 1))
+        Next j
+    Next i
+    CateNum = CateNum + CInt(Ticks(CateCnt))
+    Set xSeries = cht.SeriesCollection.NewSeries
+    xSeries.Name = "tick1"
+    xSeries.ChartType = xlXYScatterLinesNoMarkers
+    With cht.Axes(xlValue, xlSecondary)
+        .MinimumScale = 0
+        .MaximumScale = CateNum
+        .MinorUnitIsAuto = True
+        .MajorUnit = 1
+    End With
+    MaxScale = cht.Axes(xlValue, xlPrimary).MaximumScale
+    MinScale = cht.Axes(xlValue, xlPrimary).MinimumScale
+    cht.Axes(xlValue, xlPrimary).MaximumScaleIsAuto = False
+    cht.Axes(xlValue, xlPrimary).MinimumScaleIsAuto = False
+    cht.Axes(xlValue, xlPrimary).MaximumScale = MaxScale
+     cht.Axes(xlValue, xlPrimary).MinimumScale = MinScale
+    cht.Axes(xlCategory, xlSecondary).MinimumScale = MinScale
+    cht.Axes(xlCategory, xlSecondary).MaximumScale = MaxScale
+    xSeries.XValues = "={" & MinScale & "," & MaxScale & "}"
+    xSeries.Values = "={" & cates(1) & "," & cates(1) & "}"
+    xSeries.Border.ColorIndex = 1
+    xSeries.Border.LineStyle = xlDot
+    xSeries.Border.Weight = xlThin
+    xSeries.MarkerStyle = xlNone
+    For i = 2 To CateCnt
+        Set xSeries = cht.SeriesCollection.NewSeries
+        xSeries.ChartType = xlXYScatterLinesNoMarkers
+        xSeries.Name = "tick" & i
+        xSeries.XValues = "={" & MinScale & "," & MaxScale & "}"
+        xSeries.Values = "={" & cates(i) & "," & cates(i) & "}"
+        xSeries.Border.ColorIndex = 1
+        xSeries.Border.LineStyle = xlDot
+        xSeries.Border.Weight = xlThin
+        xSeries.MarkerStyle = xlNone
+    Next i
+    
+    cht.Axes(xlValue, xlSecondary).Delete
+    cht.Axes(xlCategory, xlSecondary).Delete
+    cht.Axes(xlCategory).Select
+    cht.Axes(xlCategory).ReversePlotOrder = bRevStatus
+    Application.ScreenUpdating = bScreenUpdating
+    On Error GoTo 0
+End Sub
+
+'=== EOF ===
+
+
+Attribute VB_Name = "mdlPubB"
+Attribute VB_Name = "mdlStartEnd"
+'=======================================================
+' VBA Common Functions : Start & End
+'
+' 2007.1.30 LSQ
+'=======================================================
+Option Explicit
+
+Sub Auto_open()
+    getRgeObj(1) = 0 'init
+End Sub
+
+'=== EOF ===
+
+Attribute VB_Name = "mdlUnicodeText"
+Option Explicit
+
+Private Const TEXTHEAD As String = "__TKO__"
+Private Const TEXTTAIL As String = "_T_"
+
+Private TextCollection As Collection
+Private KeyCollection As Collection
+
+Public Function IsKeyInCollection(ByVal TestCollection As Collection, ByVal key As Variant) As Boolean
+   Dim Value As Variant
+   IsKeyInCollection = True
+   On Error Resume Next
+   Value = TestCollection(key)
+   If IsEmpty(Value) Then
+      Set Value = TestCollection(key)
+      If Value Is Nothing Then
+         IsKeyInCollection = False
+      End If
+   End If
+End Function
+
+Public Function AddKey(ByVal key As Variant) As Variant
+    Dim cnt As Long
+    Dim var As Variant
+    If VarType(key) <> vbString Then
+        var = CStr(key)
+    Else
+        var = key
+    End If
+    cnt = KeyCollection.Count + 1
+    If Not IsKeyInCollection(TextCollection, var) Then
+        TextCollection.Add TEXTHEAD & cnt & TEXTTAIL, var
+        KeyCollection.Add var, TEXTHEAD & cnt & TEXTTAIL
+    End If
+    AddKey = TextCollection(var)
+End Function
+
+Public Function IsTextInCollection(ByVal text As Variant) As Boolean
+    IsTextInCollection = IsKeyInCollection(KeyCollection, text)
+End Function
+
+Public Function GetTextFromCollection(ByVal key As Variant) As Variant
+    GetTextFromCollection = KeyCollection(key)
+End Function
+
+Public Function IsPartTextInCollection(ByVal text As Variant) As Boolean
+    Dim RE As Object, REMatches As Object
+    Set RE = CreateObject("vbscript.regexp")
+    With RE
+        '.MultiLine = False
+        .Global = False
+        .IgnoreCase = True
+        .Pattern = TEXTHEAD & "[0-9]{1,}" & TEXTTAIL
+    End With
+    Set REMatches = RE.Execute(text)
+    IsPartTextInCollection = IIf(REMatches.Count > 0, True, False)
+End Function
+
+Function GetAllTags(strData As Variant) As Object
+    Dim RE As Object
+    Set RE = CreateObject("vbscript.regexp")
+    With RE
+        '.MultiLine = False
+        .Global = True
+        .IgnoreCase = True
+        .Pattern = TEXTHEAD & "[0-9]{1,}" & TEXTTAIL
+    End With
+    Set GetAllTags = RE.Execute(strData)
+End Function
+
+Public Function ReplaceTextInCollection(ByVal text As Variant) As Variant
+    Dim i As Long
+    Dim var As Variant
+    Dim AllTags As Object
+    var = text
+    Set AllTags = GetAllTags(var)
+    For i = 0 To AllTags.Count - 1
+        var = Replace(var, AllTags.Item(i), KeyCollection(AllTags.Item(i))) '10.4.23 LSQ mdf : IE5.0 |fffd||389||fffd|
+    Next
+    ReplaceTextInCollection = var
+End Function
+
+Sub InitCollection()
+    Set TextCollection = New Collection
+    Set KeyCollection = New Collection
+End Sub
+
+Sub ReleaseCollection()
+    Set TextCollection = Nothing
+    Set KeyCollection = Nothing
+End Sub
+
+
+
+INQUEST-PP=macro

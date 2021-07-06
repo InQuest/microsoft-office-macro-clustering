@@ -1,0 +1,1177 @@
+Attribute VB_Name = "ModulAztec"
+Option Explicit
+Dim typ As Long, enc(1665) As Integer
+Dim md As Long, eb As Long, el As Long, b As Long
+
+' Aztec bar code symbol creation according ISO/IEC 24778:2008
+'  param text to encode
+'  param security optional: percentage of checkwords used for security 2%-90% (23%)
+'  param layers optional: number of layers (size), default autodetect, 0 - Aztec rune
+'   creates Actec and compact Aztec bar code symbol as shape in Excel cell.
+Public Function Aztec(text As String, Optional security As Integer, Optional layers As Integer = 1) As String
+Attribute Aztec.VB_Description = "Draw Aztec barcode"
+Attribute Aztec.VB_ProcData.VB_Invoke_Func = " \n18"
+Dim fColor As Long, bColor As Long, line As Long, shp As Shape, txt As String
+Dim x As Long, y As Long, dx As Long, dy As Long, ctr As Long, ec As Long
+Dim c As Long, i As Long, j As Long, k As Long, l As Long, m As Long
+
+On Error GoTo failed
+If Not TypeOf Application.Caller Is Range Then Err.Raise 513, "Aztec code", "Call only from sheet"
+fColor = vbBlack: bColor = vbBlack: line = xlHairline ' redraw graphic ?
+For Each shp In Application.Caller.Parent.Shapes
+    If shp.Name = Application.Caller.Address Then
+        If shp.Title = text Then Exit Function ' same as prev ?
+        fColor = shp.Fill.ForeColor.RGB  ' remember format
+        bColor = shp.line.ForeColor.RGB
+        line = shp.line.Weight
+        shp.Delete
+    End If
+Next shp
+If security < 1 Then security = 23 Else If security > 90 Then security = 90
+txt = IIf(text = "", " ", utf16to8(text)) ' at least 1 char
+el = Len(txt): x = 4: typ = 0
+Do ' compute word size b: 6/8/10/12 bits
+    i = Int(el * 100 / (100 - security) + 3) * x ' needed bits, at least 3 checkwords
+    If i > l Then l = i
+    b = IIf(l <= 240, 6, IIf(l <= 1920, 8, IIf(l <= 10208, 10, 12))) ' bit capacity -> word size
+    i = IIf(layers < 3, 6, IIf(layers < 9, 8, IIf(layers < 23, 10, 12))) ' layer paramerter
+    If i > b Then b = i
+    If x >= b Then Exit Do
+    el = 0: md = 0: eb = 0: enc(0) = 0 ' clr bit stream
+    For i = 1 To Len(txt) ' scan text
+        c = Asc(Mid(txt, i, 1)): k = 0
+        If i < Len(txt) Then k = Asc(Mid(txt, i + 1, 1))
+        If c = 32 Then ' space
+            If md = 3 Then push 31: md = 0 ' punct: latch to upper
+            c = 1 ' space in all other modes
+        ElseIf md = 4 And c = 44 Then
+            c = 12 ' , in digit mode
+        ElseIf md = 4 And c = 46 Then
+            c = 13 ' . in digit mode
+        ElseIf ((c = 44 Or c = 46 Or c = 58) And k = 32) Or (c = 13 And k = 10) Then
+            If md <> 3 Then push (0) ' shift to punct
+            push IIf(c = 46, 3, IIf(c = 44, 4, IIf(c = 58, 5, 2))) ' two char encoding
+            i = i + 1: GoTo continue
+        Else
+            c = IIf(c = 13 And modeOf(k) \ 32 = md, 97, modeOf(c))
+            If c < 0 Then ' binary
+                If md > 2 Then push IIf(md = 3, 31, 14): md = 0 ' latch to upper
+                j = 0: push 31 ' shift to binary
+                For k = 0 To Len(txt) - i - 1 ' calc binary length
+                    If modeOf(Asc(Mid(txt, k + i, 1))) < 0 Then
+                        j = 0
+                    Else
+                        j = j + 1
+                        If j > 5 Then Exit For ' look for at least 5 consecutive non binary chars
+                    End If
+                Next k
+                k = k - j
+                If k > 30 Then
+                    push 0: push k - 30, 11
+                Else
+                    push k + 1
+                End If
+                For j = 0 To k  ' encode binary data
+                    push Asc(Mid(txt, i + j, 1)), 8
+                    If el > 1660 Then Exit For
+                Next j
+                i = i + k: GoTo continue
+            End If
+            m = c \ 32 ' needed mode
+            If m = 4 And md = 2 Then push 29: md = 0 ' mixed to upper (to digit)
+            If m <> 3 And md = 3 Then push 31: md = 0 ' exit punct: to upper
+            If m <> 4 And md = 4 Then ' exit digit
+                If (m = 3 Or m = 0) And modeOf(k) > 129 Then
+                    push (3 - m) * 5: push c And 31, 5 ' shift to punct/upper
+                    GoTo continue
+                End If
+                push 14: md = 0 ' latch to upper
+            End If
+            If md <> m Then ' mode change needed
+                If m = 3 Then ' to punct
+                    If md <> 4 And modeOf(k) \ 32 = 3 Then ' 2x punct, latch to punkt
+                        If md <> 2 Then push 29 ' latch to mixed
+                        push 30 ' latch to punct
+                        md = 3 ' mode punct
+                    Else
+                        push 0 ' shift to punct
+                    End If
+                ElseIf md = 1 And m = 0 Then ' lower to upper
+                    If modeOf(k) \ 32 = 1 Then
+                        push 28 ' shift
+                    Else
+                        push 30: push 14, 4 ' latch
+                        md = 0
+                    End If
+                Else ' latch to ..
+                    push Array(29, 28, 29, 30, 30)(m)
+                    md = m
+                End If
+            End If
+        End If
+        push c And 31 ' add char
+        If el > 1660 Then Exit For
+continue:
+    Next i
+    push 2 ^ (b - eb) - 1, b - eb ' add padding bits
+    x = b
+Loop
+If el > 1660 Then Err.Raise 514, "Aztec code", "Message too long."
+typ = IIf(l > 608 Or el > 64, 14, 11) ' full or compact Aztec
+md = val(Left(txt, 3)) ' Aztec rune possible ?
+If md < 0 Or md > 255 Or md & "" <> txt Or layers > 0 Then
+    i = -Int((typ - Sqr(l + typ * typ)) / 4) ' needed layers
+    If i > layers Then layers = i
+    If layers > 32 Then layers = 32
+End If
+ec = (8 * layers * (typ + 2 * layers)) \ b - el ' # of checkwords
+typ = typ \ 2: ctr = typ + 2 * layers: ctr = ctr + (ctr - 1) \ 15 ' center position
+security = 100 * ec / (el + ec)
+
+With Application.Caller.Parent.Shapes ' layout Aztec barcode
+    m = .Count + 1
+    For y = 1 - typ To typ - 1 ' layout central finder
+        For x = 1 - typ To typ - 1
+            If (IIf(Abs(x) > Abs(y), x, y) And 1) = 0 Then
+                .AddShape(msoShapeRectangle, ctr + x, ctr + y, 1, 1).Name = Application.Caller.Address
+            End If
+        Next x
+    Next y
+    For i = 0 To 5 ' orientation marks
+        x = Array(-typ, -typ, 1 - typ, typ, typ, typ)(i)
+        y = Array(1 - typ, -typ, -typ, typ - 1, 1 - typ, -typ)(i)
+        .AddShape(msoShapeRectangle, ctr + x, ctr + y, 1, 1).Name = Application.Caller.Address
+    Next i
+    If layers > 0 Then ' layout data
+        addCheck ec, 2 ^ b - 1, Array(67, 301, 1033, 4201)(b / 2 - 3) ' error correction, generator polynomial
+        x = -typ: y = x - 1 ' start of layer 1 at top left
+        j = (3 * typ + 11) / 2: l = j ' length of inner side
+        dx = 1: dy = 0 ' direction right
+        For ec = ec + el - 1 To 0 Step -1 ' layout codeword
+            c = enc(ec) ' data in reversed order inside to outside
+            For i = 1 To b / 2
+                If c And 1 Then ' odd bit
+                    .AddShape(msoShapeRectangle, ctr + x, ctr + y, 1, 1).Name = Application.Caller.Address
+                End If
+                move x, y, dy, -dx ' move across
+                If c And 2 Then ' even bit
+                    .AddShape(msoShapeRectangle, ctr + x, ctr + y, 1, 1).Name = Application.Caller.Address
+                End If
+                move x, y, dx - dy, dx + dy ' move ahead
+                j = j - 1
+                If j = 0 Then ' spiral turn
+                    move x, y, dy, -dx ' move across
+                    j = dx: dx = -dy: dy = j ' rotate clockwise
+                    If dx < 1 Then
+                        move x, y, dx - dy, dx + dy ' move ahead
+                        move x, y, dx - dy, dx + dy ' move ahead
+                    Else
+                        l = l + 4 ' full turn -> next layer
+                    End If
+                    j = l ' start new side
+                End If
+                c = c \ 4
+            Next i
+        Next ec
+        If typ = 7 Then ' layout reference grid
+            For x = (15 - ctr) And -16 To ctr Step 16
+                For y = (1 - ctr) And -2 To ctr Step 2
+                    If Abs(x) > typ Or Abs(y) > typ Then
+                        .AddShape(msoShapeRectangle, ctr + x, ctr + y, 1, 1).Name = Application.Caller.Address ' down
+                        If y And 15 Then
+                            .AddShape(msoShapeRectangle, ctr + y, ctr + x, 1, 1).Name = Application.Caller.Address ' across
+                        End If
+                    End If
+                Next y
+            Next x
+        End If
+        md = (layers - 1) * (typ * 992 - 4896&) + el - 1 ' 2/5 + 6/11 mode bits
+    End If
+    el = typ - 3 ' process modes message compact/full
+    For i = el - 1 To 0 Step -1
+        enc(i) = md And 15 ' mode to 4 bit words
+        md = md \ 16
+    Next i
+    addCheck typ \ 2 + 3, 15, 19 ' add 5/6 words error correction
+    el = el + typ \ 2 + 3 ' init bit stream
+    b = (typ * 3) \ 2  ' 7/10 bits per side
+    eb = 0: j = IIf(layers, 0, 10) 'XOR Aztec rune data
+    For i = 0 To b - 1
+        push j Xor enc(i), 4 ' 8/16 words to 4 chunks
+    Next i
+    j = 1 ' layout mode data
+    For i = 2 - typ To typ - 2
+        If typ = 7 And i = 0 Then i = i + 1 ' skip reference grid
+        If enc(b) And j Then .AddShape(msoShapeRectangle, ctr - i, ctr - typ, 1, 1).Name = Application.Caller.Address ' top
+        If enc(b + 1) And j Then .AddShape(msoShapeRectangle, ctr + typ, ctr - i, 1, 1).Name = Application.Caller.Address ' right
+        If enc(b + 2) And j Then .AddShape(msoShapeRectangle, ctr + i, ctr + typ, 1, 1).Name = Application.Caller.Address ' bottom
+        If enc(b + 3) And j Then .AddShape(msoShapeRectangle, ctr - typ, ctr + i, 1, 1).Name = Application.Caller.Address     ' left
+        j = j + j
+    Next i
+    m = .Count - m
+    ReDim shps(m) As Integer ' group all shapes
+    For i = .Count To 1 Step -1
+        If .Range(i).Name = Application.Caller.Address Then
+            shps(m) = i: m = m - 1
+            If m < 0 Then Exit For
+        End If
+    Next i
+    With .Range(shps).Group
+        .Fill.ForeColor.RGB = fColor ' format barcode shape
+        .line.ForeColor.RGB = bColor
+        .line.Weight = line
+        x = Application.Caller.MergeArea.Width
+        y = Application.Caller.MergeArea.Height
+        If x > y Then x = y
+        .Width = x * (2 * ctr + 1) / (2 * ctr + 3) ' fit symbol in excel cell
+        .Height = .Width
+        .Left = Application.Caller.Left + (Application.Caller.MergeArea.Width - .Width) / 2
+        .Top = Application.Caller.Top + (Application.Caller.MergeArea.Height - .Height) / 2
+        .Name = Application.Caller.Address ' link shape to data
+        .Title = text
+        .AlternativeText = "Aztec " & IIf(typ = 5, "compact", "full") & " barcode, security " & security & "%, layers " & layers & ", " & (2 * ctr + 1) & "x" & (2 * ctr + 1) & " cells"
+        .LockAspectRatio = True
+        .Placement = xlMove
+    End With
+End With
+failed:
+If Err.Number Then Aztec = "ERROR Aztec: " & Err.Description
+End Function
+
+' get character encoding mode of ch
+Private Function modeOf(ByVal ch As Integer) As Integer
+Dim i As Integer, k As Variant
+If ch = 32 Then modeOf = md * 32: Exit Function ' space
+k = Array(0, 14, 65, 26, 32, 52, 32, 48, 69, 47, 58, 82, 57, 64, 59, 64, 91, -63, 96, 123, -63)
+For i = 0 To UBound(k) Step 3 ' check range
+    If ch > k(i) And ch < k(i + 1) Then Exit For
+Next i
+If i <= UBound(k) Then modeOf = ch + k(i + 2): Exit Function ' ch in range
+i = InStr("@\^_'|~|fffd|[]{}", Chr(ch))
+modeOf = IIf(i = 0, -1, IIf(i < 9, 20 + 64, 27 + 96 - 8) + i - 1) ' binary/mixed/punct
+End Function
+
+' add value to data stream
+Private Sub push(ByVal val As Long, Optional ByVal bits As Integer = 0)
+val = val * 2 ^ b
+If bits = 0 Then bits = IIf(md = 4, 4, 5)
+eb = eb + bits
+enc(el) = enc(el) + val \ 2 ^ eb ' add data
+Do While eb >= b ' word full ?
+    If typ = 0 And (enc(el) < 2 Or enc(el) + 3 > 2 ^ b) Then ' bit stuffing
+        enc(el) = enc(el) Xor ((enc(el) + 3) \ 2 And 1) ' add complementary bit
+        eb = eb + 1
+    End If
+    eb = eb - b: el = el + 1
+    enc(el) = (val \ 2 ^ eb) And ((2 ^ b) - 1)
+Loop
+End Sub
+
+' compute Reed Solomon error detection and correction
+Private Sub addCheck(ByVal ec As Integer, ByVal s As Integer, ByVal p As Integer)
+Dim i As Integer, j As Integer, x As Integer
+ReDim rc(ec + 2) As Integer, lg(s + 1) As Integer, ex(s) As Integer
+j = 1
+For i = 0 To s - 1 ' compute log/exp table of Galois field
+    ex(i) = j: lg(j) = i
+    j = j + j: If (j > s) Then j = j Xor p ' GF polynomial
+Next i
+rc(ec + 1) = 0
+For i = 0 To ec ' compute RS generator polynomial
+    rc(ec - i) = 1
+    For j = ec - i + 1 To ec
+        rc(j) = rc(j + 1) Xor ex((lg(rc(j)) + i) Mod s)
+    Next j
+    enc(el + i) = 0
+Next i
+For i = 0 To el - 1 ' compute RS checkwords
+    x = enc(el) Xor enc(i)
+    For j = 1 To ec
+        enc(el + j - 1) = enc(el + j) Xor IIf(x, ex((lg(rc(j)) + lg(x)) Mod s), 0)
+    Next j
+Next i
+End Sub
+
+' move one cell
+Private Sub move(x As Long, y As Long, ByVal dx As Integer, ByVal dy As Integer)
+Do
+    x = x + dx
+Loop While typ = 7 And (x And 15) = 0 ' skip reference grid
+Do
+    y = y + dy
+Loop While typ = 7 And (y And 15) = 0
+End Sub
+Attribute VB_Name = "ModulBarcode"
+' Barcode symbol creation by VBA
+' Author: alois zingl
+' Version: V1.1 jan 2016
+' Copyright: Free and open-source software
+' http://members.chello.at/~easyfilter/barcode.html
+' Description: the indention of this library is a short and compact implementation to create barcodes
+'  of Code 128, Data Matrix, (micro) QR or Aztec symbols so it could be easily adapted for individual requirements.
+'  The Barcode is drawn as shape in the cell of the Excel sheet.
+'  The smallest bar code symbol fitting the data is automatically selected,
+'  but no size optimization for mixed data types in one code is done.
+' Functions:
+'   DataMatrix(text As String, Optional rectangle As Integer)
+'   QuickResponse(text As String, Optional level As String = "L", Optional version As Integer = 1)
+'   Aztec(text As String, Optional security As Integer, Optional layers As Integer = 1)
+'   Code128(text As String)
+'
+Option Explicit
+
+' add description to user defined barcode functions
+Private Sub Workbook_Open()
+ReDim arg(0) As String
+arg(0) = "text to encode"
+Application.MacroOptions macro:="Code128", Description:="Draw Code 128 barcode", Category:="Barcode", ArgumentDescriptions:=arg
+Application.MacroOptions macro:="DataMatrix", Description:="Draw DataMatrix barcode", Category:="Barcode", ArgumentDescriptions:=arg
+ReDim Preserve arg(2)
+arg(1) = "percentage of checkwords (1..90)" + vbCrLf + "number, optional, default 23%"
+arg(2) = "minimum number of layers (0-32)" + vbCrLf + "number, optional, default 1" + vbCrLf + "set to 0 for Aztec rune"
+Application.MacroOptions macro:="Aztec", Description:="Draw Aztec barcode", Category:="Barcode", ArgumentDescriptions:=arg
+arg(1) = "security level ""LMQH""" + vbCrLf + "low, medium, quartile, high" + vbCrLf + "letter, optional, default L"
+arg(2) = "minimum version size(-3..40)" + vbCrLf + "number, optional, default 1" + vbCrLf + "MircoQR M1:-3, M2:-2, M3:-1, M4:0"
+Application.MacroOptions macro:="QRCode", Description:="Draw QR code", Category:="Barcode", ArgumentDescriptions:=arg
+End Sub
+
+' convert UTF-16 (Windows) to UTF-8
+Public Function utf16to8(text As String) As String
+Dim i As Integer, c As Long
+utf16to8 = text
+For i = Len(text) To 1 Step -1
+    c = AscW(Mid(text, i, 1)) And 65535
+    If c > 127 Then
+        If c > 4095 Then
+            utf16to8 = Left(utf16to8, i - 1) + Chr(224 + c \ 4096) + Chr(128 + (c \ 64 And 63)) + Chr(128 + (c And 63)) & Mid(utf16to8, i + 1)
+        Else
+            utf16to8 = Left(utf16to8, i - 1) + Chr(192 + c \ 64) + Chr(128 + (c And 63)) & Mid(utf16to8, i + 1)
+        End If
+    End If
+Next i
+End Function
+
+'update all barcodes in active sheet
+
+
+' read/write kanji conversion string from/to file
+
+Attribute VB_Name = "ModulCode128"
+Option Explicit
+
+' Code 128 symbol creation according ISO/IEC 15417:2007
+Public Function Code128(text As String) As String
+Attribute Code128.VB_Description = "Draw Code 128 barcode"
+Attribute Code128.VB_ProcData.VB_Invoke_Func = " \n18"
+On Error GoTo failed
+If Not TypeOf Application.Caller Is Range Then Err.Raise 513, "Code 128", "Call only from sheet"
+Dim m As Long, i As Long, j As Long, c As Long, l As Long, t As Long
+Dim shp As Shape, color As Long, txt As String ' redraw barcode ?
+color = vbBlack
+For Each shp In Application.Caller.Parent.Shapes
+    If shp.Name = Application.Caller.Address Then
+        If shp.Title = text Then Exit Function ' same as prev ?
+        color = shp.Fill.ForeColor.RGB ' redraw with same color
+        shp.Delete
+    End If
+Next shp
+txt = utf16to8(text): m = 3: l = 0: t = Len(txt)
+ReDim enc(3 * t + 3) As Byte
+For i = 1 To t
+    If m <> 2 Then ' alpha mode
+        For j = 0 To t - i ' count digits
+            If Not IsNumeric(Mid(txt, i + j, 1)) Then Exit For
+        Next j
+        If (j > 1 And i = 1) Or (j > 3 And (i + j < t Or (j And 1) = 0)) Then
+            enc(l) = IIf(i = 1, 105, 99) ' start / code C
+            l = l + 1: m = 2 ' to digit
+        End If
+    End If
+    If m = 2 Then ' digit mode
+        If IsNumeric(Mid(txt, i, 1)) And IsNumeric(Mid(txt, i + 1, 1)) Then
+            enc(l) = val(Mid(txt, i, 2)) ' two digits
+            l = l + 1: i = i + 1
+        Else
+            m = 3 ' exit digit
+        End If
+    End If
+    If m <> 2 Then ' alpha mode
+        c = Asc(Mid(txt, i, 1))
+        If m > 2 Or ((c And 127) < 32 And m) Or ((c And 127) > 95 And m = 0) Then  ' change ?
+            For j = IIf(m > 2 Or i + 1 = t, i, i + 1) To t - 1 ' A or B needed?
+                If Asc(Mid(txt, j, 1)) - 32 And 64 Then Exit For ' < 32 or > 95
+            Next j
+            j = IIf(Asc(Mid(txt, j, 1)) And 96, 1, 0) ' new set
+            enc(l) = IIf(i = 1, 103 + j, IIf(j <> m, 101 - j, 98))
+            l = l + 1: m = j ' change set: start,code,(shift)
+        End If
+        If c > 127 Then enc(l) = 101 - m: l = l + 1 ' FNC4: char > 127
+        enc(l) = ((c And 127) + 64) Mod 96: l = l + 1
+    End If
+Next i
+If i = 1 Then enc(0) = 103: l = 1 ' empty message
+j = enc(0) ' check sum
+For i = 1 To l
+    j = j + i * enc(i)
+Next i
+enc(l) = j Mod 103: enc(l + 1) = 106 ' stop
+
+With Application.Caller.Parent.Shapes
+    For i = 0 To l + 1 ' code to pattern
+        c = Array(277, 337, 341, 69, 73, 133, 84, 88, 148, 324, 328, 388, 22, 82, 86, 37, 97, _
+            101, 356, 322, 326, 292, 352, 530, 517, 577, 581, 532, 592, 596, 273, 281, 401, 9, _
+            129, 137, 24, 144, 152, 264, 384, 392, 18, 26, 146, 33, 41, 161, 545, 266, 386, 288, _
+            296, 290, 513, 521, 641, 528, 536, 656, 560, 332, 896, 5, 13, 65, 77, 193, 197, 20, 28, _
+            80, 92, 208, 212, 452, 320, 800, 448, 176, 7, 67, 71, 52, 112, 116, 772, 832, 836, 275, _
+            305, 785, 3, 11, 131, 48, 56, 768, 776, 35, 50, 515, 770, 268, 260, 262, 416)(enc(i))
+        m = c \ 256 + 1
+        .AddShape(msoShapeRectangle, 11 * i, 0, m, 1).Name = Application.Caller.Address ' 1st bar
+        j = 11 * i + m + ((c \ 64) And 3) + 1
+        m = ((c \ 16) And 3) + 1
+        .AddShape(msoShapeRectangle, j, 0, m, 1).Name = Application.Caller.Address ' 2nd bar
+        j = j + m + ((c \ 4) And 3) + 1
+        .AddShape(msoShapeRectangle, j, 0, (c And 3) + 1, 1).Name = Application.Caller.Address ' 3rd bar
+    Next i
+    .AddShape(msoShapeRectangle, 11 * i, 0, 2, 1).Name = Application.Caller.Address ' stop bar
+    j = 3 * l + 6: m = j
+
+    ReDim shps(j) As Integer ' group all shapes
+    For i = .Count To 1 Step -1
+        If .Range(i).Name = Application.Caller.Address Then
+            shps(j) = i: j = j - 1
+            If j < 0 Then Exit For
+        End If
+    Next i
+    With .Range(shps).Group
+        .Fill.ForeColor.RGB = color ' format barcode shape
+        .line.Visible = False
+        .Width = Application.Caller.MergeArea.Width * 2 * m / (2 * m + 1) ' fit symbol in excel cell
+        .Height = Application.Caller.MergeArea.Height - .Width / (2 * m)
+        .Left = Application.Caller.Left + (Application.Caller.MergeArea.Width - .Width) / 2
+        .Top = Application.Caller.Top + (Application.Caller.MergeArea.Height - .Height) / 2
+        .Name = Application.Caller.Address ' link shape to data
+        .Title = text
+        .AlternativeText = "Code128 barcode, " & (l + 2) & " characters"
+    End With
+End With
+failed:
+If Err.Number Then Code128 = "ERROR Code128: " & Err.Description
+End Function
+Attribute VB_Name = "ModulDataMatrix"
+Option Explicit
+
+'   creates Data Matrix barcode symbol as shape in Excel cell.
+'   param text to encode
+'   param rectangle boolean, default autodetect on cell dimension
+' Data Matrix symbol creation according ISO/IEC 16022:2006
+Public Function DataMatrix(text As String, Optional rectangle As Integer = -2) As String
+Attribute DataMatrix.VB_Description = "Draw DataMatrix barcode"
+Attribute DataMatrix.VB_ProcData.VB_Invoke_Func = " \n18"
+On Error GoTo failed
+If Not TypeOf Application.Caller Is Range Then Err.Raise 513, "DataMatrix", "Call only from sheet"
+Dim enc As String, en As String, el As Long, k As Variant, l As Long
+Dim h As Long, w As Long, nc As Byte, nr As Byte, shp As Shape
+Dim fw As Integer, fh As Integer, i As Long, j As Long, b As Double
+Dim c As Long, r As Double, s As Long, x As Long, y As Long, txt As String
+Dim fColor As Long, bColor As Long, line As Long
+fColor = vbBlack: bColor = vbBlack: line = xlHairline ' redraw graphic ?
+For Each shp In Application.Caller.Parent.Shapes
+    If shp.Name = Application.Caller.Address Then
+        If shp.Title = text Then Exit Function ' same as prev ?
+        fColor = shp.Fill.ForeColor.RGB  ' remember format
+        bColor = shp.line.ForeColor.RGB
+        line = shp.line.Weight
+        shp.Delete
+    End If
+Next shp
+txt = IIf(text = "", " ", utf16to8(text)): l = Len(txt)
+For i = 1 To l ' ASCII mode encoding
+    c = Asc(Mid(txt, i, 1)): r = 0
+    If i < l Then r = Asc(Mid(txt, i + 1, 1))
+    If c > 47 And c < 58 And r > 47 And r < 58 Then
+        enc = enc + Chr((c - 48) * 10 + r - 48 + 130) ' 2 digits
+        i = i + 1
+    ElseIf (c > 127) Then ' extended char
+        enc = enc + Chr(235) + Chr(c - 127)
+    Else
+        enc = enc + Chr(c + 1)
+    End If
+Next i
+For x = 0 To 2 ' C40, TEXT and X12 modes encoding
+    k = Array(Array(230, 31, 0, 0, 32, 9, 32 - 3, 47, 1, 33, 57, 9, 48 - 4, 64, 1, 58 - 15, 90, 9, 65 - 14, 95, 1, 91 - 22, 127, 2, 96, 255, 1, 0), _
+              Array(239, 31, 0, 0, 32, 9, 32 - 3, 47, 1, 33, 57, 9, 48 - 4, 64, 1, 58 - 15, 90, 2, 64, 95, 1, 91 - 22, 122, 9, 97 - 14, 127, 2, 123 - 27, 255, 1, 0), _
+              Array(238, 12, 8, 0, 13, 9, 13, 31, 8, 0, 32, 9, 32 - 3, 41, 8, 0, 42, 9, 42 - 1, 47, 8, 0, 57, 9, 48 - 4, 64, 8, 0, 90, 9, 65 - 14, 255, 8, 0))(x)
+    b = 0: h = 0
+    en = Chr(k(0)) ' start switch
+    For i = 1 To l
+        If h = 0 And i = l Then Exit For
+        c = Asc(Mid(txt, i, 1))
+        If c > 127 And k(0) <> 238 Then
+            b = b * 40 + 1: b = b * 40 + 30
+            h = h + 2: c = c - 128 ' hi bit in C40 & TEXT
+        End If
+        For j = 1 To 90 Step 3 ' select char set
+            If c <= k(j) Then Exit For
+        Next j
+        s = k(j + 1) ' set
+        If s = 8 Or (s = 9 And h = 0 And i = l) Then
+            en = txt + txt
+            Exit For ' char not in set, next mode
+        End If
+        If s < 5 And h = 2 And i = l Then  'Exit For ' last char in ASCII
+            b = b * 40: h = 3 ' add padding
+            i = i - 1
+        Else
+            If s < 5 Then b = b * 40 + s: h = h + 1 ' set
+            b = b * 40 + c - k(j + 2): h = h + 1 ' char offset
+            If h Mod 3 = 2 And k(0) <> 238 And i = l Then b = b * 40: h = h + 1 ' add padding
+        End If
+        Do While h > 2 ' pack 3 chars in 2 bytes
+            h = h - 3: r = 40& ^ h
+            c = Int(b / r) + 1
+            en = en + Chr((c \ 256) And 255) + Chr(c And 255)
+            b = b - c * r + r
+        Loop
+    Next i
+    en = en + Chr(254) ' return to ASCII
+    For i = i - h To l ' add last chars
+        c = Asc(Mid(txt, i, 1))
+        If (c > 127) Then en = en + Chr(235)
+        en = en + Chr((c And 127) + 1)
+    Next i
+    If Len(en) < Len(enc) Then enc = en ' take shorter
+Next x
+
+j = (l + 1) And -4: b = 0: en = Chr(240) ' switch to Edifact
+For i = 1 To j
+    If i < j Then  ' encode char
+        c = Asc(Mid(txt, i, 1))
+        If c < 32 Or c > 94 Then Exit For ' not in set
+    Else
+        c = 31 ' return to ASCII
+    End If
+    b = b * 64 + (c And 63)
+    If (i And 3) = 0 Then ' 4 data in 3 bytes
+        en = en + Chr(b \ 65536) + Chr((b \ 256) And 255) + Chr(b And 255)
+        b = 0
+    End If
+Next i
+If j > 0 And i > j Then
+    For i = i - 1 To l ' add last chars
+        c = Asc(Mid(txt, i, 1))
+        If (c > 127) Then en = en + Chr(235)
+        en = en + Chr((c And 127) + 1)
+    Next i
+    If Len(en) < Len(enc) Then enc = en ' take shorter
+End If
+
+en = Chr(231) ' Base256 encoding
+If l > 250 Then en = en + Chr((l \ 250 + 37) And 255) ' len high byte
+en = en + Chr((l Mod 250 + (149 * (Len(en) + 1)) Mod 255 + 1) And 255) ' low
+For i = 1 To l ' data in 255 state algo
+    en = en + Chr((Asc(Mid(txt, i, 1)) + (149 * (Len(en) + 1)) Mod 255 + 1) And 255)
+Next i
+If Len(en) < Len(enc) Then enc = en ' take shorter
+
+' compute symbol size
+nc = 1: nr = 1: j = -1: b = 1: el = Len(enc) ' symbol size, regions, region size
+If (rectangle = -1 Or (rectangle = -2 And (Application.Caller.MergeArea.Width * 3 > Application.Caller.MergeArea.Height * 4))) And el < 50 Then ' rectangular pattern ?
+    k = Array(16, 7, 28, 11, 24, 14, 32, 18, 32, 24, 44, 28) ' symbol width, checkwords
+    Do
+        j = j + 1: w = k(j) ' width w/o finder pattern
+        h = 6 + (j And 12) ' height
+        l = w * h / 8: j = j + 1 ' # of bytes in symbol
+    Loop While l - k(j) < el ' data fit in symbol ?
+    If w > 25 Then nc = 2 ' column regions
+Else ' square symbol
+    w = 6: h = w
+    i = 2 ' size increment
+    k = Array(5, 7, 10, 12, 14, 18, 20, 24, 28, 36, 42, 48, 56, 68, 84, _
+            112, 144, 192, 224, 272, 336, 408, 496, 620) ' checkwords
+    Do
+        If j = UBound(k) Then Err.Raise 514, "DataMatrix", "Message too long"
+        j = j + 1
+        If w > 11 * i Then i = 4 + i And 12 ' advance increment
+        w = w + i: h = w
+        l = (w * h) \ 8
+    Loop While l - k(j) < el
+    If w > 27 Then nr = 2 * (w \ 54) + 2: nc = nr ' regions
+    If l > 255 Then b = 2 * (l \ 512) + 2 ' blocks
+End If
+s = k(j) ' checkwords
+fw = w / nc: fh = h / nr ' region size
+
+If el < l - s Then enc = enc + Chr(129): el = el + 1 ' first padding
+Do While el < l - s ' add more padding
+    el = el + 1
+    enc = enc + Chr((((149 * el) Mod 253) + 130) Mod 254)
+Loop
+
+enc = enc + Space(s) ' compute Reed Solomon error detection and correction
+Dim rs(70) As Integer, rc(70) As Integer ' RS code
+Dim lg(256) As Integer, ex(255) As Integer ' log/exp table
+s = s / b: j = 1
+For i = 0 To 254
+    ex(i) = j: lg(j) = i ' compute log/exp table of Galois field
+    j = j + j: If j > 255 Then j = j Xor 301 ' GF polynomial a^8+a^5+a^3+a^2+1 = 100101101b = 301
+Next i
+rs(s + 1) = 0 ' compute RS generator polynomial
+For i = 0 To s
+    rs(s - i) = 1
+    For j = s - i + 1 To s
+        rs(j) = rs(j + 1) Xor ex((lg(rs(j)) + i) Mod 255)
+    Next j
+Next i
+For c = 1 To b ' compute RS correction data for each block
+    For i = 0 To s: rc(i) = 0: Next i
+    For i = c To el Step b
+        x = rc(0) Xor Asc(Mid(enc, i, 1))
+        For j = 1 To s
+            rc(j - 1) = rc(j) Xor IIf(x, ex((lg(rs(j)) + lg(x)) Mod 255), 0)
+        Next j
+    Next i
+    For i = 0 To s - 1 ' add interleaved correction data
+        Mid(enc, el + c + i * b, 1) = Chr(rc(i))
+    Next i
+Next c
+
+With Application.Caller.Parent.Shapes
+    b = .Count + 1 ' layout DataMatrix barcode
+    For i = 0 To h + 2 * nr - 1 Step fh + 2 ' finder horizontal
+        For j = 0 To w + 2 * nc - 1
+            .AddShape(msoShapeRectangle, j, i + fh + 1, 1, 1).Name = Application.Caller.Address
+            If (j And 1) = 0 Then .AddShape(msoShapeRectangle, j, i, 1, 1).Name = Application.Caller.Address
+        Next j
+    Next i
+    For i = 0 To w + 2 * nc - 1 Step fw + 2 ' finder vertical
+        For j = 0 To h - 1
+            .AddShape(msoShapeRectangle, i, j + (j \ fh) * 2 + 1, 1, 1).Name = Application.Caller.Address
+            If (j And 1) = 1 Then .AddShape(msoShapeRectangle, i + fw + 1, j + (j \ fh) * 2, 1, 1).Name = Application.Caller.Address
+        Next j
+    Next i
+    'layout data
+    s = 2: c = 0: r = 4 ' step,column,row of data position
+    For i = 1 To l
+        If (r = h - 3 And c = -1) Then ' corner A
+            k = Array(w, 6 - h, w, 5 - h, w, 4 - h, w, 3 - h, w - 1, 3 - h, 3, 2, 2, 2, 1, 2)
+        ElseIf r = h + 1 And c = 1 And (w And 7) = 0 And (h And 7) = 6 Then ' corner D
+            k = Array(w - 2, -h, w - 3, -h, w - 4, -h, w - 2, -1 - h, w - 3, -1 - h, w - 4, -1 - h, w - 2, -2, -1, -2)
+        Else
+            If r = 0 And c = w - 2 And (w And 3) Then i = i - 1: GoTo continue ' corner B
+            If r < 0 Or c >= w Or r >= h Or c < 0 Then ' outside
+                s = -s: r = r + 2 + s / 2: c = c + 2 - s / 2 ' turn around
+                Do While r < 0 Or c >= w Or r >= h Or c < 0
+                    r = r - s: c = c + s
+                Loop
+            End If
+            If r = h - 2 And c = 0 And (w And 3) Then ' corner B
+                k = Array(w - 1, 3 - h, w - 1, 2 - h, w - 2, 2 - h, w - 3, 2 - h, w - 4, 2 - h, 0, 1, 0, 0, 0, -1)
+            ElseIf r = h - 2 And c = 0 And (w And 7) = 4 Then ' corner C
+                k = Array(w - 1, 5 - h, w - 1, 4 - h, w - 1, 3 - h, w - 1, 2 - h, w - 2, 2 - h, 0, 1, 0, 0, 0, -1)
+            ElseIf r = 1 And c = w - 1 And (w And 7) = 0 And (h And 7) = 6 Then ' omit corner D
+                i = i - 1: GoTo continue
+            Else
+                k = Array(0, 0, -1, 0, -2, 0, 0, -1, -1, -1, -2, -1, -1, -2, -2, -2) ' nominal layout
+            End If
+        End If
+        el = Asc(Mid(enc, i, 1))
+        For j = 0 To 15 Step 2 ' layout each bit
+            If el And 1 Then
+                x = c + k(j): y = r + k(j + 1)
+                If x < 0 Then x = x + w: y = y + 4 - ((w + 4) And 7) ' wrap around
+                If y < 0 Then y = y + h: x = x + 4 - ((h + 4) And 7)
+                .AddShape(msoShapeRectangle, x + 2 * (x \ fw) + 1, y + 2 * (y \ fh) + 1, 1, 1).Name = Application.Caller.Address
+            End If
+            el = el \ 2
+        Next j
+continue:
+        r = r - s: c = c + s ' diagonal step
+    Next i
+    For i = (w And -4) + 1 To w ' unfilled corner
+        .AddShape(msoShapeRectangle, i, i, 1, 1).Name = Application.Caller.Address
+    Next i
+    b = .Count - b
+    ReDim shps(b) As Integer   ' group all shapes
+    For i = .Count To 1 Step -1
+        If .Range(i).Name = Application.Caller.Address Then
+            shps(b) = i: b = b - 1
+            If b < 0 Then Exit For
+        End If
+    Next i
+    s = 2 ' padding around symbol
+    x = Application.Caller.MergeArea.Width * w / (w + s)
+    y = Application.Caller.MergeArea.Height * h / (h + s) * (w + s) / (h + s)
+    If x > y Then x = y
+    With .Range(shps).Group
+        .Fill.ForeColor.RGB = fColor ' format barcode shape
+        .line.ForeColor.RGB = bColor
+        .line.Weight = line
+        .Width = x ' fit symbol in excel cell
+        .Height = .Width * (h + s) / (w + s)
+        .Left = Application.Caller.Left + (Application.Caller.MergeArea.Width - .Width) / 2
+        .Top = Application.Caller.Top + (Application.Caller.MergeArea.Height - .Height) / 2
+        .Name = Application.Caller.Address ' link shape to data
+        .Title = text
+        .AlternativeText = "DataMatrix barcode, " & (w + 2 * nc) & "x" & (h + 2 * nr) & " cells"
+        .LockAspectRatio = True
+        .Placement = xlMove
+    End With
+End With
+failed:
+If Err.Number Then DataMatrix = "ERROR DataMatrix: " & Err.Description
+End Function
+Attribute VB_Name = "ModulQRcode"
+Option Explicit
+Dim mat() As Byte ' matrix of QR
+
+' QR Code 2005 bar code symbol creation according ISO/IEC 18004:2006
+'   param text to encode
+'   param level optional: quality level LMQH
+'   param version optional: minimum version size (-3:M1, -2:M2, .. 1, .. 40)
+'   creates QR and micro QR bar code symbol as shape in Excel cell.
+'  Kanji mode needs the custom property 'kanji' of the Application.Caller sheet to convert from unicode to kanji
+'   the string contains the 6879 chars of Kanji followed by the 6879 equivalent unicode chars
+Public Function QRCode(text As String, Optional level As String, Optional version As Integer = 1) As String
+Attribute QRCode.VB_Description = "Draw QR code"
+Attribute QRCode.VB_ProcData.VB_Invoke_Func = " \n18"
+On Error GoTo failed
+If Not TypeOf Application.Caller Is Range Then Err.Raise 513, "QR code", "Call only from sheet"
+Dim mode As Byte, lev As Byte, s As Long, a As Long, blk As Long, ec As Long
+Dim i As Long, j As Long, k As Long, l As Long, c As Long, b As Long, txt As String
+Dim w As Long, x As Long, y As Long, v As Double, el As Long, eb As Long
+Dim shp As Shape, m As Long, p As Variant, ecw As Variant, ecb As Variant
+Dim k1 As String, k2 As String, fColor As Long, bColor As Long, line As Long
+Const alpha = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
+
+fColor = vbBlack: bColor = vbBlack: line = xlHairline ' redraw graphic ?
+For Each shp In Application.Caller.Parent.Shapes
+    If shp.Name = Application.Caller.Address Then
+        If shp.Title = text Then Exit Function ' same as prev ?
+        fColor = shp.Fill.ForeColor.RGB  ' remember format
+        bColor = shp.line.ForeColor.RGB
+        line = shp.line.Weight
+        shp.Delete
+    End If
+Next shp
+For Each ecw In ActiveWorkbook.Worksheets
+    For Each p In ecw.CustomProperties ' look for kanji conversion string
+        If p.Name = "kanji" Then If Len(p.Value) > 10000 Then k1 = p.Value
+    Next p
+Next ecw
+lev = (InStr("LMQHlmqh0123", level) - 1) And 3
+For i = 1 To Len(text) ' compute mode
+    c = AscW(Mid(text, i, 1))
+    If c < 48 Or c > 57 Then
+        If mode = 0 Then mode = 1 ' alphanumeric mode
+        If InStr(alpha, ChrW(c)) = 0 Then
+            If mode = 1 Then mode = 2 ' binary or kanji ?
+            If c < 32 Or c > 126 Then
+                If InStr(Len(k1) / 2 + 1, k1, ChrW(c)) = 0 Then mode = 2: Exit For ' binary
+                mode = 3 ' kanji
+            End If
+        End If
+    End If
+Next i
+txt = IIf(mode = 2, utf16to8(text), text) ' for reader conformity
+l = Len(txt)
+w = Int(l * Array(10 / 3, 11 / 2, 8, 13)(mode) + 0.5) ' 3 digits in 10 bits, 2 chars in 11 bits, 1 byte, 13 bits/byte
+p = Array(Array(10, 12, 14), Array(9, 11, 13), Array(8, 16, 16), Array(8, 10, 12))(mode) ' # of bits of count indicator
+' error correction words L,M,Q,H and blocks L,M,Q,H for all version sizes (99=N/A)
+ecw = Array(Array(2, 5, 6, 8, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28, 30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30), _
+    Array(99, 6, 8, 10, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28), _
+    Array(99, 99, 99, 14, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30, 30, 30, 30, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30), _
+    Array(99, 99, 99, 99, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30))
+ecb = Array(Array(1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25), _
+    Array(1, 1, 1, 1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49), _
+    Array(1, 1, 1, 1, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29, 34, 34, 35, 38, 40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68), _
+    Array(1, 1, 1, 1, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32, 35, 37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81))
+version = IIf(version < mode - 3, mode - 3, version) - 1
+Do ' compute QR size
+    version = version + 1
+    If version + 3 > UBound(ecb(0)) Then Err.Raise 515, "QRCode", "Message too long"
+    s = version * IIf(version < 1, 2, 4) + 17 ' symbol size
+    j = ecb(lev)(version + 3) * ecw(lev)(version + 3)   ' error correction
+    a = IIf(version < 2, 0, version \ 7 + 2) ' # of align pattern
+    el = (s - 1) * (s - 1) - (5 * a - 1) * (5 * a - 1) ' total bits - align - timing
+    el = el - IIf(version < 1, 59, IIf(version < 2, 191, IIf(version < 7, 136, 172))) ' finder, version, format
+    k = IIf(version < 1, version + (19 - 2 * mode) \ 3, p((version + 7) \ 17)) ' count indcator bits
+    i = IIf(version < 1, version + (version And 1) * 4 + 3, 4) ' mode indicator bits, M1+M3: +4 bits
+Loop While (el And -8) - 8 * j < w + i + k
+For lev = lev To 2 ' increase security level if data still fits
+    j = ecb(lev + 1)(version + 3) * ecw(lev + 1)(version + 3)
+    If (el And -8) - 8 * j < w + i + k Then Exit For
+Next lev
+blk = ecb(lev)(version + 3) ' # of error correction blocks
+ec = ecw(lev)(version + 3) ' # of error correction bytes
+el = el \ 8 - ec * blk ' data capacity
+w = el \ blk ' # of words in group 1
+b = blk + w * blk - el ' # of blocks in group 1
+
+ReDim enc(el + ec * blk) As Byte, mat(s - 1, s - 1) As Byte
+c = 0 ' encode head indicator bits
+If version > 0 Then v = 2 ^ mode: eb = 4 Else v = mode: eb = version + 3 ' mode indicator
+eb = eb + k: v = v * 2 ^ k + l ' character count indicator
+For i = 1 To l ' encode data
+    Select Case mode
+    Case 0: ' numeric
+        v = v * IIf(i + 1 < l, 1024, IIf(i < l, 128, 16)) + val(Mid(txt, i, 3))
+        eb = eb + IIf(i + 1 < l, 10, 4 + 3 * (l - i)): i = i + 2
+    Case 1: ' alphanumeric
+        j = InStr(alpha, Mid(txt, i, 1)) - 1
+        If i < l Then j = 45 * j + InStr(alpha, Mid(txt, i + 1, 1)) - 1
+        v = v * IIf(i < l, 2048, 64) + j
+        eb = eb + IIf(i < l, 11, 6): i = i + 1
+    Case 2: ' binary
+        v = v * 256 + Asc(Mid(txt, i, 1))
+        eb = eb + 8
+    Case 3: ' Kanji
+        j = InStr(Len(k1) / 2 + 1, k1, Mid(txt, i, 1)) - Len(k1) / 2
+        j = (AscW(Mid(k1, j, 1)) And &H3FFF) - 320 ' unicode to shift JIS X 2008
+        v = v * 8192 + (j \ 256) * 192 + (j And 255) ' to 13 bit kanji
+        eb = eb + 13
+    End Select
+    For eb = eb To 8 Step -8 ' add data to bit stream
+        j = 2 ^ (eb - 8): enc(c) = v \ j
+        v = v - enc(c) * j: c = c + 1
+    Next eb
+Next i
+If el > c Then i = IIf(version > 0, 4, version + 6): v = v * 2 ^ i: eb = eb + i ' terminator
+enc(c) = (v * 256) \ 2 ^ eb: c = c + 1: enc(c) = ((v * 65536) \ 2 ^ eb) And 255
+If eb > 8 And el >= c Then c = c + 1 ' bit padding
+If (version And -3) = -3 And el = c Then enc(c) = enc(c) \ 16 ' M1,M3: shift high bits to low nibble
+i = 236
+For c = c To el - 1 ' byte padding
+    enc(c) = IIf((version And -3) = -3 And c = el - 1, 0, i)
+    i = i Xor 236 Xor 17
+Next c
+
+ReDim rs(ec + 1) As Integer ' compute Reed Solomon error detection and correction
+Dim lg(256) As Integer, ex(255) As Integer ' log/exp table
+j = 1
+For i = 0 To 254
+    ex(i) = j: lg(j) = i ' compute log/exp table of Galois field
+    j = j + j: If j > 255 Then j = j Xor 285 ' GF polynomial a^8+a^4+a^3+a^2+1 = 100011101b = 285
+Next i
+rs(0) = 1 ' compute RS generator polynomial
+For i = 0 To ec - 1
+    rs(i + 1) = 0
+    For j = i + 1 To 1 Step -1
+        rs(j) = rs(j) Xor ex((lg(rs(j - 1)) + i) Mod 255)
+    Next j
+Next i
+eb = el: k = 0
+For c = 1 To blk  ' compute RS correction data for each block
+    For i = IIf(c <= b, 1, 0) To w
+        x = enc(eb) Xor enc(k)
+        For j = 1 To ec
+            enc(eb + j - 1) = enc(eb + j) Xor IIf(x, ex((lg(rs(j)) + lg(x)) Mod 255), 0)
+        Next j
+        k = k + 1
+    Next i
+    eb = eb + ec
+Next c
+
+' fill QR matrix
+For i = 8 To s - 1 ' timing pattern
+    mat(i, IIf(version < 1, 0, 6)) = i And 1 Xor 3
+    mat(IIf(version < 1, 0, 6), i) = i And 1 Xor 3
+Next i
+If version > 6 Then ' reserve version area
+    For i = 0 To 17
+        mat(i \ 3, s - 11 + i Mod 3) = 2
+        mat(s - 11 + i Mod 3, i \ 3) = 2
+    Next i
+End If
+If a < 2 Then a = IIf(version < 1, 1, 2)
+For x = 1 To a ' layout finder/align pattern
+    For y = 1 To a
+        If x = 1 And y = 1 Then ' finder upper left
+            i = 0: j = 0
+            p = Array(383, 321, 349, 349, 349, 321, 383, 256, 511)
+        ElseIf x = 1 And y = a Then  ' finder lower left
+            i = 0: j = s - 8
+            p = Array(256, 383, 321, 349, 349, 349, 321, 383)
+        ElseIf x = a And y = 1 Then  ' finder upper right
+            i = s - 8: j = 0
+            p = Array(254, 130, 186, 186, 186, 130, 254, 0, 255)
+        Else ' alignment grid
+            c = 2 * Int(2 * (version + 1) / (1 - a)) ' pattern spacing
+            i = IIf(x = 1, 4, s - 9 + c * (a - x))
+            j = IIf(y = 1, 4, s - 9 + c * (a - y))
+            p = Array(31, 17, 21, 17, 31) ' alignment pattern
+        End If
+        If version <> 1 Or x + y < 4 Then ' no align pattern for version 1
+            For c = 0 To UBound(p) ' set fixed pattern, reserve space
+                m = p(c): k = 0
+                Do
+                    mat(i + k, j + c) = (m And 1) Or 2
+                    m = m \ 2: k = k + 1
+                Loop While 2 ^ k <= p(0)
+            Next c
+        End If
+    Next y
+Next x
+x = s: y = s - 1 ' layout codewords
+For i = 0 To eb - 1
+    c = 0: k = 0: j = w + 1 ' interleave data
+    If i >= el Then
+        c = el: k = el: j = ec ' interleave checkwords
+    ElseIf i + blk - b >= el Then
+        c = -b: k = c ' interleave group 2 last bytes
+    ElseIf (i Mod blk) >= b Then
+        c = -b ' interleave group 2
+    Else
+        j = j - 1 ' interleave group 1
+    End If
+    c = enc(c + ((i - k) Mod blk) * j + (i - k) \ blk) ' interleave data
+    For j = IIf((-3 And version) = -3 And i = el - 1, 3, 7) To 0 Step -1 ' M1,M3: 4 bit
+        k = IIf(version > 0 And x < 6, 1, 0) ' skip vertical timing pattern
+        Do ' advance x,y
+            x = x - 1
+            If 1 And (x + 1) Xor k Then
+                If s - x - k And 2 Then
+                    If y > 0 Then y = y - 1: x = x + 2 ' up, top turn
+                Else
+                    If y < s - 1 Then y = y + 1: x = x + 2 ' down, bottom turn
+                End If
+            End If
+        Loop While mat(x, y) And 2 ' skip reserved area
+        If c And 2 ^ j Then mat(x, y) = 1
+    Next j
+Next i
+
+m = 0: p = 1000000 ' data masking
+For k = 0 To IIf(version < 1, 3, 7)
+    If version < 1 Then ' penalty micro QR
+        x = 1: y = 1
+        For i = 1 To s - 1
+            x = x - getPattern(i, s - 1, k, version)
+            y = y - getPattern(s - 1, i, k, version)
+        Next i
+        j = IIf(x > y, 16 * x + y, x + 16 * y)
+    Else ' penalty QR
+        l = 0: k2 = "": j = 0
+        For y = 0 To s - 1 ' horizontal
+            c = 0: i = 0: k1 = "0000"
+            For x = 0 To s - 1
+                w = getPattern(x, y, k, version)
+                l = l + w: k1 = k1 & w ' rule 4: count darks
+                If c = w Then ' same as prev
+                    i = i + 1
+                    If x And Mid(k2, x + 4, 2) = c & c Then j = j + 3 ' rule 2: block 2x2
+                Else
+                    If i > 5 Then j = j + i - 2 ' rule 1: >5 adjacent
+                    c = 1 - c: i = 1
+                End If
+            Next x
+            If i > 5 Then j = j + i - 2 ' rule 1: >5 adjacent
+            i = 0
+            Do ' rule 3: like finder pattern
+                i = InStr(i + 4, k1, "1011101")
+                If i < 1 Then Exit Do
+                If Mid(k1, i - 4, 4) = "0000" Or Mid(k1 & "0000", i + 7, 4) = "0000" Then j = j + 40
+            Loop
+            k2 = k1 ' rule 2: remember last line
+        Next y
+        For x = 0 To s - 1 ' vertical
+            c = 0: i = 0: k1 = "0000"
+            For y = 0 To s - 1
+                w = getPattern(x, y, k, version)
+                k1 = k1 & w ' vertical to string
+                If c = w Then ' same as prev
+                    i = i + 1
+                Else
+                    If i > 5 Then j = j + i - 2 ' rule 1: >5 adjacent
+                    c = 1 - c: i = 1
+                End If
+            Next y
+            If i > 5 Then j = j + i - 2 ' rule 1: >5 adjacent
+            i = 0
+            Do ' rule 3: like finder pattern
+                i = InStr(i + 4, k1, "1011101")
+                If i < 1 Then Exit Do
+                If Mid(k1, i - 4, 4) = "0000" Or Mid(k1 & "0000", i + 7, 4) = "0000" Then j = j + 40
+            Loop
+        Next x
+        j = j + Int(Abs(10 - 20 * l / (s * s))) * 10 ' rule 4: darks
+    End If
+    If j < p Then p = j: m = k ' take mask of lower penalty
+Next k
+' add format information, code level and mask
+j = IIf(version = -3, m, IIf(version < 1, (2 * version + lev + 5) * 4 + m, ((5 - lev) And 3) * 8 + m))
+j = j * 1024: k = j
+For i = 4 To 0 Step -1 ' BCH error correction: 5 data, 10 error bits
+    If j >= 1024 * 2 ^ i Then j = j Xor 1335 * 2 ^ i
+Next i ' generator polynom: x^10+x^8+x^5+x^4+x^2+x+1 = 10100110111b = 1335
+k = k Xor j Xor IIf(version < 1, 17477, 21522) ' XOR masking
+For j = 0 To 14 ' layout format information
+    If version < 1 Then
+        mat(IIf(j < 8, 8, 15 - j), IIf(j < 8, j + 1, 8)) = k And 1 Xor 2 ' micro QR
+    Else
+        mat(IIf(j < 8, s - j - 1, IIf(j = 8, 7, 14 - j)), 8) = k And 1 Xor 2 ' QR horizontal
+        mat(8, IIf(j < 6, j, IIf(j < 8, j + 1, s + j - 15))) = k And 1 Xor 2 ' vertical
+    End If
+    k = k \ 2
+Next j
+If version > 6 Then ' add version information
+    k = version * 4096&
+    For i = 5 To 0 Step -1 ' BCH error correction: 6 data, 12 error bits
+        If k >= 4096 * 2 ^ i Then k = k Xor 7973 * 2 ^ i
+    Next i ' generator polynom: x^12+x^11+x^10+x^9+x^8+x^5+x^2+1 = 1111100100101b = 7973
+    k = k Xor (version * 4096&)
+    For j = 0 To 17 ' layout version information
+        mat(j \ 3, s + j Mod 3 - 11) = k And 1 Xor 2
+        mat(s + j Mod 3 - 11, j \ 3) = k And 1 Xor 2
+        k = k \ 2
+    Next j
+End If
+With Application.Caller.Parent.Shapes
+    k = .Count + 1 ' layout QR code
+    For y = 0 To s - 1
+        For x = 0 To s - 1
+            If getPattern(x, y, m, version) Then ' apply mask
+                .AddShape(msoShapeRectangle, x, y, 1, 1).Name = Application.Caller.Address
+            End If
+        Next x
+    Next y
+    k = .Count - k
+    ReDim shps(k) As Integer   ' group all shapes
+    For i = .Count To 1 Step -1
+        If .Range(i).Name = Application.Caller.Address Then
+            shps(k) = i: k = k - 1
+            If k < 0 Then Exit For
+        End If
+    Next i
+
+    With .Range(shps).Group
+        .Fill.ForeColor.RGB = fColor ' format barcode shape
+        .line.ForeColor.RGB = bColor
+        .line.Weight = line
+        x = Application.Caller.MergeArea.Width
+        y = Application.Caller.MergeArea.Height
+        If x > y Then x = y
+        .Width = x * s / (s + 2) ' fit symbol in excel cell
+        .Height = .Width
+        .Left = Application.Caller.Left + (Application.Caller.MergeArea.Width - .Width) / 2
+        .Top = Application.Caller.Top + (Application.Caller.MergeArea.Height - .Height) / 2
+        .Name = Application.Caller.Address ' link shape to data
+        .Title = text
+        .AlternativeText = "QuickResponse barcode, level " & Mid("LMQH", lev + 1, 1) & ", version " & IIf(version < 1, "M" & (version + 4), version) & ", mode " & Array("digit", "alpha", "binary", "kanji")(mode) & ", " & s & "x" & s & " cells"
+        .LockAspectRatio = True
+        .Placement = xlMove
+    End With
+End With
+failed:
+If Err.Number Then QRCode = "ERROR QRCode: " & Err.Description
+End Function
+
+' get QR pattern mask
+Private Function getPattern(ByVal x As Long, ByVal y As Long, ByVal m As Integer, ByVal version As Integer) As Integer
+Dim i As Integer, j As Long
+If version < 1 Then m = Array(1, 4, 6, 7)(m) ' mask pattern of micro QR
+i = mat(x, y)
+If i < 2 Then
+    Select Case m
+    Case 0: j = (x + y) And 1
+    Case 1: j = y And 1
+    Case 2: j = x Mod 3
+    Case 3: j = (x + y) Mod 3
+    Case 4: j = (x \ 3 + y \ 2) And 1
+    Case 5: j = ((x * y) And 1) + (x * y) Mod 3
+    Case 6: j = (x * y + (x * y) Mod 3) And 1
+    Case 7: j = (x + y + (x * y) Mod 3) And 1
+    End Select
+    If j = 0 Then i = i Xor 1 ' invert only data according mask
+End If
+getPattern = i And 1
+End Function
+Attribute VB_Name = "Module1"
+Attribute VB_Name = "Module2"
+Attribute VB_Name = "Module3"
+Sub TiskStranky()
+Attribute TiskStranky.VB_ProcData.VB_Invoke_Func = " \n14"
+
+ Dim PocetStitku As Integer
+ Dim Customer
+ 
+ Customer = Range("A10")
+ PocetStitku = Range("D16").Value
+ If Customer = "3M" Then
+    Sheets("label3M1").PrintOut Copies:=1, Collate:=True, _
+        IgnorePrintAreas:=False
+    If PocetStitku > 1 Then
+    Sheets("labels3M").PrintOut Copies:=PocetStitku - 1, Collate:=True, _
+        IgnorePrintAreas:=False
+    Else
+    End If
+Else
+    Sheets("label1").PrintOut Copies:=PocetStitku, Collate:=True, _
+        IgnorePrintAreas:=False
+        End If
+Worksheets("form").Select
+
+End Sub
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Sub VycistitZadani()
+Range("B10:C14").Value = Empty
+Range("N10:N14").Value = Empty
+Range("D16").Value = 1
+End Sub
+
+
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+End Sub
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Workbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

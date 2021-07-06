@@ -1,0 +1,1550 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="FonctionsUtiles" script:language="StarBasic">&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de correction de deux bug d&apos;OOo
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB Correction
+	
+	RemettreChapitres
+	RemettreStyleIndex
+	
+END SUB
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de mise a jour des numerotations des Annexes. Attention cette Macro
+&apos;  se base sur le style TitreAnnexe. Elle est executee avant l&apos;enregistrement
+&apos;  du document.
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB RepererTitreAnnexe
+
+	&apos; Variables de manipulation et de parcours du document
+	DIM Doc AS OBJECT
+	DIM Curseur AS VARIANT
+	
+	&apos; Variables de creation de Champs de sequence
+	DIM NomMaitre AS STRING
+	DIM MaitreAnnexe, NumAnnexe AS OBJECT
+	
+	&apos; Recuperation du document actif
+	Doc = thisComponent
+	
+	&apos; Creation d&apos;un curseur
+	Curseur = Doc.Text.CreateTextCursor()
+	Curseur.gotoStart(false)
+	
+	&apos; Boucle de parcours du document pour retrouver tous les paragraphes
+	&apos; de style TitreAnnexe
+ 	DO WHILE (Curseur.GotoNextParagraph(false))
+	
+		&apos; Teste si le style de paragraphe est TitreAnnexe
+		IF (Curseur.getPropertyValue(&quot;ParaStyleName&quot;) = &quot;TitreAnnexe&quot;) THEN
+			Curseur.GotoStartOfParagraph(false)
+			Curseur.GotoEndOfWord(true)
+		
+			&apos; Teste si le texte est deja ajoute
+			IF (Curseur.getString &lt;&gt; &quot;Annexe&quot;) THEN
+				&apos; Ajout de Annexe&lt;E&gt;&lt;ChampAnnexe&gt;&lt;EI&gt;:&lt;E&gt; sous le curseur
+				&apos; &lt;EI&gt; : Espace Insecable
+				&apos; &lt;E&gt;  : Espace
+				&apos; &lt;ChampAnnexe&gt; : Sequence Annexe indiquant le numero d&apos;annexe
+			
+				&apos; Sequence : utiliser les objets TextField.SetExpression ET 
+				&apos;                                FieldMaster.SetExpression
+				&apos;            Le FieldMaster fourni la donn|e9|e a afficher dans le TexteField
+				&apos;
+				&apos;            Creer un FieldMaster et un TextField
+				&apos;            attachFieldMaster()
+				&apos;            Inserer le TextField
+				&apos;      
+				&apos; EI : Caractere special com.sun.star.text.ControlCharacter.HARD_SPACE
+				&apos;      Doc.Text.InsertControlCharacter(Curseur, Caractere, false)
+
+				Doc.Text.insertString(Curseur, &quot;Annexe &quot;, false)
+				&apos; Ne pas ajouter d&apos;espace insecable ici, sinon Curseur.getText &lt;&gt;Annexe
+				&apos; ne fonctionne pas.
+				
+				&apos;Utilisation du FieldMASter Annexe 
+			
+				NomMaitre = &quot;com.sun.star.text.FieldMaster.SetExpression.Annexe&quot;
+				IF (Doc.getTextFieldMasters.hasByName(NomMaitre)) THEN
+					MaitreAnnexe = Doc.getTextFieldMasters.getByName(NomMaitre)
+					InitAnnexe = false
+			    ELSE
+			    	MaitreAnnexe = Doc.createInstance(&quot;com.sun.star.text.FieldMaster.SetExpression&quot;)
+			    	MaitreAnnexe.setPropertyValue(&quot;Name&quot;, &quot;Annexe&quot;)
+			    	MaitreAnnexe.setPropertyValue(&quot;SubType&quot;, com.sun.star.text.SetVariableType.SEQUENCE)
+			    	InitAnnexe = true
+				END IF
+		
+				&apos; Creation d&apos;un TextField lie a Annexe
+				&apos; L&apos;insertion du FieldMaster dans le document ne se fait qu&apos;avec celle du TextField
+				NumAnnexe = Doc.createInstance(&quot;com.sun.star.text.TextField.SetExpression&quot;)
+				
+				&apos; Le 2 reste a comprendre mais ca marche : c&apos;est l&apos;essentiel pour l&apos;instant
+				NumAnnexe.setPropertyValue(&quot;NumberFormat&quot;,2)
+				NumAnnexe.setPropertyValue(&quot;NumberingType&quot; , com.sun.star.style.NumberingType.ROMAN_UPPER)
+				
+				NumAnnexe.setPropertyValue(&quot;Content&quot;, &quot;Annexe+1&quot;)
+
+				
+				NumAnnexe.attachTextFieldMaster(MaitreAnnexe)
+		
+				Doc.Text.InsertTextContent(Curseur, NumAnnexe, false)
+										
+				Doc.Text.InsertControlCharacter(Curseur, _
+												com.sun.star.text.ControlCharacter.HARD_SPACE, false)
+				Doc.Text.insertString(Curseur, &quot;: &quot;, false)
+				
+			END IF
+		END IF
+	LOOP
+
+END SUB
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de mise a jour de la numerotation des chapitres du document. Cette
+&apos;  macro est executee lors de l&apos;ouverture du document pour compenser un bug de 
+&apos;  certaines version d&apos;OpenOffice.org.
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB RemettreChapitres
+
+	&apos; Variable de manipulation du document
+	DIM Doc AS OBJECT
+	
+	&apos; Variable de curseur de recherche de style
+	DIM Curseur AS OBJECT
+	
+	&apos;Variable temporaire de manipulation d&apos;un niveau de numerotation de chapitre
+	DIM NiveauChapitre AS VARIANT
+	
+	&apos; Increments
+	DIM i,j AS INTEGER
+
+	Doc = thisComponent
+
+	&apos; Mettre a jour la numerotation des chapitres du document
+	&apos; Compense la perte des styles de numerotation de chapitre
+	
+	&apos; Boucle de parcours des 10 niveaux de numerotation
+	FOR i = 0 TO 9
+		NiveauChapitre = Doc.ChapterNumberingRules.getByIndex(i)
+	
+		&apos; Recherche de la propriete HeadingStyleName parmi toutes
+		&apos; les proprietes du niveau
+		FOR j = LBound(NiveauChapitre) TO UBound(NiveauChapitre)
+			IF (NiveauChapitre(j).name = &quot;HeadingStyleName&quot;) THEN
+			
+				&apos; Seuls les 4 premiers niveaux sont utilises
+				&apos; pour des raisons de lisibilite du plan
+				IF (i &lt; 4) THEN
+     				NiveauChapitre(j).value = &quot;TitreNiveau&quot;+(i+1)
+     			ELSE
+     				NiveauChapitre(j).value = &quot;&quot;
+     			END IF
+			END IF
+		NEXT j
+		
+		&apos;Remplacement du niveau par celui qui vient d&apos;etre mis a jour
+		Doc.ChapterNumberingRules.replaceByIndex(i, NiveauChapitre)
+	NEXT i
+	
+	
+	Curseur = Doc.createReplaceDescriptor()
+	Curseur.setPropertyValue(&quot;SearchStyles&quot;, true)
+	
+	&apos; Remise des styles numerotes
+	FOR i = 1 TO 4
+	
+		&apos; Passe temporairement en Style Titre i
+		Curseur.setSearchString(&quot;TitreNiveau&quot;+i)
+		Curseur.setReplaceString(&quot;Titre &quot;+i)
+	    Doc.ReplaceAll(Curseur)
+	    
+	    &apos; Repasse en style TitreNiveaui
+	    Curseur.setSearchString(&quot;Titre &quot;+i)
+	    Curseur.setReplaceString(&quot;TitreNiveau&quot;+i)
+	    Doc.ReplaceAll(Curseur)
+		
+	NEXT i
+	
+
+END SUB
+
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de mise a jour du style de caractere des Hyperliens des index
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB RemettreStyleIndex
+
+	&apos; Variables pour la manipulation des indexes
+	DIM Doc AS OBJECT
+	DIM Indexes AS VARIANT
+	
+	&apos; Parcours des Indexes
+	DIM Index AS OBJECT
+	DIM NbIndexes, i AS INTEGER
+	
+	&apos; Parcours des Niveaux de formats
+	DIM Formats, Format AS VARIANT
+	DIM j AS INTEGER
+	
+	&apos; Parcours des Elements de format
+	DIM k AS INTEGER
+	DIM Proprietes AS VARIANT
+	
+	&apos; Parcours des Proprietes du format
+	DIM l AS INTEGER
+	DIM propriete AS NEW com.sun.star.beans.PropertyValue
+	
+	&apos; Recuperation de la table des matieres
+	Doc = thisComponent
+	Indexes = Doc.getDocumentIndexes()
+	
+	nbIndexes = Indexes.getCount()
+	IF (nbIndexes &gt; 0) THEN
+		FOR i = 0 TO nbIndexes-1
+		
+			&apos; Recuperation des styles de l&apos;index
+			Index = Indexes.getByIndex(i)
+			
+			IF (Index.supportsService(&quot;com.sun.star.text.ContentIndex&quot;)) THEN
+			
+				Formats = Index.LevelFormat
+				FOR j = 0 TO Formats.getCount()-1
+								
+					&apos; Recherche des debut et fin d&apos;hyperlien
+					Format = Formats.getByIndex(j)
+					FOR k = LBound(Format) TO UBound(Format)
+						&apos; Test du type d&apos;element
+
+						estLien = 0
+						Proprietes = Format(k)
+						FOR l = LBound(Proprietes) TO UBound(Proprietes)
+						
+							&apos; Recherche si la propriete est un Debut ou une fin d&apos;hyperlien
+							IF (Proprietes(l).name = &quot;TokenType&quot;) THEN
+								
+								IF (Proprietes(l).Value = &quot;TokenHyperlinkStart&quot;) THEN
+									estLien = 1
+									EXIT FOR
+								END IF
+								
+								IF (Proprietes(l).Value = &quot;TokenHyperlinkEnd&quot;) THEN
+									estLien = 2
+									EXIT FOR
+								END IF
+							END IF
+						NEXT l
+						
+						&apos; ModIFication de la propri|e9|t|e9| CharacterStyleName
+						&apos; Si Proprietes est un Debut d&apos;hyperlien
+						IF (estLien = 1) THEN
+						
+							DIM NProprietesD(UBound(Proprietes())+1) AS Object
+														
+							&apos; on recree le tableau de proprietes avec cette propriete manquante
+							&apos; On ajoute la propriete manquante
+							propType = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+							propType.name = &quot;TokenType&quot;
+							propType.value = &quot;TokenHyperlinkStart&quot;
+							propType.Handle = -1
+							propType.State = com.sun.star.beans.PropertyState.DIRECT_VALUE
+							NProprietesD(0) = propType
+							
+							&apos; On ajoute la propriete manquante
+							propStyle = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+							propStyle.name = &quot;CharacterStyleName&quot;
+							propStyle.value = &quot;Caract|e8|reStyl|e9|&quot;
+							propStyle.Handle = -1
+							propStyle.State = com.sun.star.beans.PropertyState.DIRECT_VALUE
+								
+							NProprietesD(1) = propStyle
+							Format(k) = NProprietesD()
+
+						END IF
+						
+						IF (estLien = 2) THEN
+							
+							DIM NProprietesF(UBound(Proprietes())+1) AS OBJECT
+														
+							&apos;on recree le tableau de proprietes avec cette propriete manquante
+							
+							&apos; On ajoute la propriete manquante
+							propType = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+							propType.name = &quot;TokenType&quot;
+							propType.value = &quot;TokenHyperlinkEnd&quot;
+							propType.Handle = -1
+							propType.State = com.sun.star.beans.PropertyState.DIRECT_VALUE
+							NProprietesF(0) = propType
+							
+							&apos; On ajoute la propriete manquante
+							propStyle = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+							propStyle.name = &quot;CharacterStyleName&quot;
+							propStyle.value = &quot;Caract|e8|reStyl|e9|&quot;
+							propStyle.Handle = -1
+							propStyle.State = com.sun.star.beans.PropertyState.DIRECT_VALUE
+								
+							NProprietesF(1) = propStyle
+							Format(k) = NProprietesF()
+						
+						END IF
+						
+					NEXT k
+					Formats.replaceByIndex(j, Format)
+			
+				NEXT j
+				Index.LevelFormat = Formats
+			END IF
+		NEXT i
+	END IF 
+
+END SUB
+</script:module>
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Aide" script:language="StarBasic">REM  *****  BASIC  *****
+
+SUB Main
+	AfficherAide
+END SUB
+
+&apos;&apos; Variables globales pointant sur les fenetres
+PRIVATE xDlgAide AS VARIANT
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction affichant la fenetre d&apos;aide du modele
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB AfficherAide
+&apos; Methode d&apos;affichage de l&apos;aide
+
+    DIM ControleTexte AS OBJECT
+    DIM Texte AS STRING
+	
+	DialogLibraries.LoadLibrary(&quot;Standard&quot;)
+	xDlgAide = createUNODialog(DialogLibraries.Standard.DlgAide)
+	
+	xDlgAide.setTitle(&quot;Assistant de cr|e9|ation de compte-rendu de TP -- Aide&quot;)
+	
+	AfficherSommaire
+	
+	xDlgAide.execute()
+	
+	xDlgAide.dispose()
+	
+END SUB
+
+
+SUB AfficherSommaire
+
+	DIM ControleTexte AS OBJECT
+    DIM Texte AS STRING
+
+	ControleTexte = xDlgAide.getControl(&quot;TxtAide&quot;)
+
+	Texte = &quot;---------SOMMAIRE---------&quot;+chr(10)+chr(10)+_
+			&quot;1 - Objectifs et licence de ce document&quot;+ Chr(10)+_
+			&quot;      1.1 - Objectifs et contexte du document&quot; +Chr(10)+_
+			&quot;      1.2 - Licence du document&quot;+chr(10)+_
+			&quot;      1.3 - Contacter l&apos;auteur&quot;+Chr(10)+_
+			&quot;2 - D|e9|finitions&quot;+Chr(10)+_
+			&quot;3 - Les styles |e0| utiliser&quot;+Chr(10)+_
+			&quot;      3.1 - Styles de paragraphes&quot;+Chr(10)+_
+			&quot;      3.2 - Styles de caract|e8|res&quot;+Chr(10)+_
+			&quot;      3.3 - Styles de cadres&quot;+Chr(10)+_
+			&quot;      3.4 - Styles de pages&quot;+Chr(10)+_
+			&quot;      3.5 - Styles de num|e9|rotations&quot;+Chr(10)+_
+			&quot;4 - Adapter le mod|e8|le |e0| vos go|fb|ts et besoins&quot;+Chr(10)+_
+			&quot;      4.1 - Les styles&quot;+Chr(10)+_
+			&quot;      4.2 - Les macros&quot;+Chr(10)+Chr(10)+_
+			&quot;Cliquez sur la section qui vous int|e9|resse dans le menu |e0| gauche.&quot;
+			
+	ControleTexte.setText(Texte)
+	
+END SUB
+
+
+SUB AfficherLicence (Event AS OBJECT)
+
+	DIM ControleTexte AS OBJECT
+    DIM Texte AS STRING
+
+	ControleTexte = xDlgAide.getControl(&quot;TxtAide&quot;)
+
+	Texte = &quot;1 - Objectifs et licence de ce document&quot;+ Chr(10)+Chr(10)
+	
+	Texte = Texte + _
+			&quot;      1.1 - Objectifs et contexte du document&quot; +Chr(10)+Chr(10)                     +_
+	        &quot;    Ce document a |e9|t|e9| r|e9|alis|e9| par C|e9|dric Bosdonnat pour r|e9|diger des comptes-rendus &quot;+_
+	        &quot;de travaux pratiques en informatique. Ce document permet aussi de g|e9|rer l&apos;&quot;         +_
+	        &quot;historique de modifications du document dans un objectif de d|e9|marche qualit|e9| &quot;      +_
+	        &quot;pour la r|e9|alisation de nos projets. Vous pouvez l&apos;utiliser, le modifier, le &quot;       +_
+	        &quot;redistribuer et redistribuer vos modifications librement. Sachez juste qu&apos;aucune&quot;   +_
+	        &quot;garantie n&apos;est donn|e9|e au sujet de ce document.&quot;+Chr(10)+Chr(10)
+	        
+	Texte = Texte +_
+			&quot;      1.2 - Licence du document&quot;+chr(10)+chr(10)+_
+			&quot;Le contenu de cette Documentation est soumis |e0| la Licence de Documentation Publique &quot;      +_
+			&quot;dans sa Version 1.0 (la &quot;&quot;Licence&quot;&quot;); vous ne ne pouvez utiliser cette Documentation que &quot; +_
+			&quot;si vous respectez les conditions de cette Licence. Une copie de la Licence est disponible &quot;+_
+			&quot;|e0| l&apos;adresse suivante http://fr.openoffice.org/files/documents/67/1518/PDL_fr.sxw.&quot;         +_
+			Chr(10)+Chr(10)+Chr(10)
+	        
+	Texte = Texte +_
+	        &quot;      1.3 - Contacter l&apos;auteur&quot;+Chr(10)+Chr(10)
+	
+	Texte = Texte +_
+	        &quot;    Vous pouvez m&apos;envoyer un mail |e0| l&apos;adresse suivante si vous souhaitez rapporter une &quot;   +_
+	        &quot;erreur ou un probl|e8|me : cedric POINT bosdonnat CHEZ free POINT fr. Sinon vos versions &quot;    +_
+	        &quot;de ce mod|e8|le int|e9|ressent la communaut|e9| OpenOffice.org et nous vous serions reconnaissants &quot;+_
+	        &quot;de les d|e9|poser au projet de documentation fran|e7|aise pour les faire relire et publier.&quot;     +_
+	        Chr(10)
+	        
+	ControleTexte.setText(Texte)
+	        
+END SUB
+
+
+
+SUB AfficherDefinitions (Event AS OBJECT)
+
+	DIM ControleTexte AS OBJECT
+    DIM Texte AS STRING
+
+	ControleTexte = xDlgAide.getControl(&quot;TxtAide&quot;)
+	
+	Texte = &quot;2 - D|e9|finitions&quot;+Chr(10)+Chr(10)+_
+	        &quot;    Nom du projet : nom du projet auquel votre document appartiendra (Ex : Totomobile). &quot; +_
+	        &quot;Si votre document n&apos;appartient pas |e0| un projet particulier, c&apos;est le titre principal &quot;    +_
+	        &quot;de votre document que vous devez saisir ici (Ex : TP de SA-RT).&quot;+Chr(10)+Chr(10)
+	        
+	Texte = Texte +_
+            &quot;    Document : type de document r|e9|alis|e9|. Un projet produit beaucoup de documents, il est &quot; +_
+            &quot;donc important de pr|e9|ciser de quel document il s&apos;agit (Ex : Sp|e9|cifications). Si votre &quot;    +_
+            &quot;document n&apos;appartient pas |e0| un projet, c&apos;est le sous-titre du document (Ex : listings)&quot;    +_
+            &quot;.&quot;+chr(10)+Chr(10)
+            
+    Texte = Texte +_
+            &quot;    Version : Num|e9|ro de version du document. Vous pouvez mettre 1.0 par d|e9|faut si cela ne &quot;+_
+            &quot;vous int|e9|resse pas.&quot;+chr(10)+Chr(10)
+            
+	Texte = Texte +_
+            &quot;    Groupe/St|e9| : Nom du groupe de travail qui produit le document. Dans le cas d&apos;un travail &quot;   +_
+            &quot;scolaire, cela peut se traduire par un num|e9|ro de bin|f4|me ou un num|e9|ro de classe (Ex : &quot;      +_
+            &quot;&apos;B3124&apos; ou &apos;3eme1&apos;). Dans le cas d&apos;un travail professionnel, cela peut se traduire par le &quot; +_
+            &quot;nom de l&apos;unit|e9| ou de l&apos;entreprise qui produit le document (Ex : &apos;INSA Lyon&apos; ou &apos;Dpt IF&apos; ou &quot;+_
+            &quot;&apos;INSA Lyon - IF&apos;).&quot;+Chr(10)+Chr(10)
+            
+    Texte = Texte +_
+            &quot;    Auteurs : Noms des auteurs du documents. Dans un projet, les auteurs seront les membres de &quot;+_
+            &quot;l&apos;|e9|quipe charg|e9|s de la r|e9|daction du document, et non tous les membres de l&apos;|e9|quipe. Dans le &quot;+_
+            &quot;d&apos;un travail scolaire, cela peut se traduire par les noms de chacun des |e9|l|e8|ves du groupe. &quot; +_
+            &quot;Pour mettre plusieurs noms, vous devez en mettre un par ligne dans le champ qui vous est &quot;  +_
+            &quot;fourni.&quot;+chr(10)+Chr(10)
+            
+     Texte = Texte +_
+            &quot;    R|e9|f|e9|rence : Identifiant du document dans le syst|e8|me documentaire du projet ou du groupe&quot;+_
+            &quot;. Si vous &apos;avez pas besoin de ce champ, laissez-le vide, il n&apos;appara|ee|tra pas dans le &quot; +_
+            &quot;document. Vous pourrez le remettre en le remplissant lors d&apos;une nouvelle |e9|dition des param|e8|tres &quot; +_
+            &quot;du document.&quot; + chr(10)+Chr(10)
+            
+    Texte = Texte +_
+            &quot;    En-t|ea|te : L&apos;en-t|ea|te de ce document n&apos;a aucun rapport avec celle d&apos;un document OpenOffice.&quot;  +_
+            &quot;org : il correspond aux premi|e8|re pages du document qui servent de pr|e9|sentation. Il comprend&quot;+_
+            &quot; une page de titre, une table des mati|e8|res et une page de suivi de document.&quot;+Chr(10)+Chr(10)
+            
+    Texte = Texte +_
+            &quot;    Table des mati|e8|res : elle est bas|e9|e sur les titres par d|e9|faut d&apos;OpenOffice.org et &quot;  +_
+            &quot;contient des liens vers les diff|e9|rentes parties. Les styles de liens internets n&apos;|e9|tant &quot; +_
+            &quot;pas utilis|e9|s dans ce document, ils n&apos;ont pas d&apos;apparence diff|e9|rentes du reste du texte. &quot;+_
+            &quot;Si vous les changez, prenez garde |e0| l&apos;apparence de votre table des mati|e8|res.&quot;            +_
+            Chr(10)+Chr(10)
+            
+    Texte = Texte +_
+            &quot;    Page de suivi : elle contient des informations utiles |e0| la gestion d&apos;une documentation &quot;+_
+            &quot;dans un projet. Par d|e9|faut elle contient un tableau d&apos;historique des modifications majeures&quot;+_
+            &quot;. Vous pouvez adapter cette page aux besoins de votre projet.&quot;+Chr(10)+Chr(10)
+            
+    Texte = Texte +_
+    		&quot;    Annexe : partie de document de m|ea|me niveau qu&apos;un titre 1, mais sans num|e9|rotation ni &quot; +_
+    		&quot;Table de mati|e8|res de chapitre. Une annexe ne peut contenir que 3 niveaux de chapitres &quot;   +_
+    		&quot;tous non num|e9|rot|e9|s.&quot;+Chr(10) + Chr(10)
+            
+    Texte = Texte +_
+    		&quot;    Objet du document : Cliquez sur ce texte pour le changer. Ce champ sert |e0| rapeller &quot; +_
+    		&quot;l&apos;utilit|e9| du document au sein du projet. Il est d|e9|conseill|e9| de supprimer cette partie &quot; + _
+    		&quot;m|ea|me dans le c|e2|dre de petits projets : cela rappelle le contexte du document au lecteur.&quot;+_
+    		Chr(10)
+            
+    ControleTexte.setText(Texte)
+    
+END SUB
+
+
+SUB AfficherStyles (Event AS OBJECT)
+
+	DIM ControleTexte AS OBJECT
+    DIM Texte AS STRING
+
+	ControleTexte = xDlgAide.getControl(&quot;TxtAide&quot;)
+	
+	Texte = &quot;3 - Les styles |e0| utiliser&quot;+Chr(10)+Chr(10)+_
+	        &quot;      3.1 - Styles de paragraphes&quot;+Chr(10)+Chr(10)
+	        
+	Texte = Texte +_
+			&quot;TexteCourant :&quot;+Chr(10)+_
+			&quot;    Style |e0| utiliser pour du texte normal.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Code :&quot;+Chr(10)+_
+			&quot;    Style |e0| utiliser pour mettre des listings en valeur.&quot;+Chr(10)+Chr(10)
+	      
+	Texte = Texte +_
+			&quot;ContenuTableau :&quot;+Chr(10)+_
+			&quot;    Style des cellules normales d&apos;un tableau.&quot;+Chr(10)+Chr(10)
+			
+    Texte = Texte +_
+			&quot;TitreTableau :&quot;+Chr(10)+_
+			&quot;    Style des cellules de titre horizontal d&apos;un tableau.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreTableauVertical :&quot;+Chr(10)+_
+			&quot;    Style des cellules de titre horizontal d&apos;un tableau.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Important :&quot;+Chr(10)+_
+			&quot;    Style |e0| appliquer pour un texte important |e0| mettre en valeur.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Note :&quot;+Chr(10)+_
+			&quot;    Style |e0| appliquer pour une note peu importante.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Section :&quot;+Chr(10)+_
+			&quot;    Style des sections de la page de suivi.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TexteEntete :&quot;+Chr(10)+_
+			&quot;    Style des en-t|ea|tes de page.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TextePied :&quot;+Chr(10)+_
+			&quot;    Style de pieds de page.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TexteL|e9|gende :&quot;+Chr(10)+_
+			&quot;    Style des l|e9|gendes de graphiques, figures, tableaux, etc.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;fig :&quot;+Chr(10)+_
+			&quot;    Style des l|e9|gendes de figures.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TexteStyl|e9| :&quot;+Chr(10)+_
+			&quot;    Style g|e9|n|e9|rique permettant de d|e9|finir le th|e8|me de couleur &quot;+_
+			&quot;global du mod|e8|le.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Auteur :&quot;+Chr(10)+_
+			&quot;    Style du champ d&apos;auteurs de la page de garde.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreProjet :&quot;+Chr(10)+_
+			&quot;    Style du titre principal de la page de garde.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreDocument :&quot;+Chr(10)+_
+			&quot;    Style du sous-titre de la page de garde.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreIndex :&quot;+Chr(10)+_
+			&quot;    Style des titres d&apos;index.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;IndexNiveau1 :&quot;+Chr(10)+_
+			&quot;    Style du niveau 1 des index.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;IndexNiveau2 :&quot;+Chr(10)+_
+			&quot;    Style du niveau 2 des index.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;IndexNiveau3 :&quot;+Chr(10)+_
+			&quot;    Style du niveau 3 des index.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;IndexNiveau4 :&quot;+Chr(10)+_
+			&quot;    Style du niveau 4 des index.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreNiveau1 :&quot;+Chr(10)+_
+			&quot;    Style des titres de chapitre de niveau 1.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreNiveau2 :&quot;+Chr(10)+_
+			&quot;    Style des titres de chapitre de niveau 2.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreNiveau3 :&quot;+Chr(10)+_
+			&quot;    Style des titres de chapitre de niveau 3.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreNiveau4 :&quot;+Chr(10)+_
+			&quot;    Style des titres de chapitre de niveau 4.&quot;+Chr(10)+Chr(10)
+		
+	Texte = Texte +_
+			&quot;TitreIntroduction :&quot;+Chr(10)+_
+			&quot;    Style du titre de l&apos;introduction du document. Il ne sert qu&apos;a &quot;+_
+			&quot;faire figurer le titre de l&apos;introduction dans la table des mati|e8|res&quot;+_
+			Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreAnnexe :&quot;+Chr(10)+_
+			&quot;    Style des titres des annexes.&quot;+Chr(10)+Chr(10)	
+			
+	Texte = Texte +_
+			&quot;TitreAnnexe1 :&quot;+Chr(10)+_
+			&quot;    Style des titres de niveau 1 des annexes.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreAnnexe2 :&quot;+Chr(10)+_
+			&quot;    Style des titres de niveau 2 des annexes.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;TitreAnnexe3 :&quot;+Chr(10)+_
+			&quot;    Style des titres de niveau 3 des annexes.&quot;+Chr(10)+Chr(10)+Chr(10)
+		
+	        
+	Texte = Texte +_
+			&quot;      3.2 - Styles de caract|e8|res&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Caract|e8|reCourant :&quot;+Chr(10)+_
+			&quot;    Caract|e8|re normal.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Caract|e8|reStyl|e9| :&quot;+Chr(10)+_
+			&quot;    Caract|e8|re mis en valeur.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;CodeSource :&quot;+Chr(10)+_
+			&quot;    Style de caract|e8|res de base dans un listing.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Commentaire :&quot;+Chr(10)+_
+			&quot;    Style des commentaires dans un listing.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;MotCl|e9| :&quot;+Chr(10)+_
+			&quot;    Style des mots cl|e9|s du langage dans un listing.&quot;+Chr(10)+Chr(10)+Chr(10)
+			
+    Texte = Texte +_
+			&quot;      3.3 - Styles de cadres&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;ImageCourante :&quot;+Chr(10)+_
+			&quot;    Style des images normales.&quot;+Chr(10)+Chr(10)+Chr(10)
+	        
+	Texte = Texte +_
+			&quot;      3.4 - Styles de pages&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;PageEntete :&quot;+Chr(10)+_
+			&quot;    Style de la page de garde.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Introduction :&quot;+Chr(10)+_
+			&quot;    Style des pages d&apos;introduction du document.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;PageCourante :&quot;+Chr(10)+_
+			&quot;    Style des pages normales.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;PageAnnexe :&quot;+Chr(10)+_
+			&quot;    Style des pages d&apos;annexes.&quot;+Chr(10)+Chr(10)+Chr(10)
+			
+    Texte = Texte +_
+			&quot;      3.5 - Styles de num|e9|rotations&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;Num|e9|rotationStyl|e9|e :&quot;+Chr(10)+_
+			&quot;    Style des num|e9|rotations incluses dans le texte.&quot;+Chr(10)+Chr(10)
+			
+	Texte = Texte +_
+			&quot;PuceStyl|e9|e :&quot;+Chr(10)+_
+			&quot;    Style des listes d&apos;items incluses dans le texte.&quot;+Chr(10)+Chr(10)
+	        
+	ControleTexte.setText(Texte)
+	
+END SUB
+
+
+SUB AfficherModifier (Event AS OBJECT)
+
+	DIM ControleTexte AS OBJECT
+    DIM Texte AS STRING
+
+	ControleTexte = xDlgAide.getControl(&quot;TxtAide&quot;)    
+
+	Texte = &quot;4 - Adapter le mod|e8|le |e0| vos go|fb|ts et besoins&quot;+Chr(10)+Chr(10)
+	        
+	Texte = Texte +_
+	        &quot;      4.1 - Les styles&quot;+Chr(10)+Chr(10)+_
+	        &quot;    Les styles sont d|e9|crits dans la section 3 de cette aide, veuillez vous &quot;+_
+	        &quot;y reporter pour les d|e9|tails sur leur utilisation.&quot;+Chr(10)+Chr(10)+_
+	        &quot;    Il est conseill|e9| de modifier les styles ci-dessus pour changer les styles &quot;+_
+	        &quot;du mod|e8|le. Vous pouvez aussi en ajouter pour compl|e9|ter ceux qui sont d|e9|j|e0| fournis.&quot;+_
+	        &quot;Tout manque important peut |ea|tre signaler |e0| l&apos;auteur pour qu&apos;il soit ajouter que la &quot;+_
+	        &quot;version originale de ce document tienne compte de l&apos;oubli.&quot;+Chr(10)+Chr(10)+Chr(10)
+	        
+	Texte = Texte +_
+	        &quot;      4.2 - Les macros&quot;+Chr(10)+Chr(10)+_
+	        &quot;    Afin de comprendre les macros, veuillez vous reporter |e0| la documentation du code.&quot;+_
+	        &quot;Si celle-ci n&apos;est pas suffisament fournie, contactez l&apos;auteur pour plus de pr|e9|cisions &quot; +_
+	        &quot;ou pour faire part d&apos;un manque.&quot;+ Chr(10)
+	        
+	ControleTexte.setText(Texte)
+    
+END SUB
+</script:module>
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="ControleVersions" script:language="StarBasic">REM  *****  BASIC  *****
+
+PRIVATE xDlgVersion
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos; Fonction d&apos;affichage de la fenetre de recolte des informations de changement
+&apos; de version du document
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB DemandeVersion
+
+	DIM Doc AS Object
+	
+	DialogLibraries.LoadLibrary(&quot;Standard&quot;)
+	xDlgVersion = createUNODialog(DialogLibraries.Standard.DlgVersion)
+	
+	xDlgVersion.execute()
+	 
+END SUB
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de Verification du remplissage des champs. Cette fonction est 
+&apos;  appelee a chaque clic sur le bouton Enregistrer
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB ClicValider (Event AS OBJECT)
+
+	NoVersion = xDlgVersion.getControl(&quot;txtVersion&quot;).Text
+	Responsable = xDlgVersion.getControl(&quot;txtResponsable&quot;).Text
+	Modifications = xDlgVersion.getControl(&quot;txtModifications&quot;).Text
+	
+	&apos;&apos; Test de l&apos;etat des champs
+
+	IF ( NOT (NoVersion=&quot;&quot; or Responsable=&quot;&quot; or Modifications=&quot;&quot;)) THEN
+		xDlgVersion.endExecute()
+		EnregistrerVersion(NoVersion, Responsable, Modifications)
+	ELSE
+		xDlgVersion.getControl(&quot;lblErreur&quot;).Text = &quot;Tous les champs doivent |ea|tre remplis&quot;
+	END IF
+
+END SUB
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de mise a jour du document avec les donnees de changement de version
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB EnregistrerVersion (NoVersion AS STRING,_
+						Responsable AS STRING,_
+						Modification AS STRING)
+
+    &apos; Variables pointant sur le document, le frame affich|e9| et le dispatcher
+    &apos; Qui mets les champs a jour.
+  	DIM Doc, Dispatcher, Frame AS OBJECT
+  	
+  	&apos; Variables de manipulation des Champs de texte Variables
+	DIM EnumChampTexte AS OBJECT
+	DIM ChampTexte AS OBJECT
+	
+  	&apos; Creation du dispatcher et recuperation du document et de son espace d&apos;affichage
+	Doc = ThisComponent
+	Frame = Doc.CurrentController.Frame
+	Dispatcher = createUnoService(&quot;com.sun.star.frame.DispatchHelper&quot;) 
+
+
+    &apos; Changer les champs variables
+	EnumChampTexte = Doc.getTextFields.createEnumeration
+
+	WHILE EnumChampTexte.hasMoreElements()
+	
+	  ChampTexte = EnumChampTexte.nextElement()
+	  
+	  IF (ChampTexte.supportsService(&quot;com.sun.star.text.TextField.SetExpression&quot;)) THEN
+	  
+		IF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;DateDerniereModif&quot;) THEN
+		   Dim tDate As Long
+		   tDate = DateValue(Now)
+		   ChampTexte.Content = tDate
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;NoVersion&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, NoVersion)
+		END IF
+	  END IF
+	
+	WEND
+	
+	AjouterLigneSuivi (NoVersion, Responsable, Modification)
+	
+	&apos; Actualiser les champs du document
+	dispatcher.executeDispatch(Frame, &quot;.uno:UpdateFields&quot;, &quot;&quot;, 0, Array())
+
+END SUB
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de recuperation du tableau de suivi contenu dans le document
+&apos;
+&apos;-------------------------------------------------------------------------------
+FUNCTION GetTableSuivi AS OBJECT
+
+	&apos; Variable contenant le document
+	DIM Doc AS OBJECT
+	
+	&apos; Variable contenant la liste des tableaux du document
+	DIM Tables AS OBJECT
+	
+	Doc = ThisComponent
+	Tables = Doc.getTextTables
+	
+	GetTableSuivi = Tables.getByName(&quot;Historique&quot;)
+
+END FUNCTION
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction d&apos;ajout d&apos;une ligne dans le tableau de suivi de version.
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB AjouterLigneSuivi (NoVersion AS STRING,_
+					   Responsable AS STRING,_
+					   Modification AS STRING)
+
+	&apos; Ajouter un ligne au tableau de suivi
+	TSuivi = GetTableSuivi
+	
+	&apos; Variables de parcours de lignes du tableau
+	DIM Lignes, CelluleI AS OBJECT
+	DIM Trouve AS INTEGER
+	
+	Lignes = TSuivi.getRows
+	Trouve = 0
+	
+	&apos; Recherche de la premiere ligne ou la version est vide
+	FOR i = 1 TO Lignes.getCount()-1
+	
+		CelluleI = TSuivi.getCellByPosition(0, i)
+		IF (CelluleI.getString = &quot;&quot;) THEN
+			&apos; Ligne sans version trouvee
+			Trouve = i
+			EXIT FOR
+			
+		END IF
+		
+	NEXT i
+	
+	&apos; Ajout d&apos;une ligne si besoin
+	IF (Trouve = 0) THEN
+		Trouve = Lignes.getCount()
+		Lignes.insertByIndex(Trouve, 1)
+	END IF
+	
+	&apos; Insertion des valeurs dans la ligne Trouve
+	
+	&apos; insertion de la version
+	TSuivi.getCellByPosition(0, Trouve).NumberFormat = com.sun.star.util.NumberFormat.TEXT
+	debut = TSuivi.getCellByPosition(0, Trouve). GetStart()
+	debut.ParaAdjust = com.sun.star.style.ParagraphAdjust.LEFT
+	
+	&apos; Creation ou recuperation du champ maitre de la version
+	NomMaitre = &quot;com.sun.star.text.FieldMaster.SetExpression.Version&quot;+(Trouve-1)
+	IF (ThisComponent.getTextFieldMasters.hasByName(NomMaitre)) THEN
+		tVersionMaitre = ThisComponent.getTextFieldMasters.getByName(NomMaitre)
+	ELSE
+		tVersionMaitre = ThisComponent.createInstance(&quot;com.sun.star.text.FieldMaster.SetExpression&quot;)
+		tVersionMaitre.setPropertyValue(&quot;Name&quot;, &quot;Version&quot;+(Trouve-1))
+		tVersionMaitre.setPropertyValue(&quot;SubType&quot;, com.sun.star.text.SetVariableType.STRING)
+	END IF
+	&apos; Creation du champ de la version
+	tVersion = ThisComponent.createInstance(&quot;com.sun.star.text.TextField.SetExpression&quot;)
+	tVersion.setPropertyValue(&quot;Content&quot;, NoVersion)
+	tVersion.attachTextFieldMaster(tVersionMaitre)
+	
+	TSuivi.getCellByPosition(0, Trouve).insertTextContent(debut, tVersion, false)
+			
+	&apos; insertion de la date
+	debut = TSuivi.getCellByPosition(1, Trouve).getStart()
+	tDate = ThisComponent.createInstance(&quot;com.sun.star.text.TextField.DateTime&quot;)
+	tDate.isDate = true
+	tDate.isFixed = true
+	tDate.NumberFormat = GetTypeDate
+	TSuivi.getCellByPosition(1, Trouve).insertTextContent(debut, tDate, false)
+	TSuivi.getCellByPosition(1, Trouve).getStart(false).ParaAdjust = com.sun.star.style.ParagraphAdjust.LEFT
+	
+	TSuivi.getCellByPosition(2, Trouve).setString(Responsable)
+	TSuivi.getCellByPosition(3, Trouve).setString(Modification)
+
+END SUB
+
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de recuperation du NumberFormat de DateDerniereModif. Ainsi, la
+&apos;  modification du format de DateDerniereModif entrainera la modification des 
+&apos;  nouveaux formats de dates inseres dans le tableau d&apos;historique.
+&apos;  
+&apos;  Si DateDerniereModif n&apos;existe pas, renvoie 5075
+&apos;
+&apos;-------------------------------------------------------------------------------
+FUNCTION GetTypeDate
+	&apos; Variables pointant sur le document, le frame affich|e9| et le dispatcher
+    &apos; Qui mets les champs a jour.
+  	DIM Doc AS OBJECT
+  	
+  	&apos; Variables de manipulation des Champs de texte Variables
+	DIM EnumChampTexte AS OBJECT
+	DIM ChampTexte AS OBJECT
+      
+    DIM tDate AS LONG
+                    
+  	&apos; Recuperation du document
+	Doc = ThisComponent           
+	tDate = 5075
+
+    &apos; Recupere les champs variables
+	EnumChampTexte = Doc.getTextFields.createEnumeration
+
+	DO WHILE EnumChampTexte.hasMoreElements()
+	
+	  ChampTexte = EnumChampTexte.nextElement()
+	  
+	  IF (ChampTexte.supportsService(&quot;com.sun.star.text.TextField.SetExpression&quot;)) THEN
+		
+		IF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;DateDerniereModif&quot;) THEN
+			tDate = ChampTexte.NumberFormat
+			EXIT DO
+		END IF
+	  END IF
+	
+	LOOP
+	
+	GetTypeDate = tDate
+
+END FUNCTION
+</script:module>
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="SaisieParametres" script:language="StarBasic">REM  *****  BASIC  *****
+
+
+&apos;&apos; Variable globale pointant sur les fenetres
+PRIVATE xDlgParam AS VARIANT
+
+&apos;&apos; Variable globale contenant les parametres actuels du documents
+PRIVATE ParamsActuels(9) AS VARIANT
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction principale qui ne fait qu&apos;appeler la procedure de debut : 
+&apos;  DemandeParams
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB Main
+	DemandeParams
+END SUB
+
+
+SUB RecupereParamsActuels
+	&apos; Variables pointant sur le document, le frame affich|e9| et le dispatcher
+    &apos; Qui mets les champs a jour.
+  	DIM Doc AS OBJECT
+  	
+  	&apos; Variables de manipulation des Champs de texte Variables
+	DIM EnumChampTexte AS OBJECT
+	DIM ChampTexte AS OBJECT
+                    
+  	&apos; CRecuperation du document
+	Doc = ThisComponent           
+
+
+    &apos; Recupere les champs variables
+	EnumChampTexte = Doc.getTextFields.createEnumeration
+
+	WHILE EnumChampTexte.hasMoreElements()
+	
+	  ChampTexte = EnumChampTexte.nextElement()
+	  
+	  IF (ChampTexte.supportsService(&quot;com.sun.star.text.TextField.SetExpression&quot;)) THEN
+		
+		valeur = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+	
+		IF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Projet&quot;) THEN
+			valeur.Name = &quot;Projet&quot;
+			texte = &quot;&quot;
+			IF ( NOT(ChampTexte.getPropertyValue(&quot;Content&quot;) = &quot;Projet&quot;)) THEN
+				texte = ChampTexte.getPropertyValue(&quot;Content&quot;)
+			END IF
+			valeur.Value = texte
+			ParamsActuels(0) = valeur
+			
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Document&quot;) THEN
+			valeur.Name = &quot;Document&quot;
+		   	texte = &quot;&quot;
+			IF ( NOT(ChampTexte.getPropertyValue(&quot;Content&quot;) = &quot;Document&quot;)) THEN
+				texte = ChampTexte.getPropertyValue(&quot;Content&quot;)
+			ELSE
+			
+			END IF
+			valeur.Value = texte
+		   	ParamsActuels(1) = valeur
+		   	
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Groupe&quot;) THEN
+		    valeur.Name = &quot;Groupe&quot;
+		    texte = &quot;&quot;
+			IF ( NOT(ChampTexte.getPropertyValue(&quot;Content&quot;) = &quot;Groupe&quot;)) THEN
+				texte = ChampTexte.getPropertyValue(&quot;Content&quot;)
+			ELSE
+			
+			END IF
+			valeur.Value = texte
+		    ParamsActuels(2) = valeur
+		   
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;NoVersion&quot;) THEN
+		    valeur.Name = &quot;NoVersion&quot;
+		    texte = &quot;&quot;
+			IF ( NOT(ChampTexte.getPropertyValue(&quot;Content&quot;) = &quot;Version&quot;)) THEN
+				texte = ChampTexte.getPropertyValue(&quot;Content&quot;)
+			ELSE
+			
+			END IF
+			valeur.Value = texte
+		   ParamsActuels(3) = valeur
+		   
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Auteurs&quot;) THEN
+			valeur.Name = &quot;Auteurs&quot;
+		   	texte = &quot;&quot;
+			IF ( NOT(ChampTexte.getPropertyValue(&quot;Content&quot;) = &quot;Auteurs&quot;)) THEN
+				texte = ChampTexte.getPropertyValue(&quot;Content&quot;)
+			ELSE
+			
+			END IF
+			valeur.Value = texte
+		   	ParamsActuels(4) = valeur
+		   
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Reference&quot;) THEN
+			valeur.Name = &quot;Reference&quot;
+		   	texte = &quot;&quot;
+			IF ( NOT(ChampTexte.getPropertyValue(&quot;Content&quot;) = &quot;Reference&quot;)) THEN
+				texte = ChampTexte.getPropertyValue(&quot;Content&quot;)
+			ELSE
+			
+			END IF
+			valeur.Value = texte
+		   	ParamsActuels(5) = valeur
+		   
+		END IF
+	  END IF
+	
+	WEND
+	
+	&apos; Recuperation de l&apos;etat de l&apos;entete
+	valeur = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+	Valeur.Name = &quot;Entete&quot;
+	IF (Doc.getTextSections.getByName(&quot;Entete&quot;).IsVisible = True) THEN
+		Valeur.value = 1
+	ELSE
+		Valeur.value = 0
+	END IF
+	ParamsActuels(6) = valeur
+	
+	&apos; Recuperation de l&apos;etat de la page de Suivi
+	valeur = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+	Valeur.Name = &quot;Suivi&quot;
+	IF (Doc.getTextSections.getByName(&quot;Suivi&quot;).IsVisible = True) THEN
+		Valeur.value = 1
+	ELSE
+		Valeur.value = 0
+	END IF
+	ParamsActuels(7) = valeur
+	
+	
+	&apos; Recuperation de l&apos;etat de la table des mati|e8|res
+	valeur = createUnoStruct(&quot;com.sun.star.beans.PropertyValue&quot;)
+	Valeur.Name = &quot;TableMatieres&quot;
+	IF (Doc.getTextSections.getByName(&quot;TableMatieres&quot;).IsVisible = True) THEN
+		Valeur.value = 1
+	ELSE
+		Valeur.value = 0
+	END IF
+	ParamsActuels(8) = valeur
+
+END SUB
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction demandant la saisie des parametres du documents
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB DemandeParams
+
+	DIM TxtDocument, TxtProjet, TxtVersion, TxtGroupe, TxtAuteur AS OBJECT
+	DIM ChkTableMatiere, ChkSuivi, ChkEntete AS OBJECT
+	
+	DIM Document, Projet, Version, Groupe, Auteur AS STRING
+	DIM AffEntete, AffTableMatiere, AffSuivi AS BOOLEAN
+	
+	&apos; Chargement de la librairie de dialogues
+	DialogLibraries.LoadLibrary(&quot;Standard&quot;)
+	
+	&apos; Creation de la boite de dialogue
+	xDlgParam = createUNODialog(DialogLibraries.Standard.DlgParam)
+	xDlgParam.setTitle(&quot;Assistant de cr|e9|ation de compte-rendu de TP&quot;)
+
+	&apos; Recuperation des objets pour avoir les valeurs saisies
+	TxtProjet    = xDlgParam.getControl(&quot;TxtProjet&quot;)
+	TxtDocument  = xDlgParam.getControl(&quot;TxtDocument&quot;)
+	TxtVersion   = xDlgParam.getControl(&quot;TxtVersion&quot;)
+	TxtGroupe    = xDlgParam.getControl(&quot;TxtGroupe&quot;)
+	TxtAuteur    = xDlgParam.getControl(&quot;TxtAuteur&quot;)
+	TxtReference = xDlgParam.getControl(&quot;txtReference&quot;)
+	
+	ChkTableMatiere = xDlgParam.getControl(&quot;ChkTableMatiere&quot;)
+	ChkSuivi        = xDlgParam.getControl(&quot;ChkSuivi&quot;)
+	ChkEntete	    = xDlgParam.getControl(&quot;ChkEntete&quot;)
+	
+	&apos; Recuperation des parametres actuels du document
+	RecupereParamsActuels
+	
+	FOR i = 0 TO UBound(ParamsActuels())-1
+		SELECT CASE ParamsActuels(i).Name
+			CASE &quot;Projet&quot;:
+				TxtProjet.Text = ParamsActuels(i).value
+			CASE &quot;Document&quot;:
+				TxtDocument.Text = ParamsActuels(i).value
+			CASE &quot;Groupe&quot;:
+				TxtGroupe.Text = ParamsActuels(i).value
+			CASE &quot;NoVersion&quot;:
+				TxtVersion.Text = ParamsActuels(i).value
+			CASE &quot;Auteurs&quot;:
+				TxtAuteur.Text = ParamsActuels(i).value
+			CASE &quot;Reference&quot;:
+				TxtReference.Text = ParamsActuels(i).value
+			CASE &quot;Entete&quot;:
+				ChkEntete.setState(ParamsActuels(i).value)
+			CASE &quot;Suivi&quot;:
+				ChkSuivi.setState(ParamsActuels(i).value)
+			CASE &quot;TableMatieres&quot;:
+				ChkTableMatiere.setState(ParamsActuels(i).value)
+		END SELECT
+	NEXT i
+	
+	xDlgParam.Execute()
+	
+	&apos; Recuperation des valeurs saisies
+	Projet = TxtProjet.Text
+	Document = TxtDocument.Text
+	Version = TxtVersion.Text
+	Groupe = TxtGroupe.Text
+	Auteurs = TxtAuteur.Text
+	Reference = TxtReference.Text
+	
+	IF (ChkEntete.getState = 0) THEN
+	    AffEntete = 0
+	    AffTableMatiere = 0
+	    AffSuivi = 0
+	ELSE
+	 	AffEntete = 1
+	 	AffTableMatiere = ChkTableMatiere.getState
+	 	AffSuivi = chkSuivi.getState
+	END IF
+	
+	&apos; Construction du document
+	ConstruitDocument(Projet, Document, Version, Groupe, Auteurs, Reference,_
+	                  AffEntete, AffTableMatiere, AffSuivi)
+	
+	xDlgParam.dispose()
+
+END SUB
+
+
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction gerant le clic sur la case a cocher pour afficher l&apos;en-tete
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB SelectEntete (Event AS OBJECT)
+	DIM oDoc, Forms, Dialog AS OBJECT
+	
+	&apos;Recuperer la boite de dialogue active
+	oDoc = ThisComponent
+	Forms = oDoc.DrawPage.Forms
+
+    IF (Event.source.getState = 1) THEN
+       xDlgParam.getControl(&quot;ChkTableMatiere&quot;).setEnable(true)
+       xDlgParam.getControl(&quot;ChkSuivi&quot;).setEnable(true)
+    ELSE
+       xDlgParam.getControl(&quot;ChkTableMatiere&quot;).SetEnable(false)
+       xDlgParam.getControl(&quot;ChkSuivi&quot;).setEnable(false)
+    END IF
+END SUB
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de positionnement des cadres de premiere page
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB PositionnerCadres
+
+	Cadres = ThisComponent.getTextFrames
+	
+	&apos; Mise en page de CadreInfo
+	CadreInfos = Cadres.getByName(&quot;InfosDocument&quot;)
+	CadreInfos.VertOrient = com.sun.star.text.VertOrientation.NONE
+	CadreInfos.VertOrientPosition = 8000
+	CadreInfos.PositionProtected = True
+
+
+	&apos;Mise en page de ObjetDocument
+	ObjetDocument = Cadres.getByName(&quot;ObjetDocument&quot;)
+	ObjetDocument.VertOrient = com.sun.star.text.VertOrientation.NONE
+	ObjetDocument.VertOrientPosition = 11000
+	ObjetDocument.PositionProtected = True
+	
+END SUB
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction de mise ajour du document en fonction des valeurs passees en 
+&apos;  parametre.
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB ConstruitDocument (Projet AS STRING,_
+					   Document AS STRING,_
+                       Version AS STRING,_
+                       Groupe AS STRING,_
+                       Auteurs AS STRING,_
+                       Reference AS STRING,_
+                       AffEntete AS BOOLEAN,_
+                       AffTableMatiere AS BOOLEAN,_
+                       AffSuivi AS BOOLEAN)
+                       
+    &apos; Variables pointant sur le document, le frame affich|e9| et le dispatcher
+    &apos; Qui mets les champs a jour.
+  	DIM Doc, Dispatcher, Frame AS OBJECT
+  	
+  	&apos; variables pointant sur les sections de document a manipuler
+  	DIM Entete, TableMatieres, Suivi AS OBJECT
+  	
+  	&apos; Variables de manipulation des Champs de texte Variables
+	DIM EnumChampTexte AS OBJECT
+	DIM ChampTexte AS OBJECT
+	
+	&apos; Variable contenant le curseur qui permet de localiser Titre1
+	DIM Curseur AS OBJECT
+	
+	&apos; Variables de parcours de tableau
+	DIM i,j AS INTEGER
+	
+	&apos; Champ de premiere utilisation
+	DIM ChampPremierParametrage AS OBJECT
+                       
+  	&apos; Creation du dispatcher et recuperation du document et de son espace d&apos;affichage
+	Doc = ThisComponent
+	Frame = Doc.CurrentController.Frame
+	Dispatcher = createUnoService(&quot;com.sun.star.frame.DispatchHelper&quot;) 
+                       
+                      
+    &apos; Masquer ou afficher les parties du document.
+    
+    Entete = Doc.getTextSections.getByName(&quot;Entete&quot;)
+    Entete.setPropertyValue(&quot;Condition&quot;, &quot;true&quot;)
+    IF (AffEntete = 0) THEN
+	    Entete.setPropertyValue(&quot;IsVisible&quot;, false)
+	ELSE
+		Entete.setPropertyValue(&quot;IsVisible&quot;, true)
+	END IF
+    
+    &apos; Gestion de l&apos;affichage de la table des mati|e8|res
+    TableMatiere = Doc.getTextSections.getByName(&quot;TableMatieres&quot;)
+    TableMatiere.setPropertyValue(&quot;Condition&quot;, &quot;true&quot;)
+    
+    IF (AffTableMatiere = 0) THEN
+	    TableMatiere.setPropertyValue(&quot;IsVisible&quot;, false)
+	ELSE
+		TableMatiere.setPropertyValue(&quot;IsVisible&quot;, true)
+	END IF
+	
+
+	&apos; Gestion de l&apos;affichage de la page de suivi	
+	Suivi = Doc.getTextSections.getByName(&quot;Suivi&quot;)
+    Suivi.setPropertyValue(&quot;Condition&quot;, &quot;true&quot;)
+    
+	IF (AffSuivi = 0) THEN
+	    Suivi.setPropertyValue(&quot;IsVisible&quot;, false)
+	ELSE 
+	    Suivi.setPropertyValue(&quot;IsVisible&quot;, true)
+	END IF
+
+
+    &apos; Changer les champs variables
+	EnumChampTexte = Doc.getTextFields.createEnumeration
+
+	WHILE EnumChampTexte.hasMoreElements()
+	
+	  ChampTexte = EnumChampTexte.nextElement()
+	  
+	  IF (ChampTexte.supportsService(&quot;com.sun.star.text.TextField.SetExpression&quot;)) THEN
+	
+		IF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Projet&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, Projet)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Document&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, Document)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Groupe&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, Groupe)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;NoVersion&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, Version)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Auteurs&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, Auteurs)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Version0&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, Version)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Etat&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, &quot;En Cours&quot;)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Reference&quot;) THEN
+		   ChampTexte.setPropertyValue(&quot;Content&quot;, Reference)
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;DateDerniereModif&quot;) THEN
+		   Dim tDate As Long
+		   tDate = DateValue(Now)
+		   ChampTexte.Content = tDate
+		ELSEIF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;PremierParametrage&quot;) THEN
+			ChampPremierParametrage = ChampTexte
+		END IF
+	  END IF
+	
+	WEND
+	
+	&apos; Mise en forme du style du premier paragraphe propos|e9| |e0| l&apos;utilisateur
+	&apos; Dans notre cas, le document commencera souvent par un Titre1
+	
+	&apos; Remplacement du style de paragraphe
+	Curseur = Doc.createSearchDescriptor
+	Curseur.SearchString = &quot;Titre1&quot;
+	Trouve = Doc.findFirst(Curseur)	
+	
+	IF (NOT isNull(Trouve)) THEN
+	
+		Trouve.setPropertyValue(&quot;ParaStyleName&quot;, &quot;TitreNiveau1&quot;)
+		&apos; la valeur de PageDescName effectue un saut de page et affecte
+		&apos; ce style a la nouvelle page
+		Trouve.setPropertyValue(&quot;PageDescName&quot;, &quot;PageCourante&quot;)
+	
+		&apos; Remplacement du texte
+		Curseur = Doc.createReplaceDescriptor
+		Curseur.SearchString = &quot;Titre1&quot;
+		Curseur.ReplaceString = &quot;&quot;
+	
+		Doc.replaceAll(Curseur)
+
+	END IF
+	
+	IF (ChampPremierParametrage.Content = &quot;vrai&quot;) THEN
+		ChampPremierParametrage.Content = &quot;faux&quot;
+		
+		PrevenirMacro()
+		Correction()
+		PositionnerCadres()
+	END IF
+	
+	&apos; Actualiser les champs du document
+	dispatcher.executeDispatch(Frame, &quot;.uno:UpdateFields&quot;, &quot;&quot;, 0, Array())
+                       
+END SUB
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction d&apos;affichage de la fenetre de prevention de l&apos;usage des macros dans
+&apos;  le document. Mettre les informations importantes pour l&apos;utilisateur dedans
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB PrevenirMacro
+
+	DIM xDlgPrevention AS OBJECT
+	DIM LblPrevention AS OBJECT
+
+	&apos; Chargement de la librairie de dialogues
+	DialogLibraries.LoadLibrary(&quot;Standard&quot;)
+	
+	&apos; Creation de la boite de dialogue
+	xDlgPrevention = createUNODialog(DialogLibraries.Standard.DlgPrevention)
+	xDlgPrevention.setTitle(&quot;Assistant de cr|e9|ation de compte-rendu de TP&quot;)
+
+	&apos; Recuperation du label de prevention
+	LblPrevention = xDlgPrevention.getControl(&quot;LblPrevention&quot;)
+	
+	LblPrevention.Text = _
+	   &quot;MACRO A L&apos;OUVERTURE :&quot;+Chr(10)+Chr(10)+_
+	   &quot;    Du fait d&apos;un bug de OOo corrig|e9| |e0| partir de la version 1.1.4, la macro &quot;+_
+	   &quot;&quot;&quot;RemettreChapitres&quot;&quot; s&apos;ex|e9|cute lors de chaque ouverture d&apos;un fichier &quot;+_
+	   &quot;cr|e9||e9| avec ce mod|e8|le pour remettre la num|e9|rotation des chapitres en place.&quot;+_
+	   Chr(10)+Chr(10)+_
+	   &quot;    Pensez |e0| la modifier si vous changer votre num|e9|rotation de chapitres.&quot;+_
+	   chr(10)+Chr(10)+Chr(10)+_
+	   &quot;MACRO A L&apos;ENREGISTREMENT :&quot;+Chr(10)+Chr(10)+_
+	   &quot;    A l&apos;enregistrement, une macro de d|e9|tection des TitreAnnexe est lanc|e9|e. Elle &quot;+_
+	   &quot;met les num|e9|rotations manquantes des annexes.&quot;+Chr(10)
+	   
+    xDlgPrevention.execute()
+    
+    xDlgPrevention.dispose()
+
+END SUB
+
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos; Fonction de mise a jour de l&apos;etat apres un changement de la ComboBox BoxEtat
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB ChangerEtat (Event AS OBJECT)
+	
+	&apos; Variables pointant sur le document, le frame affich|e9| et le dispatcher
+    &apos; Qui mets les champs a jour.
+  	DIM Doc, Frame, Dispatcher AS OBJECT
+  	
+  	&apos; Variables de manipulation des Champs de texte Variables
+	DIM EnumChampTexte AS OBJECT
+	DIM ChampTexte AS OBJECT
+                    
+  	&apos; Recuperation du document
+	Doc = ThisComponent
+	Frame = Doc.CurrentController.Frame
+	Dispatcher = createUnoService(&quot;com.sun.star.frame.DispatchHelper&quot;) 
+
+
+    &apos; Recupere les champs variables
+	EnumChampTexte = Doc.getTextFields.createEnumeration
+
+	SwitchDraftLivrable(Event.Source.getText())
+
+	DO WHILE (EnumChampTexte.hasMoreElements())
+	
+	  ChampTexte = EnumChampTexte.nextElement()
+	  
+	  IF (ChampTexte.supportsService(&quot;com.sun.star.text.TextField.SetExpression&quot;)) THEN
+	  
+		IF (ChampTexte.getPropertyValue(&quot;VariableName&quot;) = &quot;Etat&quot;) THEN
+			
+			&apos; Changement du champ Etat imprime
+			IF (ChampTexte.getPropertyValue(&quot;Content&quot;) = &quot;En Cours&quot;) THEN
+			
+			
+			END IF
+			
+			ChampTexte.setPropertyValue(&quot;Content&quot;, Event.Source.getText)
+			EXIT DO
+			
+		END IF
+			
+	  END IF
+	
+	LOOP
+	
+	&apos; Remise a jour des champs
+	Dispatcher.executeDispatch(Frame, &quot;.uno:UpdateFields&quot;, &quot;&quot;, 0, Array())
+
+END SUB
+
+
+
+
+
+&apos;-------------------------------------------------------------------------------
+&apos;
+&apos;  Fonction qui permet de passer d&apos;une presentation sous forme de draft a celle
+&apos;  de livrable et inversement.
+&apos;
+&apos;-------------------------------------------------------------------------------
+SUB SwitchDraftLivrable (FuturEtat AS STRING)
+	StylesPage = ThisComponent.getStyleFamilies().getByName(&quot;PageStyles&quot;)
+	
+	IF (FuturEtat = &quot;En Cours&quot;) THEN
+		Couleur = 14736621  &apos; Gris-Bleu Clair
+	ELSE
+		Couleur = 16777215  &apos; Blanc
+	END IF
+	
+	PageCourante = StylesPage.getByName(&quot;PageCourante&quot;)
+	PageCourante.BackColor = Couleur
+	
+	Introduction = StylesPage.getByName(&quot;Introduction&quot;)
+	Introduction.BackColor = Couleur
+	
+	PageEntete = StylesPage.getByName(&quot;PageEntete&quot;)
+	PageEntete.BackColor = Couleur
+	
+END SUB
+</script:module>

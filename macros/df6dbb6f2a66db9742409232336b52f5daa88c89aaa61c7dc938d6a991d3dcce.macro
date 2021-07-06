@@ -1,0 +1,1288 @@
+Attribute VB_Name = "Module1"
+'**********************************************************************
+' Copyright(c) Information Resources, Inc.  All Rights Reserved.
+'**********************************************************************
+' Author   :  Greg Miller
+' Created  :  June 2017 (v09112017-1111)
+' Overview :  Build code for Hersheys Report 36
+' Modified :
+'**********************************************************************
+Option Explicit
+Const sUOsheet = "Executive Summary Pull"
+Const sUOsheetcopy = "rawdatacopy"
+Const sAdmin = "admin"
+Const sWip = "wip"
+Const sTempSum = "TEMPLATE-Summary"
+Const sTempSumMars = "TEMPLATE-Summary-Mars"
+Const sTempDet = "TEMPLATE-Detail"
+Const sIRI_UO_WS = "IRI_UO_WorkspaceStorage"
+Const sRemoveStringFromTotal = "Seasonal and Total Non-Seasonal"
+Const sTopPct = 90
+
+Sub produceFinalReport()
+Dim sSubName As String
+Dim StartTime As Date
+Dim FinishTime As Date
+Dim LengthOfTime As Date
+'Dim sCurrSheet As String
+'Dim rCurrCell As Range
+Dim iLastDataCol As Integer
+Dim lLastDataRow As Long
+Dim lFirstProdRow As Long
+Dim lLastProdRow As Long
+Dim iLastWipCol As Integer
+Dim lLastWipRow As Long
+Dim lWipRow As Long
+Dim lItemCt As Long
+'Dim key As Variant
+Dim dGeogs As Dictionary 'Need to add reference MICROSOFT RUNTIME SCRIPTING for Dictionary object
+Dim dGeogSheetName As Dictionary
+Dim iNumGeogs As Integer
+Dim dDecomps As Dictionary
+Dim iNumDecomps As Integer
+Dim iCol As Integer
+Dim lDataRow As Integer
+Dim sCurrGeog As String
+Dim sCurrDecomp As String
+Dim sCurrPacktype As String
+Dim sTime1 As String
+Dim sTime2 As String
+Dim sTime3 As String
+Dim sTime4 As String
+Dim sCatShr As Single
+Dim iTimeCt As Integer
+Dim iPackTypeNum As Integer
+Dim iDecompNum As Integer
+Dim iDecompCt As Integer
+Dim bFoundHershey As Boolean
+Dim lRowNum As Long
+Dim iOffsetRows As Integer
+Dim sMsg As String
+Dim lFirstSortRow As Long
+
+sTime1 = Sheets(sAdmin).Cells(1, 28).Value '(AB1)
+sTime2 = Sheets(sAdmin).Cells(2, 28).Value '(AB2)
+sTime3 = Sheets(sAdmin).Cells(3, 28).Value '(AB3)
+sTime4 = Sheets(sAdmin).Cells(4, 28).Value '(AB4)
+
+Const iGeogCol = 1
+Const iDecompCol = 2
+Const iPacktypeCol = 4
+Const iFirstDataRow = 2
+Const iL52WkDolSalesCol = 23 'W
+
+StartTime = Time()
+sSubName = "produceSummaryAndDetail"
+On Error GoTo ErrHandler
+
+Application.Cursor = xlWait
+Application.DisplayAlerts = False
+Application.ScreenUpdating = False
+Application.StatusBar = "Producing Summary and Detail Sheets..."
+
+'capture current sheet and cell
+'sCurrSheet = ActiveSheet.Name
+'Set rCurrCell = ActiveCell
+
+'delete all summary and detail sheets
+UnhideAllSheets
+DeletePreviousSheets
+
+'clearing of sWip and sUOsheetcopy sheets done in DeletePreviousSheets sub
+'dsgjm 08252017 - copy data from sUOsheet to sUOsheetcopy so we can remove rows w/o fear of corrupting UO report definition
+Sheets(sUOsheet).Select
+iLastDataCol = Cells(1, Cells.Columns.Count).End(xlToLeft).Column
+lLastDataRow = Cells(Cells.Rows.Count, 1).End(xlUp).Row
+Range(Cells(1, 1), Cells(lLastDataRow, iLastDataCol)).Copy
+Cells(1, 1).Select
+
+Sheets(sUOsheetcopy).Select
+'Cells(1, 1).Select
+'ActiveSheet.Paste
+Sheets(sUOsheetcopy).Cells(1, 1).PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+'Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+Application.CutCopyMode = False
+Cells(1, 1).Select
+
+'delete rows where 52 week dollar sales is not > 0
+For lRowNum = lLastDataRow To 2 Step -1
+ If (Not (Cells(lRowNum, iL52WkDolSalesCol).Value > 0) Or Not (IsNumeric(Cells(lRowNum, iL52WkDolSalesCol).Value))) Then
+  'Cells(lRowNum, iL52WkDolSalesCol).Select
+  Rows(lRowNum).Delete
+ End If
+Next lRowNum
+
+'reset lLastDataRow after deleting rows
+lLastDataRow = Cells(Cells.Rows.Count, 1).End(xlUp).Row
+
+'set geog and decomp arrays
+'geogs
+iCol = iGeogCol
+'Set dGeogs = New Dictionary
+Set dGeogs = Col2UniqueArray(Sheets(sUOsheetcopy).Range(Cells(iFirstDataRow, iCol), Cells(lLastDataRow, iCol)))
+iNumGeogs = dGeogs.Count
+Debug.Print "NumGeogs:<" & iNumGeogs & ">"
+
+'reports geogs as they are ordered in data file
+For lItemCt = 0 To (iNumGeogs - 1)
+ dGeogs(dGeogs.Keys(lItemCt)) = 4 'next row for data placement on geog detail sheet
+ Debug.Print "Geog: <" & lItemCt & "> : <" & dGeogs.Keys(lItemCt) & "> : <" & dGeogs(dGeogs.Keys(lItemCt)) & ">"
+Next lItemCt
+
+'decomps
+iCol = iDecompCol
+Set dDecomps = Col2UniqueArray(Sheets(sUOsheetcopy).Range(Cells(iFirstDataRow, iCol), Cells(lLastDataRow, iCol)))
+iNumDecomps = dDecomps.Count
+Debug.Print "NumDecomps:<" & iNumDecomps & ">"
+
+For lItemCt = 0 To (iNumDecomps - 1)
+ Select Case lItemCt
+  Case 0:
+   dDecomps(dDecomps.Keys(lItemCt)) = 7 'next row for data placement for particular decomp on summary sheet
+  Case 1:
+   dDecomps(dDecomps.Keys(lItemCt)) = 9 'next row for data placement for particular decomp on summary sheet
+  Case 2:
+   dDecomps(dDecomps.Keys(lItemCt)) = 11 'next row for data placement for particular decomp on summary sheet
+ End Select
+
+ Debug.Print "Decomp: <" & lItemCt & "> : <" & dDecomps.Keys(lItemCt) & "> : <" & dDecomps(dDecomps.Keys(lItemCt)) & ">"
+Next lItemCt
+
+'start processing UO data sheet
+'1) copy data section to wip sheet in order to determine top sTopPct of manufacturers create All Other aggregate
+'2) copy data from wip sheet to detail sheet (and summary sheet if necessary)
+sCurrGeog = ""
+sCurrDecomp = ""
+sCurrPacktype = ""
+iPackTypeNum = 0
+
+'create new summary sheet based off sTempSum sheet
+Sheets(sTempSum).Select
+Sheets(sTempSum).Copy Before:=Sheets(sUOsheet)
+ActiveSheet.Name = "Summary"
+
+Cells(4, 2).Value = sTime1
+Cells(4, 7).Value = sTime2
+Cells(4, 12).Value = sTime3
+Cells(4, 17).Value = sTime4
+
+Sheets(sUOsheetcopy).Select
+For lDataRow = 2 To lLastDataRow
+ 'Application.StatusBar = "Processing data in Unify Office report on " & sUOsheetcopy & ": row<" & lDataRow & " of " & lLastDataRow & ">"
+
+ 'populate current values
+ 'new geography
+ If (sCurrGeog <> Sheets(sUOsheetcopy).Cells(lDataRow, iGeogCol).Value) Then
+  'Sheets(sUOsheetcopy).Select
+  sCurrGeog = Sheets(sUOsheetcopy).Cells(lDataRow, iGeogCol).Value
+  sCurrDecomp = Sheets(sUOsheetcopy).Cells(lDataRow, iDecompCol).Value
+  iDecompNum = 1
+  iPackTypeNum = 1
+  sCurrPacktype = Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value
+  lFirstProdRow = lDataRow
+  iOffsetRows = 1
+
+  'create new geog sheet based off sTempDet sheet
+  Sheets(sTempDet).Select
+  Sheets(sTempDet).Copy Before:=Sheets(sUOsheet)
+
+  'dsgjm 08302017 - add "hash" to contain actual sheet name for sCurrGeog
+  Set dGeogSheetName = New Dictionary
+  dGeogSheetName(sCurrGeog) = GeogSheetName(sCurrGeog)
+  ActiveSheet.Name = dGeogSheetName(sCurrGeog)
+  Cells(1, 2).Value = sCurrGeog
+  Cells(2, 2).Value = sTime1
+  Cells(2, 7).Value = sTime2
+  Cells(2, 12).Value = sTime3
+  Cells(2, 17).Value = sTime4
+
+  'dsgjm 06192017 add link to summary sheet
+  ActiveSheet.Hyperlinks.Add Anchor:=Cells(3, 1), Address:="", SubAddress:="'Summary'!A5", TextToDisplay:="Summary"
+  Cells(3, 1).Font.Italic = True
+
+  Sheets(sUOsheetcopy).Select
+
+ 'new decomp
+ ElseIf (sCurrDecomp <> Sheets(sUOsheetcopy).Cells(lDataRow, iDecompCol).Value) Then
+  'Sheets(sUOsheetcopy).Select
+  sCurrDecomp = Sheets(sUOsheetcopy).Cells(lDataRow, iDecompCol).Value
+  iDecompNum = iDecompNum + 1
+  iPackTypeNum = 1
+  sCurrPacktype = Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value
+  lFirstProdRow = lDataRow
+  iOffsetRows = 1
+
+ 'new packtype
+ ElseIf (sCurrPacktype <> Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value) Then
+  'Sheets(sUOsheetcopy).Select
+  sCurrPacktype = Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value
+  iPackTypeNum = iPackTypeNum + 1
+  lFirstProdRow = lDataRow
+  iOffsetRows = 1
+ End If
+
+ Application.StatusBar = "Processing Unify Office report: row<" & lDataRow & " of " & lLastDataRow & ">" '& " <Geog:" & sCurrGeog & "> <Decomp:" & sCurrDecomp & "> <Packtype:" & sCurrPacktype & ">"
+
+ 'determine new decomp is next
+ If (sCurrDecomp <> Sheets(sUOsheetcopy).Cells(lDataRow + 1, iDecompCol).Value) Then
+  iOffsetRows = 2
+ End If
+
+ If ((sCurrPacktype <> Sheets(sUOsheetcopy).Cells(lDataRow + 1, iPacktypeCol).Value) Or (lDataRow = lLastDataRow)) Then
+  lLastProdRow = lDataRow
+
+  Sheets(sUOsheetcopy).Select
+  Range(Cells(lFirstProdRow, 1), Cells(lLastProdRow, iLastDataCol)).Select
+  Range(Cells(lFirstProdRow, 1), Cells(lLastProdRow, iLastDataCol)).Copy
+  Cells(1, 1).Select
+
+  Sheets(sWip).Select
+  'Cells(1, 1).Select
+  'ActiveSheet.Paste
+  Sheets(sWip).Cells(1, 1).PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+  'Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+  Application.CutCopyMode = False
+
+  'dsgjm(09112017)-for Total Seasonal and Total Non-Seasonal, Total Seasonal, and Total Non-Seasonal CMG lines change share of parent to 100 and ya change to 0
+  'share and ya change columns are: H&I (8&9), N&O(14&15), T&U(20&21), Z&AA (26&27)
+  'if Combined Packtype Value is empty then you are in a total decomp
+  If Cells(1, 4) = "" Then
+   Cells(1, 8).Value = 100
+   Cells(1, 9).Value = 0
+
+   Cells(1, 14).Value = 100
+   Cells(1, 15).Value = 0
+
+   Cells(1, 20).Value = 100
+   Cells(1, 21).Value = 0
+
+   Cells(1, 26).Value = 100
+   Cells(1, 27).Value = 0
+  End If
+
+  'Sheets(sWip).Select
+  'delete Geog, Decomp, and Custom Combined Packtype columns from data copied to sheet wip since they are no longer needed.
+  'Range("A:B,D:D,J:J,P:P,V:V").Select
+  Range("A:B,D:D,J:J,P:P,V:V").Delete Shift:=xlToLeft
+  Cells(1, 1).Select
+
+  'iLastWipCol = Cells(1, Cells.Columns.Count).End(xlToLeft).Column
+  iLastWipCol = iLastDataCol - 6
+  lLastWipRow = Cells(Cells.Rows.Count, 1).End(xlUp).Row
+
+  'dsgjm 06192017 change - remove all instances of CMG in product names
+  Range(Cells(1, 1), Cells(lLastWipRow, 1)).Replace What:="CMG ", Replacement:="", LookAt:=xlPart, SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, ReplaceFormat:=False
+  Range(Cells(1, 1), Cells(lLastWipRow, 1)).Replace What:="CMG", Replacement:="", LookAt:=xlPart, SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, ReplaceFormat:=False
+
+  'dsgjm 06192017 change - move hershey row to be first manufacturer of each packtype section
+  bFoundHershey = False
+  lRowNum = 1
+  lFirstSortRow = 2
+  While ((bFoundHershey = False) And (lRowNum <= (lLastWipRow - 1)))
+   lRowNum = lRowNum + 1
+
+   If InStr(1, LCase(Cells(lRowNum, 1).Value), "hershey") Then
+    bFoundHershey = True
+    lFirstSortRow = 3
+
+    'move hershey to row #2 if not already there
+    If (lRowNum <> 2) Then
+     Rows(lRowNum).Cut
+     Selection.Cut
+     Rows("2:2").Insert Shift:=xlDown
+    End If
+   End If
+  Wend
+
+  'sort data in descending order based on L52 Dollar sales (col Q)
+  Worksheets("wip").Sort.SortFields.Clear
+  Worksheets("wip").Sort.SortFields.Add key:=Range(Cells(lFirstSortRow, 17), Cells(lLastWipRow, 17)), SortOn:=xlSortOnValues, Order:=xlDescending, DataOption:=xlSortNormal
+  With Worksheets("wip").Sort
+   .SetRange Range(Cells(lFirstSortRow, 1), Cells(lLastWipRow, iLastWipCol))
+   .Header = False
+   .MatchCase = False
+   .Orientation = xlTopToBottom
+   .SortMethod = xlPinYin
+   .Apply
+  End With
+
+  'determine manufactures which make up top sTopPct of manufacturers based on latest 52 week dollar share
+  Const iShrCol = 20 '(col t)
+  sCatShr = 0
+  'following excludes Hershey from top % if exists in packtype
+  'lWipRow = lFirstSortRow - 1
+  'folling includes all manufactures...
+  lWipRow = 1
+  While ((lWipRow < lLastWipRow) And (sCatShr < sTopPct))
+   lWipRow = lWipRow + 1
+   sCatShr = sCatShr + Cells(lWipRow, iShrCol).Value
+  Wend
+
+  'if any, remove manufactures making up bottom %
+  'moved bottom % down for QCing
+  'Rows(lWipRow + 1).Select
+  'Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+  'Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+  'Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+
+  If ((lWipRow + 1) < lLastWipRow) Then
+   Range(Cells(lWipRow + 1, 1), Cells(lLastWipRow, iLastWipCol)).Clear
+  End If
+
+  'create custom agg of bottom %
+  Cells(lWipRow + 1, 1).Value = Cells(1, 1).Value & " All Other"
+
+  Const iNumMeas = 5
+  For iTimeCt = 1 To 4
+   'Dollar Sales
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 2).FormulaR1C1 = "=R[-" & lWipRow & "]C-SUM(R[-" & lWipRow - 1 & "]C:R[-1]C)"
+
+   'Dollar Sales Change vs YA
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 3).FormulaR1C1 = "=R[-" & lWipRow & "]C-SUM(R[-" & lWipRow - 1 & "]C:R[-1]C)"
+
+   'Dollar Sales %Change vs YA
+   'Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 4).FormulaR1C1 = "=RC[-1]/(RC[-2]-RC[-1])"
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 4).FormulaR1C1 = "=iferror(RC[-1]/(RC[-2]-RC[-1]),"""")"
+
+   'Dollar Share of Parent
+   'Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 5).FormulaR1C1 = "=RC[-3]/R[-" & lWipRow & "]C[-3]*100"
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 5).FormulaR1C1 = "=iferror(RC[-3]/R[-" & lWipRow & "]C[-3]*100,"""")"
+
+   'Dollar Share of Parent Change vs YA
+   'Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 6).FormulaR1C1 = "=RC[-1] - ((RC[-4]-RC[-3])/(R[-" & lWipRow & "]C[-4]-R[-" & lWipRow & "]C[-3])*100)"
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 6).FormulaR1C1 = "=iferror(RC[-1] - ((RC[-4]-RC[-3])/(R[-" & lWipRow & "]C[-4]-R[-" & lWipRow & "]C[-3])*100),"""")"
+  Next iTimeCt
+
+  lLastWipRow = Cells(Cells.Rows.Count, 1).End(xlUp).Row
+
+  'copy data to geog detail sheet
+  Range(Cells(1, 1), Cells(lLastWipRow, iLastWipCol)).Select
+  Range(Cells(1, 1), Cells(lLastWipRow, iLastWipCol)).Copy
+
+  Sheets(dGeogSheetName(sCurrGeog)).Select
+  Cells(dGeogs(sCurrGeog), 1).Select
+  Sheets(dGeogSheetName(sCurrGeog)).Cells(dGeogs(sCurrGeog), 1).PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+  Application.CutCopyMode = False
+
+  'clear out wip sheet
+  Sheets(sWip).Cells.Clear
+
+  'format data
+  Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+  Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+  With Selection.Borders(xlEdgeLeft)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlEdgeTop)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlEdgeBottom)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlEdgeRight)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlInsideVertical)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlInsideHorizontal)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+
+  'format top row in section
+  Range(Cells(dGeogs(sCurrGeog), 1), Cells(dGeogs(sCurrGeog), iLastWipCol)).Select
+  Range(Selection, Selection.End(xlToRight)).Select
+  With Selection.Font
+   .Name = "Comic Sans MS"
+   .Size = 11
+   .Bold = True
+  End With
+
+  'tweak product name for first in new decomp section
+  If (iPackTypeNum = 1) Then
+   'Cells(dGeogs(sCurrGeog), 1).Value = Trim(Replace(sCurrDecomp, sRemoveStringFromTotal, "")) & " - " & Cells(dGeogs(sCurrGeog), 1).Value
+   'dsgjm 06192017 change
+   Cells(dGeogs(sCurrGeog), 1).Value = Trim(Replace(sCurrDecomp, sRemoveStringFromTotal, "")) '& " - " & Cells(dGeogs(sCurrGeog), 1).Value
+  End If
+
+  'format other rows section
+  Range(Cells(dGeogs(sCurrGeog) + 1, 1), Cells(dGeogs(sCurrGeog) + (lLastWipRow - 1), iLastWipCol)).Select
+  With Selection.Font
+   .Name = "Comic Sans MS"
+   .Size = 10
+   .Bold = False
+  End With
+
+  'center numbers
+  Range(Cells(dGeogs(sCurrGeog), 2), Cells(dGeogs(sCurrGeog) + (lLastWipRow - 1), iLastWipCol)).Select
+  With Selection
+   .HorizontalAlignment = xlCenter
+  End With
+
+  'highlight hershey row
+  bFoundHershey = False
+  lRowNum = dGeogs(sCurrGeog) - 1
+  While ((bFoundHershey = False) And (lRowNum <= dGeogs(sCurrGeog) + (lLastWipRow - 1)))
+   lRowNum = lRowNum + 1
+
+   If InStr(1, LCase(Cells(lRowNum, 1).Value), "hershey") Then
+    bFoundHershey = True
+    With Range(Cells(lRowNum, 1), Cells(lRowNum, iLastWipCol)).Interior
+     .Pattern = xlSolid
+     .PatternColorIndex = xlAutomatic
+     '.Color = 65535
+     .Color = 10092543
+     .TintAndShade = 0
+     .PatternTintAndShade = 0
+    End With
+
+    'move hershey to row #2
+    'Rows(lRowNum).Cut
+    'Selection.Cut
+    'Rows("2:2").Insert Shift:=xlDown
+
+    'for first Packtype of each geog, copy hershey row to summary sheet and replace prod value with geog value (col a)
+    If iPackTypeNum = 1 Then
+     Debug.Print sCurrDecomp & "<" & dDecomps(sCurrDecomp) & ">"
+     Range(Cells(lRowNum, 1), Cells(lRowNum, iLastWipCol)).Copy
+
+     Sheets("Summary").Select
+     Cells(dDecomps(sCurrDecomp), 1).Select
+     Sheets("Summary").Cells(dDecomps(sCurrDecomp), 1).PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+
+     With Selection.Borders(xlEdgeLeft)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlEdgeTop)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlEdgeBottom)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlEdgeRight)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlInsideVertical)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+
+     Sheets("Summary").Cells(dDecomps(sCurrDecomp), 1).Value = sCurrGeog
+     'dsgjm 06192017 change
+     Sheets("Summary").Hyperlinks.Add Anchor:=Cells(dDecomps(sCurrDecomp), 1), Address:="", SubAddress:="'" & dGeogSheetName(sCurrGeog) & "'!A3", TextToDisplay:=sCurrGeog
+     'dDecomps(sCurrDecomp) = dDecomps(sCurrDecomp) + 1
+
+     For iDecompCt = (iDecompNum - 1) To (dDecomps.Count - 1)
+      Debug.Print iDecompCt & "<" & dDecomps(dDecomps.Keys(iDecompCt)) & ">"
+      dDecomps(dDecomps.Keys(iDecompCt)) = dDecomps(dDecomps.Keys(iDecompCt)) + 1
+      Debug.Print iDecompCt & "<" & dDecomps(dDecomps.Keys(iDecompCt)) & ">"
+     Next
+
+     Sheets("Summary").Rows(dDecomps(sCurrDecomp)).Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+     Sheets(dGeogSheetName(sCurrGeog)).Select
+    End If
+   End If
+  Wend
+
+  'add offsets to new next row numbers...
+  dGeogs(sCurrGeog) = dGeogs(sCurrGeog) + lLastWipRow + iOffsetRows
+
+  Cells(3, 1).Select
+ End If
+Next lDataRow
+'#############################################################################################################################################################################
+
+For lItemCt = 0 To (iNumDecomps - 1)
+ Select Case lItemCt
+  Case 0:
+   dDecomps(dDecomps.Keys(lItemCt)) = 7 'next row for data placement for particular decomp on summary sheet
+  Case 1:
+   dDecomps(dDecomps.Keys(lItemCt)) = 9 'next row for data placement for particular decomp on summary sheet
+  Case 2:
+   dDecomps(dDecomps.Keys(lItemCt)) = 11 'next row for data placement for particular decomp on summary sheet
+ End Select
+
+ Debug.Print "Mars Decomp: <" & lItemCt & "> : <" & dDecomps.Keys(lItemCt) & "> : <" & dDecomps(dDecomps.Keys(lItemCt)) & ">"
+Next lItemCt
+
+'start processing UO data sheet
+'1) copy data section to wip sheet in order to determine top sTopPct of manufacturers create All Other aggregate
+'2) copy data from wip sheet to detail sheet (and summary sheet if necessary)
+sCurrGeog = ""
+sCurrDecomp = ""
+sCurrPacktype = ""
+iPackTypeNum = 0
+
+
+'create new summary sheet based off sTempSum sheet
+Sheets(sTempSumMars).Select
+Sheets(sTempSumMars).Copy Before:=Sheets(sUOsheet)
+ActiveSheet.Name = "Summary-Mars"
+
+Cells(4, 2).Value = sTime1
+Cells(4, 7).Value = sTime2
+Cells(4, 12).Value = sTime3
+Cells(4, 17).Value = sTime4
+
+Sheets(sUOsheetcopy).Select
+For lDataRow = 2 To lLastDataRow
+ 'Application.StatusBar = "Processing data in Unify Office report on " & sUOsheetcopy & ": row<" & lDataRow & " of " & lLastDataRow & ">"
+
+ 'populate current values
+ 'new geography
+ If (sCurrGeog <> Sheets(sUOsheetcopy).Cells(lDataRow, iGeogCol).Value) Then
+  'Sheets(sUOsheetcopy).Select
+  sCurrGeog = Sheets(sUOsheetcopy).Cells(lDataRow, iGeogCol).Value
+  sCurrDecomp = Sheets(sUOsheetcopy).Cells(lDataRow, iDecompCol).Value
+  iDecompNum = 1
+  iPackTypeNum = 1
+  sCurrPacktype = Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value
+  lFirstProdRow = lDataRow
+  iOffsetRows = 1
+
+  'create new geog sheet based off sTempDet sheet
+  Sheets(sTempDet).Select
+  Sheets(sTempDet).Copy Before:=Sheets(sUOsheet)
+
+  'dsgjm 08302017 - add "hash" to contain actual sheet name for sCurrGeog
+  Set dGeogSheetName = New Dictionary
+  dGeogSheetName(sCurrGeog) = GeogSheetName(sCurrGeog)
+  ActiveSheet.Name = dGeogSheetName(sCurrGeog)
+  Cells(1, 2).Value = sCurrGeog
+  Cells(2, 2).Value = sTime1
+  Cells(2, 7).Value = sTime2
+  Cells(2, 12).Value = sTime3
+  Cells(2, 17).Value = sTime4
+
+  'dsgjm 06192017 add link to summary sheet
+  ActiveSheet.Hyperlinks.Add Anchor:=Cells(3, 1), Address:="", SubAddress:="'Summary-Mars'!A5", TextToDisplay:="Summary"
+  Cells(3, 1).Font.Italic = True
+
+  Sheets(sUOsheetcopy).Select
+
+ 'new decomp
+ ElseIf (sCurrDecomp <> Sheets(sUOsheetcopy).Cells(lDataRow, iDecompCol).Value) Then
+  'Sheets(sUOsheetcopy).Select
+  sCurrDecomp = Sheets(sUOsheetcopy).Cells(lDataRow, iDecompCol).Value
+  iDecompNum = iDecompNum + 1
+  iPackTypeNum = 1
+  sCurrPacktype = Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value
+  lFirstProdRow = lDataRow
+  iOffsetRows = 1
+
+ 'new packtype
+ ElseIf (sCurrPacktype <> Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value) Then
+  'Sheets(sUOsheetcopy).Select
+  sCurrPacktype = Sheets(sUOsheetcopy).Cells(lDataRow, iPacktypeCol).Value
+  iPackTypeNum = iPackTypeNum + 1
+  lFirstProdRow = lDataRow
+  iOffsetRows = 1
+ End If
+
+ Application.StatusBar = "Processing Unify Office report: row<" & lDataRow & " of " & lLastDataRow & ">" '& " <Geog:" & sCurrGeog & "> <Decomp:" & sCurrDecomp & "> <Packtype:" & sCurrPacktype & ">"
+
+ 'determine new decomp is next
+ If (sCurrDecomp <> Sheets(sUOsheetcopy).Cells(lDataRow + 1, iDecompCol).Value) Then
+  iOffsetRows = 2
+ End If
+
+ If ((sCurrPacktype <> Sheets(sUOsheetcopy).Cells(lDataRow + 1, iPacktypeCol).Value) Or (lDataRow = lLastDataRow)) Then
+  lLastProdRow = lDataRow
+
+  Sheets(sUOsheetcopy).Select
+  Range(Cells(lFirstProdRow, 1), Cells(lLastProdRow, iLastDataCol)).Select
+  Range(Cells(lFirstProdRow, 1), Cells(lLastProdRow, iLastDataCol)).Copy
+  Cells(1, 1).Select
+
+  Sheets(sWip).Select
+  'Cells(1, 1).Select
+  'ActiveSheet.Paste
+  Sheets(sWip).Cells(1, 1).PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+  'Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+  Application.CutCopyMode = False
+
+  'dsgjm(09112017)-for Total Seasonal and Total Non-Seasonal, Total Seasonal, and Total Non-Seasonal CMG lines change share of parent to 100 and ya change to 0
+  'share and ya change columns are: H&I (8&9), N&O(14&15), T&U(20&21), Z&AA (26&27)
+  'if Combined Packtype Value is empty then you are in a total decomp
+  If Cells(1, 4) = "" Then
+   Cells(1, 8).Value = 100
+   Cells(1, 9).Value = 0
+
+   Cells(1, 14).Value = 100
+   Cells(1, 15).Value = 0
+
+   Cells(1, 20).Value = 100
+   Cells(1, 21).Value = 0
+
+   Cells(1, 26).Value = 100
+   Cells(1, 27).Value = 0
+  End If
+
+  'Sheets(sWip).Select
+  'delete Geog, Decomp, and Custom Combined Packtype columns from data copied to sheet wip since they are no longer needed.
+  'Range("A:B,D:D,J:J,P:P,V:V").Select
+  Range("A:B,D:D,J:J,P:P,V:V").Delete Shift:=xlToLeft
+  Cells(1, 1).Select
+
+  'iLastWipCol = Cells(1, Cells.Columns.Count).End(xlToLeft).Column
+  iLastWipCol = iLastDataCol - 6
+  lLastWipRow = Cells(Cells.Rows.Count, 1).End(xlUp).Row
+
+  'dsgjm 06192017 change - remove all instances of CMG in product names
+  Range(Cells(1, 1), Cells(lLastWipRow, 1)).Replace What:="CMG ", Replacement:="", LookAt:=xlPart, SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, ReplaceFormat:=False
+  Range(Cells(1, 1), Cells(lLastWipRow, 1)).Replace What:="CMG", Replacement:="", LookAt:=xlPart, SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, ReplaceFormat:=False
+
+  'dsgjm 06192017 change - move hershey row to be first manufacturer of each packtype section
+  bFoundHershey = False
+  lRowNum = 1
+  lFirstSortRow = 2
+  While ((bFoundHershey = False) And (lRowNum <= (lLastWipRow - 1)))
+   lRowNum = lRowNum + 1
+
+   If InStr(1, LCase(Cells(lRowNum, 1).Value), "mars/wrigley") Then
+    bFoundHershey = True
+    lFirstSortRow = 3
+
+    'move hershey to row #2 if not already there
+    If (lRowNum <> 2) Then
+     Rows(lRowNum).Cut
+     Selection.Cut
+     Rows("2:2").Insert Shift:=xlDown
+    End If
+   End If
+  Wend
+
+  'sort data in descending order based on L52 Dollar sales (col Q)
+  Worksheets("wip").Sort.SortFields.Clear
+  Worksheets("wip").Sort.SortFields.Add key:=Range(Cells(lFirstSortRow, 17), Cells(lLastWipRow, 17)), SortOn:=xlSortOnValues, Order:=xlDescending, DataOption:=xlSortNormal
+  With Worksheets("wip").Sort
+   .SetRange Range(Cells(lFirstSortRow, 1), Cells(lLastWipRow, iLastWipCol))
+   .Header = False
+   .MatchCase = False
+   .Orientation = xlTopToBottom
+   .SortMethod = xlPinYin
+   .Apply
+  End With
+
+  'determine manufactures which make up top sTopPct of manufacturers based on latest 52 week dollar share
+  '(col t)
+  sCatShr = 0
+  'following excludes Hershey from top % if exists in packtype
+  'lWipRow = lFirstSortRow - 1
+  'folling includes all manufactures...
+  lWipRow = 1
+  While ((lWipRow < lLastWipRow) And (sCatShr < sTopPct))
+   lWipRow = lWipRow + 1
+   sCatShr = sCatShr + Cells(lWipRow, iShrCol).Value
+  Wend
+
+  'if any, remove manufactures making up bottom %
+  'moved bottom % down for QCing
+  'Rows(lWipRow + 1).Select
+  'Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+  'Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+  'Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+
+  If ((lWipRow + 1) < lLastWipRow) Then
+   Range(Cells(lWipRow + 1, 1), Cells(lLastWipRow, iLastWipCol)).Clear
+  End If
+
+  'create custom agg of bottom %
+  Cells(lWipRow + 1, 1).Value = Cells(1, 1).Value & " All Other"
+
+  For iTimeCt = 1 To 4
+   'Dollar Sales
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 2).FormulaR1C1 = "=R[-" & lWipRow & "]C-SUM(R[-" & lWipRow - 1 & "]C:R[-1]C)"
+
+   'Dollar Sales Change vs YA
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 3).FormulaR1C1 = "=R[-" & lWipRow & "]C-SUM(R[-" & lWipRow - 1 & "]C:R[-1]C)"
+
+   'Dollar Sales %Change vs YA
+   'Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 4).FormulaR1C1 = "=RC[-1]/(RC[-2]-RC[-1])"
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 4).FormulaR1C1 = "=iferror(RC[-1]/(RC[-2]-RC[-1]),"""")"
+
+   'Dollar Share of Parent
+   'Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 5).FormulaR1C1 = "=RC[-3]/R[-" & lWipRow & "]C[-3]*100"
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 5).FormulaR1C1 = "=iferror(RC[-3]/R[-" & lWipRow & "]C[-3]*100,"""")"
+
+   'Dollar Share of Parent Change vs YA
+   'Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 6).FormulaR1C1 = "=RC[-1] - ((RC[-4]-RC[-3])/(R[-" & lWipRow & "]C[-4]-R[-" & lWipRow & "]C[-3])*100)"
+   Cells(lWipRow + 1, ((iTimeCt - 1) * iNumMeas) + 6).FormulaR1C1 = "=iferror(RC[-1] - ((RC[-4]-RC[-3])/(R[-" & lWipRow & "]C[-4]-R[-" & lWipRow & "]C[-3])*100),"""")"
+  Next iTimeCt
+
+  lLastWipRow = Cells(Cells.Rows.Count, 1).End(xlUp).Row
+
+  'copy data to geog detail sheet
+  Range(Cells(1, 1), Cells(lLastWipRow, iLastWipCol)).Select
+  Range(Cells(1, 1), Cells(lLastWipRow, iLastWipCol)).Copy
+
+  Sheets(dGeogSheetName(sCurrGeog)).Select
+  Cells(dGeogs(sCurrGeog), 1).Select
+  Sheets(dGeogSheetName(sCurrGeog)).Cells(dGeogs(sCurrGeog), 1).PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+  Application.CutCopyMode = False
+
+  'clear out wip sheet
+  Sheets(sWip).Cells.Clear
+
+  'format data
+  Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+  Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+  With Selection.Borders(xlEdgeLeft)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlEdgeTop)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlEdgeBottom)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlEdgeRight)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlInsideVertical)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+  With Selection.Borders(xlInsideHorizontal)
+   .LineStyle = xlContinuous
+   .ColorIndex = xlAutomatic
+   .TintAndShade = 0
+   .Weight = xlThin
+  End With
+
+  'format top row in section
+  Range(Cells(dGeogs(sCurrGeog), 1), Cells(dGeogs(sCurrGeog), iLastWipCol)).Select
+  Range(Selection, Selection.End(xlToRight)).Select
+  With Selection.Font
+   .Name = "Comic Sans MS"
+   .Size = 11
+   .Bold = True
+  End With
+
+  'tweak product name for first in new decomp section
+  If (iPackTypeNum = 1) Then
+   'Cells(dGeogs(sCurrGeog), 1).Value = Trim(Replace(sCurrDecomp, sRemoveStringFromTotal, "")) & " - " & Cells(dGeogs(sCurrGeog), 1).Value
+   'dsgjm 06192017 change
+   Cells(dGeogs(sCurrGeog), 1).Value = Trim(Replace(sCurrDecomp, sRemoveStringFromTotal, "")) '& " - " & Cells(dGeogs(sCurrGeog), 1).Value
+  End If
+
+  'format other rows section
+  Range(Cells(dGeogs(sCurrGeog) + 1, 1), Cells(dGeogs(sCurrGeog) + (lLastWipRow - 1), iLastWipCol)).Select
+  With Selection.Font
+   .Name = "Comic Sans MS"
+   .Size = 10
+   .Bold = False
+  End With
+
+  'center numbers
+  Range(Cells(dGeogs(sCurrGeog), 2), Cells(dGeogs(sCurrGeog) + (lLastWipRow - 1), iLastWipCol)).Select
+  With Selection
+   .HorizontalAlignment = xlCenter
+  End With
+
+  'highlight hershey row
+  bFoundHershey = False
+  lRowNum = dGeogs(sCurrGeog) - 1
+  While ((bFoundHershey = False) And (lRowNum <= dGeogs(sCurrGeog) + (lLastWipRow - 1)))
+   lRowNum = lRowNum + 1
+
+   If InStr(1, LCase(Cells(lRowNum, 1).Value), "mars/wrigley") Then
+    bFoundHershey = True
+    With Range(Cells(lRowNum, 1), Cells(lRowNum, iLastWipCol)).Interior
+     .Pattern = xlSolid
+     .PatternColorIndex = xlAutomatic
+     '.Color = 65535
+     .Color = 10092543
+     .TintAndShade = 0
+     .PatternTintAndShade = 0
+    End With
+
+    'move hershey to row #2
+    'Rows(lRowNum).Cut
+    'Selection.Cut
+    'Rows("2:2").Insert Shift:=xlDown
+
+    'for first Packtype of each geog, copy hershey row to summary sheet and replace prod value with geog value (col a)
+    If iPackTypeNum = 1 Then
+     Debug.Print sCurrDecomp & "<" & dDecomps(sCurrDecomp) & ">"
+     Range(Cells(lRowNum, 1), Cells(lRowNum, iLastWipCol)).Copy
+
+     Sheets("Summary-Mars").Select
+     Cells(dDecomps(sCurrDecomp), 1).Select
+     Sheets("Summary-Mars").Cells(dDecomps(sCurrDecomp), 1).PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+
+     With Selection.Borders(xlEdgeLeft)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlEdgeTop)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlEdgeBottom)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlEdgeRight)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+     With Selection.Borders(xlInsideVertical)
+      .LineStyle = xlContinuous
+      .ColorIndex = xlAutomatic
+      .TintAndShade = 0
+      .Weight = xlThin
+     End With
+
+     Sheets("Summary-Mars").Cells(dDecomps(sCurrDecomp), 1).Value = sCurrGeog
+     'dsgjm 06192017 change
+     Sheets("Summary-Mars").Hyperlinks.Add Anchor:=Cells(dDecomps(sCurrDecomp), 1), Address:="", SubAddress:="'" & dGeogSheetName(sCurrGeog) & "'!A3", TextToDisplay:=sCurrGeog
+     'dDecomps(sCurrDecomp) = dDecomps(sCurrDecomp) + 1
+
+     For iDecompCt = (iDecompNum - 1) To (dDecomps.Count - 1)
+      Debug.Print iDecompCt & "<" & dDecomps(dDecomps.Keys(iDecompCt)) & ">"
+      dDecomps(dDecomps.Keys(iDecompCt)) = dDecomps(dDecomps.Keys(iDecompCt)) + 1
+      Debug.Print iDecompCt & "<" & dDecomps(dDecomps.Keys(iDecompCt)) & ">"
+     Next
+
+     Sheets("Summary-Mars").Rows(dDecomps(sCurrDecomp)).Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+     Sheets(dGeogSheetName(sCurrGeog)).Select
+    End If
+   End If
+  Wend
+
+  'add offsets to new next row numbers...
+  dGeogs(sCurrGeog) = dGeogs(sCurrGeog) + lLastWipRow + iOffsetRows
+
+  Cells(3, 1).Select
+ End If
+Next lDataRow
+'###########################################################################################################################################################################################
+
+'reselect original sheet
+'Sheets(sCurrSheet).Select
+'rCurrCell.Select
+
+HideSheets
+Sheets("Summary").Select
+Columns("A:A").EntireColumn.AutoFit
+If Columns("A:A").ColumnWidth > 80 Then Columns("A:A").ColumnWidth = 80
+Cells(5, 1).Select
+
+Application.ScreenUpdating = True
+Application.DisplayAlerts = True
+Application.StatusBar = "Ready"
+Application.Cursor = xlDefault
+
+FinishTime = Time()
+LengthOfTime = FinishTime - StartTime
+Debug.Print "" & Format(LengthOfTime, "hh:mm:ss") & " --- Total run time"
+
+'MsgBox "Sucessfully created Summary sheet and a Detail sheet for each Geography", vbInformation, "IRI: Report creation complete"
+sMsg = Format(LengthOfTime, "hh:mm:ss") & " --- Total run time" & Chr(13) & "Sucessfully created worksheet:" & Chr(13)
+sMsg = sMsg & " - Summary" & Chr(13)
+sMsg = sMsg & " - Summary-Mars" & Chr(13) & Chr(13)
+sMsg = sMsg & "As well as Detail Sheets for the following geographies:" & Chr(13)
+For lItemCt = 0 To (iNumGeogs - 1)
+ sMsg = sMsg & " - " & dGeogs.Keys(lItemCt) & Chr(13) 'GeogSheetName(dGeogs.Keys(lItemCt)) & Chr(13)
+Next lItemCt
+MsgBox sMsg, vbInformation, "IRI: Report creation complete"
+
+
+Call changeFont
+
+Exit Sub
+
+ErrHandler:
+ HideSheets
+ Application.ScreenUpdating = True
+ Application.DisplayAlerts = True
+ Application.StatusBar = "Ready"
+ Application.Cursor = xlDefault
+ 'Application.PrintCommunication = True
+ MsgBox sSubName & ":" & Err.Description, vbCritical, sSubName & " Error"
+End Sub
+Function GeogSheetName(ByVal sGeog As String) As String
+Dim bWorksheetExists As Boolean
+Dim iGeogCt As Integer
+
+sGeog = Replace(sGeog, "[", "")
+sGeog = Replace(sGeog, "]", "")
+sGeog = Replace(sGeog, "{", "")
+sGeog = Replace(sGeog, "}", "")
+sGeog = Replace(sGeog, "|", "")
+sGeog = Replace(sGeog, "\", "")
+sGeog = Replace(sGeog, "/", "")
+sGeog = Replace(sGeog, "*", "")
+sGeog = Replace(sGeog, "&", "")
+sGeog = Replace(sGeog, "?", "")
+sGeog = Replace(sGeog, ":", "")
+sGeog = Replace(sGeog, "'", "")
+sGeog = Replace(sGeog, "<", "")
+sGeog = Replace(sGeog, ">", "")
+sGeog = Replace(sGeog, ",", "")
+sGeog = Replace(sGeog, ".", "")
+sGeog = Replace(sGeog, """", "")
+sGeog = Replace(sGeog, " ", "")
+sGeog = Left(sGeog, 29)
+
+bWorksheetExists = Evaluate("ISREF('" & sGeog & "'!A1)")
+If (bWorksheetExists = True) Then
+ iGeogCt = 2
+ While (Evaluate("ISREF('" & sGeog & iGeogCt & "'!A1)"))
+  iGeogCt = iGeogCt + 1
+ Wend
+ GeogSheetName = sGeog & iGeogCt
+Else
+ GeogSheetName = sGeog
+End If
+
+End Function
+
+Function Col2UniqueArray(rng As Range) As Dictionary
+Dim dElements As Dictionary 'Need to add reference MICROSOFT RUNTIME SCRIPTING for Dictionary object
+'Dim dOrdered As Dictionary
+Dim cell As Range
+Dim lCt As Long
+
+lCt = 0
+'Set dOrdered = New Dictionary
+Set dElements = New Dictionary
+
+For Each cell In rng.Cells
+ If Not dElements.Exists(cell.Value) Then
+  lCt = lCt + 1
+  dElements.Add cell.Value, 0
+  'dOrdered.Add lCt, cell.Value
+ End If
+Next
+
+'Set Col2UniqueArray = dOrdered
+Set Col2UniqueArray = dElements
+End Function
+
+Private Sub UnhideAllSheets()
+Dim lNum As Long
+
+For lNum = 1 To ActiveWorkbook.Sheets.Count
+  Sheets(lNum).Visible = True
+Next lNum
+End Sub
+
+Private Sub HideSheets()
+ Sheets(sUOsheetcopy).Visible = False
+ Sheets(sWip).Visible = False
+ Sheets(sTempSum).Visible = False
+ Sheets(sTempSumMars).Visible = False
+ Sheets(sTempDet).Visible = False
+ Sheets(sIRI_UO_WS).Visible = False
+End Sub
+
+Private Sub DeletePreviousSheets()
+Dim lNum As Long
+
+For lNum = ActiveWorkbook.Sheets.Count To 1 Step -1
+ If (Sheets(lNum).Name = sUOsheetcopy) Then Sheets(lNum).Cells.Clear
+ If (Sheets(lNum).Name = sWip) Then Sheets(lNum).Cells.Clear
+
+ If ((Sheets(lNum).Name <> sAdmin) And _
+     (Sheets(lNum).Name <> sUOsheet) And _
+     (Sheets(lNum).Name <> sUOsheetcopy) And _
+     (Sheets(lNum).Name <> sWip) And _
+     (Sheets(lNum).Name <> sTempSum) And _
+     (Sheets(lNum).Name <> sTempSumMars) And _
+     (Sheets(lNum).Name <> sTempDet) And _
+     (Sheets(lNum).Name <> sIRI_UO_WS)) Then
+  Sheets(lNum).Delete
+ End If
+Next lNum
+End Sub
+
+Private Sub changeFont()
+  'format all cells in workbook
+  
+  Application.DisplayAlerts = False
+  Sheets("TotalUS-MultiOutlet+Conv2").Delete
+  Sheets("TotalUS-Food2").Delete
+  Sheets("TotalUS-Drug2").Delete
+  Sheets("TotalUS-Conv2").Delete
+  Sheets("WalmartCorp-RMA-Walmart2").Delete
+  Sheets("CVSCorpTotal-RMA-Drug2").Delete
+  Sheets("WBACorp-RMA-Drug2").Delete
+  Sheets("RiteAidTotalCorp-RMA-Drug2").Delete
+  Sheets("WawaCorp-RMA-Conv2").Delete
+  Sheets("CircleKCorpTotal-RMA-Conv2").Delete
+  
+  Worksheets("Summary-Mars").Move After:=Worksheets("Summary")
+  
+  On Error Resume Next
+  Dim WS As Worksheet
+  For Each WS In ThisWorkbook.Worksheets
+    WS.Activate
+    Cells.Select
+        With Selection.Font
+            .Name = "Calibri"
+        End With
+    Range("A1").Select
+    Next WS
+  Worksheets("Summary").Select
+  On Error GoTo 0
+  
+End Sub
+
+
+Attribute VB_Name = "Sheet01"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet02"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet03"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet04"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet05"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet06"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet07"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet08"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet09"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "Label24, 4, 60, MSForms, Label"
+Attribute VB_Control = "Label25, 5, 61, MSForms, Label"
+Attribute VB_Control = "Label26, 6, 62, MSForms, Label"
+Attribute VB_Control = "Label27, 7, 63, MSForms, Label"
+Attribute VB_Control = "Label28, 8, 64, MSForms, Label"
+Attribute VB_Control = "Label34, 77, 65, MSForms, Label"
+Attribute VB_Control = "Label35, 78, 66, MSForms, Label"
+Attribute VB_Control = "Label47, 79, 67, MSForms, Label"
+Attribute VB_Control = "Label6, 87, 68, MSForms, Label"
+Attribute VB_Control = "Label7, 88, 69, MSForms, Label"
+Attribute VB_Control = "Label8, 89, 70, MSForms, Label"
+Attribute VB_Control = "Label1, 99, 71, MSForms, Label"
+Attribute VB_Name = "Sheet10"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet11"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet12"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet13"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet14"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet15"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet16"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet17"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet18"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet19"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+'  't7
+
+INQUEST-PP=macro

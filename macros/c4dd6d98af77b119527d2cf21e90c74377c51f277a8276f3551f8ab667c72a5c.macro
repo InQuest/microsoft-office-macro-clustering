@@ -1,0 +1,439 @@
+Attribute VB_Name = "GUIDUtils"
+Option Explicit
+
+' Read this value from Registry where installer put it.
+
+Private Const P4FOROFFICE_KEY = "Software\Perforce\P4OFC"
+Private Const P4COMADDIN_VALUE = "P4ComAddin"
+
+' Taken from Microsoft Knowledge Base:
+' http://support.microsoft.com/support/kb/articles/q145/6/79.asp?FR=0
+
+Private Const REG_SZ As Long = 1
+Private Const REG_DWORD As Long = 4
+
+Private Const HKEY_CLASSES_ROOT = &H80000000
+Private Const HKEY_CURRENT_USER = &H80000001
+Private Const HKEY_LOCAL_MACHINE = &H80000002
+Private Const HKEY_USERS = &H80000003
+
+Private Const ERROR_NONE = 0
+Private Const ERROR_BADDB = 1
+Private Const ERROR_BADKEY = 2
+Private Const ERROR_CANTOPEN = 3
+Private Const ERROR_CANTREAD = 4
+Private Const ERROR_CANTWRITE = 5
+Private Const ERROR_OUTOFMEMORY = 6
+Private Const ERROR_ARENA_TRASHED = 7
+Private Const ERROR_ACCESS_DENIED = 8
+Private Const ERROR_INVALID_PARAMETERS = 87
+Private Const ERROR_NO_MORE_ITEMS = 259
+
+Private Const KEY_QUERY_VALUE = &H1
+Private Const KEY_SET_VALUE = &H2
+Private Const KEY_ALL_ACCESS = &H3F
+
+Private Const REG_OPTION_NON_VOLATILE = 0
+
+Declare Function RegCloseKey Lib "advapi32.dll" _
+    (ByVal hKey As Long) As Long
+Declare Function RegCreateKeyEx Lib "advapi32.dll" Alias _
+    "RegCreateKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, _
+    ByVal Reserved As Long, ByVal lpClass As String, ByVal dwOptions _
+    As Long, ByVal samDesired As Long, ByVal lpSecurityAttributes _
+    As Long, phkResult As Long, lpdwDisposition As Long) As Long
+Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias _
+    "RegOpenKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, _
+    ByVal ulOptions As Long, ByVal samDesired As Long, phkResult As _
+    Long) As Long
+Declare Function RegQueryValueExString Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, ByVal lpData _
+    As String, lpcbData As Long) As Long
+Declare Function RegQueryValueExLong Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, lpData As _
+    Long, lpcbData As Long) As Long
+Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, ByVal lpData _
+    As Long, lpcbData As Long) As Long
+Declare Function RegSetValueExString Lib "advapi32.dll" Alias _
+    "RegSetValueExA" (ByVal hKey As Long, ByVal lpValueName As String, _
+    ByVal Reserved As Long, ByVal dwType As Long, ByVal lpValue As _
+    String, ByVal cbData As Long) As Long
+Declare Function RegSetValueExLong Lib "advapi32.dll" Alias _
+    "RegSetValueExA" (ByVal hKey As Long, ByVal lpValueName As String, _
+    ByVal Reserved As Long, ByVal dwType As Long, lpValue As Long, _
+    ByVal cbData As Long) As Long
+
+Public Function SetValueEx(ByVal hKey As Long, sValueName As String, _
+                            lType As Long, vValue As Variant) As Long
+       Dim lValue As Long
+       Dim sValue As String
+       Select Case lType
+           Case REG_SZ
+               sValue = vValue & Chr$(0)
+               SetValueEx = RegSetValueExString(hKey, sValueName, 0&, _
+                                              lType, sValue, Len(sValue))
+           Case REG_DWORD
+               lValue = vValue
+               SetValueEx = RegSetValueExLong(hKey, sValueName, 0&, _
+                                                lType, lValue, 4)
+           End Select
+End Function
+
+Function QueryValueEx(ByVal lhKey As Long, ByVal szValueName As String, _
+                    vValue As Variant) As Long
+       Dim cch As Long
+       Dim lrc As Long
+       Dim lType As Long
+       Dim lValue As Long
+       Dim sValue As String
+
+       On Error GoTo QueryValueExError
+
+       ' Determine the size and type of data to be read
+       lrc = RegQueryValueExNULL(lhKey, szValueName, 0&, lType, 0&, cch)
+       If lrc <> ERROR_NONE Then Error 5
+
+       Select Case lType
+           ' For strings
+           Case REG_SZ:
+               sValue = VBA.String(cch, 0)
+
+               lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, _
+                                        sValue, cch)
+               If lrc = ERROR_NONE Then
+                   vValue = VBA.Left$(sValue, cch - 1)
+               Else
+                   vValue = Empty
+               End If
+               
+           ' For DWORDS
+           Case REG_DWORD:
+                lrc = RegQueryValueExLong(lhKey, szValueName, 0&, lType, _
+                                        lValue, cch)
+                If lrc = ERROR_NONE Then vValue = lValue
+                
+           Case Else
+               'all other data types not supported
+               lrc = -1
+       End Select
+
+QueryValueExExit:
+       QueryValueEx = lrc
+       Exit Function
+
+QueryValueExError:
+       Resume QueryValueExExit
+End Function
+
+Private Function CreateNewKey(sNewKeyName As String, lPredefinedKey As Long) As Long
+    ' e.g.      CreateNewKey "TestKey\SubKey1\SubKey2", HKEY_LOCAL_MACHINE
+
+    Dim hNewKey As Long         'handle to the new key
+    Dim result As Long         'result of the RegCreateKeyEx function
+
+    result = RegCreateKeyEx(lPredefinedKey, sNewKeyName, 0&, _
+                    vbNullString, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, _
+                    0&, hNewKey, result)
+    RegCloseKey (hNewKey)
+    CreateNewKey = result
+End Function
+
+Private Function QueryValue(sKeyName As String, sValueName As String) As Long
+    Dim result As Long         'result of the API functions
+    Dim hKey As Long         'handle of opened key
+    Dim vValue As Variant      'setting of queried value
+    
+    result = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, _
+                           KEY_QUERY_VALUE, hKey)
+    If result = 0 Then
+        result = QueryValueEx(hKey, sValueName, vValue)
+        If result = 0 Then
+            MsgBox vValue
+        End If
+    End If
+    RegCloseKey (hKey)
+    QueryValue = result
+End Function
+
+'A call of:
+'
+'   SetKeyValue "TestKey\SubKey1", "StringValue", "Hello", REG_SZ
+'
+Private Function SetKeyValue(sKeyName As String, sValueName As String, _
+        vValueSetting As Variant, lValueType As Long) As Long
+    Dim result As Long         'result of the SetValueEx function
+    Dim hKey As Long         'handle of open key
+
+    'open the specified key
+    result = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, _
+                              KEY_SET_VALUE, hKey)
+    If result = 0 Then
+        result = SetValueEx(hKey, sValueName, lValueType, vValueSetting)
+    End If
+    RegCloseKey (hKey)
+    SetKeyValue = result
+End Function
+
+'--------------------------------------
+' A couple of application specific functions - could be generalised!
+
+Public Function GetP4ComAddinGUID() As String
+   
+    On Error Resume Next
+    Dim result As Long         'result of the API functions
+    Dim hKey As Long         'handle of opened key
+    Dim vValue As Variant      'setting of queried value
+    
+    result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, P4FOROFFICE_KEY, 0, _
+                           KEY_QUERY_VALUE, hKey)
+    If result = 0 Then
+        result = QueryValueEx(hKey, P4COMADDIN_VALUE, vValue)
+        If result = 0 Then
+            GetP4ComAddinGUID = CStr(vValue)
+        End If
+    End If
+
+    If GetP4ComAddinGUID = "" Then
+        MsgBox "Error finding Registry value for P4ComAddin DLL", vbExclamation + vbOKOnly
+    End If
+    
+Exit_Proc:
+    RegCloseKey (hKey)
+    
+End Function
+
+Attribute VB_Name = "P4Project"
+'Option Explicit
+
+' This is required for Office 97 integration
+'
+' Copyright (c) 2000,2001 Vaccaperna Systems Ltd
+'
+' Project specific file
+
+' Interface to all P4ComAddin functions
+Public g_p4interface As Object
+
+Private Const strCLSID_P4PROJECT As String = "{CC076C6D-5B68-48f9-B0FF-0D270B4BD4C5}"
+
+Public Sub p4ofc_CheckInterface()
+
+    If g_p4interface Is Nothing Then
+        Set g_p4interface = CoGetClassObject( _
+                CLSIDFromString(strCLSID_P4PROJECT), _
+                CLSCTX_INPROC_SERVER Or CLSCTX_LOCAL_SERVER, 0, _
+                IIDFromString(strIID_IDispatch))
+    End If
+
+End Sub
+
+Public Sub p4ofc_check_project(pj As MSProject.Project)
+    On Error GoTo Error_Block
+    p4ofc_CheckInterface
+    If pj Is Nothing Then Exit Sub
+    g_p4interface.P4Project_CheckFile
+    Exit Sub
+Error_Block:
+    Exit Sub
+End Sub
+
+
+Attribute VB_Name = "ThisProject"
+Attribute VB_Base = "0{1019A320-508A-11CF-A49D-00AA00574C74}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+' This is required for P4OFC integration with MSProject
+'
+' Copyright (c) 2000-2004 Vaccaperna Systems Ltd
+'
+' MSProject specific file
+
+' This routine traps this project being opened and does installation
+Private Sub project_open(ByVal pj As MSProject.Project)
+    install_p4ofc
+End Sub
+
+Public Sub install_p4ofc()
+    
+    p4project_CheckGlobalReferences
+    InstallModule "P4Project", vbext_ct_StdModule
+    InstallProjectOpen
+    Application.Quit pjSave
+
+End Sub
+
+Public Sub InstallProjectOpen()
+    Dim code As String
+    Dim newsub As String
+    Dim newline As String
+    Dim startline As Long
+    
+    Dim cQuote As String
+    cQuote = VBA.Chr$(34)
+    
+
+    newsub = "Sub project_open(ByVal"
+    newline = "p4ofc_check_project pj"
+    
+    startline = 1
+    With Application.VBE.VBProjects(1).VBComponents(1).CodeModule
+        If Not .Find(newsub, 1, 1, .CountOfLines, 9999) Then
+            .InsertLines 1, "Private " & newsub & " pj As MSProject.Project)" & vbCrLf & _
+                "    " & newline & vbCrLf & _
+                "End Sub" & vbCrLf
+        ElseIf Not .Find(newline, startline, 1, .CountOfLines, 9999) Then
+            .InsertLines 1 + .ProcBodyLine("project_open", vbext_pk_Proc), _
+                "    " & newline & vbCrLf
+        End If
+    End With
+
+End Sub
+
+Private Sub InstallModule(module As String, modtype As vbext_ComponentType)
+    Dim cp As MSProject.Project
+    Dim code As String
+    Dim i As Integer
+    Dim bFound As Boolean
+    Dim cm As VBComponent
+    Set cp = Application.ActiveProject
+    
+    With ThisProject.VBProject.VBComponents(module).CodeModule
+        code = .Lines(1, .CountOfLines)
+    End With
+    
+    With Application.VBE.VBProjects(1)
+        For i = 1 To .VBComponents.Count
+            If .VBComponents(i).Name = module Then
+                Exit Sub
+            End If
+        Next
+        Set cm = .VBComponents.Add(modtype)
+        cm.Name = module
+        cm.CodeModule.InsertLines 1, code
+    End With
+    
+End Sub
+
+Private Function StripFilePart(ByVal path As String)
+    While VBA.Right$(path, 1) <> "\" And Len(path) >= 1
+        path = VBA.Left$(path, Len(path) - 1)
+    Wend
+    StripFilePart = path
+End Function
+
+' Check if appropriate references (to DLL) are set up, and if not, then do so.
+Sub p4project_CheckGlobalReferences()
+    On Error GoTo Error_Block
+    Dim bRef As Boolean
+    Dim GUIDFilename As String
+    Dim TypeFilename As String
+    
+    GUIDFilename = GetP4ComAddinGUID()
+    TypeFilename = StripFilePart(GUIDFilename)
+    Debug.Print "Got GUID: " & GUIDFilename
+    bRef = p4project_CheckGlobalReference("P4ComAddin", "", GUIDFilename)
+    bRef = p4project_CheckGlobalReference("P4OFCVBTypes", "", TypeFilename & "p4ofcvbtypes.tlb")
+    Exit Sub
+    
+Error_Block:
+    Resume Next
+    
+End Sub
+
+' Check if appropriate references (to DLL) are set up, and if not, then do so.
+Function p4project_CheckGlobalReference(ByVal RefName As String, Optional ByVal GUID As String = "", Optional ByVal GUIDFilename As String = "") As Boolean
+    Dim p As VBProject
+    Dim r, p4r
+    Dim s As String
+    Dim bFound As Boolean
+    Dim bBroken As Boolean
+    Dim bDoneSomething As Boolean
+    Dim Progress As String
+    
+    On Error GoTo Error_Block
+    
+    Progress = "Checking references"
+    bFound = False
+    bBroken = False
+    bDoneSomething = False
+    
+    Set p = Application.VBE.VBProjects(1)   ' Global project
+    For Each r In p.References
+        s = s & " " & r.Name
+        If r.Name = RefName Then
+            bFound = True
+            If r.IsBroken Then
+                s = s & " (broken)"
+                Set p4r = r
+                bBroken = True
+            End If
+        End If
+    Next
+
+    Progress = "Checked references"
+
+    Debug.Print "References: " & s
+    
+    If bBroken Then
+        Progress = "Removing reference"
+        bDoneSomething = True
+        Debug.Print Progress
+        p.References.Remove p4r
+    Else
+        Progress = "Reference not broken"
+        Debug.Print Progress
+    End If
+    
+    ' Re-add if necessary
+    If Not bFound Or bBroken Then
+        Progress = "Adding reference"
+        bDoneSomething = True
+        Debug.Print Progress
+
+        If GUID <> "" Then
+            p.References.AddFromGuid GUID, 1, 0
+        Else
+            p.References.AddFromFile GUIDFilename
+        End If
+        
+        Progress = "Checking references again"
+        Debug.Print Progress
+        s = ""
+        For Each r In p.References
+            s = s & " " & r.Name
+        Next
+    
+        Debug.Print "New References: " & s
+    
+    End If
+    
+    Progress = "Exiting sub"
+    
+    p4project_CheckGlobalReference = bDoneSomething
+    
+    Exit Function
+    
+Error_Block:
+    ' Removed output of error messages as they didn't seem to help and just caused
+    ' concern to users!
+    'MsgBox "Error occurred trying to update references - if this persists then contact Robert!" & vbCrLf & _
+    '    Progress & " - Error:" & Err.Number & Err.Description
+    Resume Next
+    
+End Function
+
+
+
+
+
+INQUEST-PP=macro

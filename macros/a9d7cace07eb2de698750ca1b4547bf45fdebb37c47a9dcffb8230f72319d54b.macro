@@ -1,0 +1,692 @@
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Attribute VB_Name = "Modul1"
+Option Explicit
+
+' Dieser Quelltext unterliegt der GNU GENERAL PUBLIC LICENSE, Version 2, June 1991
+' Matthias Stolte
+
+
+Const CColsPerMonth = 4          'Wie viele Spalten pro Monat?
+Const CFeiertagsspalte = 2       'In welcher Spalte sollen die Feiertagsbenennungen eingetragen werden?
+Const CKWSpalte = 3              'In welcher Spalte eines Monats sollen die Kalenderwochen eingetragen werden? Z|fffd|hlung beginnt bei 1.
+Const CZyklusSpalte = 4          'Wo ist die Spalte mit den zyklischen Eintr|fffd|gen?
+
+
+Const CKWSize = 8                ' G|fffd||fffd|e der Schrift f|fffd|r die Zelle mit der KW
+Const CKWStr = ". W"             ' Text, der nach der Zahl der KW angeh|fffd|ngt wird
+
+Const CZeileErsterDesMonats = 2  ' In welcher Zeile soll jeweils der Erste des Monats eingetragen werden? Mu|fffd| gr|fffd||fffd|er als 1 sein.
+
+
+
+' *********************** interne "Variablen" ***********************
+Const CTitleMsgBox = "Kalendererstellung v7 vom 12.06.02"
+
+Const CFeiertageTableName = "Feiertage" ' Wie hei|fffd|t die Tabelle mit den Feiertagen?
+Const CFormatCellRange = "B1" ' Wo ist die Zelle mit der Format-Vorgabe? (f|fffd|r Tabelle "Feiertage" sowie "Schulferien"
+Const CSchulferienTableName = "Schulferien"
+Const CZyklischeEintraegeTableName = "zyklische Eintr|fffd|ge"
+Const CInfoTableName = "Infos"
+
+Const CZyklischeEintraegeRowBegin = 3 ' In welcher Zeile beginnen die Daten?
+Const CZyklischeEintraegeColKennbuchstabe = 3 ' In welcher Spalte befinden sich die Kennbuchstaben?
+
+
+
+Sub macheKalender()
+Attribute macheKalender.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim Kalenderjahr As Integer
+
+  If Not CheckHelpTables() Then Exit Sub
+  Kalenderjahr = KalenderjahrEinlesen
+  If Kalenderjahr = 0 Then Exit Sub
+  Application.ScreenUpdating = False
+  If KalenderblattEinf|fffd|gen(CStr(Kalenderjahr)) = 0 Then Exit Sub
+  DatumEintragen (Kalenderjahr)
+  KalenderwochenEintragen (Kalenderjahr)
+  SchulferienEintragen (Kalenderjahr)
+  SonntageF|fffd|rben (Kalenderjahr)
+  FeiertageEintragen (Kalenderjahr)
+  ZykischeEintr|fffd|geBehandeln (Kalenderjahr)
+  BeschriftungenEintragen (Kalenderjahr)
+  SpaltenBreitenSetzen (Kalenderjahr)
+  Seiteneinrichtung (Kalenderjahr)
+  Sheets(CStr(Kalenderjahr)).Select
+  ActiveWindow.DisplayGridlines = False
+  Application.ScreenUpdating = True
+  Application.StatusBar = False
+  'MsgBox "Fertig. Vermutlich werden Sie die Spaltenbreiten noch ein wenig anpassen m|fffd|ssen.", , CTitleMsgBox
+End Sub
+    
+    
+Function Check4TableAndComplain(ByVal TableName As String) As Boolean
+  If Not TabelleVorhanden(TableName) Then
+    MsgBox "Die Tabelle |fffd|" & TableName & "|fffd| konnte nicht gefunden werden!", vbOKOnly + vbExclamation, CTitleMsgBox
+    Check4TableAndComplain = False
+  Else
+    Check4TableAndComplain = True
+  End If
+End Function
+
+    
+Function CheckHelpTables() As Boolean
+  Application.StatusBar = "Pr|fffd|fe Hilfstabellen..."
+  CheckHelpTables = False
+  
+  If Not Check4TableAndComplain(CFeiertageTableName) Then GoTo ExitFunction
+  If Not Check4TableAndComplain(CSchulferienTableName) Then GoTo ExitFunction
+  If Not Check4TableAndComplain(CZyklischeEintraegeTableName) Then GoTo ExitFunction
+  
+  CheckHelpTables = True
+ExitFunction:
+  Application.StatusBar = ""
+End Function
+    
+    
+Sub SpaltenBreitenSetzen(ByVal Kalenderjahr As Integer)
+Attribute SpaltenBreitenSetzen.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim ber As Range
+Dim DestTableName As String
+  
+  Application.StatusBar = "Setze Spaltenbreiten..."
+
+  With Worksheets(CStr(Kalenderjahr))
+    AlleMonatsspalten(CFeiertagsspalte, Kalenderjahr).ColumnWidth = 5
+    AlleMonatsspalten(CZyklusSpalte, Kalenderjahr).ColumnWidth = 4
+    ' Autofit macht jetzt der Anwender... ;-)
+    'Set ber = .Range( _
+    '  .Cells(Tag2Zeile(1), Monat2Spalte(1)), _
+    '  .Cells(Tag2Zeile(31), Monat2Spalte(13 * CColsPerMonth)) _
+    '  )
+    '
+    ' ber.EntireColumn.AutoFit
+  End With
+  Application.StatusBar = ""
+End Sub
+    
+Function KalenderjahrEinlesen() As Integer
+Attribute KalenderjahrEinlesen.VB_ProcData.VB_Invoke_Func = " \n14"
+' Liest das Kalenderjahr vom Benutzer ein und gibt es als vierstellige Zahl zur|fffd|ck.
+' Bei Abbruch durch den Benutzer wird 0 zur|fffd|ckgegeben.
+
+Dim s As String
+Dim ok As Boolean
+Dim jahrhundert As Integer
+Dim Kalenderjahr As Integer
+Dim FehlerNummer As Integer
+
+On Error GoTo BeiFehler
+
+  KalenderjahrEinlesen = 0
+  jahrhundert = Int(Year(Date) / 100) * 100
+  s = CStr(Year(Date))
+  
+NochmalEingabe:
+  Do
+    s = InputBox("F|fffd|r welches Jahr? (JJ oder JJJJ)", CTitleMsgBox, s)
+    If s = "" Then Exit Function ' Abbruch durch Benutzer
+    Kalenderjahr = CInt(s)
+    If Kalenderjahr < 100 Then Kalenderjahr = Kalenderjahr + jahrhundert
+    If Kalenderjahr < 1900 Or Kalenderjahr > 9998 Then
+      MsgBox "Das Jahr mu|fffd| zwischen 1900 und 9998 liegen!", vbOKOnly + vbCritical, CTitleMsgBox
+      ok = False
+    Else
+      ok = True
+    End If
+  Loop Until ok
+  KalenderjahrEinlesen = Kalenderjahr
+  Exit Function
+  
+BeiFehler:
+  FehlerNummer = Err
+  If FehlerNummer = 13 Then ' keine Zahl
+    s = "Ung|fffd|ltige Zahleneingabe!"
+  Else
+    s = "Fehler " + CStr(FehlerNummer) + ": " + Error(FehlerNummer)
+  End If
+  MsgBox s, vbOKOnly + vbCritical, CTitleMsgBox
+  GoTo NochmalEingabe
+End Function
+    
+    
+Function TabelleVorhanden(ByVal TabellenName As String) As Boolean
+Attribute TabelleVorhanden.VB_ProcData.VB_Invoke_Func = " \n14"
+' Pr|fffd|ft, ob bereits ein Tabellenblatt mit dem Namen *Name* vorhanden ist
+On Error GoTo nichtvorhanden
+  TabelleVorhanden = Worksheets(TabellenName).Name = TabellenName
+  Exit Function
+nichtvorhanden:
+  TabelleVorhanden = False
+End Function
+    
+    
+
+Function KalenderblattEinf|fffd|gen(ByVal Name As String) As Boolean
+Attribute KalenderblattEinf|fffd|gen.VB_ProcData.VB_Invoke_Func = " \n14"
+' F|fffd|gt ggf. in der aktiven Mappe ein neues Blatt mit dem Namen *Name* ein
+' und gibt TRUE zur|fffd|ck, falls erfolgreich.
+' Falls bereits ein Blatt mit diesem Namen existiert, wird nachgefragt,
+' ob es gel|fffd|scht oder |fffd|berschrieben werden soll.
+' Falls weder ein Tabellenblatt eingef|fffd|gt wurde noch eines mit diesem Namen existiert,
+' wird FALSE zur|fffd|ckgegeben
+
+
+Dim b As Boolean
+Dim last As Integer
+
+
+  KalenderblattEinf|fffd|gen = False
+  If TabelleVorhanden(Name) Then
+    Select Case MsgBox("Es existiert bereits ein Kalenderblatt f|fffd|r " & Name & "!" & vbNewLine & _
+      "Sie k|fffd|nnen das Blatt l|fffd|schen und ein neues anlegen oder das bisherige mit den aktuellen Daten |fffd|berschreiben lassen." & vbNewLine & _
+      vbNewLine & _
+      "Blatt l|fffd|schen?", vbYesNoCancel, CTitleMsgBox)
+      Case vbNo  ' Blatt beibehalten
+        KalenderblattEinf|fffd|gen = True
+        Exit Function
+      Case vbYes ' Blatt rauswerfen:
+        b = Application.DisplayAlerts
+        Application.DisplayAlerts = False
+        Worksheets(Name).Delete
+        Application.DisplayAlerts = b
+        If TabelleVorhanden(Name) Then
+          MsgBox "Konnte das Tabellenblatt '" & Name & "' nicht l|fffd|schen! (Huch?)", vbCritical
+          Exit Function ' L|fffd|schen hat nicht geklappt
+        End If
+      Case Else ' mu|fffd| wohl "Abbrechen" gewesen sein...
+        Exit Function
+    End Select
+  End If
+  For last = 1 To Worksheets.Count
+    If Worksheets(last).Name > Name Then Exit For
+  Next last
+    
+  Worksheets.Add Before:=Worksheets(last)
+  ActiveSheet.Name = Name
+  KalenderblattEinf|fffd|gen = TabelleVorhanden(Name)
+End Function
+    
+    
+  
+Function Monat2Spalte(ByVal Monat As Integer) As Integer
+Attribute Monat2Spalte.VB_ProcData.VB_Invoke_Func = " \n14"
+' Gibt die erste der Spaltennummern zur|fffd|ck, die f|fffd|r *Monat* vorgesehen sind.
+' Die Z|fffd|hlung der Spalten beginnt bei 1.
+  Monat2Spalte = (Monat - 1) * CColsPerMonth + 1
+End Function
+    
+    
+Function Tag2Zeile(ByVal Tag As Integer) As Integer
+Attribute Tag2Zeile.VB_ProcData.VB_Invoke_Func = " \n14"
+' Gibt die Zeilennummer zur|fffd|ck, die f|fffd|r den entsprechenden *Tag* vorgesehen ist.
+' Die Z|fffd|hlung der Zeilen beginnt bei 1.
+  Tag2Zeile = Tag + CZeileErsterDesMonats - 1
+End Function
+    
+Sub LeseFarbe(ByVal TableName, Cell As String, ByRef AColorIndex, APattern, APatternColorIndex As Long)
+  With Worksheets(TableName).Range(Cell).Interior
+    AColorIndex = .ColorIndex
+    APattern = .Pattern
+    APatternColorIndex = .PatternColorIndex
+  End With
+End Sub
+    
+    
+    
+Sub SetzeTagesfarbeVonDatum(ByVal ADate As Date, ByVal Kalenderjahr As Integer, ByVal AColorIndex As Long, ByVal APattern As Long, ByVal APatternColorIndex As Long)
+Dim Tag As Integer, Monat As Integer
+    Tag = Day(ADate)
+    Monat = month(ADate)
+    'SetzeTagesfarbe Day(dat), month(dat), KalenderJahr, AColorIndex, APattern, APatternColorIndex
+    SetzeTagesfarbeVonTagMonat Tag, Monat, Kalenderjahr, AColorIndex, APattern, APatternColorIndex
+
+End Sub
+    
+
+Sub SetzeTagesfarbeVonTagMonat(ByVal Tag As Integer, Monat As Integer, ByVal Kalenderjahr As Integer, ByVal AColorIndex As Long, ByVal APattern As Long, ByVal APatternColorIndex As Long)
+Dim Zeile As Integer, Spalte As Integer
+
+  Zeile = Tag2Zeile(Tag)
+  Spalte = Monat2Spalte(Monat)
+  SetzeTagesfarbeVonZeileSpalte Zeile, Spalte, Kalenderjahr, AColorIndex, APattern, APatternColorIndex
+End Sub
+
+
+Sub SetzeTagesfarbeVonZeileSpalte(ByVal Zeile As Integer, Spalte As Integer, ByVal Kalenderjahr As Integer, ByVal AColorIndex As Long, ByVal APattern As Long, ByVal APatternColorIndex As Long)
+Dim KalenderjahrStr As String
+
+  KalenderjahrStr = CStr(Kalenderjahr)
+  With Worksheets(KalenderjahrStr).Range(Worksheets(KalenderjahrStr).Cells(Zeile, Spalte), Worksheets(KalenderjahrStr).Cells(Zeile, Spalte + CColsPerMonth - 1)).Interior
+    .ColorIndex = AColorIndex
+    .Pattern = APattern
+    .PatternColorIndex = APatternColorIndex
+  End With
+End Sub
+    
+
+Sub SetzeFont(ByVal Zeile As Integer, ByVal Spalte As Integer, ByVal AWorkSheet As Worksheet, AFont As Font, Optional AVerticalAlignment)
+  With AWorkSheet.Cells(Zeile, Spalte)
+    .Font.Name = AFont.Name
+    .Font.Size = AFont.Size
+    .Font.FontStyle = AFont.FontStyle
+    .Font.Color = AFont.Color
+    If Not IsMissing(AVerticalAlignment) Then .VerticalAlignment = AVerticalAlignment
+  End With
+End Sub
+
+
+Sub FeiertageEintragen(ByVal Kalenderjahr As Integer)
+Attribute FeiertageEintragen.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim z As Integer, i As Integer, Monat As Integer, Tag As Integer, AColorIndex As Integer
+Dim APattern As Long, APatternColorIndex As Long
+Dim KalenderjahrStr As String
+Dim DestCol As Integer
+Dim DestRow As Integer
+
+
+
+  Application.StatusBar = "Trage Feiertage ein..."
+  z = SucheJahresZeile(CFeiertageTableName, Kalenderjahr, 1, 1)
+  If z = 0 Then GoTo ExitSub ' f|fffd|r dieses Jahr gibt es keine Feiertage
+  
+  LeseFarbe CFeiertageTableName, CFormatCellRange, AColorIndex, APattern, APatternColorIndex
+  
+  KalenderjahrStr = CStr(Kalenderjahr)
+  i = 2
+  With Worksheets(CFeiertageTableName)
+    While .Cells(z, i) <> ""
+      Tag = Day(.Cells(z, i))
+      Monat = month(.Cells(z, i))
+      DestCol = Monat2Spalte(Monat)
+      DestRow = Tag2Zeile(Tag)
+      
+      SetzeTagesfarbeVonZeileSpalte DestRow, DestCol, Kalenderjahr, AColorIndex, APattern, APatternColorIndex
+      SetzeFont DestRow, DestCol + CFeiertagsspalte - 1, Worksheets(KalenderjahrStr), Worksheets(CFeiertageTableName).Range(CFormatCellRange).Font, xlVAlignCenter
+      Worksheets(KalenderjahrStr).Cells(DestRow, DestCol + CFeiertagsspalte - 1).Value = Worksheets(CFeiertageTableName).Cells(2, i)
+        
+      i = i + 1
+    Wend
+  End With
+ExitSub:
+  Application.StatusBar = ""
+End Sub
+
+Function SucheJahresZeile(ByVal TabellenName As String, ByVal Kalenderjahr, Zeile, Spalte As Integer) As Integer
+' Sucht in der Tabelle mit dem *TabellenName* in der *Spalte* ab ausschlie|fffd|lich *Zeile*
+' nach einer Zelle, die das angegebene *KalenderJahr* enth|fffd|lt und liefert die
+' entsprechende Zeilennummer zur|fffd|ck.
+' Falls keine Zelle gefunden wurde, wird 0 zur|fffd|ckgegeben.
+' Mit der ersten leeren Zelle endet der Suchvorgang
+
+  SucheJahresZeile = 0
+  Do
+    Zeile = Zeile + 1
+    If Worksheets(TabellenName).Cells(Zeile, Spalte) = "" Then Exit Function
+  Loop Until Worksheets(TabellenName).Cells(Zeile, Spalte) = Kalenderjahr
+  SucheJahresZeile = Zeile
+End Function
+
+
+Sub SchulferienEintragen(ByVal Kalenderjahr As Integer)
+Attribute SchulferienEintragen.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim AColorIndex As Integer, z As Integer, i As Integer
+Dim APattern As Long, APatternColorIndex As Long
+Dim dat As Date, EndeDatum As Date
+Dim KalenderjahrStr As String
+
+
+
+  Application.StatusBar = "Trage Schulferien ein..."
+  z = SucheJahresZeile(CSchulferienTableName, Kalenderjahr, 3, 1)
+  If z = 0 Then GoTo ExitSub ' f|fffd|r dieses Jahr gibt es leider keine Schulferien, liebe Kinder...
+  KalenderjahrStr = CStr(Kalenderjahr)
+  
+  LeseFarbe CSchulferienTableName, CFormatCellRange, AColorIndex, APattern, APatternColorIndex
+ 
+ 
+  i = 2 ' Startindex f|fffd|r die Spalte ist Spalte B
+  While Worksheets(CSchulferienTableName).Cells(z, i) <> ""
+    If IsDate(Worksheets(CSchulferienTableName).Cells(z, i)) Then
+      dat = Worksheets(CSchulferienTableName).Cells(z, i)  ' Beginndatum
+      'ggf. auf kleinsten Wert des aktuellen Jahres setzen:
+      If Year(dat) < Kalenderjahr Then dat = CDate("1.1." & Kalenderjahr)
+      If Year(dat) = Kalenderjahr Then ' ansonsten ung|fffd|ltiger Eintrag
+        EndeDatum = Worksheets(CSchulferienTableName).Cells(z, i + 1)
+        While (dat <= EndeDatum) And (Year(dat) = Kalenderjahr)
+          SetzeTagesfarbeVonDatum dat, Kalenderjahr, AColorIndex, APattern, APatternColorIndex
+          dat = dat + 1
+        Wend
+      End If
+    End If
+    i = i + 2 ' Spaltenindex erh|fffd|hen
+  Wend
+ 
+  
+ExitSub:
+  Application.StatusBar = ""
+End Sub
+
+
+Sub KalenderwochenEintragen(ByVal Kalenderjahr As Integer)
+Attribute KalenderwochenEintragen.VB_ProcData.VB_Invoke_Func = " \n14"
+' Aus den Weiten des www:
+'---8<---
+'F|fffd|r die Wochenz|fffd|hlung nach DIN, welche seit 1972 konsequent angewendet
+'wird, gilt folgende Norm: |fffd|Bei der Nummerierung der Kalenderwochen z|fffd|hlt
+'als erste Kalenderwoche eines Kalenderjahres diejenige Woche, in die die
+'ersten vier oder mehr Januartage fallen|fffd|. Die erste Kalenderwoche eines
+'Kalenderjahres ist also diejenige, die den ersten Donnerstag des
+'Kalenderjahres enth|fffd|lt.
+'---8<---
+' Bleibt noch die Frage, mit welchem Wochentag die Woche beginnt: Hier
+' wird *Montag* unterstellt
+
+Dim dat As Date
+Dim kw As Integer
+Dim ber As Range
+Dim s As String
+  
+  Application.StatusBar = "Trage Kalenderwochen ein..."
+ 
+  ' erste Woche ermitteln:
+  dat = CDate("1.1." & Kalenderjahr)
+  While WeekDay(dat) <> vbMonday
+    dat = dat + 1
+  Wend
+ 
+  s = CStr(Kalenderjahr)
+  If dat - CDate("1.1." & Kalenderjahr) < 4 Then kw = 1 Else kw = 2
+  Do
+    With Worksheets(s).Cells(Tag2Zeile(Day(dat)), Monat2Spalte(month(dat)) + CKWSpalte - 1)
+      .Value = kw & CKWStr
+      .Font.Size = CKWSize
+    End With
+    dat = dat + 7
+    kw = kw + 1
+    If kw > 52 Then kw = 1
+  Loop While Year(dat) = Kalenderjahr
+  Set ber = AlleMonatsspalten(CKWSpalte, Kalenderjahr)
+  ber.EntireColumn.AutoFit
+  Application.StatusBar = ""
+End Sub
+
+
+
+Sub SonntageF|fffd|rben(ByVal Kalenderjahr As Integer)
+Attribute SonntageF|fffd|rben.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim dat As Date
+Dim AColorIndex As Integer
+Dim APattern As Long, APatternColorIndex As Long
+ 
+  
+  Application.StatusBar = "F|fffd|rbe Sonntage..."
+  
+  LeseFarbe CFeiertageTableName, CFormatCellRange, AColorIndex, APattern, APatternColorIndex
+  
+  dat = CDate("1.1." & Kalenderjahr)
+  ' ersten Sonntag aufsuchen
+  While WeekDay(dat) <> vbSunday
+    dat = dat + 1
+  Wend
+ 
+ 
+  Do
+    SetzeTagesfarbeVonDatum dat, Kalenderjahr, AColorIndex, APattern, APatternColorIndex
+    dat = dat + 7
+  Loop While Year(dat) = Kalenderjahr
+  Application.StatusBar = ""
+End Sub
+
+
+Sub DatumEintragen(ByVal Kalenderjahr As Integer)
+Attribute DatumEintragen.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim dat As Date
+Dim ber As Range
+Dim s As String
+
+  Application.StatusBar = "Trage Datum ein..."
+
+ 
+  s = CStr(Kalenderjahr)
+  dat = CDate("1.1." & Kalenderjahr)
+  Do   ' diese Schleife l|fffd|uft |fffd|ber 365 oder 366 Tage und tr|fffd|gt diese in die Tabelle *kalenderjahr* ein
+    Worksheets(s).Cells(Tag2Zeile(Day(dat)), Monat2Spalte(month(dat))).Value = dat
+    dat = dat + 1
+  Loop While Year(dat) = Kalenderjahr
+
+  'Bereiche formatieren:
+  Set ber = AlleMonatsspalten(1, Kalenderjahr)
+  With ber
+    .NumberFormat = "TT TTT"
+    .HorizontalAlignment = xlLeft
+    .VerticalAlignment = xlBottom
+    .WrapText = False
+    .Orientation = xlHorizontal
+    .EntireColumn.AutoFit
+  End With
+  Application.StatusBar = ""
+End Sub
+
+
+Function AlleMonatsspalten(ByVal Column, Kalenderjahr As Integer) As Range
+Attribute AlleMonatsspalten.VB_ProcData.VB_Invoke_Func = " \n14"
+' Liefert 12 Spalten aus der Tabelle *Kalenderjahr*,
+
+Dim ber As Range
+Dim Monat As Integer, ZeilenBeginn As Integer, Spalte As Integer
+
+  ZeilenBeginn = Tag2Zeile(1)
+  Column = Column - 1
+  Spalte = Monat2Spalte(1) + Column
+  With Worksheets(CStr(Kalenderjahr))
+    Set ber = .Range(.Cells(ZeilenBeginn, Spalte), .Cells(ZeilenBeginn + 30, Spalte))
+    For Monat = 2 To 12
+      Spalte = Monat2Spalte(Monat) + Column
+      Set ber = Union(ber, .Range(.Cells(ZeilenBeginn, Spalte), .Cells(ZeilenBeginn + 30, Spalte)))
+    Next Monat
+  End With
+  Set AlleMonatsspalten = ber
+End Function
+
+
+Sub BeschriftungenEintragen(Kalenderjahr As Integer)
+Attribute BeschriftungenEintragen.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim ber As Range
+Dim i As Integer, Spalte As Integer
+Dim DestTableName As String
+
+  Application.StatusBar = "Trage Beschriftungen ein..."
+  DestTableName = CStr(Kalenderjahr)
+  With Worksheets(DestTableName)
+    For i = 1 To 12
+      Spalte = (i - 1) * CColsPerMonth + 1
+      With .Cells(CZeileErsterDesMonats - 1, Spalte)
+        .Value = Worksheets(DestTableName).Cells(CZeileErsterDesMonats, Spalte) ' dort ist der 1. des Monats eingetragen
+        .NumberFormat = "MMMM" ' bitte nur den Monatsnamen anzeigen
+      End With
+      With .Range(.Cells(CZeileErsterDesMonats - 1, Spalte), .Cells(CZeileErsterDesMonats - 1, Spalte + CColsPerMonth - 1))
+        .HorizontalAlignment = xlCenterAcrossSelection  ' "Zentrieren |fffd|ber Markierung" f|fffd|r *CColsPerMonth* Spalten einschalten
+        .Font.Bold = True                               ' und Fett
+      End With
+    Next i
+    '.DisplayGridlines = False ' keine Anzeige der Gitternetzlinen
+    
+    ' um jeden Tag eine punktierte Linie; links und rechts eine Haarlinie
+    With .Range(.Cells(CZeileErsterDesMonats - 1, 1), .Cells(CZeileErsterDesMonats - 1 + 31, 12 * CColsPerMonth))
+      .Borders(xlTop).Weight = xlHairline
+      .Borders(xlBottom).Weight = xlHairline
+    End With
+    
+    ' jeden Monat mit einer d|fffd|nnen, durchgezogenen Linie umrahmen:
+    For i = 1 To 12
+      .Range(.Cells(CZeileErsterDesMonats - 1, (i - 1) * CColsPerMonth + 1), .Cells(CZeileErsterDesMonats - 1 + 31, i * CColsPerMonth)).BorderAround Weight:=xlThin
+    Next i
+    
+    ' die erste Zeile mit den Beschriftungen ebenfalls mit derselben Linienart abtrennen:
+    .Range(.Cells(CZeileErsterDesMonats - 1, 1), .Cells(CZeileErsterDesMonats - 1, 12 * CColsPerMonth)).Borders(xlBottom).Weight = xlThin
+    
+  End With ' Worksheets(DestTableName)
+  Application.StatusBar = ""
+End Sub
+
+
+Sub Seiteneinrichtung(Kalenderjahr As Integer)
+Attribute Seiteneinrichtung.VB_ProcData.VB_Invoke_Func = " \n14"
+  Application.StatusBar = "Richte Seite ein..."
+  With Worksheets(CStr(Kalenderjahr)).PageSetup
+    .LeftFooter = ""
+    .CenterFooter = ""
+    .RightFooter = ""
+    .LeftHeader = "Hergestellt von MSDatec Bielefeld" & Chr(13) & "http://www.msdatec.de/"
+    .CenterHeader = "&F&12Jahreskalender " & CStr(Kalenderjahr) & "&F"
+    .RightHeader = ""
+    .Orientation = xlLandscape
+    .PaperSize = xlPaperA4
+  End With
+  Application.StatusBar = ""
+End Sub
+
+
+
+Function Kennbuchstabe(ByVal ATableName As String, ByVal ARow As Integer, ByVal ACol As Integer, ByVal Zyklus As Byte) As Byte
+' Liefert den Kennbuchstaben aus der Zelle in Zeile *ARow* und Spalte *ACol* aus Tabelle *ATableName*.
+' *Zyklus* gibt dabei den Index (beginnend mit 1) des gew|fffd|nschten Buchstabens an. Falls
+' die Zeichenkette in der Zelle k|fffd|rzer ist als *Zyklus*, wird der letzte Buchstabe zur|fffd|ckgegeben.
+' Falls die Zelle leer ist, wird ein Fragezeichen zur|fffd|ckgegeben.
+
+Dim s As String
+
+  
+  s = Worksheets(ATableName).Cells(ARow, ACol)
+  If Len(s) < Zyklus Then
+    If s <> "" Then
+      Kennbuchstabe = Asc(Right(s, 1))
+    Else
+      Kennbuchstabe = Asc("?")
+    End If
+  Else
+    Kennbuchstabe = Asc(Mid(s, Zyklus, 1))
+  End If
+End Function
+
+
+
+Sub ZykischeEintr|fffd|geBehandeln(ByVal Kalenderjahr As Integer)
+Attribute ZykischeEintr|fffd|geBehandeln.VB_ProcData.VB_Invoke_Func = " \n14"
+
+
+Dim dat As Date
+Dim Zeile As Integer, Spalte As Integer, i As Integer, j As Integer, Periode As Integer, dauer As Integer
+Dim DestTableName As String
+Dim s As String
+
+
+  Application.StatusBar = "Zyklische Eintr|fffd|ge behandeln..."
+  DestTableName = CStr(Kalenderjahr)
+ 
+  i = CZyklischeEintraegeRowBegin
+  While Worksheets(CZyklischeEintraegeTableName).Cells(i, 1) <> ""
+    If Worksheets(CZyklischeEintraegeTableName).Cells(i, 1) = Kalenderjahr Then
+      dat = Worksheets(CZyklischeEintraegeTableName).Cells(i, 4)
+      If (Year(dat) = Kalenderjahr) Or (Year(dat) + 1 = Kalenderjahr) Then
+        dauer = Val(Worksheets(CZyklischeEintraegeTableName).Cells(i, 5))
+        Periode = Val(Worksheets(CZyklischeEintraegeTableName).Cells(i, 6))
+        Do
+          For j = 0 To dauer - 1
+            If Year(dat + j) = Kalenderjahr Then
+              Zeile = Tag2Zeile(Day(dat + j))
+              Spalte = Monat2Spalte(month(dat + j))
+              s = Chr(Kennbuchstabe(CZyklischeEintraegeTableName, i, CZyklischeEintraegeColKennbuchstabe, j + 1))
+              ' Nur eintragen, falls noch nicht vorhanden:
+              If InStr(1, Worksheets(DestTableName).Cells(Zeile, Spalte + CZyklusSpalte - 1), s) = 0 Then
+                Worksheets(DestTableName).Cells(Zeile, Spalte + CZyklusSpalte - 1) = _
+                  "'" & s & Worksheets(DestTableName).Cells(Zeile, Spalte + CZyklusSpalte - 1)
+                With Worksheets(DestTableName).Cells(Zeile, Spalte + CZyklusSpalte - 1).Characters(1, 1).Font
+                  .Name = Worksheets(CZyklischeEintraegeTableName).Cells(i, CZyklischeEintraegeColKennbuchstabe).Font.Name
+                  .Size = Worksheets(CZyklischeEintraegeTableName).Cells(i, CZyklischeEintraegeColKennbuchstabe).Font.Size
+                  .FontStyle = Worksheets(CZyklischeEintraegeTableName).Cells(i, CZyklischeEintraegeColKennbuchstabe).Font.FontStyle
+                  .Color = Worksheets(CZyklischeEintraegeTableName).Cells(i, CZyklischeEintraegeColKennbuchstabe).Font.Color
+                End With
+              End If
+            End If
+          Next j
+          dat = dat + Periode
+        Loop While Year(dat) = Kalenderjahr
+     
+      End If
+    End If
+    i = i + 1
+  Wend
+  
+  ' Formatierung:
+  AlleMonatsspalten(CZyklusSpalte, Kalenderjahr).HorizontalAlignment = xlRight
+  
+End Sub
+
+
+Sub Auto_|fffd|ffnen()
+Attribute Auto_|fffd|ffnen.VB_ProcData.VB_Invoke_Func = " \n14"
+  Sheets("Infos").Select
+  MsgBox CTitleMsgBox + String(2, 13) + String(1, 169) + _
+    " 1995-2002 Matthias Stolte Datentechnik, Bielefeld" + vbNewLine + _
+    "Tel.: +49-521-880056, Fax:  +49-521-880059" + vbNewLine + _
+    "Web: http://www.MSDatec.de/" + vbNewLine + vbNewLine + _
+    "Die private Nutzung ist kostenlos," + vbNewLine + _
+    "die Weitergabe erlaubt." + vbNewLine + _
+    "Die Nutzung im gewerblichen Bereich ist lizenzpflichtig.", 64, "Willkommen"
+End Sub
+
+Sub Farbe|fffd|ndern()
+Dim bereich As Range
+  
+  Set bereich = Selection
+  Range(CFormatCellRange).Select
+  Application.Dialogs(xlDialogPatterns).Show
+  bereich.Select
+End Sub
+
+
+Sub Schriftart|fffd|ndern()
+Dim bereich As Range
+  
+  Set bereich = Selection
+  Range(CFormatCellRange).Select
+  Application.Dialogs(xlDialogActiveCellFont).Show
+  bereich.Select
+End Sub
+
+
+Sub SelectTableFeiertage()
+  Worksheets(CFeiertageTableName).Select
+End Sub
+
+
+Sub SelectTableSchulferien()
+  Worksheets(CSchulferienTableName).Select
+End Sub
+
+
+Sub SelectTableCyclic()
+  Worksheets(CZyklischeEintraegeTableName).Select
+End Sub
+
+
+Sub SelectTableInfo()
+  Worksheets(CInfoTableName).Select
+End Sub
+
+
+
+' InQuest injected base64 decoded content
+' !zq"
+
+INQUEST-PP=macro

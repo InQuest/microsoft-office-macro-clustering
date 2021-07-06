@@ -1,0 +1,3187 @@
+Attribute VB_Name = "clsBidReview"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Private goConn As ADODB.Connection
+Private gclsReportSQL As clsReportSQL
+Private gwkbReport As Workbook
+Private glReportCount As Long
+Private gstrTreeINStatement As String
+
+Private Const gcstrVersion As String = "Bid Analysis Tool"
+Private Const gcstrFileExtension As String = "Excel Files (*.xlsx), *.xlsx"
+Private gstrFileName As String
+
+Public grstBidders As ADODB.Recordset
+Public grstSubs As ADODB.Recordset
+Public grstJobs As ADODB.Recordset
+Public grstBids As ADODB.Recordset
+Public grstItems As ADODB.Recordset
+Public grstChanges As ADODB.Recordset
+
+'///Enum///
+Public Enum BidTablesEnum
+'---------------------------------------------------------------------------------------
+' Enum      : BidTablesEnum
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Enum provides quick reference to available source data tables
+'---------------------------------------------------------------------------------------
+    tblBidders = 1
+    tblSubs = 2
+    tblJobs = 3
+    tblBids = 4
+    tblItems = 5
+    tblChanges = 6
+End Enum
+
+Public Sub GenerateAnalytics(ByVal strJob As String, ByVal lngLeft As Long, ByVal lngTop As Long)
+Const ciPrecision As Integer = 3 'Decimal points used in reporting and calculation (i.e. 3 = 0.0%)
+Dim rst As ADODB.Recordset
+Dim strSQL As String
+
+    Set rst = New ADODB.Recordset
+    strSQL = "SELECT 'Job Name: ' & job.[Name],'','','','','' " & _
+         "FROM [Jobs$] AS job " & _
+         "WHERE job.[JobID] = " & strJob & " "
+    strSQL = strSQL & "UNION ALL "
+    strSQL = strSQL & "SELECT '','','','Ratios of Bid to','','' " & _
+         "FROM [Jobs$] AS job " & _
+         "WHERE job.[JobID] = " & strJob & " "
+    strSQL = strSQL & "UNION ALL "
+    strSQL = strSQL & "SELECT '','Bidder','Bid','Estimate','Winner','Prev Bid' " & _
+         "FROM [Jobs$] AS job " & _
+         "WHERE job.[JobID] = " & strJob & " "
+    strSQL = strSQL & "UNION ALL "
+    strSQL = strSQL & "SELECT 0,'Job Estimate',job.[Cost Estimate], '-','-','-' " & _
+         "FROM [Jobs$] AS job " & _
+         "WHERE job.[JobID] = " & strJob & " "
+    strSQL = strSQL & "UNION ALL "
+ 
+    strSQL = strSQL & "SELECT [sub].[Bid Status],[sub].[Name],[sub].[Bid Amount]," & _
+        "'=ROUND((OFFSET($C$4,ROW()-4,0)/$C$4)-1," & ciPrecision & ")'," & _
+        "'=IF(OFFSET($A$4,ROW()-4,0)=""Won"",""-"",ROUND((OFFSET($C$4,ROW()-4,0)/VLOOKUP(""Won"",A:C,3,FALSE))," & ciPrecision & ")-1)'," & _
+        "'=IF(OR(OFFSET($E$4,ROW()-4,0)=""-"",OFFSET($E$4,ROW()-4,0)=MIN(E:E)),""-"",ROUND((OFFSET($C$4,ROW()-4,0)/OFFSET($C$4,ROW()-5,0))," & ciPrecision & ")-1)' " & _
+        "FROM [Jobs$] AS job " & _
+        "INNER JOIN (SELECT bid.[JobID], bid.[Bid Status], bid.[Bid Amount], [bdr].[Name] " & _
+        "FROM [Bids$] AS bid " & _
+        "INNER JOIN [Bidders$] AS [bdr] " & _
+        "ON bid.[BidderID] = [bdr].[BidderID]) AS [sub] " & _
+        "ON job.[JobID] = [sub].[JobID] " & _
+        "WHERE job.[JobID] = " & strJob
+
+    rst.Open strSQL, goConn, adOpenDynamic, adLockOptimistic
+    modVisualAnalysis.GenerateVisual rst, ciPrecision, lngLeft, lngTop
+
+End Sub
+
+Property Get TreeViewTbl(ByVal strTable As String) As BidTablesEnum
+Dim tbl As BidTablesEnum
+
+    Select Case strTable
+        Case Is = "bdr" 'tblBidders
+            tbl = tblBidders
+        Case Is = "sub" 'tblSubs
+            tbl = tblSubs
+        Case Is = "job" 'tblJobs
+            tbl = tblJobs
+        Case Is = "bid" 'tblBids
+            tbl = tblBids
+        Case Is = "itm" 'tblItems
+            tbl = tblItems
+        Case Is = "chg" ' tblChanges
+            tbl = tblChanges
+    End Select
+    TreeViewTbl = tbl
+
+End Property
+
+Property Get TreeViewTblName(ByVal iTable As BidTablesEnum) As String
+Dim str As String
+
+    Select Case iTable
+        Case Is = 1
+            str = "bdr"
+        Case Is = 2
+            str = "sub"
+        Case Is = 3
+            str = "job"
+        Case Is = 4
+            str = "bid"
+        Case Is = 5
+            str = "itm"
+        Case Is = 6
+            str = "chg"
+    End Select
+    TreeViewTblName = str
+
+End Property
+
+Property Get ReportCount() As String
+
+    ReportCount = glReportCount
+
+End Property
+
+Property Get FileName() As String
+
+    FileName = gstrFileName
+
+End Property
+
+Property Let FileName(ByVal strValue As String)
+Dim i As Integer
+
+    gstrFileName = strValue
+    GetADODBConnection
+    For i = tblBidders To tblChanges Step 1
+        OpenRecordset i
+    Next i
+
+End Property
+
+Private Sub GetADODBConnection()
+
+    Set goConn = New ADODB.Connection
+
+    'Connect to Excel 2007 or 2010 spreadsheet
+    Application.StatusBar = "Opening ADODB connection to data set."
+    goConn.Provider = "Microsoft.ACE.OLEDB.12.0"
+    goConn.Open "Data Source=" & gstrFileName & ";Extended Properties=""Excel 12.0;HDR=Yes"";"
+    Application.StatusBar = ""
+
+End Sub
+
+Private Function BlankSheet(ByVal iTable As BidTablesEnum) As Boolean
+Dim rst As ADODB.Recordset
+Dim boolValue As Boolean
+
+    Set rst = New ADODB.Recordset
+    rst.Open "SELECT COUNT(*) FROM [" & SheetName(iTable) & "$]", goConn, adOpenDynamic, adLockOptimistic
+    If rst.Fields(0).Value = 0 Then boolValue = True
+    BlankSheet = boolValue
+
+End Function
+
+
+Private Sub OpenRecordset(ByVal iTable As BidTablesEnum)
+Dim i As Integer
+Dim rst As ADODB.Recordset
+
+    Application.StatusBar = "Opening ADODB recordset."
+    Set rst = New ADODB.Recordset
+    If Not BlankSheet(iTable) Then rst.Open Me.SQL(iTable), goConn, adOpenDynamic, adLockOptimistic
+    Select Case iTable
+        Case Is = 1
+            Set grstBidders = rst
+        Case Is = 2
+            Set grstSubs = rst
+        Case Is = 3
+            Set grstJobs = rst
+        Case Is = 4
+            Set grstBids = rst
+        Case Is = 5
+            Set grstItems = rst
+        Case Is = 6
+            Set grstChanges = rst
+    End Select
+    Application.StatusBar = ""
+
+End Sub
+
+Property Get Version() As String
+
+    Version = gcstrVersion
+
+End Property
+
+
+Property Get Extension() As String
+
+    Extension = gcstrFileExtension
+
+End Property
+
+Property Get PKName(ByVal iTable As BidTablesEnum) As String
+Dim strPKName As String
+
+    Select Case iTable
+        Case Is = 1 'tblBidders
+            strPKName = "Contractor"
+        Case Is = 2 'tblSubs
+            strPKName = "Name" 'Subcontractor"
+        Case Is = 3 'tblJobs
+            strPKName = "Name" 'Job Name"
+        Case Is = 4 'tblBids
+            strPKName = "Submitted By" 'Security Issuing Bank"
+        Case Is = 5 'tblItems
+            strPKName = "Item Name"
+        Case Is = 6 ' tblChanges
+            strPKName = "Description"
+    End Select
+    PKName = strPKName
+
+End Property
+
+Property Get PK(ByVal iTable As BidTablesEnum) As String
+Dim strPK As String
+
+    Select Case iTable
+        Case Is = 1 'tblBidders
+            strPK = "BidderID"
+        Case Is = 2 'tblSubs
+            strPK = "SubID"
+        Case Is = 3 'tblJobs
+            strPK = "JobID"
+        Case Is = 4 'tblBids
+            strPK = "BidID"
+        Case Is = 5 'tblItems
+            strPK = "ItemID"
+        Case Is = 6 ' tblChanges
+            strPK = "ChangeID"
+    End Select
+    PK = "[" & strPK & "]"
+
+End Property
+
+Property Get Recordset(ByVal iTable As BidTablesEnum) As ADODB.Recordset
+
+    Select Case iTable
+        Case Is = 1 'tblBidders
+            Set Recordset = grstBidders
+        Case Is = 2 'tblSubs
+            Set Recordset = grstSubs
+        Case Is = 3 'tblJobs
+            Set Recordset = grstJobs
+        Case Is = 4 'tblBids
+            Set Recordset = grstBids
+        Case Is = 5 'tblItems
+            Set Recordset = grstItems
+        Case Is = 6 ' tblChanges
+            Set Recordset = grstChanges
+    End Select
+
+End Property
+
+Property Get SheetName(ByVal iTable As BidTablesEnum) As String
+Dim strName As String
+
+    Select Case iTable
+        Case Is = 1 'tblBidders
+            strName = "Bidders"
+        Case Is = 2 'tblSubs
+            strName = "Subcontractors"
+        Case Is = 3 'tblJobs
+            strName = "Jobs"
+        Case Is = 4 'tblBids
+            strName = "Bids"
+        Case Is = 5 'tblItems
+            strName = "Line Items"
+        Case Is = 6 ' tblChanges
+            strName = "Change Orders"
+    End Select
+    SheetName = strName
+
+End Property
+
+Property Get SheetHeader(ByVal iTable As BidTablesEnum) As String()
+Dim strHeader As String
+
+    Select Case iTable
+        Case Is = 1 'tblBidders
+            strHeader = "BidderID|fffd|Name|fffd|Address|fffd|State|fffd|City|fffd|Country|fffd|Phone|fffd|Fax|fffd|Email"
+        Case Is = 2 'tblSubs
+            strHeader = "SubID|fffd|BidID|fffd|Name|fffd|Address|fffd|City|fffd|State|fffd|Country|fffd|Zip|fffd|Phone|fffd|Fax"
+        Case Is = 3 'tblJobs
+            strHeader = "JobID|fffd|Name|fffd|Location|fffd|Country|fffd|Cost Estimate|fffd|Award Date"
+        Case Is = 4 'tblBids
+            strHeader = "BidID|fffd|JobID|fffd|BidderID|fffd|Submitted By|fffd|Bid Date|fffd|Bid Amount|fffd|Bid Status|fffd|Security Issuing Bank|fffd|Security Issuing Date|fffd|Security Number|fffd|Signer"
+        Case Is = 5 'tblItems
+            strHeader = "ItemID|fffd|BidID|fffd|Item Name|fffd|Item Cost"
+        Case Is = 6 ' tblChanges
+            strHeader = "ChangeID|fffd|Description|fffd|Cost|fffd|BidID"
+    End Select
+    SheetHeader = Split(strHeader, "|fffd|")
+     
+End Property
+
+
+
+Public Sub GenerateReport(ByVal rpt As UserReportsEnum, Optional ByVal arg As String = "")
+Dim rst As ADODB.Recordset
+Dim iSheet As Integer
+Dim i As Integer
+On Error GoTo errHdlr
+
+    Set rst = New ADODB.Recordset
+    rst.Open gclsReportSQL.ReportSQL(rpt, arg), goConn, adOpenDynamic, adLockOptimistic
+    If gwkbReport Is Nothing Then Set gwkbReport = CreateReportWorkbook
+    If Not gwkbReport Is Nothing Then
+        With gwkbReport
+            Application.ScreenUpdating = False
+            If .Sheets(1).UsedRange.Columns.Count > 1 Then .Sheets.Add after:=.Sheets(.Sheets.Count)
+            .Sheets(.Sheets.Count).Name = "Report #" & .Sheets.Count
+            With .Sheets(.Sheets.Count)
+                .Activate
+                With .Cells(1, 1)
+                    .Value = "IACRC Bid Analysis Tool"
+                    .Font.Bold = True
+                End With
+                With .Cells(2, 1)
+                    .Value = "Report: " & Replace(gclsReportSQL.ReportName(rpt), "X%", arg & "%")
+                    .Font.Bold = True
+                End With
+                For i = 0 To rst.Fields.Count - 1 Step 1
+                    With .Cells(4, 1).Offset(0, i)
+                        .Value = rst.Fields(i).Name
+                        .Font.Bold = True
+                        .HorizontalAlignment = xlCenter
+                    End With
+                Next i
+                .Cells(4, 1).EntireRow.AutoFilter
+                .Cells(5, 1).CopyFromRecordset rst
+                .Hyperlinks.Add Anchor:=.Cells(2, .UsedRange.Columns.Count), Address:="http://iacrc.org/", TextToDisplay:="http://iacrc.org/"
+                .Cells.EntireColumn.AutoFit
+                .Columns(1).ColumnWidth = 12
+                With ActiveWindow
+                    .SplitRow = 3
+                    .FreezePanes = True
+                End With
+            End With
+            Application.ScreenUpdating = True
+        End With
+    End If
+    If rst.State = adStateOpen Then rst.Close
+    Set rst = Nothing
+
+errHdlr:
+
+    If Err.Number <> 0 Then
+        Stop
+        Resume Next
+    End If
+
+End Sub
+
+Public Sub PreCountReport(ByVal rpt As UserReportsEnum, Optional ByVal arg As String = "")
+Dim rst As ADODB.Recordset
+Dim lng As Long
+Dim str As String
+On Error GoTo errHdlr
+
+    lng = 0
+    str = ""
+    If rpt > 0 Then
+        str = "("
+        Set rst = New ADODB.Recordset
+        rst.Open gclsReportSQL.ReportSQL(rpt, arg), goConn, adOpenDynamic, adLockOptimistic
+        Do Until rst.EOF
+            If Len(str) = 1 Then str = str & "'" & rst.Fields(0).Value & "'"
+            If InStr(1, str, "'" & rst.Fields(0).Value & "'") = 0 Then str = str & ",'" & rst.Fields(0).Value & "'"
+            lng = lng + 1
+            rst.MoveNext
+        Loop
+        If Len(str) = 1 Then str = str & "-1"
+        str = str & ")"
+        If rst.State = adStateOpen Then rst.Close
+        Set rst = Nothing
+    End If
+    glReportCount = lng
+    gstrTreeINStatement = Replace(str, "'", "")
+
+errHdlr:
+
+    If Err.Number <> 0 Then
+        Stop
+        Resume Next
+    End If
+
+End Sub
+
+Private Function CreateReportWorkbook() As Workbook
+Dim wkb As Workbook
+Dim strFileName As String
+Dim boolEvents As Boolean
+Dim boolAlerts As Boolean
+Dim iSheet As Integer
+Dim i As Integer
+Dim arrHeader() As String
+
+    With Application
+        'Default file name
+        strFileName = "C:\Documents and Settings\" & .UserName & _
+                      "\Desktop\IACRC Reports - " & Format(Now(), "yyyymmdd") & ".xlsx"
+
+        'User defined file name
+        strFileName = .GetSaveAsFilename(strFileName, gcstrFileExtension, Title:=gcstrVersion)
+        If strFileName = "False" Then Exit Function
+        .ScreenUpdating = False 'Eliminates screen flutter
+        
+        If .EnableEvents Then 'Determines if user has 'Events' enabled
+            boolEvents = True
+            .EnableEvents = False
+        End If
+
+        If .DisplayAlerts Then 'Determines if user has 'Alerts' enabled
+            boolAlerts = True
+            .DisplayAlerts = False
+        End If
+    
+        Set wkb = .Workbooks.Add
+        With wkb 'Adds new dataset workbook
+            iSheet = .Worksheets.Count
+            
+            For i = iSheet To 2 Step -1 'Deletes excessive sheets
+                .Sheets(i).Delete
+            Next i
+
+            'Saves workbook
+            .SaveAs FileName:=strFileName, FileFormat:=xlOpenXMLWorkbook
+
+        End With
+
+        'Resets user defined settings
+        If boolAlerts Then .DisplayAlerts = True
+        If boolEvents Then .EnableEvents = True
+        .ScreenUpdating = True
+    End With
+    Set CreateReportWorkbook = wkb
+
+End Function
+
+Private Sub Class_Initialize()
+On Error GoTo errHdlr
+
+    Set gclsReportSQL = New clsReportSQL
+
+errHdlr:
+    If Err.Number <> 0 Then Stop
+
+End Sub
+
+Property Get ReportName(ByVal iRpt As UserReportsEnum) As String
+
+    ReportName = gclsReportSQL.ReportName(iRpt)
+
+End Property
+
+Public Sub CloseConnection()
+Dim var As Variant
+
+    For Each var In Array(grstBidders, grstSubs, grstJobs, grstBids, grstItems, grstChanges)
+        If Not var Is Nothing Then
+            If var.State = adStateOpen Then var.Close
+            Set var = Nothing
+        End If
+    Next var
+    If Not goConn Is Nothing Then
+        If goConn.State = adStateOpen Then goConn.Close
+        Set goConn = Nothing
+    End If
+   
+
+End Sub
+
+Private Sub Class_Terminate()
+
+    CloseConnection
+
+End Sub
+
+Property Get SQL(ByVal iTable As BidTablesEnum) As String
+Dim strSQL As String
+    
+    Select Case iTable
+        Case Is = 1 'tblBidders
+            strSQL = "SELECT bdr.[BidderID] " & _
+                          ",bdr.[Name] AS [Contractor] " & _
+                          ",bdr.[Address] " & _
+                          ",bdr.[City] " & _
+                          ",bdr.[Country] " & _
+                          ",bdr.[Phone] " & _
+                          ",bdr.[Fax] " & _
+                          ",bdr.[Email] " & _
+                    "FROM [Bidders$] bdr " & _
+                    "ORDER BY 2"
+        Case Is = 2 'tblSubs
+            strSQL = "SELECT sub.[SubID] " & _
+                       ",sub.[Name] AS [Subcontractor] " & _
+                       ",qry.[Name] AS [Contractor] " & _
+                       ",sub.[Address] " & _
+                    "FROM [Subcontractors$] sub " & _
+                    "INNER JOIN (" & _
+                       "SELECT bid.[BidID] " & _
+                             ",bid.[BidderID] " & _
+                             ",bdr.[Name] " & _
+                       "FROM [Bids$] bid " & _
+                       "INNER JOIN [Bidders$] bdr " & _
+                       "ON bdr.[BidderID] = bid.[BidderID]) qry " & _
+                    "ON qry.[BidID] = sub.[BidID] " & _
+                    "ORDER BY 2,3"
+        Case Is = 3 'tblJobs
+            strSQL = "SELECT job.[JobID] " & _
+                           ",job.[Name] AS [Job Name] " & _
+                           ",job.[Location] " & _
+                           ",job.[Country] " & _
+                           ",job.[Cost Estimate] " & _
+                           ",job.[Award Date] " & _
+                    "FROM [Jobs$] job " & _
+                    "ORDER BY 2"
+        Case Is = 4 'tblBids
+            strSQL = "SELECT bid.[BidID] " & _
+                           ",(SELECT [Name] FROM [Jobs$] WHERE [JobID] = bid.[JobID]) AS [Job Name] " & _
+                           ",(SELECT [Name] FROM [Bidders$] WHERE [BidderID] = bid.[BidderID]) AS [Contractor] " & _
+                           ",bid.[Bid Date] " & _
+                           ",bid.[Bid Status] " & _
+                           ",bid.[Security Issuing Bank] " & _
+                           ",bid.[Security Issuing Date] " & _
+                           ",bid.[Security Number] " & _
+                    "FROM [Bids$] bid " & _
+                    "ORDER BY 2"
+
+        Case Is = 5 'tblItems
+            strSQL = "SELECT itm.[ItemID] " & _
+                           ",job.[Name] AS [Job Name] " & _
+                           ",itm.[Item Name] " & _
+                           ",itm.[Item Cost] " & _
+                    "FROM [Line Items$] itm " & _
+                    "INNER JOIN (" & _
+                       "SELECT bid.[BidID] " & _
+                             ",job.[Name] " & _
+                       "FROM [Bids$] bid " & _
+                       "INNER JOIN [Jobs$] job " & _
+                       "ON job.[JobID] = bid.[JobID]) qry " & _
+                    "ON qry.[BidID] = itm.[BidID] " & _
+                    "ORDER BY 2"
+        Case Is = 6 ' tblChanges
+            strSQL = "SELECT odr.[ChangeID] " & _
+                           ",odr.[Description] " & _
+                           ",job.[Name] AS [Job Name] " & _
+                           ",odr.[Cost] " & _
+                    "FROM [Change Orders$] odr " & _
+                    "INNER JOIN (" & _
+                       "SELECT bid.[BidID] " & _
+                             ",job.[Name] " & _
+                       "FROM [Bids$] bid " & _
+                       "INNER JOIN [Jobs$] job " & _
+                       "ON job.[JobID] = bid.[JobID]) qry " & _
+                    "ON qry.[BidID] = odr.[BidID] " & _
+                    "ORDER BY 2"
+    End Select
+    SQL = strSQL
+
+End Property
+
+Private Function TreePath(ByVal varArray As Variant, Optional boolPK As Boolean = False) As String
+Dim strPath As String
+Dim strTable As String
+Dim strPK As String
+Dim var As Variant
+Dim iCount As Integer
+
+    If IsNull(varArray) Then
+        strPath = "''"
+    Else
+        For Each var In varArray
+            strTable = TreeViewTblName(var)
+            strPK = PK(var)
+
+            If iCount = 0 Then
+                strPath = strPath & "'" & strTable & "|fffd|' & " & strTable & "." & strPK
+            ElseIf iCount < UBound(varArray) Then
+                strPath = strPath & " & '|fffd|" & strTable & "|fffd|' & " & strTable & "." & strPK
+            ElseIf boolPK Then
+                strPath = strPath & " & '|fffd|" & strTable & "|fffd|' & qry." & strPK
+            Else
+                strPath = strPath & " & '|fffd|" & strTable & "'"
+            End If
+            iCount = iCount + 1
+        Next var
+    End If
+
+    TreePath = strPath
+
+End Function
+
+
+Private Function BiddersTreeviewSQL(ByVal iTable As BidTablesEnum, ByVal iSort As Integer) As String
+Const ciBaseTable As Integer = tblBidders
+Dim strSQL As String
+Dim strTable As String
+Dim strSheet As String
+Dim strPK As String
+Dim strPKName As String
+
+    strTable = TreeViewTblName(iTable)
+    strSheet = SheetName(iTable)
+    strPK = PK(iTable)
+    strPKName = PKName(iTable)
+
+    If iTable <> tblBidders Then strSQL = "UNION ALL "
+
+    strSQL = strSQL & "SELECT bdr.[BidderID] AS [PK]"
+    strSQL = strSQL & ", " & iSort & " AS [Sort]"
+    Select Case iTable
+        Case Is = 1
+            strSQL = strSQL & ", " & TreePath(Null) & " AS [Relative]"
+            strSQL = strSQL & ", " & TreePath(Array(tblBidders)) & " AS [Key]"
+            strSQL = strSQL & ", bdr.[Name] AS [Text] "
+            strSQL = strSQL & "FROM [bidders$] bdr "
+        Case Is = 2, 3
+            strSQL = strSQL & ", " & TreePath(Array(tblBidders)) & " AS [Relative]"
+            strSQL = strSQL & ", " & TreePath(Array(tblBidders, iTable)) & " AS [Key]"
+            strSQL = strSQL & ", '" & strSheet & "' AS [Text] "
+            strSQL = strSQL & "FROM [bidders$] bdr "
+        Case Is = 4, 5, 6
+            strSQL = strSQL & ", " & TreePath(Array(tblBidders, tblJobs), True) & " AS [Relative]"
+            strSQL = strSQL & ", " & TreePath(Array(tblBidders, tblJobs, iTable)) & " AS [Key]"
+            strSQL = strSQL & ", '" & strSheet & "' AS [Text] "
+            strSQL = strSQL & "FROM [bidders$] bdr "
+            strSQL = strSQL & "INNER JOIN ("
+            strSQL = strSQL & "SELECT bid.[BidderID]"
+            strSQL = strSQL & ", bid.[BidID]"
+            strSQL = strSQL & ", job.[JobID]"
+            strSQL = strSQL & ", job.[Name] "
+            strSQL = strSQL & "FROM [Bids$] bid "
+            strSQL = strSQL & "INNER JOIN [Jobs$] job "
+            strSQL = strSQL & "ON job.[JobID] = bid.[JobID]"
+            strSQL = strSQL & ") qry ON qry.[BidderID] = bdr.[BidderID] "
+    End Select
+    
+    If iTable <> tblBidders Then
+        strSQL = strSQL & "UNION ALL "
+        strSQL = strSQL & "SELECT bdr.[BidderID] AS [PK]"
+        strSQL = strSQL & ", " & iSort + 1 & " AS [Sort]"
+        Select Case iTable
+            Case Is = 2, 3
+                strSQL = strSQL & ", " & TreePath(Array(tblBidders, iTable)) & " AS [Relative]"
+                strSQL = strSQL & ", " & TreePath(Array(tblBidders, iTable), True) & " AS [Key]"
+            Case Is = 4, 5, 6
+                strSQL = strSQL & ", " & TreePath(Array(tblBidders, tblJobs, iTable)) & " AS [Relative]"
+                strSQL = strSQL & ", " & TreePath(Array(tblBidders, tblJobs, iTable), True) & " AS [Key]"
+        End Select
+        strSQL = strSQL & ", qry.[" & strPKName & "] "
+        strSQL = strSQL & "FROM [bidders$] AS bdr "
+        strSQL = strSQL & "INNER JOIN ("
+        Select Case iTable
+            Case Is = 2, 3
+                strSQL = strSQL & "SELECT bid.[BidderID]"
+                strSQL = strSQL & ", " & strTable & "." & strPK
+                strSQL = strSQL & ", " & strTable & ".[" & strPKName & "] "
+                strSQL = strSQL & "FROM [Bids$] bid "
+                strSQL = strSQL & "INNER JOIN [" & strSheet & "$] AS " & strTable & " "
+                If iTable = tblSubs Then
+                    strSQL = strSQL & "ON " & strTable & ".[BidID] = bid.[BidID]"
+                ElseIf iTable = tblJobs Then
+                    strSQL = strSQL & "ON " & strTable & ".[JobID] = bid.[JobID]" '
+                End If
+                strSQL = strSQL & ") qry ON qry.[BidderID] = bdr.[BidderID] "
+            Case Is = 4, 5, 6
+                strSQL = strSQL & "SELECT qry.[BidderID]"
+                strSQL = strSQL & ", job.[JobID]"
+                strSQL = strSQL & ", qry.[BidID]"
+                If iTable <> tblBids Then strSQL = strSQL & ", qry." & strPK
+                strSQL = strSQL & ", qry.[" & strPKName & "] "
+                strSQL = strSQL & "FROM [Jobs$] job "
+                Select Case iTable
+                    Case Is = 4
+                        strSQL = strSQL & "INNER JOIN [Bids$] qry "
+                    Case Is = 5, 6
+                        strSQL = strSQL & "INNER JOIN ("
+                        strSQL = strSQL & "SELECT bid.[BidderID]"
+                        strSQL = strSQL & ", bid.[BidID]"
+                        strSQL = strSQL & ", bid.[JobID]"
+                        strSQL = strSQL & ", " & strTable & "." & strPK
+                        strSQL = strSQL & ", " & strTable & ".[" & strPKName & "] "
+                        strSQL = strSQL & "FROM [Bids$] bid "
+                        strSQL = strSQL & "INNER JOIN [" & strSheet & "$] " & strTable & " "
+                        strSQL = strSQL & "ON " & strTable & ".[BidID] = bid.[BidID]) qry "
+                End Select
+                strSQL = strSQL & "ON qry.[JobID] = job.[JobID]"
+                strSQL = strSQL & ") qry ON qry.[BidderID] = bdr.[BidderID] "
+            End Select
+
+    End If
+    
+    
+    BiddersTreeviewSQL = strSQL
+
+End Function
+
+Property Get TreeViewRST(ByVal iTable As BidTablesEnum) As ADODB.Recordset
+
+Dim strSQL As String
+
+
+Const sqlBdr As String = " FROM [bidders$] [bdr] "
+Const sqlJob As String = sqlBdr & _
+                         "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid " & _
+                         "INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+Const sqlSub As String = sqlBdr & _
+                         "INNER JOIN (SELECT bid.[BidderID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid " & _
+                         "INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+Const sqlItm As String = sqlBdr & _
+                         "INNER JOIN (SELECT sqry.[BidderID], job.[JobID], sqry.[BidID], sqry.[ItemID], sqry.[Item Name] FROM [Jobs$] job " & _
+                         "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], bid.[JobID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid " & _
+                         "INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) sqry ON sqry.[JobID] = job.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+Const sqlChg As String = sqlBdr & _
+                         "INNER JOIN (SELECT sqry.[BidderID], job.[JobID], sqry.[BidID], sqry.[ChangeID], sqry.[Description] FROM [Jobs$] job " & _
+                         "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], bid.[JobID], [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid " & _
+                         "INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID]) sqry ON sqry.[JobID] = job.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+
+    
+    Select Case iTable
+        Case Is = 1 'tblBidders
+
+            strSQL = BiddersTreeviewSQL(tblBidders, 1)
+            If Not grstSubs.ActiveConnection Is Nothing Then strSQL = strSQL & BiddersTreeviewSQL(tblSubs, 2)
+            If Not grstJobs.ActiveConnection Is Nothing Then strSQL = strSQL & BiddersTreeviewSQL(tblJobs, 4)
+            If Not grstBids.ActiveConnection Is Nothing Then strSQL = strSQL & BiddersTreeviewSQL(tblBids, 6)
+            If Not grstItems.ActiveConnection Is Nothing Then strSQL = strSQL & BiddersTreeviewSQL(tblItems, 8)
+            If Not grstChanges.ActiveConnection Is Nothing Then strSQL = strSQL & BiddersTreeviewSQL(tblChanges, 10)
+            If Len(gstrTreeINStatement) > 0 Then
+                strSQL = "SELECT trv.* FROM (" & strSQL & ") AS trv WHERE trv.[PK] IN " & gstrTreeINStatement
+            End If
+            
+            strSQL = strSQL & " ORDER BY 2, 5;"
+        Case Is = 2 'tblSubs
+            
+            strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'sub|fffd|' & [sub].[SubID] AS [Key], [sub].[Name] AS [Text] FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "UNION ALL SELECT 2, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr', 'Bidders' FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "UNION ALL SELECT 3, 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr', 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [sub].[BidID] "
+            strSQL = strSQL & "UNION ALL SELECT 4, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|bid', 'Bids' FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "UNION ALL SELECT 5, 'sub|fffd|' & [sub].[SubID] & '|fffd|bid', 'sub|fffd|' & [sub].[SubID] & '|fffd|bid|fffd|' & qry.[BidID], qry.[Name] & ' Bid' FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] "
+            strSQL = strSQL & "UNION ALL SELECT 6, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|job', 'Jobs' FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "UNION ALL SELECT 7, 'sub|fffd|' & [sub].[SubID] & '|fffd|job', 'sub|fffd|' & [sub].[SubID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] "
+            strSQL = strSQL & "UNION ALL SELECT 8, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|itm', 'Line Items' FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] "
+            strSQL = strSQL & "UNION ALL SELECT 9, 'sub|fffd|' & [sub].[SubID] & '|fffd|itm', 'sub|fffd|' & [sub].[SubID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "INNER JOIN (SELECT bid.[BidID], bid.[JobID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [sub].[BidID] "
+            strSQL = strSQL & "UNION ALL SELECT 10, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|chg', 'Change Orders' FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] "
+            strSQL = strSQL & "UNION ALL SELECT 11, 'sub|fffd|' & [sub].[SubID] & '|fffd|chg', 'sub|fffd|' & [sub].[SubID] & '|fffd|chg|fffd|' & qry.[ChangeID], qry.[Description] FROM [Subcontractors$] [sub] "
+            strSQL = strSQL & "INNER JOIN (SELECT bid.[BidID], bid.[JobID], [itm].[ChangeID], [itm].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [sub].[BidID] "
+            strSQL = strSQL & "ORDER BY 1, 4"
+
+'            strSQL = "SELECT 1 AS [Sort]"
+'            strSQL = strSQL & ", '' AS [Relative]"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] AS [Key]"
+'            strSQL = strSQL & ", [sub].[Name] AS [Text] "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 2"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID]"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr'"
+'            strSQL = strSQL & ", 'Bidders' "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 3"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr'"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr|fffd|' & qry.[BidderID]"
+'            strSQL = strSQL & ", qry.[Name] "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidID]"
+'            strSQL = strSQL & ", [bdr].[BidderID]"
+'            strSQL = strSQL & ", [bdr].[Name] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [bidders$] [bdr] "
+'            strSQL = strSQL & "ON [bdr].[BidderID] = bid.[BidderID]"
+'            strSQL = strSQL & ") qry ON qry.[BidID] = [sub].[BidID] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 4"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID]"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|bid'"
+'            strSQL = strSQL & ", 'Bids' "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 5"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|bid'"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|bid|fffd|' & qry.[BidID]"
+'            strSQL = strSQL & ", qry.[Name] & ' Bid' "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidID]"
+'            strSQL = strSQL & ", job.[JobID]"
+'            strSQL = strSQL & ", job.[Name] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [Jobs$] job "
+'            strSQL = strSQL & "ON job.[JobID] = bid.[JobID]"
+'            strSQL = strSQL & ") qry ON qry.[BidID] = [sub].[BidID] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 6"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID]"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|job'"
+'            strSQL = strSQL & ", 'Jobs' "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 7"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|job'"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|job|fffd|' & qry.[JobID]"
+'            strSQL = strSQL & ", qry.[Name] "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidID]"
+'            strSQL = strSQL & ", job.[JobID]"
+'            strSQL = strSQL & ", job.[Name] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [Jobs$] job "
+'            strSQL = strSQL & "ON job.[JobID] = bid.[JobID]"
+'            strSQL = strSQL & ") qry ON qry.[BidID] = [sub].[BidID] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 8"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID]"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|itm'"
+'            strSQL = strSQL & ", 'Line Items' "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidID]"
+'            strSQL = strSQL & ", job.[JobID]"
+'            strSQL = strSQL & ", job.[Name] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [Jobs$] job "
+'            strSQL = strSQL & "ON job.[JobID] = bid.[JobID]"
+'            strSQL = strSQL & ") qry ON qry.[BidID] = [sub].[BidID] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT 9"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|itm'"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|itm|fffd|' & qry.[ItemID]"
+'            strSQL = strSQL & ", qry.[Item Name] "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidID]"
+'            strSQL = strSQL & ", bid.[JobID]"
+'            strSQL = strSQL & ", [itm].[ItemID]"
+'            strSQL = strSQL & ", [itm].[Item Name] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [Line Items$] [itm] "
+'            strSQL = strSQL & "ON [itm].[BidID] = bid.[BidID]"
+'            strSQL = strSQL & ") qry ON qry.[BidID] = [sub].[BidID] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT sub.[SubID] AS [PK]"
+'            strSQL = strSQL & ", 10"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|chg'"
+'            strSQL = strSQL & ", 'Change Orders' "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidderID]"
+'            strSQL = strSQL & ", job.[JobID]"
+'            strSQL = strSQL & ", bid.[BidID]"
+'            strSQL = strSQL & ", job.[Name] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [Jobs$] job "
+'            strSQL = strSQL & "ON job.[JobID] = bid.[JobID]"
+'            strSQL = strSQL & ") qry ON qry.[BidID] = [sub].[BidID] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT sub.[SubID] AS [PK]"
+'            strSQL = strSQL & ", 11"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|chg'"
+'            strSQL = strSQL & ", 'sub|fffd|' & [sub].[SubID] & '|fffd|chg|fffd|' & qry.[ChangeID]"
+'            strSQL = strSQL & ", qry.[Description] "
+'            strSQL = strSQL & "FROM [Subcontractors$] [sub] "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidID]"
+'            strSQL = strSQL & ", bid.[JobID]"
+'            strSQL = strSQL & ", [itm].[ChangeID]"
+'            strSQL = strSQL & ", [itm].[Description] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [Change Orders$] [itm] "
+'            strSQL = strSQL & "ON [itm].[BidID] = bid.[BidID]"
+'            strSQL = strSQL & ") qry ON qry.[BidID] = [sub].[BidID] "
+'            strSQL = strSQL & "ORDER BY [Sort], [Text]"
+        Case Is = 3 'tblJobs
+            If grstSubs.ActiveConnection Is Nothing Then
+                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'job|fffd|' & job.[JobID] AS [Key], job.[Name] AS [Text] FROM [Jobs$] job " & _
+                        "UNION ALL SELECT 2, 'job|fffd|' & job.[JobID], 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'Bidders' FROM [Jobs$] job " & _
+                        "UNION ALL SELECT 3, 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 4, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'Bids' FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 5, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid|fffd|' & qry.[BidID], job.[Name] & ' Bid' FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 8, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'Line Items' FROM [Jobs$] job INNER JOIN [Bids$] bid ON bid.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 9, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "ORDER BY [Sort], [Text]"
+            Else
+                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'job|fffd|' & job.[JobID] AS [Key], job.[Name] AS [Text] FROM [Jobs$] job " & _
+                        "UNION ALL SELECT 2, 'job|fffd|' & job.[JobID], 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'Bidders' FROM [Jobs$] job " & _
+                        "UNION ALL SELECT 3, 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 4, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'Bids' FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 5, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid|fffd|' & qry.[BidID], job.[Name] & ' Bid' FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 6, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|sub', 'Sub Contractors' FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 7, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|sub', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|sub|fffd|' & qry.[SubID], qry.[Name] FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 8, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'Line Items' FROM [Jobs$] job INNER JOIN [Bids$] bid ON bid.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 9, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 10, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|chg', 'Change Orders' FROM [Jobs$] job INNER JOIN [Bids$] bid ON bid.[JobID] = job.[JobID] " & _
+                        "UNION ALL SELECT 11, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|chg', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|chg|fffd|' & qry.[ChangeID], qry.[Description] FROM [Jobs$] job " & _
+                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+                        "ORDER BY [Sort], [Text]"
+            End If
+        Case Is = 4 'tblBids
+            If grstSubs.ActiveConnection Is Nothing Then
+                strSQL = "SELECT bid.[BidID] AS [PK], 1 AS [Sort], '' AS [Relative], 'bid|fffd|' & bid.[BidID] AS [Key], job.[Name] & ' Bid' AS [Text] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]" & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 2, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 3, 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'bid|fffd|' & bid.[BidID] & '|fffd|job|fffd|' & job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID] " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 4, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 5, 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'bid|fffd|' & bid.[BidID] & '|fffd|bdr|fffd|' & [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID] " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 8, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'LineItems' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 9, 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'bid|fffd|' & bid.[BidID] & '|fffd|itm|fffd|' & [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID] "
+            Else
+                strSQL = "SELECT bid.[BidID] AS [PK], 1 AS [Sort], '' AS [Relative], 'bid|fffd|' & bid.[BidID] AS [Key], job.[Name] & ' Bid' AS [Text] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]" & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 2, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 3, 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'bid|fffd|' & bid.[BidID] & '|fffd|job|fffd|' & job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID] " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 4, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 5, 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'bid|fffd|' & bid.[BidID] & '|fffd|bdr|fffd|' & [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID] " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 6, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|sub', 'Sub Contractors' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 7, 'bid|fffd|' & bid.[BidID] & '|fffd|sub', 'bid|fffd|' & bid.[BidID] & '|fffd|sub|fffd|' & [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID] " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 8, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'LineItems' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 9, 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'bid|fffd|' & bid.[BidID] & '|fffd|itm|fffd|' & [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID] " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 10, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|chg', 'Change Orders' FROM [Bids$] bid " & _
+                        "UNION ALL SELECT bid.[BidID] AS [PK], 11, 'bid|fffd|' & bid.[BidID] & '|fffd|chg', 'bid|fffd|' & bid.[BidID] & '|fffd|chg|fffd|' & [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID] "
+            End If
+            If Len(gstrTreeINStatement) > 0 Then strSQL = "SELECT [trv].* FROM (" & strSQL & ") AS [trv] WHERE [trv].[PK]IN " & gstrTreeINStatement
+
+            strSQL = strSQL & " ORDER BY [Sort], [Text]"
+        Case Is = 5 'tblItems
+            If grstSubs.ActiveConnection Is Nothing Then
+                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'itm|fffd|' & [itm].[ItemID] AS [Key], [itm].[Item Name] AS [Text] FROM [Line Items$] [itm] " & _
+                        "UNION ALL SELECT 2, 'itm|fffd|' & [itm].[ItemID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'Bids' FROM [Line Items$] [itm] " & _
+                        "UNION ALL SELECT 3, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], bid.[Security Issuing Bank] FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                        "UNION ALL SELECT 4, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                        "UNION ALL SELECT 5, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Line Items$] [itm] " & _
+                        "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+                        "UNION ALL SELECT 6, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                        "UNION ALL SELECT 7, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Line Items$] [itm] " & _
+                        "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [itm].[BidID] "
+            Else
+                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'itm|fffd|' & [itm].[ItemID] AS [Key], [itm].[Item Name] AS [Text] FROM [Line Items$] [itm] " & _
+                    "UNION ALL SELECT 2, 'itm|fffd|' & [itm].[ItemID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'Bids' FROM [Line Items$] [itm] " & _
+                    "UNION ALL SELECT 3, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], bid.[Security Issuing Bank] FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 4, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 5, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Line Items$] [itm] " & _
+                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 6, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 7, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Line Items$] [itm] " & _
+                    "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 8, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|sub', 'Sub Contractors' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 9, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub|fffd|' & qry.[SubID], qry.[Name] FROM [Line Items$] [itm] " & _
+                    "INNER JOIN (SELECT bid.[BidID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 10, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|chg', 'Change Orders' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+                    "UNION ALL SELECT 11, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg|fffd|' & qry.[ChangeID], qry.[Description] FROM [Line Items$] [itm] " & _
+                    "INNER JOIN (SELECT bid.[BidID], [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [itm].[BidID] "
+            End If
+            strSQL = strSQL & "ORDER BY [Sort], [Text]"
+        Case Is = 6 ' tblChanges
+            strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'chg|fffd|' & [chg].[ChangeID] AS [Key], [chg].[Description] AS [Text] FROM [Change Orders$] [chg] " & _
+                    "UNION ALL SELECT 2, 'chg|fffd|' & [chg].[ChangeID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid', 'Bids' FROM [Change Orders$] [chg] " & _
+                    "UNION ALL SELECT 3, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], bid.[Security Issuing Bank] FROM [Change Orders$] [chg]  INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 4, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 5, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Change Orders$] [chg] " & _
+                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 6, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 7, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Change Orders$] [chg] " & _
+                    "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 8, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|sub', 'Sub Contractors' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 9, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub|fffd|' & qry.[SubID], qry.[Name] FROM [Change Orders$] [chg] " & _
+                    "INNER JOIN (SELECT bid.[BidID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 10, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|chg', 'Change Orders' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+                    "UNION ALL SELECT 11, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Change Orders$] [chg] " & _
+                    "INNER JOIN (SELECT bid.[BidID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+                    "ORDER BY [Sort], [Text]"
+    End Select
+    Set TreeViewRST = New ADODB.Recordset
+    TreeViewRST.Open strSQL, goConn, adOpenDynamic, adLockOptimistic
+
+End Property
+
+'
+'Property Get TreeViewRST(ByVal iTable As BidTablesEnum) As ADODB.Recordset
+'
+'Dim strSQL As String
+'
+'
+'Const sqlBdr As String = " FROM [bidders$] [bdr] "
+'Const sqlJob As String = sqlBdr & _
+'                         "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid " & _
+'                         "INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+'Const sqlSub As String = sqlBdr & _
+'                         "INNER JOIN (SELECT bid.[BidderID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid " & _
+'                         "INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+'Const sqlItm As String = sqlBdr & _
+'                         "INNER JOIN (SELECT sqry.[BidderID], job.[JobID], sqry.[BidID], sqry.[ItemID], sqry.[Item Name] FROM [Jobs$] job " & _
+'                         "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], bid.[JobID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid " & _
+'                         "INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) sqry ON sqry.[JobID] = job.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+'Const sqlChg As String = sqlBdr & _
+'                         "INNER JOIN (SELECT sqry.[BidderID], job.[JobID], sqry.[BidID], sqry.[ChangeID], sqry.[Description] FROM [Jobs$] job " & _
+'                         "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], bid.[JobID], [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid " & _
+'                         "INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID]) sqry ON sqry.[JobID] = job.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+'
+'
+'    Select Case iTable
+'        Case Is = 1 'tblBidders
+'            If grstSubs.ActiveConnection Is Nothing Then
+'                strSQL = "SELECT [bdr].[BidderID] AS [PK], 1 AS [Sort], '' AS [Relative], 'bdr|fffd|' & [bdr].[BidderID] AS [Key], [bdr].[Name] AS [Text] FROM [bidders$] [bdr] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 4, 'bdr|fffd|' & [bdr].[BidderID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job', 'Jobs' FROM [Bidders$] [bdr] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 5, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & job.[JobID], job.[Name] FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 6, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|bid', 'Bids' FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 7, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|bid', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|bid|fffd|' & qry.[BidID], qry.[Name] & ' Bid' FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], bid.[BidID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 8, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|itm', 'Line Items' FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], bid.[BidID] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 9, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|itm', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT sqry.[BidderID], job.[JobID], sqry.[BidID], sqry.[ItemID], sqry.[Item Name] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], bid.[JobID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) sqry ON sqry.[JobID] = job.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+'            Else
+'                strSQL = "SELECT [bdr].[BidderID] AS [PK], 1 AS [Sort], '' AS [Relative], 'bdr|fffd|' & [bdr].[BidderID] AS [Key], [bdr].[Name] AS [Text] FROM [bidders$] [bdr] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 2, 'bdr|fffd|' & [bdr].[BidderID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|sub', 'Sub Contractors' FROM [Bidders$] [bdr] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 3, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|sub', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|sub|fffd|' & qry.[SubID], qry.[Name] FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 4, 'bdr|fffd|' & [bdr].[BidderID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job', 'Jobs' FROM [Bidders$] [bdr] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 5, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & job.[JobID], job.[Name] FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 6, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|bid', 'Bids' FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 7, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|bid', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|bid|fffd|' & qry.[BidID], qry.[Name] & ' Bid' FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], bid.[BidID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 8, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|itm', 'Line Items' FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], bid.[BidID] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 9, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|itm', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT sqry.[BidderID], job.[JobID], sqry.[BidID], sqry.[ItemID], sqry.[Item Name] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], bid.[JobID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) sqry ON sqry.[JobID] = job.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 10, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID], 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|chg', 'Change Order' FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], job.[JobID], bid.[BidID] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] " & _
+'                        "UNION ALL SELECT [bdr].[BidderID] AS [PK], 11, 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|chg', 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|chg|fffd|' & qry.[ChangeID], qry.[Description] FROM [bidders$] [bdr] " & _
+'                        "INNER JOIN (SELECT sqry.[BidderID], job.[JobID], sqry.[BidID], sqry.[ChangeID], sqry.[Description] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[BidderID], bid.[BidID], bid.[JobID], [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID]) sqry ON sqry.[JobID] = job.[JobID]) qry ON qry.[BidderID] = [bdr].[BidderID] "
+'            End If
+'            If Len(gstrTreeINStatement) > 0 Then strSQL = "SELECT [trv].* FROM (" & strSQL & ") AS [trv] WHERE [trv].[PK]IN " & gstrTreeINStatement
+'
+'            strSQL = strSQL & " ORDER BY [Sort], [Text]"
+'        Case Is = 2 'tblSubs
+'            strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'sub|fffd|' & [sub].[SubID] AS [Key], [sub].[Name] AS [Text] FROM [Subcontractors$] [sub] " & _
+'                    "UNION ALL SELECT 2, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr', 'Bidders' FROM [Subcontractors$] [sub] " & _
+'                    "UNION ALL SELECT 3, 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr', 'sub|fffd|' & [sub].[SubID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Subcontractors$] [sub] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [sub].[BidID] " & _
+'                    "UNION ALL SELECT 4, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|bid', 'Bids' FROM [Subcontractors$] [sub] " & _
+'                    "UNION ALL SELECT 5, 'sub|fffd|' & [sub].[SubID] & '|fffd|bid', 'sub|fffd|' & [sub].[SubID] & '|fffd|bid|fffd|' & qry.[BidID], qry.[Name] & ' Bid' FROM [Subcontractors$] [sub] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] " & _
+'                    "UNION ALL SELECT 6, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|job', 'Jobs' FROM [Subcontractors$] [sub] " & _
+'                    "UNION ALL SELECT 7, 'sub|fffd|' & [sub].[SubID] & '|fffd|job', 'sub|fffd|' & [sub].[SubID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Subcontractors$] [sub] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] " & _
+'                    "UNION ALL SELECT 8, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|itm', 'Line Items' FROM [Subcontractors$] [sub] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] " & _
+'                    "UNION ALL SELECT 9, 'sub|fffd|' & [sub].[SubID] & '|fffd|itm', 'sub|fffd|' & [sub].[SubID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Subcontractors$] [sub] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], bid.[JobID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [sub].[BidID] " & _
+'                    "UNION ALL SELECT 10, 'sub|fffd|' & [sub].[SubID], 'sub|fffd|' & [sub].[SubID] & '|fffd|chg', 'Change Orders' FROM [Subcontractors$] [sub] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [sub].[BidID] " & _
+'                    "UNION ALL SELECT 11, 'sub|fffd|' & [sub].[SubID] & '|fffd|chg', 'sub|fffd|' & [sub].[SubID] & '|fffd|chg|fffd|' & qry.[ChangeID], qry.[Description] FROM [Subcontractors$] [sub] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], bid.[JobID], [itm].[ChangeID], [itm].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [sub].[BidID] " & _
+'                    "ORDER BY [Sort], [Text]"
+'        Case Is = 3 'tblJobs
+'            If grstSubs.ActiveConnection Is Nothing Then
+'                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'job|fffd|' & job.[JobID] AS [Key], job.[Name] AS [Text] FROM [Jobs$] job " & _
+'                        "UNION ALL SELECT 2, 'job|fffd|' & job.[JobID], 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'Bidders' FROM [Jobs$] job " & _
+'                        "UNION ALL SELECT 3, 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 4, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'Bids' FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 5, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid|fffd|' & qry.[BidID], job.[Name] & ' Bid' FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 8, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'Line Items' FROM [Jobs$] job INNER JOIN [Bids$] bid ON bid.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 9, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "ORDER BY [Sort], [Text]"
+'            Else
+'                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'job|fffd|' & job.[JobID] AS [Key], job.[Name] AS [Text] FROM [Jobs$] job " & _
+'                        "UNION ALL SELECT 2, 'job|fffd|' & job.[JobID], 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'Bidders' FROM [Jobs$] job " & _
+'                        "UNION ALL SELECT 3, 'job|fffd|' & job.[JobID] & '|fffd|bdr', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 4, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'Bids' FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 5, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|bid|fffd|' & qry.[BidID], job.[Name] & ' Bid' FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 6, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|sub', 'Sub Contractors' FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 7, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|sub', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & qry.[BidderID] & '|fffd|sub|fffd|' & qry.[SubID], qry.[Name] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 8, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'Line Items' FROM [Jobs$] job INNER JOIN [Bids$] bid ON bid.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 9, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|itm|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 10, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID], 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|chg', 'Change Orders' FROM [Jobs$] job INNER JOIN [Bids$] bid ON bid.[JobID] = job.[JobID] " & _
+'                        "UNION ALL SELECT 11, 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|chg', 'job|fffd|' & job.[JobID] & '|fffd|bdr|fffd|' & bid.[BidderID] & '|fffd|chg|fffd|' & qry.[ChangeID], qry.[Description] FROM [Jobs$] job " & _
+'                        "INNER JOIN (SELECT bid.[JobID], bid.[BidID], bid.[BidderID], [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID]) qry ON qry.[JobID] = job.[JobID] " & _
+'                        "ORDER BY [Sort], [Text]"
+'            End If
+'        Case Is = 4 'tblBids
+'            If grstSubs.ActiveConnection Is Nothing Then
+'                strSQL = "SELECT bid.[BidID] AS [PK], 1 AS [Sort], '' AS [Relative], 'bid|fffd|' & bid.[BidID] AS [Key], job.[Name] & ' Bid' AS [Text] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]" & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 2, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 3, 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'bid|fffd|' & bid.[BidID] & '|fffd|job|fffd|' & job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID] " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 4, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 5, 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'bid|fffd|' & bid.[BidID] & '|fffd|bdr|fffd|' & [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID] " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 8, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'LineItems' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 9, 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'bid|fffd|' & bid.[BidID] & '|fffd|itm|fffd|' & [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID] "
+'            Else
+'                strSQL = "SELECT bid.[BidID] AS [PK], 1 AS [Sort], '' AS [Relative], 'bid|fffd|' & bid.[BidID] AS [Key], job.[Name] & ' Bid' AS [Text] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]" & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 2, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 3, 'bid|fffd|' & bid.[BidID] & '|fffd|job', 'bid|fffd|' & bid.[BidID] & '|fffd|job|fffd|' & job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID] " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 4, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 5, 'bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'bid|fffd|' & bid.[BidID] & '|fffd|bdr|fffd|' & [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID] " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 6, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|sub', 'Sub Contractors' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 7, 'bid|fffd|' & bid.[BidID] & '|fffd|sub', 'bid|fffd|' & bid.[BidID] & '|fffd|sub|fffd|' & [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID] " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 8, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'LineItems' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 9, 'bid|fffd|' & bid.[BidID] & '|fffd|itm', 'bid|fffd|' & bid.[BidID] & '|fffd|itm|fffd|' & [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID] " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 10, 'bid|fffd|' & bid.[BidID], 'bid|fffd|' & bid.[BidID] & '|fffd|chg', 'Change Orders' FROM [Bids$] bid " & _
+'                        "UNION ALL SELECT bid.[BidID] AS [PK], 11, 'bid|fffd|' & bid.[BidID] & '|fffd|chg', 'bid|fffd|' & bid.[BidID] & '|fffd|chg|fffd|' & [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID] "
+'            End If
+'            If Len(gstrTreeINStatement) > 0 Then strSQL = "SELECT [trv].* FROM (" & strSQL & ") AS [trv] WHERE [trv].[PK]IN " & gstrTreeINStatement
+'
+'            strSQL = strSQL & " ORDER BY [Sort], [Text]"
+'        Case Is = 5 'tblItems
+'            If grstSubs.ActiveConnection Is Nothing Then
+'                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'itm|fffd|' & [itm].[ItemID] AS [Key], [itm].[Item Name] AS [Text] FROM [Line Items$] [itm] " & _
+'                        "UNION ALL SELECT 2, 'itm|fffd|' & [itm].[ItemID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'Bids' FROM [Line Items$] [itm] " & _
+'                        "UNION ALL SELECT 3, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], bid.[Security Issuing Bank] FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                        "UNION ALL SELECT 4, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                        "UNION ALL SELECT 5, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Line Items$] [itm] " & _
+'                        "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+'                        "UNION ALL SELECT 6, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                        "UNION ALL SELECT 7, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Line Items$] [itm] " & _
+'                        "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [itm].[BidID] "
+'            Else
+'                strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'itm|fffd|' & [itm].[ItemID] AS [Key], [itm].[Item Name] AS [Text] FROM [Line Items$] [itm] " & _
+'                    "UNION ALL SELECT 2, 'itm|fffd|' & [itm].[ItemID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'Bids' FROM [Line Items$] [itm] " & _
+'                    "UNION ALL SELECT 3, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], bid.[Security Issuing Bank] FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 4, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 5, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Line Items$] [itm] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 6, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 7, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Line Items$] [itm] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 8, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|sub', 'Sub Contractors' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 9, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub|fffd|' & qry.[SubID], qry.[Name] FROM [Line Items$] [itm] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 10, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID], 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|chg', 'Change Orders' FROM [Line Items$] [itm] INNER JOIN [Bids$] bid ON bid.[BidID] = [itm].[BidID] " & _
+'                    "UNION ALL SELECT 11, 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg', 'itm|fffd|' & [itm].[ItemID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg|fffd|' & qry.[ChangeID], qry.[Description] FROM [Line Items$] [itm] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], [chg].[ChangeID], [chg].[Description] FROM [Bids$] bid INNER JOIN [Change Orders$] [chg] ON [chg].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [itm].[BidID] "
+'            End If
+'            strSQL = strSQL & "ORDER BY [Sort], [Text]"
+'        Case Is = 6 ' tblChanges
+'            strSQL = "SELECT 1 AS [Sort], '' AS [Relative], 'chg|fffd|' & [chg].[ChangeID] AS [Key], [chg].[Description] AS [Text] FROM [Change Orders$] [chg] " & _
+'                    "UNION ALL SELECT 2, 'chg|fffd|' & [chg].[ChangeID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid', 'Bids' FROM [Change Orders$] [chg] " & _
+'                    "UNION ALL SELECT 3, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], bid.[Security Issuing Bank] FROM [Change Orders$] [chg]  INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 4, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|job', 'Jobs' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 5, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|job|fffd|' & qry.[JobID], qry.[Name] FROM [Change Orders$] [chg] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], job.[JobID], job.[Name] FROM [Bids$] bid INNER JOIN [Jobs$] job ON job.[JobID] = bid.[JobID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 6, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|bdr', 'Bidders' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 7, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|bdr|fffd|' & qry.[BidderID], qry.[Name] FROM [Change Orders$] [chg] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], [bdr].[BidderID], [bdr].[Name] FROM [Bids$] bid INNER JOIN [Bidders$] [bdr] ON [bdr].[BidderID] = bid.[BidderID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 8, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|sub', 'Sub Contractors' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 9, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|sub|fffd|' & qry.[SubID], qry.[Name] FROM [Change Orders$] [chg] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], [sub].[SubID], [sub].[Name] FROM [Bids$] bid INNER JOIN [Subcontractors$] [sub] ON [sub].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 10, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID], 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & bid.[BidID] & '|fffd|chg', 'Change Orders' FROM [Change Orders$] [chg] INNER JOIN [Bids$] bid ON bid.[BidID] = [chg].[BidID] " & _
+'                    "UNION ALL SELECT 11, 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg', 'chg|fffd|' & [chg].[ChangeID] & '|fffd|bid|fffd|' & qry.[BidID] & '|fffd|chg|fffd|' & qry.[ItemID], qry.[Item Name] FROM [Change Orders$] [chg] " & _
+'                    "INNER JOIN (SELECT bid.[BidID], [itm].[ItemID], [itm].[Item Name] FROM [Bids$] bid INNER JOIN [Line Items$] [itm] ON [itm].[BidID] = bid.[BidID]) qry ON qry.[BidID] = [chg].[BidID] " & _
+'                    "ORDER BY [Sort], [Text]"
+'    End Select
+'    Set TreeViewRST = New ADODB.Recordset
+'    TreeViewRST.Open strSQL, goConn, adOpenDynamic, adLockOptimistic
+'
+'End Property
+'
+'
+'Private Function BiddersTreeviewSQL(ByVal iTable As BidTablesEnum, ByVal iSort As Integer) As String
+'Dim strSQL As String
+'Dim strTable As String
+'Dim strSheet As String
+'Dim strPK As String
+'Dim strPKName As String
+'
+'    strTable = TreeViewTblName(iTable)
+'    strSheet = SheetName(iTable)
+'    strPK = PK(iTable)
+'    strPKName = PKName(iTable)
+'
+'    If iTable <> tblBidders Then
+'
+'
+'    Select Case iTable
+'        Case Is = 1
+'            strSQL = "SELECT bdr.[BidderID] AS [PK]"
+'            strSQL = strSQL & ", " & iSort & " AS [Sort]"
+'            strSQL = strSQL & ", '' AS [Relative]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] AS [Key]"
+'            strSQL = strSQL & ", bdr.[Name] AS [Text] "
+'            strSQL = strSQL & "FROM [bidders$] bdr "
+'        Case Is = 3
+'            strSQL = "UNION ALL "
+'            strSQL = strSQL & "SELECT [bdr].[BidderID] AS [PK]"
+'            strSQL = strSQL & ", " & iSort & " AS [Sort]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & [bdr].[BidderID] AS [Relative]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|" & strTable & "' AS [Key]"
+'            strSQL = strSQL & ", '" & strSheet & "' AS [Text] "
+'            strSQL = strSQL & "FROM [Bidders$] [bdr] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT bdr.[BidderID] AS [PK]"
+'            strSQL = strSQL & ", " & iSort + 1 & " AS [Sort]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|" & strTable & "' AS [Relative]" '
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|" & strTable & "|fffd|' & qry." & strPK & " AS [Key]" '
+'            strSQL = strSQL & ", qry.[" & strPKName & "] " '
+'            strSQL = strSQL & "FROM [bidders$] AS bdr "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidderID]"
+'            strSQL = strSQL & ", " & strTable & "." & strPK '
+'            strSQL = strSQL & ", " & strTable & ".[" & strPKName & "] " '
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [" & strSheet & "$] AS " & strTable & " " '
+'            strSQL = strSQL & "ON " & strTable & ".[JobID] = bid.[JobID]" '
+'            strSQL = strSQL & ") qry ON qry.[BidderID] = bdr.[BidderID] "
+'        Case Is = 2, 3
+'            strSQL = "UNION ALL "
+'            strSQL = strSQL & "SELECT [bdr].[BidderID] AS [PK]"
+'            strSQL = strSQL & ", " & iSort & " AS [Sort]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & [bdr].[BidderID] AS [Relative]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & [bdr].[BidderID] & '|fffd|" & strTable & "' AS [Key]"
+'            strSQL = strSQL & ", '" & strSheet & "' AS [Text] "
+'            strSQL = strSQL & "FROM [Bidders$] [bdr] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT bdr.[BidderID] AS [PK]"
+'            strSQL = strSQL & ", " & iSort + 1 & " AS [Sort]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|" & strTable & "' AS [Relative]" '
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|" & strTable & "|fffd|' & qry." & strPK & " AS [Key]" '
+'            strSQL = strSQL & ", qry.[" & strPKName & "] " '
+'            strSQL = strSQL & "FROM [bidders$] AS bdr "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidderID]"
+'            strSQL = strSQL & ", " & strTable & "." & strPK '
+'            strSQL = strSQL & ", " & strTable & ".[" & strPKName & "] " '
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [" & strSheet & "$] AS " & strTable & " " '
+'            strSQL = strSQL & "ON " & strTable & ".[BidID] = bid.[BidID]" '
+'            strSQL = strSQL & ") qry ON qry.[BidderID] = bdr.[BidderID] "
+'        Case Is = 4, 5, 6
+'            strSQL = "UNION ALL "
+'            strSQL = strSQL & "SELECT bdr.[BidderID] AS [PK]"
+'            strSQL = strSQL & ", " & iSort
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|job|fffd|' & qry.[JobID]"
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|" & strTable & "'"
+'            strSQL = strSQL & ", '" & strSheet & "' "
+'            strSQL = strSQL & "FROM [bidders$] bdr "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT bid.[BidderID]"
+'            strSQL = strSQL & ", bid.[BidID]"
+'            strSQL = strSQL & ", job.[JobID]"
+'            strSQL = strSQL & ", job.[Name] "
+'            strSQL = strSQL & "FROM [Bids$] bid "
+'            strSQL = strSQL & "INNER JOIN [Jobs$] job "
+'            strSQL = strSQL & "ON job.[JobID] = bid.[JobID]"
+'            strSQL = strSQL & ") qry ON qry.[BidderID] = bdr.[BidderID] "
+'            strSQL = strSQL & "UNION ALL "
+'            strSQL = strSQL & "SELECT bdr.[BidderID] AS [PK]"
+'            strSQL = strSQL & ", " & iSort + 1
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|" & strTable & "'"
+'            strSQL = strSQL & ", 'bdr|fffd|' & bdr.[BidderID] & '|fffd|job|fffd|' & qry.[JobID] & '|fffd|" & strTable & "|fffd|' & qry." & strPK
+'            strSQL = strSQL & ", qry.[" & strPKName & "] "
+'            strSQL = strSQL & "FROM [bidders$] bdr "
+'            strSQL = strSQL & "INNER JOIN ("
+'            strSQL = strSQL & "SELECT qry.[BidderID]"
+'            strSQL = strSQL & ", job.[JobID]"
+'            strSQL = strSQL & ", qry.[BidID]"
+'            If iTable <> tblBids Then strSQL = strSQL & ", qry." & strPK
+'            strSQL = strSQL & ", qry.[" & strPKName & "] "
+'            strSQL = strSQL & "FROM [Jobs$] job "
+'            Select Case iTable
+'                Case Is = 4
+'                    strSQL = strSQL & "INNER JOIN [Bids$] qry "
+'                Case Is = 5, 6
+'                    strSQL = strSQL & "INNER JOIN ("
+'                    strSQL = strSQL & "SELECT bid.[BidderID]"
+'                    strSQL = strSQL & ", bid.[BidID]"
+'                    strSQL = strSQL & ", bid.[JobID]"
+'                    strSQL = strSQL & ", " & strTable & "." & strPK
+'                    strSQL = strSQL & ", " & strTable & ".[" & strPKName & "] "
+'                    strSQL = strSQL & "FROM [Bids$] bid "
+'                    strSQL = strSQL & "INNER JOIN [" & strSheet & "$] " & strTable & " "
+'                    strSQL = strSQL & "ON " & strTable & ".[BidID] = bid.[BidID]) qry "
+'            End Select
+'            strSQL = strSQL & "ON qry.[JobID] = job.[JobID]"
+'
+'            strSQL = strSQL & ") qry ON qry.[BidderID] = bdr.[BidderID] "
+'        End Select
+'    BiddersTreeviewSQL = strSQL
+'
+'End Function
+'
+Attribute VB_Name = "clsReportSQL"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Enum UserReportsEnum
+'---------------------------------------------------------------------------------------
+' Enum      : UserReportsEnum
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Enum accounts for envisioned reports in IACRC Bid Review Tool
+'             SQL = SQL is static and is available to select
+'             SQL% = SQL requires X% value supplied by user and is available to select
+'             Incomplete = The SQL is in early development but has not been finished
+'---------------------------------------------------------------------------------------
+    rptSameAddress = 1 'SQL
+    rptSameName = 2 'SQL
+    rptAboveBid = 3 'SQL%
+    rptWithinBid = 4 'SQL%
+    rptAboveEstCost = 5 'SQL%
+    rptExactPerApart = 6 'SQL%
+    rptBidderToSub = 7 'SQL
+    rptLowBidSubmission = 8 'Incomplete - Need larger data set
+    rptHighBidSubmission = 9 'Incomplete - Need larger data set
+    rptSameBidPrice = 10 'SQL
+    rptPingPong = 11 'Incomplete - Need larger data set
+    rptSameBank = 12 'SQL
+    rptSameDate = 13 'SQL
+    rptSequntialIssueNum = 14 'SQL
+    rptFrequentWinner = 15 'Incomplete - Need larger data set
+    rptSameSigner = 16 'SQL
+    rptChangeOrders = 17 'Incomplete
+    rptSameLineItemBidPrice = 18 'SQL
+    rptSameLineItemPrices = 19 'SQL
+    rptLineItemsGreater = 20 'SQL%
+End Enum
+    
+Property Get ReportName(ByVal iRpt As UserReportsEnum) As String
+'---------------------------------------------------------------------------------------
+' Procedure : ReportName
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Property returns the short description of reports available the user
+'---------------------------------------------------------------------------------------
+Dim strReportName As String
+
+   On Error GoTo ReportName_Error
+
+    Select Case iRpt
+        Case Is = 1 'rptSameAddress
+            strReportName = "Bidders with the same address"
+        Case Is = 2 'rptSameName
+            strReportName = "Bidders with the same name"
+        Case Is = 3 'rptAboveBid
+            strReportName = "Bids above winning bid by X%"
+        Case Is = 4 'rptWithinBid
+            strReportName = "Bids within X% range of a winning bid" '"Bids within selected percentage range of a winning bid"
+        Case Is = 5 'rptAboveEstCost
+            strReportName = "Bids above estimated cost by X%"
+        Case Is = 6 'rptExactPerApart
+            strReportName = "Bids that are exact percentage apart by X%"
+        Case Is = 7 'rptBidderToSub
+            strReportName = "Bids where losing bidders became subcontractors" '"Bids where lost bidders became subcontractors of the winning bidder"
+        Case Is = 8 'rptLowBidSubmission
+            strReportName = "Bids where less than X% of bid package buyers submitted a bid"
+        Case Is = 9 'rptHighBidSubmission
+            strReportName = "Bids where more than X% of bid package buyers submitted a bid"
+        Case Is = 10 'rptSameBidPrice
+            strReportName = "Bids with identical total bid prices"
+        Case Is = 11 'rptPingPong
+            strReportName = "Ping-ponged bids"
+        Case Is = 12 'rptSameBank
+            strReportName = "Bids where the securities were issued by the same bank"
+        Case Is = 13 'rptSameDate
+            strReportName = "Bids where the securities were issued on the same date"
+        Case Is = 14 'rptSequntialIssueNum
+            strReportName = "Bid where the issue numbers for securities are sequential"
+        Case Is = 15 'rptFrequentWinner
+            strReportName = "Bids where a contractor wins more that a X% of the bids"
+        Case Is = 16 'rptSameSigner
+            strReportName = "Bids with the same signer"
+        Case Is = 17 'rptChangeOrders
+            strReportName = "The percentage the job was increased due to change orders"
+        Case Is = 18 'rptSameLineItemBidPrice
+            strReportName = "Bids with identical total Line Item Bid price"
+        Case Is = 19 'rptSameLineItemPrices
+            strReportName = "Bids with identical Line Item prices"
+        Case Is = 20 'rptLineItemsGreater
+            strReportName = "Selected line item bids where line items are greater by X%"
+    End Select
+    ReportName = strReportName
+
+   On Error GoTo 0
+   Exit Property
+
+ReportName_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure ReportName of Class Module clsReportSQL"
+
+End Property
+
+
+Property Get ReportSQL(ByVal iRpt As UserReportsEnum, Optional strArg As String = "") As String
+'---------------------------------------------------------------------------------------
+' Procedure : ReportSQL
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Property returns the SQL relevant to the report requested by the user
+'---------------------------------------------------------------------------------------
+Dim strReportSQL As String
+
+   On Error GoTo ReportSQL_Error
+
+    Select Case iRpt
+        Case Is = 1 'rptSameAddress
+            strReportSQL = SameAddress()
+        Case Is = 2 'rptSameName
+            strReportSQL = SameName()
+        Case Is = 3 'rptAboveBid
+            strReportSQL = AboveBid(strArg)
+        Case Is = 4 'rptWithinBid
+            strReportSQL = WithinBid(strArg)
+        Case Is = 5 'rptAboveEstCost
+            strReportSQL = AboveEstCost(strArg)
+        Case Is = 6 'rptExactPerApart
+            strReportSQL = ExactPerApart(strArg)
+        Case Is = 7 'rptBidderToSub
+            strReportSQL = BidderToSub()
+        Case Is = 8 'rptLowBidSubmission
+            strReportSQL = LowBidSubmission()
+        Case Is = 9 'rptHighBidSubmission
+            strReportSQL = HighBidSubmission()
+        Case Is = 10 'rptSameBidPrice
+            strReportSQL = SameBidPrice()
+        Case Is = 11 'rptPingPong
+            strReportSQL = PingPong()
+        Case Is = 12 'rptSameBank
+            strReportSQL = SameBank()
+        Case Is = 13 'rptSameDate
+            strReportSQL = SameDate()
+        Case Is = 14 'rptSequntialIssueNum
+            strReportSQL = SequentialIssueNum()
+        Case Is = 15 'rptFrequentWinner
+            strReportSQL = FrequentWinner()
+        Case Is = 16 'rptSameSigner
+            strReportSQL = SameSigner()
+        Case Is = 17 'rptChangeOrders
+            strReportSQL = ChangeOrders()
+        Case Is = 18 'rptSameLineItemBidPrice
+            strReportSQL = SameLineItemBidPrice()
+        Case Is = 19 'rptSameLineItemPrices
+            strReportSQL = SameLineItemPrices()
+        Case Is = 20 'rptLineItemsGreater
+            strReportSQL = LineItemsGreater(strArg)
+    End Select
+    ReportSQL = strReportSQL
+
+   On Error GoTo 0
+   Exit Property
+
+ReportSQL_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure ReportSQL of Class Module clsReportSQL"
+
+End Property
+
+Private Function SameAddress() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameAddress
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids from bidders with the same address
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo SameAddress_Error
+
+    strSQL = "SELECT DISTINCT bdr.* "
+    strSQL = strSQL & "FROM [Bidders$] AS bdr "
+    strSQL = strSQL & "INNER JOIN ("
+                strSQL = strSQL & "SELECT [Address] "
+                strSQL = strSQL & "FROM [Bidders$] "
+                strSQL = strSQL & "GROUP BY [Address] "
+                strSQL = strSQL & "HAVING COUNT(1) > 1"
+    strSQL = strSQL & ") AS qry "
+    strSQL = strSQL & "ON TRIM(bdr.[Address]) = TRIM(qry.[Address]) "
+    strSQL = strSQL & "ORDER BY bdr.[Address];"
+    SameAddress = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameAddress_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameAddress of Class Module clsReportSQL"
+
+End Function
+
+Private Function SameName() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameName
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids from bidders with the same name
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+    
+   On Error GoTo SameName_Error
+
+    strSQL = "SELECT DISTINCT bdr.* "
+    strSQL = strSQL & "FROM [Bidders$] AS bdr "
+    strSQL = strSQL & "INNER JOIN ("
+                strSQL = strSQL & "SELECT [Name] "
+                strSQL = strSQL & "FROM [Bidders$] "
+                strSQL = strSQL & "GROUP BY [Name] "
+                strSQL = strSQL & "HAVING COUNT(1) > 1) AS qry "
+    strSQL = strSQL & "ON TRIM(bdr.[Name]) = TRIM(qry.[Name]) "
+    strSQL = strSQL & "ORDER BY bdr.[Name];"
+    SameName = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameName_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameName of Class Module clsReportSQL"
+
+End Function
+
+Private Function SameBank() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameBank
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids with security documents issued by the
+'             same bank for the same job
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo SameBank_Error
+
+    strSQL = "SELECT bid.* "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN ("
+                strSQL = strSQL & "SELECT [JobID] "
+                      strSQL = strSQL & ",[Security Issuing Bank] "
+                strSQL = strSQL & "FROM [Bids$] "
+                strSQL = strSQL & "GROUP BY [JobID] "
+                        strSQL = strSQL & ",[Security Issuing Bank] "
+                strSQL = strSQL & "HAVING COUNT(*) > 1"
+    strSQL = strSQL & ") AS qry "
+    strSQL = strSQL & "ON qry.[JobID] = bid.[JobID] "
+    strSQL = strSQL & "AND qry.[Security Issuing Bank] = bid.[Security Issuing Bank];"
+    SameBank = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameBank_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameBank of Class Module clsReportSQL"
+
+End Function
+
+Private Function SameDate() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameDate
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids with security documents issued on
+'             the same day for the same job
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo SameDate_Error
+
+    strSQL = "SELECT DISTINCT bid.* "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN ("
+                strSQL = strSQL & "SELECT [JobID] "
+                      strSQL = strSQL & ",[Security Issuing Date] "
+                strSQL = strSQL & "FROM [Bids$] "
+                strSQL = strSQL & "GROUP BY [JobID] "
+                       strSQL = strSQL & ", [Security Issuing Date] "
+                strSQL = strSQL & "HAVING COUNT(*) > 1"
+    strSQL = strSQL & ") AS qry "
+    strSQL = strSQL & "ON bid.[Security Issuing Date] = qry.[Security Issuing Date] "
+    strSQL = strSQL & "AND bid.JobID = qry.JobID "
+    strSQL = strSQL & "ORDER BY bid.[JobID] "
+            strSQL = strSQL & ",bid.[Security Issuing Date];"
+    SameDate = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameDate_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameDate of Class Module clsReportSQL"
+
+End Function
+
+Private Function SequentialIssueNum() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SequentialIssueNum
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids with sequential security numbers on
+'             the same job
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo SequentialIssueNum_Error
+
+    strSQL = "SELECT DISTINCT bid.* "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN ("
+                strSQL = strSQL & "SELECT DISTINCT [JobID] "
+                               strSQL = strSQL & ",[Security Number] "
+                strSQL = strSQL & "FROM [Bids$]) AS qry "
+    strSQL = strSQL & "ON bid.JobID = qry.JobID "
+        strSQL = strSQL & "AND (bid.[Security Number] = qry.[Security Number] + 1 "
+        strSQL = strSQL & "OR bid.[Security Number] = qry.[Security Number] - 1) "
+    strSQL = strSQL & "ORDER BY bid.[JobID] "
+            strSQL = strSQL & ",bid.[Security Number];"
+    SequentialIssueNum = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SequentialIssueNum_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SequentialIssueNum of Class Module clsReportSQL"
+
+End Function
+
+Private Function SameSigner() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameSigner
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids with the same signer on the same job
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo SameSigner_Error
+
+    strSQL = "SELECT DISTINCT bid.* "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN ("
+                strSQL = strSQL & "SELECT [JobID] "
+                      strSQL = strSQL & ",[Signer] "
+                strSQL = strSQL & "FROM [Bids$] "
+                strSQL = strSQL & "GROUP BY [JobID] "
+                        strSQL = strSQL & ",[Signer] "
+                strSQL = strSQL & "HAVING COUNT(1) > 1"
+    strSQL = strSQL & ") AS qry "
+    strSQL = strSQL & "ON bid.[Signer] = qry.[Signer] "
+    strSQL = strSQL & "AND bid.[JobID] = qry.[JobID] "
+    strSQL = strSQL & "ORDER BY bid.[JobID] "
+            strSQL = strSQL & ",bid.[Signer];"
+    SameSigner = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameSigner_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameSigner of Class Module clsReportSQL"
+
+End Function
+
+
+Private Function AboveBid(ByVal strArg As String) As String
+'---------------------------------------------------------------------------------------
+' Procedure : AboveBid
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies losing bids that are within X% above the
+'             the winning bid
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+Dim d As Double
+
+   On Error GoTo AboveBid_Error
+
+    d = strArg / 100
+            strSQL = "SELECT bid.[BidID] "
+         strSQL = strSQL & ",bid.[JobID] "
+         strSQL = strSQL & ",bid.[BidderID] "
+         strSQL = strSQL & ",bid.[Bid Date] "
+         strSQL = strSQL & ",bid.[Bid Amount] "
+         strSQL = strSQL & ",bid.[Bid Status] "
+     strSQL = strSQL & "FROM [Bids$] AS bid "
+     strSQL = strSQL & "INNER JOIN [Jobs$] AS job "
+     strSQL = strSQL & "ON bid.[JobID] = job.[JobID] "
+     strSQL = strSQL & "WHERE bid.[Bid Status] <> 'Won' "
+     strSQL = strSQL & "AND ("
+          strSQL = strSQL & "SELECT SUM(itm.[Item Cost]) "
+          strSQL = strSQL & "FROM [Line Items$] AS itm "
+          strSQL = strSQL & "WHERE itm.[BidID] = bid.[BidID]) > (("
+                                               strSQL = strSQL & "SELECT SUM(qry1.[Item Cost]) "
+                                               strSQL = strSQL & "FROM [Line Items$] AS qry1 "
+                                               strSQL = strSQL & "INNER JOIN [Bids$] AS qry2 "
+                                               strSQL = strSQL & "ON qry1.[BidID] = qry2.[BidID] "
+                                               strSQL = strSQL & "WHERE qry2.[Bid Status] = 'Won' "
+                                               strSQL = strSQL & "AND qry2.[JobID] = bid.[JobID]"
+                                               strSQL = strSQL & ") * (" & 1 + d & ")"
+                                               strSQL = strSQL & ");"
+    AboveBid = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+AboveBid_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure AboveBid of Class Module clsReportSQL"
+
+End Function
+
+Private Function WithinBid(ByVal strArg As String) As String
+'---------------------------------------------------------------------------------------
+' Procedure : WithinBid
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies losing bids that are within X% above or
+'             below the winning bid
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+Dim d As Double
+
+   On Error GoTo WithinBid_Error
+
+    d = strArg / 100
+            strSQL = "SELECT bid.[BidID] "
+         strSQL = strSQL & ",bid.[JobID] "
+         strSQL = strSQL & ",bid.[BidderID] "
+         strSQL = strSQL & ",bid.[Bid Date] "
+         strSQL = strSQL & ",bid.[Bid Amount] "
+         strSQL = strSQL & ",bid.[Bid Status] "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN [Jobs$] AS job "
+    strSQL = strSQL & "ON bid.[JobID] = job.[JobID] "
+    strSQL = strSQL & "WHERE bid.[Bid Status] <> 'Won' "
+    strSQL = strSQL & "AND ("
+    strSQL = strSQL & "("
+     strSQL = strSQL & "SELECT SUM(itm.[Item Cost]) "
+     strSQL = strSQL & "FROM [Line Items$] AS itm "
+     strSQL = strSQL & "WHERE itm.[BidID] = bid.[BidID] "
+    strSQL = strSQL & ") > (("
+          strSQL = strSQL & "SELECT SUM(qry1.[Item Cost]) "
+          strSQL = strSQL & "FROM [Line Items$] AS qry1 "
+          strSQL = strSQL & "INNER JOIN [Bids$] AS qry2 "
+          strSQL = strSQL & "ON qry1.[BidID] = qry2.[BidID] "
+          strSQL = strSQL & "WHERE qry2.[Bid Status] = 'Won' "
+          strSQL = strSQL & "AND qry2.[JobID] = bid.[JobID]"
+          strSQL = strSQL & ") * (" & 1 - d & ")) "
+    strSQL = strSQL & "AND ("
+         strSQL = strSQL & "SELECT SUM(itm.[Item Cost]) "
+         strSQL = strSQL & "FROM [Line Items$] AS itm "
+         strSQL = strSQL & "WHERE itm.[BidID] = bid.[BidID]"
+    strSQL = strSQL & ") < (("
+          strSQL = strSQL & "SELECT SUM(qry3.[Item Cost]) "
+          strSQL = strSQL & "FROM [Line Items$] AS qry3 "
+          strSQL = strSQL & "INNER JOIN [Bids$] AS qry4 "
+          strSQL = strSQL & "ON qry3.[BidID] = qry4.[BidID] "
+          strSQL = strSQL & "WHERE qry4.[Bid Status] = 'Won' "
+          strSQL = strSQL & "AND qry4.[JobID] = bid.[JobID]"
+    strSQL = strSQL & ") * (" & 1 + d & "))"
+    strSQL = strSQL & ");"
+    WithinBid = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+WithinBid_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure WithinBid of Class Module clsReportSQL"
+
+End Function
+
+Private Function AboveEstCost(ByVal strArg As String) As String
+'---------------------------------------------------------------------------------------
+' Procedure : AboveEstCost
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids that are X% above the estimated cost
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+Dim d As Double
+
+   On Error GoTo AboveEstCost_Error
+
+    d = strArg / 100
+            strSQL = "SELECT bid.[BidID] "
+         strSQL = strSQL & ",bid.[JobID] "
+         strSQL = strSQL & ",bid.[BidderID] "
+         strSQL = strSQL & ",bid.[Bid Date] "
+         strSQL = strSQL & ",bid.[Bid Amount] "
+         strSQL = strSQL & ",bid.[Bid Status] "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN [Jobs$] AS job "
+    strSQL = strSQL & "ON bid.[JobID] = job.[JobID] "
+    strSQL = strSQL & "WHERE (("
+            strSQL = strSQL & "SELECT qry1.[Cost Estimate] "
+            strSQL = strSQL & "FROM [Jobs$] AS qry1 "
+            strSQL = strSQL & "WHERE qry1.[JobID] = bid.[JobID]"
+    strSQL = strSQL & ") * (" & 1 + d & ")) < ("
+                            strSQL = strSQL & "SELECT SUM(qry2.[Item Cost]) "
+                            strSQL = strSQL & "FROM [Line Items$] AS qry2 "
+                            strSQL = strSQL & "INNER JOIN [Bids$] AS qry3 "
+                            strSQL = strSQL & "ON qry2.[BidID] = qry3.[BidID] "
+                            strSQL = strSQL & "WHERE qry3.[BidID] = bid.[BidID]"
+    strSQL = strSQL & ");"
+    AboveEstCost = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+AboveEstCost_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure AboveEstCost of Class Module clsReportSQL"
+
+End Function
+
+Private Function ExactPerApart(ByVal strArg As String) As String
+'---------------------------------------------------------------------------------------
+' Procedure : ExactPerApart
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies when the sum of line items are .1% point
+'             (between X.0% and X.0999%) of the Cost Estimate
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+Dim d As Double
+
+   On Error GoTo ExactPerApart_Error
+
+    d = strArg / 100
+            strSQL = "SELECT bid.[BidID] "
+         strSQL = strSQL & ",bid.[JobID] "
+         strSQL = strSQL & ",bid.[BidderID] "
+         strSQL = strSQL & ",bid.[Bid Date] "
+         strSQL = strSQL & ",bid.[Bid Amount] "
+         strSQL = strSQL & ",bid.[Bid Status] "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN [Jobs$] AS job "
+    strSQL = strSQL & "ON bid.[JobID] = job.[JobID] "
+    strSQL = strSQL & "WHERE ("
+           strSQL = strSQL & "SELECT SUM(itm.[Item Cost]) "
+           strSQL = strSQL & "FROM [Line Items$] AS itm "
+           strSQL = strSQL & "WHERE itm.[BidID] = bid.[BidID] "
+           strSQL = strSQL & "GROUP BY itm.[BidID] "
+           strSQL = strSQL & ") BETWEEN ("
+                      strSQL = strSQL & "SELECT CLng(qry1.[Cost Estimate]) * (" & 1 + d & ") "
+                      strSQL = strSQL & "FROM [Jobs$] AS qry1 "
+                      strSQL = strSQL & "WHERE qry1.[JobID] = bid.[JobID]"
+           strSQL = strSQL & ") AND ("
+                  strSQL = strSQL & "SELECT CLng(qry2.[Cost Estimate]) * (" & 1.000999 + d & ") "
+                  strSQL = strSQL & "FROM [Jobs$] AS qry2 "
+                  strSQL = strSQL & "WHERE qry2.[JobID] = bid.[JobID]"
+           strSQL = strSQL & ");"
+    ExactPerApart = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+ExactPerApart_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure ExactPerApart of Class Module clsReportSQL"
+
+End Function
+
+Private Function BidderToSub() As String
+'---------------------------------------------------------------------------------------
+' Procedure : BidderToSub
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bidders that become subcontractors to
+'             winning bidder
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo BidderToSub_Error
+
+            strSQL = "SELECT bid.[BidID] "
+         strSQL = strSQL & ",[bdr].* "
+    strSQL = strSQL & "FROM [Bids$] AS bid "
+    strSQL = strSQL & "INNER JOIN [Bidders$] AS [bdr] "
+    strSQL = strSQL & "ON bid.[BidderID] = [bdr].[BidderID] "
+    strSQL = strSQL & "WHERE [Bid Status] = 'Lost' "
+    strSQL = strSQL & "AND [bdr].[Name] IN ("
+                         strSQL = strSQL & "SELECT qry.[Name] "
+                         strSQL = strSQL & "FROM [Subcontractors$] AS qry "
+                         strSQL = strSQL & "WHERE qry.[BidID] = bid.[BidID]"
+    strSQL = strSQL & ");"
+    BidderToSub = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+BidderToSub_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure BidderToSub of Class Module clsReportSQL"
+
+End Function
+
+Private Function SameLineItemPrices() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameLineItemPrices
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies line items with the same item cost recorded
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo SameLineItemPrices_Error
+
+            strSQL = "SELECT itm1.[BidID] "
+         strSQL = strSQL & ",itm1.[Item Name] "
+         strSQL = strSQL & ",itm1.[Item Cost] "
+    strSQL = strSQL & "FROM [Line Items$] AS itm1 "
+    strSQL = strSQL & "INNER JOIN [Line Items$] AS itm2 "
+    strSQL = strSQL & "ON itm1.[BidID] <> itm2.[BidID] "
+    strSQL = strSQL & "WHERE itm1.[Item Cost] = itm2.[Item Cost]"
+    strSQL = strSQL & "AND ("
+         strSQL = strSQL & "SELECT DISTINCT [JobID] "
+         strSQL = strSQL & "FROM [Bids$] "
+         strSQL = strSQL & "WHERE [BidID] = itm1.[BidID]"
+    strSQL = strSQL & ") = ("
+         strSQL = strSQL & "SELECT DISTINCT [JobID] "
+         strSQL = strSQL & "FROM [Bids$] "
+         strSQL = strSQL & "WHERE [BidID] = itm2.[BidID]"
+    strSQL = strSQL & ");"
+    SameLineItemPrices = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameLineItemPrices_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameLineItemPrices of Class Module clsReportSQL"
+
+End Function
+
+Private Function SameBidPrice() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameBidPrice
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids with the same bid amount recorded
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo SameBidPrice_Error
+
+            strSQL = "SELECT bid1.[BidID] "
+         strSQL = strSQL & ",bid1.[JobID] "
+         strSQL = strSQL & ",bid1.[BidderID] "
+         strSQL = strSQL & ",bid1.[Bid Date] "
+         strSQL = strSQL & ",bid1.[Bid Amount] "
+         strSQL = strSQL & ",bid1.[Bid Status] "
+    strSQL = strSQL & "FROM [Bids$] AS bid1 "
+    strSQL = strSQL & "INNER JOIN [Bids$] AS bid2 "
+    strSQL = strSQL & "ON bid1.[BidID] <> bid2.[BidID] "
+    strSQL = strSQL & "AND bid1.[JobID] = bid2.[JobID] "
+    strSQL = strSQL & "WHERE bid1.[Bid Amount] = bid2.[Bid Amount];"
+    SameBidPrice = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameBidPrice_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameBidPrice of Class Module clsReportSQL"
+
+End Function
+
+Private Function SameLineItemBidPrice() As String
+'---------------------------------------------------------------------------------------
+' Procedure : SameLineItemBidPrice
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies bids displaying the same bid amount
+'             recorded as well as all line items have the same item cost recorded
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+    
+   On Error GoTo SameLineItemBidPrice_Error
+
+             strSQL = "SELECT qry1.[BidID] "
+          strSQL = strSQL & ",SUM(qry1.[Item Cost]) "
+    strSQL = strSQL & "FROM (" & Replace(SameLineItemPrices, ";", "") & ") AS qry1 "
+    strSQL = strSQL & "GROUP BY qry1.[BidID] "
+    strSQL = strSQL & "HAVING SUM(qry1.[Item Cost]) = "
+    strSQL = strSQL & "(SELECT SUM(qry2.[Bid Amount]) "
+    strSQL = strSQL & "FROM (" & Replace(SameBidPrice, ";", "") & ") as qry2 "
+    strSQL = strSQL & "WHERE qry2.[BidID] = qry1.[BidID]);"
+    
+    SameLineItemBidPrice = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+SameLineItemBidPrice_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure SameLineItemBidPrice of Class Module clsReportSQL"
+
+End Function
+
+Private Function LineItemsGreater(ByVal strArg As String) As String
+'---------------------------------------------------------------------------------------
+' Procedure : LineItemsGreater
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : SQL statement which identifies line items from losing bids that are
+'             greater than an exact percentage from the winning bid
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+Dim d As Double
+
+   On Error GoTo LineItemsGreater_Error
+
+    d = strArg / 100
+            strSQL = "SELECT [bid_lost].* "
+    strSQL = strSQL & "FROM ("
+          strSQL = strSQL & "SELECT bid.[BidID] "
+                strSQL = strSQL & ",bid.[JobID] "
+                strSQL = strSQL & ",itm.[ItemID] "
+                strSQL = strSQL & ",itm.[Item Name] "
+                strSQL = strSQL & ",itm.[Item Cost] "
+         strSQL = strSQL & "FROM [Bids$] AS bid "
+         strSQL = strSQL & "INNER JOIN [Line Items$] AS itm "
+         strSQL = strSQL & "ON bid.[BidID] = itm.[BidID] "
+         strSQL = strSQL & "WHERE bid.[Bid Status] = 'Won'"
+    strSQL = strSQL & ") AS [bid_won] "
+    strSQL = strSQL & "INNER JOIN ("
+                strSQL = strSQL & "SELECT bid.[BidID] "
+                      strSQL = strSQL & ",bid.[JobID] "
+                      strSQL = strSQL & ",itm.[ItemID] "
+                      strSQL = strSQL & ",itm.[Item Name] "
+                      strSQL = strSQL & ",itm.[Item Cost] "
+                strSQL = strSQL & "FROM [Bids$] AS bid "
+                strSQL = strSQL & "INNER JOIN [Line Items$] AS itm "
+                strSQL = strSQL & "ON bid.[BidID] = itm.[BidID] "
+                strSQL = strSQL & "WHERE bid.[Bid Status] <> 'Won'"
+    strSQL = strSQL & ") AS [bid_lost] "
+    strSQL = strSQL & "ON [bid_won].[BidID] <> [bid_lost].[BidID] "
+    strSQL = strSQL & "AND [bid_won].[JobID] = [bid_lost].[JobID] "
+    strSQL = strSQL & "WHERE [bid_won].[Item Name] = [bid_lost].[Item Name] "
+    strSQL = strSQL & "AND [bid_lost].[Item Cost] >= [bid_won].[Item Cost]"
+    strSQL = strSQL & "* (" & 1 + d & ");"
+    LineItemsGreater = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+LineItemsGreater_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure LineItemsGreater of Class Module clsReportSQL"
+
+End Function
+
+
+Private Function LowBidSubmission() As String
+'---------------------------------------------------------------------------------------
+' Procedure : LowBidSubmission
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Identify bids where less than a certain percentage of bid package buyers
+'             submitted a bid
+'
+'             Let's just add this is a stat - percent that submitted a bid per project
+'             -- the stat: percent that submitted a bid.
+'             select bids.jobid, sum(case when bids.[Bid Status] <> 'Not Sent'
+'             then 1 else 0 end) / count(1) as pct_submitted
+'             from bids
+'             group by bids.jobid;
+'
+'             -- get bids for all jobs where less than a certain percentage of bid
+'             package buyers submitted a bid.
+'             select  *
+'             from bids
+'             inner Join (
+'             select bids.jobid, sum(case when bids.[Bid Status] <> 'Not Sent'
+'             then 1 else 0 end) / count(1) as pct_submitted
+'             from bids
+'             group by bids.jobid)   bid_pct
+'             ON  bids.jobid = bid_pct.jobid
+'             AND bid_pct.pct_submitted <= .1 -- where .1 is actually a parameter;
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo LowBidSubmission_Error
+
+    strSQL = ""
+    LowBidSubmission = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+LowBidSubmission_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure LowBidSubmission of Class Module clsReportSQL"
+
+End Function
+
+Private Function HighBidSubmission() As String
+'---------------------------------------------------------------------------------------
+' Procedure : HighBidSubmission
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Identify bids where more than a certain percentage of bid package buyers
+'             submitted a bid
+'             select  *
+'             from bids
+'             inner Join
+'             (
+'             select bids.jobid, sum(case when bids.[Bid Status] <> 'Not Sent'
+'             then 1 else 0 end) / count(1) as pct_submitted
+'             from bids
+'             group by    bids.jobid
+'             ) bid_pct
+'             ON  bids.jobid = bid_pct.jobid
+'             AND bid_pct.pct_submitted >= .1 -- where .1 is actually a parameter
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo HighBidSubmission_Error
+
+    strSQL = ""
+    HighBidSubmission = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+HighBidSubmission_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure HighBidSubmission of Class Module clsReportSQL"
+
+End Function
+
+Private Function PingPong() As String
+'---------------------------------------------------------------------------------------
+' Procedure : PingPong
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Identify ping-ponged bids
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo PingPong_Error
+
+    strSQL = ""
+    PingPong = strSQL
+   
+   On Error GoTo 0
+   Exit Function
+
+PingPong_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure PingPong of Class Module clsReportSQL"
+
+End Function
+
+Private Function FrequentWinner() As String
+'---------------------------------------------------------------------------------------
+' Procedure : FrequentWinner
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Identify bids where cetain contractors are winning more than a selected
+'             -- percentage of the bids
+'             -- incomplete
+'             SELECT  bids.bidderID, sum(case when bids.[Bid Status] = 'Won'
+'             then 1 else 0 end) / count(distinct jobid)
+'             from bids
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo FrequentWinner_Error
+
+    strSQL = ""
+    FrequentWinner = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+FrequentWinner_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure FrequentWinner of Class Module clsReportSQL"
+
+End Function
+
+Private Function ChangeOrders() As String
+'---------------------------------------------------------------------------------------
+' Procedure : ChangeOrders
+' Author    : sanderson074
+' Date      : 9/17/2012
+' Purpose   : Identify the percentage the job was increased by due to change orders
+'             -- group by job, show: total bid price, total change orders, pct increase
+'             select  jobID, bidderID, total_bid_price, total_change_orders,
+'             total_change_orders / total_bid_price as pct_increase
+'             from bids
+'             where bids.[bid status] = 'Won';
+'---------------------------------------------------------------------------------------
+Dim strSQL As String
+
+   On Error GoTo ChangeOrders_Error
+
+    strSQL = ""
+    ChangeOrders = strSQL
+
+   On Error GoTo 0
+   Exit Function
+
+ChangeOrders_Error:
+
+    MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure ChangeOrders of Class Module clsReportSQL"
+
+End Function
+Attribute VB_Name = "modLaunchTool"
+Option Explicit
+Private gclsBidReview As clsBidReview
+
+Public Sub myButton_BidReviewer(control As IRibbonControl)
+'sma 12/13/12 Launches the Bid Review Tool from the Excel Menu
+On Error GoTo errHdlr
+
+    LoadIACRCBidReviewTool
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "RibbonControl"
+
+End Sub
+
+
+Public Sub LoadIACRCBidReviewTool()
+'sma 12/13/12 Launches the Bid Review Tool from Excel or Application.Run
+On Error GoTo errHdlr
+Dim ufSplash As ufSplashPage
+Dim ufMain As ufMainPage
+
+    Set gclsBidReview = New clsBidReview
+    Set ufSplash = New ufSplashPage
+    Set ufSplash.Parent = gclsBidReview
+    ufSplash.Show
+    If Not ufSplash.gblnCancel Then
+        Set ufMain = New ufMainPage
+        Set ufMain.Parent = gclsBidReview
+        
+        ufMain.Show
+
+        Set ufMain = Nothing
+    End If
+    Set ufSplash = Nothing
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "CloseSplashForm"
+
+End Sub
+
+Public Sub ErrorMsg(ByVal strProcedure As String)
+    
+    MsgBox "The program has encountered an error." & vbLf & _
+           "We apologize for the inconvenience." & vbLf & _
+           "[" & strProcedure & "]", vbCritical + vbOKOnly, "Application Error"
+    
+End Sub
+
+Attribute VB_Name = "modVisualAnalysis"
+Option Explicit
+
+Private Const gclWhite As Long = 16777215
+Private Const gclGreen As Long = 5287936
+Private Const gclRed As Long = 255
+Private Const gclOrange As Long = 49407
+Private Const gclBlue As Long = 14536083
+
+Public Sub GenerateVisual(ByVal rst As ADODB.Recordset, ByVal iPrecision As Integer, ByVal lngLeft As Long, ByVal lngTop As Long)
+Dim wkb As Workbook
+Dim wks As Worksheet
+Dim rng As Range
+Dim strFile As String
+Const strExt As String = "bmp"
+
+On Error GoTo errHdlr
+
+    strFile = CStr(CreateObject("WScript.Shell").SpecialFolders("Desktop") & _
+              "\IACRC Visual Analysis " & Format(Now(), "MMDDYY HHMMSS") & "." & strExt)
+
+    Application.ScreenUpdating = False
+    Set wkb = Application.Workbooks.Add
+    Set wks = wkb.Sheets(1)
+    Windows(wkb.Name).WindowState = xlNormal
+
+    wks.Cells(1, 1).CopyFromRecordset rst
+    FormatReport wks
+    FormatData wks, iPrecision
+    Set rng = wks.UsedRange
+    With Windows(wkb.Name)
+        .Left = lngLeft + 5
+        .Top = lngTop - 100
+        .Height = rng.Height
+        .Width = rng.Width
+    End With
+
+    Application.ScreenUpdating = True
+    If strExt = "bmp" Then
+        rng.CopyPicture xlScreen, xlBitmap
+    Else
+        rng.CopyPicture xlScreen
+    End If
+
+    Charts.Add
+    ActiveChart.Location Where:=xlLocationAsObject, Name:=wks.Name
+    With ActiveChart
+        .Parent.Height = rng.Height
+        .Parent.Width = rng.Width
+        .Paste
+        .Export FileName:=strFile, FilterName:=strExt
+    End With
+
+    wkb.Close False
+    DisplayPicture strFile
+    Kill strFile
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "GenerateVisual"
+
+End Sub
+
+Private Sub FormatData(ByVal wks As Worksheet, ByVal iPrecision As Integer)
+Dim rngData As Range
+Dim rngMarkers As Range
+On Error GoTo errHdlr
+
+    With wks.UsedRange
+        .Cells.Interior.Color = gclWhite
+        Set rngData = .Resize(.Rows.Count - 4).Offset(4)
+        Set rngMarkers = .Resize(.Rows.Count - 3).Offset(3)
+    End With
+
+    SortReport wks, rngData
+    FormatRatios rngData, iPrecision
+    ConditionalFormatting rngMarkers.Columns(1)
+    FormatBidValues rngMarkers.Columns(3)
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "FormatData"
+
+End Sub
+
+Private Sub SortReport(ByVal wks As Worksheet, ByVal rngData As Range)
+On Error GoTo errHdlr
+
+    With wks.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=rngData.Columns(3), SortOn:=xlSortOnValues, DataOption:=xlSortTextAsNumbers
+        .SetRange rngData
+        .Apply
+    End With
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "SortReport"
+
+End Sub
+
+Private Sub FormatRatios(ByVal rngData As Range, ByVal iPrecision As Integer)
+Dim c As Range
+Dim strFormat As String
+On Error GoTo errHdlr
+
+    With Range(rngData.Columns(4), rngData.Columns(6))
+    
+        For Each c In .Cells
+            c.Formula = c.Text
+            If c.Value <> "-" Then c.Value = Round(c.Value, iPrecision)
+        Next c
+    
+        .Copy
+        .PasteSpecial Paste:=xlPasteValues
+        
+        If iPrecision = 2 Then
+            strFormat = "0%"
+        Else
+            strFormat = "0." & Application.WorksheetFunction.Rept("0", iPrecision - 2) & "%"
+        End If
+        
+        .NumberFormat = strFormat
+
+        .Resize(.Rows.Count + 1).Offset(-1).HorizontalAlignment = xlCenter
+
+        .FormatConditions.Add Type:=xlExpression, Formula1:="=AND(D5<>""-"",COUNTIF($D:$F,D5)>2)"
+        .FormatConditions(.FormatConditions.Count).SetFirstPriority
+        .FormatConditions(1).Interior.Color = gclOrange
+        CheckRatios .Cells, iPrecision
+    End With
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "FormatRatios"
+
+End Sub
+
+Private Sub ConditionalFormatting(ByVal rngFormat As Range)
+Dim c As Range
+Dim lDataBarColor As Long
+On Error GoTo errHdlr
+
+    For Each c In rngFormat.Cells
+        c.HorizontalAlignment = xlCenter
+        Select Case c.Value
+            Case 0
+                c.Value = 0
+                lDataBarColor = gclGreen
+            Case "Won"
+                c.Value = 1
+                lDataBarColor = gclGreen
+            Case "Lost"
+                c.Value = 3
+                lDataBarColor = gclRed
+            Case Else
+                c.Value = 2
+                lDataBarColor = gclOrange
+        End Select
+        c.FormatConditions.AddIconSetCondition
+        With c.FormatConditions(1)
+            .ShowIconOnly = True
+            If c.Value = 0 Then
+                .IconSet = wkbAddIn.IconSets(xl3TrafficLights1)
+            Else
+                .IconSet = wkbAddIn.IconSets(xl3Symbols)
+            End If
+            If c.Value >= 2 Then .ReverseOrder = True
+            With .IconCriteria(2)
+                .Type = xlConditionValueNumber
+                .Value = c.Value
+                .Operator = 7
+            End With
+            With .IconCriteria(3)
+                .Type = xlConditionValueNumber
+                If c.Value = 2 Then
+                    .Value = 3
+                Else
+                    .Value = c.Value
+                End If
+                .Operator = 7
+            End With
+        End With
+        
+        With c.Offset(0, 2)
+            .FormatConditions.AddDatabar
+            With .FormatConditions(1)
+                .MinPoint.Modify newtype:=xlConditionValueFormula, newvalue:="=MIN($C:$C)*.97"
+                .MaxPoint.Modify newtype:=xlConditionValueFormula, newvalue:="=MAX($C:$C)*1.03"
+                .BarColor.Color = lDataBarColor
+            End With
+        End With
+    Next c
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "ConditionalFormatting"
+
+End Sub
+
+Private Sub FormatBidValues(ByVal rngFormat As Range)
+Dim c As Range
+Dim strFormat As String
+On Error GoTo errHdlr
+
+    With rngFormat
+        For Each c In .Cells
+            c.Value = c.Value * 1
+        Next c
+        Select Case Len(Round(Application.WorksheetFunction.Min(.Cells), 0))
+            Case 1 To 3
+                strFormat = "$ #,###.0"
+            Case 4 To 6
+                strFormat = "$ #,###.0,""K"""
+            Case 5 To 9
+                strFormat = "$ #,###.0,,""M"""
+            Case Else
+                strFormat = "$ #,###.0,,,""B"""
+        End Select
+        .NumberFormat = strFormat
+    End With
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "FormatBidValues"
+
+End Sub
+
+Public Sub FormatReport(ByVal wks As Worksheet)
+On Error GoTo errHdlr
+
+    With wks.UsedRange.Resize(3) 'Report Header
+        .Font.Bold = True
+        .Resize(3, .Columns.Count - 1).Offset(0, 1).HorizontalAlignment = xlCenter
+    End With
+
+    Range(wks.Cells(2, 4), wks.Cells(2, 6)).Merge
+    wks.Columns(2).EntireColumn.AutoFit
+    wks.Columns(1).ColumnWidth = 3
+    wks.Columns(3).ColumnWidth = 26
+    Range(wks.Columns(4), wks.Columns(6)).ColumnWidth = 8
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "FormatReport"
+
+End Sub
+
+Private Sub DisplayPicture(ByVal strFile As String)
+Dim uf As ufAnalysis
+On Error GoTo errHdlr
+
+    Set uf = New ufAnalysis
+    
+    With uf.imgBid
+        .Picture = LoadPicture(strFile)
+        uf.Width = .Width + 12
+        uf.Height = .Height + 28
+    End With
+    
+    uf.Show vbModeless
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "DisplayPicture"
+
+End Sub
+
+Private Sub CheckRatios(ByVal rngRatio As Range, ByVal iPrecision As Integer)
+Dim col As Range
+Dim c1 As Range
+Dim c2 As Range
+Dim i1 As Integer
+Dim i2 As Integer
+Dim arrAddress() As Variant
+Dim arrValue() As Variant
+On Error GoTo errHdlr
+
+    For Each col In rngRatio.Columns
+        ReDim arrAddress(0)
+        ReDim arrValue(0)
+        For Each c1 In col.Cells
+            For Each c2 In col.Cells
+                If c1.Value <> "-" And c2.Value <> "-" And c1.Address <> c2.Address Then
+                    If c1.Value - c2.Value <> 0 Then
+                        If Len(arrAddress(0)) > 0 Then ReDim Preserve arrAddress(UBound(arrAddress()) + 1)
+                        If Len(arrValue(0)) > 0 Then ReDim Preserve arrValue(UBound(arrValue()) + 1)
+                        arrAddress(UBound(arrAddress())) = c1.Address
+                        arrValue(UBound(arrValue())) = Round(c2.Value - c1.Value, iPrecision)
+                    End If
+                End If
+            Next
+        Next
+        For i1 = 0 To UBound(arrValue)
+            If UBound(Filter(arrValue, arrValue(i1))) > 2 Then
+                For i2 = 0 To UBound(arrAddress)
+                    If arrValue(i1) = arrValue(i2) And arrAddress(i1) <> arrAddress(i2) Then
+                        rngRatio.Parent.Range(arrAddress(i2)).Interior.Color = gclBlue
+                    End If
+                Next i2
+            End If
+        Next i1
+    Next
+
+errHdlr:
+    If Err.Number <> 0 Then ErrorMsg "CheckRatios"
+
+End Sub
+
+Attribute VB_Name = "ufAnalysis"
+Attribute VB_Base = "0{C511D35D-1E22-4A09-AB6D-26AB2B1F713E}{6CC53B3F-E954-4954-94A8-A05BBE9BB5FA}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub UserForm_Initialize()
+
+    Me.Left = 0
+
+End Sub
+Attribute VB_Name = "ufMainPage"
+Attribute VB_Base = "0{5C475ADF-0F53-4BBC-93EE-08F955E7DEB4}{AD806EAD-57BA-4B2B-8497-98CA5F69E6D0}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Private gclsParent As clsBidReview
+
+Private Sub btnAnalyze_Click()
+Dim strJob As String
+
+    strJob = Split(Me.trvData.SelectedItem.Key, "|fffd|")(1)
+    gclsParent.GenerateAnalytics strJob, Me.Left, Me.Top
+
+End Sub
+
+Private Sub btnReport_Click()
+
+    gclsParent.GenerateReport Me.cmbReport.Value, Me.txtPercent.Value
+
+End Sub
+
+Private Sub cmbPriority_Change()
+
+    If Me.trvData.Nodes.Count > 0 Then
+        CreateNodes Me.cmbPriority.Value
+    End If
+    Me.btnAnalyze.Visible = False
+
+End Sub
+
+Private Sub cmbReport_Change()
+Dim boolReport As Boolean
+    
+    boolReport = Me.cmbReport.Value <> 0
+
+    Me.btnAnalyze.Visible = False
+    Me.btnReport.Visible = boolReport
+    Me.lblCount.Visible = boolReport
+    Me.txtCount.Visible = boolReport
+    Me.txtPriority.Visible = boolReport
+    Me.cmbPriority.Visible = Not boolReport
+    
+    If cmbReport.Text Like "*X%*" Then
+        PercentControls True
+    Else
+        PercentControls False
+    End If
+
+    gclsParent.PreCountReport Me.cmbReport.Value, Me.txtPercent.Value
+    If boolReport Then
+        Me.txtCount.Value = gclsParent.ReportCount
+        Select Case Me.cmbReport.Value
+            Case 1, 2
+                CreateNodes tblBidders
+                Me.txtPriority.Value = gclsParent.SheetName(tblBidders)
+            Case Else
+                CreateNodes tblBids
+                Me.txtPriority.Value = gclsParent.SheetName(tblBids)
+        End Select
+    Else
+        Me.txtCount.Value = ""
+        Me.txtPriority.Value = ""
+        CreateNodes Me.cmbPriority.Value
+    End If
+
+End Sub
+
+Private Sub PercentControls(ByVal boolVisible As Boolean)
+
+    Me.lblPercent.Visible = boolVisible
+    Me.txtPercent.Visible = boolVisible
+    Me.spnPercent.Visible = boolVisible
+    If Not boolVisible Then
+        Me.txtPercent.Value = ""
+    ElseIf Len(Me.txtPercent.Value) = 0 Then
+        Me.txtPercent.Value = "10"
+    End If
+
+End Sub
+
+Private Sub lblWebsite_Click()
+On Error Resume Next
+
+    wkbAddIn.FollowHyperlink Address:="http://iacrc.org/", NewWindow:=True
+
+On Error GoTo 0
+End Sub
+
+Private Sub spnPercent_SpinDown()
+
+    If txtPercent.Value < 2 Then
+        txtPercent.Value = 1
+    Else
+        txtPercent.Value = txtPercent.Value - 1
+    End If
+
+End Sub
+
+Private Sub spnPercent_SpinUp()
+
+    txtPercent.Value = txtPercent.Value + 1
+
+End Sub
+
+Private Sub trvData_NodeClick(ByVal Node As ComctlLib.Node)
+On Error GoTo errHdlr
+Dim strTable As String
+Dim strPK As String
+Dim tbl As BidTablesEnum
+
+    If (UBound(Split(Node.Key, "|fffd|")) / 2) <> Round(UBound(Split(Node.Key, "|fffd|")) / 2, 0) Then
+        strTable = Split(Node.Key, "|fffd|")(UBound(Split(Node.Key, "|fffd|")) - 1)
+        strPK = Split(Node.Key, "|fffd|")(UBound(Split(Node.Key, "|fffd|")))
+        tbl = gclsParent.TreeViewTbl(strTable)
+        With gclsParent.Recordset(tbl)
+            .MoveFirst
+            .Find gclsParent.PK(tbl) & " = '" & strPK & "'"
+            LoadRecordDetail .Fields
+        End With
+    End If
+    Me.btnAnalyze.Visible = Node.Key Like "job|fffd|*"
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "trvData_NodeClick"
+        CloseMainPage
+    End If
+
+End Sub
+
+Private Sub txtCount_Change()
+
+    Me.btnReport.Enabled = Me.txtCount > 0
+
+End Sub
+
+Private Sub txtPercent_Change()
+On Error Resume Next
+Dim d As Double
+
+    d = txtPercent.Value * 1
+
+On Error GoTo 0
+
+    If d < 1 And Me.txtPercent.Visible Then
+        MsgBox "This value must be greater than 1%.", vbInformation + vbOKOnly, "Percentage Error"
+        txtPercent.Value = 1
+    End If
+    gclsParent.PreCountReport Me.cmbReport.Value, Me.txtPercent.Value
+    Me.txtCount.Value = gclsParent.ReportCount
+    Select Case Me.cmbReport.Value
+        Case 1, 2
+            CreateNodes tblBidders
+            Me.txtPriority.Value = gclsParent.SheetName(tblBidders)
+        Case Else
+            CreateNodes tblBids
+            Me.txtPriority.Value = gclsParent.SheetName(tblBids)
+    End Select
+
+End Sub
+
+Private Sub UserForm_Initialize()
+
+    Me.Left = 0
+
+End Sub
+
+Private Sub ClearNodes()
+Dim lng As Long
+
+    For lng = Me.trvData.Nodes.Count To 1 Step -1
+        Me.trvData.Nodes.Remove lng
+    Next lng
+
+End Sub
+
+Private Sub CreateNodes(ByVal iTable As BidTablesEnum)
+On Error GoTo errHdlr
+Dim trvNodes As Nodes
+Dim trvNode As Node
+Dim boolFirstLoaded As Boolean
+
+    ClearNodes
+    With gclsParent.TreeViewRST(iTable)
+        Set trvNodes = Me.trvData.Nodes
+        Do Until .EOF
+            If Len(.Fields("Relative").Value) = 0 Then
+                trvNodes.Add Key:=.Fields("Key").Value, Text:=.Fields("Text").Value
+            Else
+                trvNodes.Add Relative:=.Fields("Relative").Value, relationship:=tvwChild, Key:=.Fields("Key").Value, Text:=.Fields("Text").Value
+            End If
+            .MoveNext
+        Loop
+        
+        With gclsParent.Recordset(iTable)
+            .Requery
+            .MoveFirst
+            If Not boolFirstLoaded Then
+                LoadRecordDetail .Fields
+                boolFirstLoaded = True
+            End If
+        End With
+    End With
+
+errHdlr:
+
+    If Err.Number <> 0 Then
+        ErrorMsg "CreateNodes"
+        CloseMainPage
+    End If
+
+End Sub
+
+Private Sub LoadRecordDetail(ByVal flds As ADODB.Fields)
+On Error GoTo errHdlr
+Dim i As Integer
+
+    For i = 1 To flds.Count - 1 Step 1
+        Me.Controls("lbl" & i).Caption = flds(i).Name
+        Me.Controls("txb" & i).Value = flds(i).Value
+        Me.Controls("lbl" & i).Visible = True
+        Me.Controls("txb" & i).Visible = True
+    Next i
+    For i = flds.Count To 7 Step 1
+        Me.Controls("lbl" & i).Visible = False
+        Me.Controls("txb" & i).Visible = False
+        Me.Controls("lbl" & i).Caption = "label " & i
+        Me.Controls("txb" & i).Value = ""
+    Next i
+    If Me.lbl4.Caption = "Cost Estimate" Then Me.txb4.Value = Format(Me.txb4.Value, "$#,##0")
+    If Me.lbl3.Caption Like "*Cost" Then Me.txb3.Value = Format(Me.txb3.Value, "$#,##0")
+
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "LoadRecordDetail"
+        CloseMainPage
+    End If
+
+End Sub
+
+Private Sub UserForm_Terminate()
+
+    CloseMainPage
+
+End Sub
+
+Private Sub CloseMainPage()
+On Error GoTo errHdlr
+
+    If Not gclsParent Is Nothing Then gclsParent.CloseConnection
+    Set gclsParent = Nothing
+    Unload Me
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "LoadReportNames"
+        CloseMainPage
+    End If
+
+End Sub
+
+Private Sub btnCancel_Click()
+
+    CloseMainPage
+
+End Sub
+
+Private Sub LoadTableNames()
+Dim i As Integer
+
+    i = -1
+
+    If Not gclsParent.grstBidders.ActiveConnection Is Nothing Then i = i + 1
+    If Not gclsParent.grstSubs.ActiveConnection Is Nothing Then i = i + 1
+    If Not gclsParent.grstJobs.ActiveConnection Is Nothing Then i = i + 1
+    
+ReDim TableList(i, 1)
+
+    i = 0
+    If Not gclsParent.grstBidders.ActiveConnection Is Nothing Then
+        TableList(i, 0) = tblBidders
+        TableList(i, 1) = gclsParent.SheetName(tblBidders)
+        i = i + 1
+    End If
+    If Not gclsParent.grstSubs.ActiveConnection Is Nothing Then
+        TableList(i, 0) = tblSubs
+        TableList(i, 1) = gclsParent.SheetName(tblSubs)
+        i = i + 1
+    End If
+    If Not gclsParent.grstJobs.ActiveConnection Is Nothing Then
+        TableList(i, 0) = tblJobs
+        TableList(i, 1) = gclsParent.SheetName(tblJobs)
+    End If
+    Me.cmbPriority.List = TableList
+    Me.cmbPriority.ListIndex = 0
+
+End Sub
+
+Private Sub LoadReportNames()
+On Error GoTo errHdlr
+Dim i As Variant
+Dim iRow As Integer
+'Dim TableList(0, 1)
+
+    iRow = 0
+    For Each i In Array(rptSameAddress, rptSameName, rptBidderToSub, rptSameBank, rptSameDate, rptSameSigner, _
+                            rptSequntialIssueNum, rptSameLineItemPrices, rptSameLineItemBidPrice, rptSameBidPrice, _
+                            rptAboveBid, rptWithinBid, rptAboveEstCost, rptExactPerApart, rptLineItemsGreater)
+        iRow = iRow + 1
+    Next i
+    ReDim TableList(iRow, 1)
+    TableList(0, 0) = 0
+    TableList(0, 1) = "[View All Data]"
+    iRow = 1
+    For Each i In Array(rptSameAddress, rptSameName, rptBidderToSub, rptSameBank, rptSameDate, rptSameSigner, _
+                            rptSequntialIssueNum, rptSameLineItemPrices, rptSameLineItemBidPrice, rptSameBidPrice, _
+                            rptAboveBid, rptWithinBid, rptAboveEstCost, rptExactPerApart, rptLineItemsGreater)
+        TableList(iRow, 0) = i
+        TableList(iRow, 1) = gclsParent.ReportName(i)
+        iRow = iRow + 1
+    Next i
+    Me.cmbReport.List = TableList
+    Me.cmbReport.ListIndex = 0
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "LoadReportNames"
+        CloseMainPage
+    End If
+
+End Sub
+
+Property Set Parent(ByRef cls As clsBidReview)
+On Error GoTo errHdlr
+
+    Set gclsParent = New clsBidReview
+    Set gclsParent = cls
+    With gclsParent
+        Me.Left = 0
+        Me.Caption = .Version
+        LoadTableNames
+        LoadReportNames
+        CreateNodes tblBidders
+    End With
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "Set Parent"
+        CloseMainPage
+    End If
+    
+End Property
+Attribute VB_Name = "ufSplashPage"
+Attribute VB_Base = "0{58F7610D-F92C-4775-B5A9-0B1E8792C905}{785884F9-DB64-4DA2-83B8-49B2E41D96E4}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Public gblnCancel As Boolean
+Private gclsParent As clsBidReview
+
+Private Sub btnLinkDB_Click()
+'sma 4/21/12 Button disabled. Later version of tool could be designed to link directly to an existing database.
+
+End Sub
+
+Private Sub btnLinkDS_Click()
+On Error GoTo errHdlr
+Dim strFileName As String
+Dim strPath As String
+
+    strPath = CreateObject("WScript.Shell").SpecialFolders("Desktop") & "\IACRC"
+    With gclsParent
+
+        If Len(Dir(strPath & "\")) <> 0 Then ChDir strPath
+        strFileName = Application.GetOpenFilename(.Extension)
+    
+        If strFileName <> "False" Then
+            .FileName = strFileName
+            Me.Hide
+        End If
+    End With
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "btnLinkDS_Click"
+        CloseSplashForm
+    End If
+
+End Sub
+
+Private Sub btnCancel_Click()
+'sma 4/21/12 On event sets global value to exit the program
+
+    CloseSplashForm
+
+End Sub
+
+Private Sub btnCreate_Click()
+On Error GoTo errHdlr
+Dim strFileName As String
+Dim boolEvents As Boolean
+Dim boolAlerts As Boolean
+Dim iSheet As Integer
+Dim i As Integer
+Const iCount As Integer = 6
+Dim arrHeader() As String
+Dim strPath As String
+
+    With Application
+        'Default file name
+        strFileName = CreateObject("WScript.Shell").SpecialFolders("Desktop") & "\"
+        If Len(Dir(strPath & "IACRC\")) <> 0 Then strFileName = strFileName & "IACRC\"
+        strFileName = strFileName & "IACRC Data Set - " & Format(Now(), "yyyymmdd") & ".xlsx"
+        
+        'User defined file name
+        strFileName = .GetSaveAsFilename(strFileName, gclsParent.Extension, Title:=gclsParent.Version)
+        If strFileName = "False" Then Exit Sub
+        .ScreenUpdating = False 'Eliminates screen flutter
+        
+        If .EnableEvents Then 'Determines if user has 'Events' enabled
+            boolEvents = True
+            .EnableEvents = False
+        End If
+
+        If .DisplayAlerts Then 'Determines if user has 'Alerts' enabled
+            boolAlerts = True
+            .DisplayAlerts = False
+        End If
+    
+        With .Workbooks.Add 'Adds new dataset workbook
+            iSheet = .Worksheets.Count
+            
+            For i = iSheet To iCount + 1 Step -1 'Deletes excessive sheets
+                .Sheets(i).Delete
+            Next i
+
+            'Adds additional sheets
+            If iSheet < iCount Then .Worksheets.Add after:=.Sheets(iSheet), Count:=iCount - iSheet
+    
+            For i = .Worksheets.Count To 1 Step -1
+                With .Sheets(i)
+
+                    'Renames sheet
+                    .Name = gclsParent.SheetName(i)
+
+                    'Lookup and sets header row
+                    arrHeader() = gclsParent.SheetHeader(i)
+                    .Cells(1, 1).Resize(1, UBound(arrHeader()) + 1).Value = arrHeader()
+
+                    'Formats sheet
+                    .Activate
+                    With ActiveWindow
+                        .SplitRow = 1
+                        .FreezePanes = True
+                    End With
+
+                    With .UsedRange.Rows(1)
+                        .HorizontalAlignment = xlCenter
+                        .Font.Bold = True
+                        .AutoFilter
+                        .EntireColumn.AutoFit
+                    End With
+                    
+                End With
+            Next i
+
+            'Saves workbook
+            .SaveAs FileName:=strFileName, FileFormat:=xlOpenXMLWorkbook
+
+        End With
+
+        'Resets user defined settings
+        If boolAlerts Then .DisplayAlerts = True
+        If boolEvents Then .EnableEvents = True
+        .ScreenUpdating = True
+    End With
+    CloseSplashForm
+
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "btnCreate_Click"
+        CloseSplashForm
+    End If
+
+End Sub
+
+
+Private Sub lblWebsite_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+On Error Resume Next
+
+    wkbAddIn.FollowHyperlink Address:="http://iacrc.org/", NewWindow:=True
+
+On Error GoTo 0
+End Sub
+
+Private Sub UserForm_Initialize()
+'sma 4/21/12 Opens the splash page
+
+    Me.Left = 0
+
+End Sub
+
+Private Sub UserForm_Terminate()
+'sma 4/21/12 On event sets global value to exit the program
+
+    CloseSplashForm
+
+End Sub
+
+Private Sub CloseSplashForm()
+On Error GoTo errHdlr
+
+    gblnCancel = True
+    Unload Me
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "CloseSplashForm"
+        CloseSplashForm
+    End If
+
+End Sub
+
+
+Property Set Parent(ByRef cls As clsBidReview)
+On Error GoTo errHdlr
+
+    Set gclsParent = New clsBidReview
+    Set gclsParent = cls
+    Me.Caption = gclsParent.Version
+
+errHdlr:
+    If Err.Number <> 0 Then
+        ErrorMsg "Set Parent"
+        CloseSplashForm
+    End If
+
+End Property
+
+Attribute VB_Name = "wkbAddIn"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "wksSheet"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

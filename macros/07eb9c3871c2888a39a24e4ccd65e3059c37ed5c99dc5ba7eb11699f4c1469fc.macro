@@ -1,0 +1,2835 @@
+Attribute VB_Name = "ChangeLog"
+Option Explicit
+
+Public LastUpdatedRowIndex As Long
+Public LastUpdatedColIndex As Long
+Public changelogSheet As Worksheet
+Public ChangedLocations As Collection
+Public LastUsedRangeRowIndex As Long
+Public TotalErrorCount As Long
+Public TotalRoyaltyErrorCount As Long
+Public TotalCharacterErrorCount As Long
+
+Public CHANGELOG_ROW_LIMIT As Long
+Public CHANGELOG_ROW_START As Long
+Public CHANGELOG_COL_START As Long
+
+Public ValidatedCellsCollection As Collection
+
+Public IsErrorFlag As Boolean
+Public IsWarningFlag As Boolean
+
+Public ValidationMessage As String
+
+
+' Method for getting the change log name work sheet
+Public Function GetChangeLogNameSheet(currentWorksheet As Worksheet)
+
+    Dim WorkSheetName As String
+    WorkSheetName = currentWorksheet.Name
+    WorkSheetName = Replace(WorkSheetName, " ", "_") & "_ChangeLog"
+    GetChangeLogNameSheet = WorkSheetName
+
+End Function
+
+' Method to update the change log with cells that were changed
+Public Sub UpdateChangeLog(Target As Range)
+
+    If Target.Worksheet.Name <> "Royalty Statement" And Target.Worksheet.Name <> "Character Map" Then
+        Exit Sub
+    End If
+    
+    Dim changeLogWorksheetName As String
+    changeLogWorksheetName = GetChangeLogNameSheet(Target.Worksheet)
+    
+    Dim ChangeLogWorksheet As Worksheet
+    Set ChangeLogWorksheet = Worksheets(changeLogWorksheetName)
+    
+    If CStr(ChangeLogWorksheet.Cells(1, 1)) = "" Then
+        ChangeLogWorksheet.Cells(1, 1) = 0
+    End If
+    
+    Dim MaxChangedRowIndex As Long
+    MaxChangedRowIndex = CLng(ChangeLogWorksheet.Cells(1, 1))
+    
+    If CLng(MaxChangedRowIndex) < CLng(Target.Row) Then
+        ChangeLogWorksheet.Cells(1, 1) = Target.Row
+        Application.StatusBar = "Updating Change Log (" & CStr(Target.Row) & ")"
+    End If
+    
+    DoEvents
+    
+End Sub
+
+' Method to iterate over the change range
+Public Sub IterateOverChangeLog()
+    Dim ErrorSheet As Worksheet
+    
+    Application.ScreenUpdating = False
+        
+    ' Clear Validation log
+    TotalErrorCount = 0
+    TotalRoyaltyErrorCount = 0
+    TotalCharacterErrorCount = 0
+    
+    MaxErrorsReached = False
+
+    Set ErrorSheet = ThisWorkbook.Worksheets("Validation Log")
+    ErrorSheet.Unprotect (TemplatePassword)
+    ErrorSheet.UsedRange.ClearContents
+    ErrorSheet.Cells(2, 1) = "Royalty Sheet"
+    ErrorSheet.Cells(2, 1).Font.Color = xlColor1
+    ErrorSheet.Cells(2, 1).Font.Size = 12
+    ErrorSheet.Cells(2, 1).Font.Bold = True
+    ErrorSheet.Cells(2, 1).Font.Underline = False
+    
+    If WorkSheetExists("Character Map") Then
+        ErrorSheet.Cells(3, 1) = "Character Map"
+        ErrorSheet.Cells(3, 1).Font.Color = xlColor1
+        ErrorSheet.Cells(3, 1).Font.Size = 12
+        ErrorSheet.Cells(3, 1).Font.Bold = True
+        ErrorSheet.Cells(3, 1).Font.Underline = False
+    End If
+        
+    ' Empty out the validation message and Flags
+    ValidationMessage = ""
+    IsErrorFlag = False
+    IsWarning = False
+    
+    Dim royaltyFailed As Boolean
+    Dim characterFailed As Boolean
+    
+    ' Need to validate royalties
+    Dim RoyaltyStatement As Worksheet
+    On Error Resume Next
+    Set RoyaltyStatement = Worksheets("Royalty Statement")
+    On Error GoTo 0
+    If Not (RoyaltyStatement Is Nothing) Then
+         royaltyFailed = ValidateForWorksheet(RoyaltyStatement)
+         Set RoyaltyStatement = Nothing
+    End If
+
+    ' Then need to check if there is a marvel character map
+    On Error Resume Next
+    Set RoyaltyStatement = Worksheets("Character Map")
+    On Error GoTo 0
+    If Not (RoyaltyStatement Is Nothing) Then
+        characterFailed = ValidateForWorksheet(RoyaltyStatement)
+    End If
+    
+    ' Output validation message to user
+    Call UpdateValidationStatusWorksheet(royaltyFailed Or characterFailed)
+    MsgBox ValidationMessage, vbExclamation, "Validation"
+    
+    Application.ScreenUpdating = True
+
+End Sub
+
+Public Function FindRoyaltyStartRow(currentWorksheet As Worksheet)
+
+    ' *** START ROYALTY ROW ***
+    ' Find the starting royalty row for the current worksheet
+    Dim dataItem As MetaDataItem
+    Dim startRoyaltyRow As Long
+    startRoyaltyRow = -1
+    
+    For Each dataItem In MetaData.GetItems
+    
+        ' Find the start row for the royalty statement
+        If (dataItem.WorkSheetName = currentWorksheet.Name) And currentWorksheet.Name = "Royalty Statement" And dataItem.rangeName = "Royalty_Columns" Then
+           startRoyaltyRow = dataItem.RowStartIndex + 1
+           Exit For
+        End If
+        
+        ' Find the start row for the character map
+        If (dataItem.WorkSheetName = currentWorksheet.Name) And currentWorksheet.Name = "Character Map" And dataItem.rangeName = "Header_Columns" Then
+           startRoyaltyRow = dataItem.RowStartIndex + 1
+           Exit For
+        End If
+    
+    Next dataItem
+    
+    ' Return value found
+    FindRoyaltyStartRow = startRoyaltyRow
+
+End Function
+
+Public Function ValidateForWorksheet(currentWorksheet As Worksheet)
+
+    Dim RoyaltyStatementSheet As Worksheet
+    Set RoyaltyStatementSheet = currentWorksheet
+    Dim errorCount As Integer
+    Dim FailFlag As Boolean
+    Dim RoyaltyChangedCell As Range
+    Dim ChangesAreValid As Boolean
+    
+    ValidateForWorksheet = True
+    
+    RoyaltyStatementSheet.Unprotect (TemplatePassword)
+    StatementHelper.Intialize currentWorksheet
+
+    ' *** CHANGE LOG - ROYALTY ROW END INDEX ***
+    ' This is where we get the change log row end index for royalty rows
+    Dim changeLogWorksheetName As String
+    changeLogWorksheetName = ChangeLog.GetChangeLogNameSheet(currentWorksheet)
+    
+    Dim ChangeLogWorksheet As Worksheet
+    Set ChangeLogWorksheet = Worksheets(changeLogWorksheetName)
+    
+    Dim endRoyaltyRow As Long
+    endRoyaltyRow = CLng(ChangeLogWorksheet.Cells(1, 1))
+    
+    Dim Index As Long
+    Dim ChangedLocation As String
+    Dim startRoyaltyRow As Long
+    
+    ' *** WORKSHEET VALIDATION ***
+    ' Looping through the meta data items and executing validation for each rule found
+    MetaData.InitItems
+    startRoyaltyRow = FindRoyaltyStartRow(currentWorksheet)
+    For Index = 1 To endRoyaltyRow
+        If StatementHelper.CheckBlankRow(currentWorksheet, startRoyaltyRow, Index) = False Then
+            Set RoyaltyChangedCell = RoyaltyStatementSheet.Cells(Index, 1)
+            ChangesAreValid = ValidateAdjacentCells(currentWorksheet, RoyaltyChangedCell)
+            If ChangesAreValid = False Then
+                errorCount = errorCount + 1
+                FailFlag = True
+            End If
+        Else
+            StatementHelper.ClearRowValidation currentWorksheet, Index
+        End If
+        DoEvents
+    Next Index
+    
+    ValidateForWorksheet = FailFlag
+    Call UpdateValidationStatusMessage(currentWorksheet, FailFlag)
+    Call ProtectSheet(RoyaltyStatementSheet)
+    
+End Function
+
+' Validates the changed cell and all the adjacent cells in the row
+Public Function ValidateAdjacentCells(currentWorksheet As Worksheet, ChangedCell As Range)
+
+    Dim AdjacentCell As Range
+    Dim ColumnRuleFailCount As Integer
+    Dim TotalRuleFailCount As Integer
+    Dim blnRuleExecuted As Boolean
+    Dim columnIndex As Integer
+    Dim dataItem As MetaDataItem
+
+    ValidateAdjacentCells = True
+    TotalRuleFailCount = 0
+    
+    For columnIndex = (MetaData.EmptyRowStartColumnIndex + 1) To (MetaData.EmptyRowEndColumnIndex + 1)
+    
+        ColumnRuleFailCount = 0
+        blnRuleExecuted = False
+        
+        Set AdjacentCell = ChangedCell.Worksheet.Cells(ChangedCell.Row, columnIndex)
+        
+        For Each dataItem In MetaData.GetItems
+            Call PreValidationUpdate(AdjacentCell, dataItem)
+        Next
+        
+        For Each dataItem In MetaData.GetItems
+            
+            If TotalErrorCount > MaxErrors Then 'Global Constant
+                MaxErrorsReached = True
+                GoTo Exit_ValidateAdjacentCells
+            End If
+            
+            If dataItem.IsRule Then
+                
+                If dataItem.IsApplicableToCell(AdjacentCell) Then
+                    
+                    ValidateAdjacentCells = ValidationRules.ExecuteRule(currentWorksheet, AdjacentCell, dataItem)
+                    blnRuleExecuted = True
+                    
+                    If ValidateAdjacentCells = False Then
+                        ColumnRuleFailCount = ColumnRuleFailCount + 1
+                        TotalRuleFailCount = TotalRuleFailCount + 1
+                        TotalErrorCount = TotalErrorCount + 1
+                        Select Case currentWorksheet.Name
+                            Case "Royalty Statement"
+                                TotalRoyaltyErrorCount = TotalRoyaltyErrorCount + 1
+                            Case "Character Map"
+                                TotalCharacterErrorCount = TotalCharacterErrorCount + 1
+                        End Select
+                        
+                        GoTo NextColumn
+                    End If
+                    
+                    Application.StatusBar = "Validating (" & CStr(AdjacentCell.Row) & "," & CStr(AdjacentCell.Column) & ")"
+                    
+                End If
+                
+            End If
+        
+        Next dataItem
+
+NextColumn:
+        If ColumnRuleFailCount = 0 And blnRuleExecuted = True Then
+            AdjacentCell.Interior.ColorIndex = xlNone ' White
+            If Not (AdjacentCell.Comment Is Nothing) Then
+                 AdjacentCell.Comment.Delete
+            End If
+        End If
+        
+    Next columnIndex
+
+Exit_ValidateAdjacentCells:
+    If TotalRuleFailCount > 0 Then
+        ValidateAdjacentCells = False
+    End If
+
+End Function
+
+Public Sub UpdateValidationStatusMessage(currentWorksheet As Worksheet, Failed As Boolean)
+
+    Dim WS As Worksheet
+    Dim SheetExists As Boolean
+    Dim ErrorSheet As Worksheet
+    Dim strMsg As String
+    Dim lastValidatedDate As String
+    
+    For Each WS In ThisWorkbook.Worksheets
+        If WS.Name = "Validation Log" Then
+            Set ErrorSheet = ThisWorkbook.Worksheets("Validation Log")
+            SheetExists = True
+        End If
+    Next
+    
+    If SheetExists = True Then
+
+        ErrorSheet.Unprotect (TemplatePassword)
+            
+        lastValidatedDate = " - Last Run: " & Format(Now(), "dd-MMM-yyyy hh:MM:ss")
+            
+        If Failed = False Then
+            strMsg = "The validation process was successful. This spreadsheet is ready to be sent to Disney."
+        Else
+            If MaxErrorsReached = False And IsErrorFlag = True And IsWarningFlag = False Then
+                strMsg = "Warning: There are issues with the validation. Please review the Validation Log Sheet for details"
+            ElseIf MaxErrorsReached = False And IsWarningFlag = True And IsErrorFlag = False Then
+                strMsg = "Warning: There are issues with the validation. Please review the Validation Log Sheet for details"
+            ElseIf MaxErrorsReached = False And IsWarningFlag = True And IsErrorFlag = True Then
+                strMsg = "Warning: There are issues with the validation. Please review the Validation Log Sheet for details"
+            Else
+                strMsg = "Warning: There are issues with the validation. The validation process didn't complete because  " & _
+                        " there are too many errors. Please fix some of the problems and try again."
+            End If
+        End If
+        
+        ValidationMessage = ValidationMessage & UCase(currentWorksheet.Name) & ": " & strMsg & vbCrLf
+    End If
+
+End Sub
+
+Public Sub UpdateValidationStatusWorksheet(Failed As Boolean)
+
+    Dim WS As Worksheet
+    Dim SheetExists As Boolean
+    Dim ErrorSheet As Worksheet
+    Dim strMsg As String
+    Dim lastValidatedDate As String
+    
+    For Each WS In ThisWorkbook.Worksheets
+        If WS.Name = "Validation Log" Then
+            Set ErrorSheet = ThisWorkbook.Worksheets("Validation Log")
+            SheetExists = True
+        End If
+    Next
+    
+    If SheetExists = True Then
+
+        ErrorSheet.Unprotect (TemplatePassword)
+            
+        lastValidatedDate = " - Last Run: " & Format(Now(), "dd-MMM-yyyy hh:MM:ss")
+            
+        If Failed = False Then
+            ErrorSheet.Cells(1, 1).value = "Validation Successful" + lastValidatedDate
+            ErrorSheet.Cells(1, 1).Font.ColorIndex = 10
+        Else
+            If MaxErrorsReached = False And IsErrorFlag = True And IsWarningFlag = False Then
+                ErrorSheet.Cells(1, 1).value = "Validated With Errors" + lastValidatedDate
+                ErrorSheet.Cells(1, 1).Font.ColorIndex = 3
+            ElseIf MaxErrorsReached = False And IsWarningFlag = True And IsErrorFlag = False Then
+                ErrorSheet.Cells(1, 1).value = "Validated With Warnings" + lastValidatedDate
+                ErrorSheet.Cells(1, 1).Font.ColorIndex = 3
+            ElseIf MaxErrorsReached = False And IsWarningFlag = True And IsErrorFlag = True Then
+                ErrorSheet.Cells(1, 1).value = "Validated With Errors and Warnings" + lastValidatedDate
+                ErrorSheet.Cells(1, 1).Font.ColorIndex = 3
+            Else
+                ErrorSheet.Cells(1, 1).value = "Validated With Errors (First " & MaxErrors & " errors shown)" + lastValidatedDate
+                ErrorSheet.Cells(1, 1).Font.ColorIndex = 3
+            End If
+        End If
+        
+        IsErrorFlag = False
+        IsWarningFlag = False
+    End If
+
+End Sub
+
+Function ProtectSheet(ByRef sheet As Worksheet) As Boolean
+
+Dim AllowRowInsert As Boolean
+Dim AllowRowDelete As Boolean
+Dim AllowAutoFilter As Boolean
+Dim AllowFormat As Boolean
+Dim AllowFormatCols As Boolean
+Dim RegistryProtectionValue As Boolean
+Dim WS As Worksheet
+Dim i As Integer
+
+AllowRowInsert = True
+AllowRowDelete = True
+AllowAutoFilter = True
+AllowFormat = False
+AllowFormatCols = True
+
+
+For Each WS In ThisWorkbook.Worksheets
+    If WS.Name = "Registry" Then
+        For i = 1 To 500
+            If WS.Cells(i, 1) = "Template.IsProtected" Then
+                RegistryProtectionValue = WS.Cells(i, 2)
+                Exit For
+            End If
+        Next
+    End If
+Next
+
+If RegistryProtectionValue = True Then
+
+    sheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True _
+        , AllowInsertingRows:=AllowRowInsert, AllowDeletingRows _
+        :=AllowRowDelete, AllowSorting:=True, AllowFiltering:=AllowAutoFilter, _
+        AllowFormattingCells:=AllowFormat, Password:=TemplatePassword, _
+        AllowFormattingColumns:=AllowFormatCols
+End If
+
+ProtectSheet = True
+
+End Function
+
+Function SetAutoFilter(OnOff As String) As Boolean
+
+    Dim sheet As Worksheet
+    Dim AutoFilterRange  As Range
+
+    On Error Resume Next
+    Set sheet = Worksheets("Royalty Statement")
+    On Error GoTo 0
+    
+    If sheet Is Nothing Then
+        Exit Function
+    End If
+
+    Set AutoFilterRange = sheet.Range("Royalty_Columns")
+
+    sheet.Unprotect (TemplatePassword)
+    
+    If OnOff = "On" Then
+        If sheet.AutoFilterMode = False Then
+            AutoFilterRange.AutoFilter
+             sheet.EnableAutoFilter = True
+        End If
+    Else 'Off
+        sheet.AutoFilterMode = False
+    End If
+
+    Set sheet = Nothing
+    Set AutoFilterRange = Nothing
+
+End Function
+
+Function PreValidationUpdate(Cell As Range, dataItem As MetaDataItem) As Boolean
+
+   If dataItem.RuleName = "ForceUpperCase" Or dataItem.RuleName = "ForceCaseToListValue" _
+    Or dataItem.RuleName = "ReApplyFormula" Or dataItem.RuleName = "SetDefaultValue" Then
+            
+            'Cell.Worksheet.Unprotect
+            
+            If dataItem.IsApplicableToCell(Cell) Then
+                If dataItem.RuleName = "ForceUpperCase" Then
+                    Call ForceUpperCase(Cell)
+                    GoTo Exit_PreValidationUpdate
+                End If
+    
+                If dataItem.RuleName = "ForceCaseToListValue" Then
+                    Call ForceCaseToListValue(Cell)
+                    GoTo Exit_PreValidationUpdate
+                End If
+                    
+                If dataItem.RuleName = "ReApplyFormula" Then
+                    Call ReApplyFormula(Cell, dataItem)
+                    GoTo Exit_PreValidationUpdate
+                End If
+                    
+                If dataItem.RuleName = "SetDefaultValue" Then
+                    Call SetDefaultValue(Cell, dataItem.RuleValues)
+                    GoTo Exit_PreValidationUpdate
+                End If
+                    
+            End If
+    End If
+
+Exit_PreValidationUpdate:
+PreValidationUpdate = True
+
+End Function
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "LinkedLookups"
+Option Explicit
+
+Dim LastUpdatedRowIndex As Integer
+Dim LastUpdatedColIndex As Integer
+
+Public Sub ApplyLinkedLookups(Target As Range)
+
+    If LastUpdatedRowIndex = Target.Row And LastUpdatedColIndex = Target.Column Then
+        LastUpdatedRowIndex = -1
+        LastUpdatedColIndex = -1
+        If ThisWorkbook.IsReverseLinkedUpdate = True Then
+            Exit Sub
+        End If
+    End If
+    
+    MetaData.InitItems
+    
+    Dim dataItem As MetaDataItem
+    Dim InitRuleValue As String
+    Dim InitRuleValueArr
+    Dim TargetColumnIndex As Integer
+    Dim SplitDelimeter As String
+    Dim SplitRuleValue As Variant
+    Dim LinkedRuleValue As Variant
+    Dim LeftValue As String
+    Dim RightValue As String
+    Dim Cell As Object
+    
+    For Each Cell In Target
+        
+        If CStr(Trim(Cell.value)) = "" Then
+            GoTo NextCell
+        End If
+        
+        For Each dataItem In MetaData.GetItems
+    
+            If dataItem.IsRule And dataItem.RuleName = "IsLinkedUpdate" And dataItem.IsApplicableToCell(Cell) Then
+                
+                InitRuleValue = dataItem.RuleValues(1)
+                InitRuleValueArr = Split(InitRuleValue, "/")
+                TargetColumnIndex = CInt(InitRuleValueArr(0)) + 1
+                SplitDelimeter = CStr(InitRuleValueArr(1))
+                
+                For Each LinkedRuleValue In dataItem.RuleValues
+                    
+                    SplitRuleValue = Split(LinkedRuleValue, SplitDelimeter)
+                    LeftValue = SplitRuleValue(0)
+                    RightValue = SplitRuleValue(1)
+                    
+                    If UCase(LeftValue) = UCase(CStr(Cell)) Then
+                        If UCase(dataItem.rangeName) = "RPT_FROM" Then
+                            LastUpdatedRowIndex = Cell.Row + 1
+                            LastUpdatedColIndex = TargetColumnIndex - 1
+                            Target.Worksheet.Cells(Cell.Row + 1, TargetColumnIndex - 1).Worksheet.Unprotect (TemplatePassword)
+                            Target.Worksheet.Cells(Cell.Row + 1, TargetColumnIndex - 1) = RightValue
+                            GoTo NextCell
+                        Else
+                            LastUpdatedRowIndex = Cell.Row
+                            LastUpdatedColIndex = TargetColumnIndex
+                            Target.Worksheet.Cells(Cell.Row, TargetColumnIndex) = RightValue
+                            GoTo NextCell
+                           ' Exit Sub
+                        End If
+                    End If
+                        
+                Next LinkedRuleValue
+                
+            End If
+    
+        Next dataItem
+        
+NextCell:
+    Next Cell
+
+End Sub
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "MetaData"
+Option Explicit
+
+' Meta Data Pointers
+Public Position As Integer
+Public PositionLimit As Integer
+        
+' Meta Data Worksheets
+Public MetaDataSheet As Worksheet
+Public MetaDataSheetEx As Worksheet
+
+' Meta Data Indexes
+Public WORKSHEETINDEX_INDEX As Integer
+Public WORKSHEETNAME_INDEX As Integer
+Public ROWSTARTINDEX_INDEX As Integer
+Public ROWENDINDEX_INDEX As Integer
+Public COLSTARTINDEX_INDEX As Integer
+Public COLENDINDEX_INDEX As Integer
+Public RULENAME_INDEX As Integer
+Public RULEVALUECOLINDEX_INDEX As Integer
+Public ISRULE_INDEX As Integer
+Public ERROR_TITLE_INDEX As Integer
+Public ERROR_MESSAGE_INDEX As Integer
+Public RANGENAME_INDEX As Integer
+Public ISROYALTYCOL_INDEX As Integer
+Public FORMULA_INDEX As Integer
+Public INSIGHT_DATA_TYPE_INDEX As Integer
+Public ISERROR_INDEX As Integer
+Public ISWARNING_INDEX As Integer
+
+' Meta Data Record
+Public WorksheetIndex As Integer
+Public rangeName As String
+Public WorkSheetName As String
+Public RowStartIndex As Long
+Public RowEndIndex As Long
+Public ColumnStartIndex As Long
+Public ColumnEndIndex As Long
+Public RuleName As String
+Public RuleValueColumnIndex As Long
+Public IsRule As Boolean
+Public ErrorTitle As String
+Public ErrorMessage As String
+Public IsRoyaltyCol As String
+Public RoyaltyFormula As String
+Public RuleValues As Collection
+Public insightDataType As String
+Public IsError As Boolean
+Public IsWarning As Boolean
+
+
+' In memory collection
+Dim metaDataItems As Collection
+
+' Empty row indicator
+Public EmptyRowStartColumnIndex As Long
+Public EmptyRowEndColumnIndex As Long
+Public Const TemplatePassword As String = "OpenUp6"
+
+' For resetting the read meta data pointer
+Public Sub Reset()
+    
+    WORKSHEETINDEX_INDEX = 1
+    WORKSHEETNAME_INDEX = 2
+    ROWSTARTINDEX_INDEX = 6
+    ROWENDINDEX_INDEX = 7
+    COLSTARTINDEX_INDEX = 8
+    COLENDINDEX_INDEX = 9
+    RULENAME_INDEX = 10
+    RULEVALUECOLINDEX_INDEX = 11
+    ISRULE_INDEX = 12
+    ERROR_TITLE_INDEX = 13
+    ERROR_MESSAGE_INDEX = 14
+    INSIGHT_DATA_TYPE_INDEX = 15
+    RANGENAME_INDEX = 3
+    ISROYALTYCOL_INDEX = 16
+    FORMULA_INDEX = 4
+    ISERROR_INDEX = 17
+    ISWARNING_INDEX = 18
+        
+    Set MetaDataSheet = Worksheets("MetaDataSheet")
+    Set MetaDataSheetEx = Worksheets("MetaDataSheetEx")
+    
+    Position = 2
+    PositionLimit = MetaDataSheet.Cells(1, 2)
+    
+    EmptyRowStartColumnIndex = MetaDataSheet.Cells(1, 6)
+    EmptyRowEndColumnIndex = MetaDataSheet.Cells(1, 8)
+    
+End Sub
+
+' For moving the meta data pointer to the next record
+Public Function MoveNext()
+    
+    Position = Position + 1
+    
+    If Position > PositionLimit Then
+        MoveNext = False
+    Else
+        MoveNext = True
+    End If
+    
+End Function
+
+' For reading the meta data values into the record
+Public Sub Read()
+
+    rangeName = MetaDataSheet.Cells(Position, RANGENAME_INDEX)
+    WorksheetIndex = MetaDataSheet.Cells(Position, WORKSHEETINDEX_INDEX)
+    WorkSheetName = MetaDataSheet.Cells(Position, WORKSHEETNAME_INDEX)
+    RowStartIndex = MetaDataSheet.Cells(Position, ROWSTARTINDEX_INDEX)
+    RowEndIndex = MetaDataSheet.Cells(Position, ROWENDINDEX_INDEX)
+    ColumnStartIndex = MetaDataSheet.Cells(Position, COLSTARTINDEX_INDEX)
+    ColumnEndIndex = MetaDataSheet.Cells(Position, COLENDINDEX_INDEX)
+    RuleName = MetaDataSheet.Cells(Position, RULENAME_INDEX)
+    ErrorTitle = MetaDataSheet.Cells(Position, ERROR_TITLE_INDEX)
+    ErrorMessage = MetaDataSheet.Cells(Position, ERROR_MESSAGE_INDEX)
+    RuleValueColumnIndex = MetaDataSheet.Cells(Position, RULEVALUECOLINDEX_INDEX)
+    IsRoyaltyCol = MetaDataSheet.Cells(Position, ISROYALTYCOL_INDEX)
+    RoyaltyFormula = MetaDataSheet.Cells(Position, FORMULA_INDEX)
+    insightDataType = MetaDataSheet.Cells(Position, INSIGHT_DATA_TYPE_INDEX)
+    
+    If MetaDataSheet.Cells(Position, ISRULE_INDEX) = "Yes" Then
+        IsRule = True
+    Else
+        IsRule = False
+    End If
+    
+    If MetaDataSheet.Cells(Position, ISERROR_INDEX) = "Yes" Then
+        IsError = True
+    Else
+        IsError = False
+    End If
+    
+    If MetaDataSheet.Cells(Position, ISWARNING_INDEX) = "Yes" Then
+        IsWarning = True
+    Else
+        IsWarning = False
+    End If
+    
+    If IsRule Then
+    
+        Set RuleValues = New Collection
+    
+        Dim ruleValueIndex As Integer
+        ruleValueIndex = 2
+        
+        Dim hasRuleValues As Boolean
+        hasRuleValues = True
+        
+        Do While hasRuleValues
+            
+            Dim currentCell As Range
+            Set currentCell = MetaDataSheetEx.Cells(ruleValueIndex, RuleValueColumnIndex + 1)
+            
+            If CStr(currentCell) = "" Then
+                Exit Do
+            End If
+            
+            RuleValues.Add CStr(currentCell)
+            ruleValueIndex = ruleValueIndex + 1
+            
+        Loop
+    
+    End If
+    
+End Sub
+
+' For initializing in memory array
+Public Sub InitItems()
+
+        Set metaDataItems = New Collection
+        Reset
+        Do While MoveNext()
+        
+            Dim dataItem As MetaDataItem
+            Set dataItem = New MetaDataItem
+            
+            dataItem.WorksheetIndex = WorksheetIndex
+            dataItem.rangeName = rangeName
+            dataItem.WorkSheetName = WorkSheetName
+            dataItem.RowStartIndex = RowStartIndex
+            dataItem.RowEndIndex = RowEndIndex
+            dataItem.ColumnStartIndex = ColumnStartIndex
+            dataItem.ColumnEndIndex = ColumnEndIndex
+            dataItem.RuleName = RuleName
+            dataItem.RuleValueColumnIndex = RuleValueColumnIndex
+            dataItem.IsRule = IsRule
+            dataItem.ErrorTitle = ErrorTitle
+            dataItem.ErrorMessage = ErrorMessage
+            dataItem.IsRoyaltyCol = IsRoyaltyCol
+            dataItem.RoyaltyFormula = RoyaltyFormula
+            dataItem.insightDataType = insightDataType
+            dataItem.IsError = IsError
+            dataItem.IsWarning = IsWarning
+            
+            Set dataItem.RuleValues = RuleValues
+            
+            metaDataItems.Add dataItem
+        
+            Read
+        
+        Loop
+
+End Sub
+
+
+' For getting the meta data in memory structure
+Public Function GetItems() As Collection
+
+    If metaDataItems Is Nothing Then
+        InitItems
+    End If
+    
+    Set GetItems = metaDataItems
+
+End Function
+
+
+
+
+
+
+
+Attribute VB_Name = "MetaDataItem"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' Meta Data Record
+Public WorksheetIndex As Integer
+Public rangeName As String
+Public WorkSheetName As String
+Public RowStartIndex As Long
+Public RowEndIndex As Long
+Public ColumnStartIndex As Long
+Public ColumnEndIndex As Long
+Public RuleName As String
+Public RuleValueColumnIndex As Integer
+Public IsRule As Boolean
+Public ErrorTitle As String
+Public ErrorMessage As String
+Public IsRoyaltyCol As String
+Public RoyaltyFormula As String
+Public RuleValues As Collection
+Public insightDataType As String
+Public IsError As Boolean
+Public IsWarning As Boolean
+
+
+Public Function IsApplicableToCell(Cell As Range)
+
+    If WorkSheetName = "Royalty Statement" And IsRoyaltyCol = "Yes" Then
+        RowEndIndex = 65000
+    End If
+    
+    IsApplicableToCell = False
+    If ((Cell.Row - 1) <= RowEndIndex And (Cell.Row - 1) >= RowStartIndex) Then
+        If ((Cell.Column - 1) <= ColumnEndIndex And (Cell.Column - 1) >= ColumnStartIndex) Then
+            If WorkSheetName = Cell.Worksheet.Name Then
+                IsApplicableToCell = True
+            End If
+        End If
+    End If
+
+End Function
+
+
+
+
+
+
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "SkuCharacterMap"
+Function ReplicateSkuToCharacterMap(RoyaltySheet As Worksheet, CharacterSheet As Worksheet)
+
+    '*** Copy Distinct Sku Numbers From Royalty Statement sheet to Character Map sheet ***
+       
+    Dim r As Range
+    
+    '*********************************************
+    'get the distinct sku's on character map sheet
+    '*********************************************
+    Dim CharacterMapSkuRange  As Range: Set CharacterMapSkuRange = CharacterSheet.Range("Marvel_SKU_Number")
+    Dim CharacterMapStyleGuideRange As Range: Set CharacterMapStyleGuideRange = CharacterSheet.Range("Marvel_Royalty_Character")
+    Dim CharacterMapSkuDescriptionRange As Range: Set CharacterMapSkuDescriptionRange = CharacterSheet.Range("Marvel_SKU_Description")
+    
+    Dim CharacterMapSkuList As Collection: Set CharacterMapSkuList = New Collection
+    Dim characterMapStartRow As Integer: characterMapStartRow = ChangeLog.FindRoyaltyStartRow(CharacterSheet)
+    
+    For Each r In CharacterMapSkuRange
+        If r.value <> "" Then
+            Dim characterSkuItem As SkuCharacterMapItem: Set characterSkuItem = New SkuCharacterMapItem
+            Dim characterSkuKey As String
+            
+            characterSkuItem.SkuNumber = r.value
+            characterSkuItem.StyleGuide = CharacterMapStyleGuideRange.Cells(r.Row - characterMapStartRow, 1)
+            
+            characterSkuKey = characterSkuItem.SkuNumber + characterSkuItem.StyleGuide
+            characterSkuKey = Replace(characterSkuKey, " ", "")
+            
+            If characterSkuItem.StyleGuide <> "" And Not Contains(CharacterMapSkuList, characterSkuKey) Then
+                CharacterMapSkuList.Add item:=characterSkuItem, key:=characterSkuKey
+            End If
+        End If
+    Next r
+    
+    
+    '****************************************************************************************
+    'get the distinct sku's on royalty sheet that do not already exist on character map sheet
+    '****************************************************************************************
+    Dim RoyaltySkuNumberRange  As Range: Set RoyaltySkuNumberRange = RoyaltySheet.Range("Licensee_Catalogue_Code")
+    Dim RoyaltySkuDescriptionRange  As Range: Set RoyaltySkuDescriptionRange = RoyaltySheet.Range("Article_Description")
+    Dim RoyaltyStyleGuideRange  As Range: Set RoyaltyStyleGuideRange = RoyaltySheet.Range("Character_Description")
+       
+    Dim DistinctRoyaltySkuList As Collection: Set DistinctRoyaltySkuList = New Collection
+    Dim royaltyStartRow As Integer: royaltyStartRow = ChangeLog.FindRoyaltyStartRow(RoyaltySheet)
+    
+    For Each r In RoyaltySkuNumberRange
+        If r.value <> "" Then
+            Dim royaltySkuItem As SkuCharacterMapItem: Set royaltySkuItem = New SkuCharacterMapItem
+            Dim royaltySkuKey As String
+            
+            royaltySkuItem.SkuNumber = r.value
+            royaltySkuItem.SkuDescription = RoyaltySkuDescriptionRange.Cells(r.Row - royaltyStartRow, 1)
+            royaltySkuItem.StyleGuide = RoyaltyStyleGuideRange.Cells(r.Row - royaltyStartRow, 1)
+            
+            royaltySkuKey = royaltySkuItem.SkuNumber + royaltySkuItem.StyleGuide
+            royaltySkuKey = Replace(royaltySkuKey, " ", "")
+            
+            If royaltySkuItem.StyleGuide <> "" And Not Contains(DistinctRoyaltySkuList, royaltySkuKey) And Not Contains(CharacterMapSkuList, royaltySkuKey) Then
+                DistinctRoyaltySkuList.Add item:=royaltySkuItem, key:=royaltySkuKey
+            End If
+        End If
+    Next r
+
+
+    If DistinctRoyaltySkuList.Count <> 0 Then
+        '**************************************************
+        'write the Distinct list to the character map sheet
+        '**************************************************
+        
+        'Update the Changelog sheet to know about the newly inserted rows
+        Dim changelogSheet As Worksheet
+        Set changelogSheet = Worksheets("Character_Map_ChangeLog")
+        changelogSheet.Cells(1, 1) = changelogSheet.Cells(1, 1) + DistinctRoyaltySkuList.Count
+        
+        CharacterSheet.Activate
+        'get the first row
+        Dim beginRow As Integer: beginRow = characterMapStartRow + 1
+            
+        Application.ScreenUpdating = False
+           
+        'insert a blank row after the first row to keep the formatting of the range (including drop down lists)
+        CharacterSheet.Unprotect (TemplatePassword)
+        CharacterSheet.Rows(beginRow + 1).Insert
+        
+        'insert the required number of rows you need based on the distinct list of sus
+        Dim copyRange As String: copyRange = beginRow + 1 & ":" & DistinctRoyaltySkuList.Count + beginRow
+        CharacterSheet.Rows(copyRange).Insert Shift:=xlDown
+     
+        'cut the first row and paste it after the new block of rows you just inserted in the previous line of code.
+        CharacterSheet.Rows(beginRow).Cut
+        CharacterSheet.Rows(DistinctRoyaltySkuList.Count + beginRow + 1).Select
+        CharacterSheet.Paste
+        
+        'delete the first rows as its not needed
+        CharacterSheet.Rows(beginRow).Delete
+        Call ProtectSheet(CharacterSheet)
+        
+        'for each for in the collection write to the block of empty rows you've just inserted.
+        Dim i As Integer
+        For i = 1 To DistinctRoyaltySkuList.Count
+            CharacterMapSkuRange.Cells(i, 1).value = DistinctRoyaltySkuList(i).SkuNumber
+            CharacterMapSkuDescriptionRange.Cells(i, 1).value = DistinctRoyaltySkuList(i).SkuDescription
+            CharacterMapStyleGuideRange.Cells(i, 1).value = DistinctRoyaltySkuList(i).StyleGuide
+        Next i
+    
+        Application.ScreenUpdating = True
+    End If
+    
+End Function
+
+
+Function Contains(col As Collection, key As Variant) As Boolean
+
+Dim var As Variant
+
+On Error GoTo err
+    
+    Contains = True
+    var = col(key).SkuNumber
+    
+    Exit Function
+
+err:
+    Contains = False
+End Function
+
+
+Attribute VB_Name = "SkuCharacterMapItem"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public SkuNumber As String
+Public SkuDescription As String
+Public StyleGuide As String
+Attribute VB_Name = "StatementHelper"
+Option Explicit
+
+Dim TemplateRules As Collection
+Dim RegistryWorkSheet As Worksheet
+Dim RoyaltyWorksheet As Worksheet
+
+Dim NAME_RANGES As Collection
+Dim INSIGHT_DATA_TYPES As Collection
+
+Function Intialize(currentWorksheet As Worksheet)
+
+    Set RegistryWorkSheet = Worksheets("Registry")
+    Set RoyaltyWorksheet = currentWorksheet
+    
+    Set NAME_RANGES = New Collection
+    Set INSIGHT_DATA_TYPES = New Collection
+    INSIGHT_DATA_TYPES.Add ("DestinationCountry")
+    INSIGHT_DATA_TYPES.Add ("InvoiceCurrencyCode")
+    INSIGHT_DATA_TYPES.Add ("MerchandiseCode")
+    INSIGHT_DATA_TYPES.Add ("StockKeepingUnit")
+    INSIGHT_DATA_TYPES.Add ("MarvelStockKeepingUnit")
+    INSIGHT_DATA_TYPES.Add ("CharacterCode")
+    INSIGHT_DATA_TYPES.Add ("CatalogueCode")
+    INSIGHT_DATA_TYPES.Add ("StandardBookNumber")
+    INSIGHT_DATA_TYPES.Add ("SeriesAndTitle")
+    INSIGHT_DATA_TYPES.Add ("MarvelStockKeepingUnit")
+    INSIGHT_DATA_TYPES.Add ("MarvelStockKeepingUnitDescription")
+    INSIGHT_DATA_TYPES.Add ("MarvelRoyaltyCharacter")
+    INSIGHT_DATA_TYPES.Add ("MarvelCharacterDescription")
+    
+    Dim metaDataItems As Collection
+    Set metaDataItems = MetaData.GetItems
+    Dim insightDataType As Variant
+    Dim item As Variant
+    
+    For Each insightDataType In INSIGHT_DATA_TYPES
+    
+        For Each item In metaDataItems
+            If (item.insightDataType = insightDataType) Then
+                NAME_RANGES.Add (item.WorkSheetName & "||" & item.rangeName)
+                Exit For
+            End If
+        Next
+    Next
+
+End Function
+
+Function CheckBlankRow(currentWorksheet As Worksheet, startRoyaltyRow As Long, rowIndex As Long) As Boolean
+
+    Dim val As Variant
+    Dim RelativeRowIndex As Long
+    Dim currentWorksheetName As String
+    Dim currentNameRange As String
+    Dim namedRange
+        
+    ' We are not interested in rows that are not valid royalty lines
+    If rowIndex < startRoyaltyRow Then
+        GoTo NotBlankRow
+    End If
+    
+    ' Calculate row index relative to
+    RelativeRowIndex = (rowIndex - startRoyaltyRow)
+    
+    ' These ranges are mixed with work sheet names like so, 'RubbishSheetName1||RubbishRangeName1'
+    For Each namedRange In NAME_RANGES
+    
+        currentNameRange = Split(namedRange, "||")(1)
+        currentWorksheetName = Split(namedRange, "||")(0)
+        
+        If (currentWorksheetName = currentWorksheet.Name) Then
+            val = currentWorksheet.Range(currentNameRange).Rows(RelativeRowIndex)
+            If Not (IsNull(val)) And CStr(Trim(val)) <> "" Then
+                GoTo NotBlankRow
+            End If
+        End If
+        
+    Next
+    
+    CheckBlankRow = True
+    Exit Function
+    
+    
+NotBlankRow:
+        CheckBlankRow = False
+        Exit Function
+    
+End Function
+
+Sub ClearRowValidation(currentWorksheet As Worksheet, rowIndex As Long)
+    Dim columnIndex As Long
+    For columnIndex = (MetaData.EmptyRowStartColumnIndex + 1) To (MetaData.EmptyRowEndColumnIndex + 1)
+        currentWorksheet.Cells(rowIndex, columnIndex).Interior.ColorIndex = xlNone ' White
+        If Not (currentWorksheet.Cells(rowIndex, columnIndex).Comment Is Nothing) Then
+             currentWorksheet.Cells(rowIndex, columnIndex).Comment.Delete
+        End If
+    Next columnIndex
+End Sub
+
+Function WorkSheetExists(WorkSheetName As String)
+    WorkSheetExists = False
+    
+    On Error Resume Next
+    Dim FindWorkSheet As Worksheet
+    
+    Set FindWorkSheet = Worksheets(WorkSheetName)
+    On Error GoTo 0
+    
+    If Not FindWorkSheet Is Nothing Then
+        WorkSheetExists = True
+    End If
+End Function
+
+Sub ShowValidateForm()
+    frmValidate.StartUpPosition = 0
+    frmValidate.Left = Application.Left + Application.Width - (frmValidate.Width) - 25
+    frmValidate.Top = Application.Top + 115
+    frmValidate.Show False
+End Sub
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Dim LastUpdatedRowIndex As Integer
+Dim LastUpdatedColIndex As Integer
+Public FireEvents As Boolean
+Public IsReverseLinkedUpdate As Boolean
+Dim WithEvents RoyaltiesEWS As Worksheet
+Attribute RoyaltiesEWS.VB_VarHelpID = -1
+Dim WithEvents CharacterMapEWS As Worksheet
+Attribute CharacterMapEWS.VB_VarHelpID = -1
+Dim loggedtarget(1 To 5) As String
+Dim icount As Long
+
+Private Sub CharacterMapEWS_Change(ByVal Target As Range)
+    ValidationRules.ExecuteActionRule ThisWorkbook.Worksheets("Character Map"), Target
+End Sub
+
+Private Sub RoyaltiesEWS_Change(ByVal Target As Range)
+    ValidationRules.ExecuteActionRule ThisWorkbook.Worksheets("Royalty Statement"), Target
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    Dim ValidationLogSheet As Worksheet
+    Dim strMsg As String
+ 
+    Set ValidationLogSheet = ThisWorkbook.Worksheets("Validation Log")
+    If Left(ValidationLogSheet.Cells(1, 1).value, 21) <> "Validation Successful" Then
+    
+        If StatementHelper.WorkSheetExists("Royalty Statement") And Not StatementHelper.WorkSheetExists("Character Map") Then
+            strMsg = "The worksheet doesn't appear to have been" & _
+                    " validated successfully. Click" & _
+                    " OK to close anyway."
+        ElseIf StatementHelper.WorkSheetExists("Character Map") Then
+            strMsg = "You must validate the workbook prior to returning to Disney.  Any unmapped SKU Character combinations must be completed."
+        End If
+        
+        If MsgBox(strMsg, vbOKCancel + vbExclamation, "Close Workbook?") = vbCancel Then
+            Cancel = True
+        End If
+        
+    End If
+End Sub
+
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+   ' Application.Calculation = xlCalculationManual
+   ' ChangeLog.IterateOverChangeLog
+   ' Application.Calculation = xlCalculationAutomatic
+End Sub
+
+Private Sub Workbook_Deactivate()
+    frmValidate.Hide
+End Sub
+
+Private Sub Workbook_NewSheet(ByVal sh As Object)
+'    sh.Delete
+End Sub
+
+
+Private Sub Workbook_Open()
+    Dim WS As Worksheet
+    Dim i As Integer
+    
+    StatementHelper.ShowValidateForm
+    ThisWorkbook.Worksheets(1).Activate
+                
+    For Each WS In ThisWorkbook.Worksheets
+        If WS.Name = "Royalty Statement" Then
+            WS.Activate
+            WS.AutoFilterMode = False
+            LastUsedRangeRowIndex = WS.UsedRange.Rows.Count
+            WS.Cells(1, 5) = ""
+            Set RoyaltiesEWS = WS
+        ElseIf WS.Name = "Character Map" Then
+            WS.Activate
+            Set CharacterMapEWS = WS
+        ElseIf WS.Name = "ChangeLog" Then
+          'DN: Make equal to the UsedRange instead
+           WS.Cells(1, 1) = LastUsedRangeRowIndex
+        ElseIf WS.Name = "Registry" Then
+            For i = 1 To 500
+            If WS.Cells(i, 1) = "Template.IsReverseLinkedUpdate" Then
+                IsReverseLinkedUpdate = WS.Cells(i, 2)
+                Exit For
+            End If
+            Next
+        End If
+    Next
+    
+    FireEvents = True
+    Set WS = Nothing
+End Sub
+
+Private Sub Workbook_SheetActivate(ByVal sh As Object)
+    If sh.Name = "Royalty Statement" Or sh.Name = "Character Map" Then
+        StatementHelper.ShowValidateForm
+    Else
+        sh.AutoFilterMode = False
+        frmValidate.Hide
+    End If
+End Sub
+
+Private Sub Workbook_SheetChange(ByVal sh As Object, ByVal Target As Range)
+
+    If Target.Worksheet.Name <> "Royalty Statement" And Target.Worksheet.Name <> "Character Map" Then
+        Exit Sub
+    End If
+    
+    'Deactivate event traps
+    'Application.EnableEvents = False
+    
+    Dim changeLogWorksheetName As String
+    changeLogWorksheetName = ChangeLog.GetChangeLogNameSheet(Target.Worksheet)
+    If sh.UsedRange.Rows.Count < LastUsedRangeRowIndex Then
+        ThisWorkbook.Worksheets(changeLogWorksheetName).Cells(1, 1) = sh.UsedRange.Rows.Count
+        GoTo Exit_Workbook_SheetChange:
+    End If
+    
+    Dim Cell As Range
+    
+    If Target.Rows.Count >= 1 And (Target.Worksheet.Name = "Royalty Statement" Or Target.Worksheet.Name = "Character Map") Then
+        Dim RowRange As Range
+        For Each RowRange In Target.Rows
+            ChangeLog.UpdateChangeLog RowRange
+        Next RowRange
+    End If
+    
+    Application.Calculation = xlCalculationManual
+    ChangeLog.UpdateChangeLog Target
+     
+    Dim match As Variant
+    Dim key As String
+    key = Target.Worksheet.Name & ":" & Target.Cells.Row & ":" & Target.Cells.Column
+    match = Filter(loggedtarget, key)
+    
+    If UBound(match) < 0 Then
+        If FireEvents = True Then
+            icount = icount + 1
+            loggedtarget(icount) = key
+            LinkedLookups.ApplyLinkedLookups Target
+            PreRuleExecution Target
+            Call ProtectSheet(sh)
+        End If
+    End If
+    
+    icount = 0
+    Erase loggedtarget
+    
+    'If FireEvents = True Then
+        'LinkedLookups.ApplyLinkedLookups Target
+        'PreRuleExecution Target
+        'Call ProtectSheet(sh)
+    'End If
+        
+    Application.Calculation = xlCalculationAutomatic
+Exit_Workbook_SheetChange:
+    LastUsedRangeRowIndex = sh.UsedRange.Rows.Count
+    
+    'Reactivate event traps
+    Application.EnableEvents = True
+    
+End Sub
+
+
+
+
+
+Attribute VB_Name = "ValidationError"
+Option Explicit
+
+Public Const MaxErrors = 1000
+Public MaxErrorsReached As Boolean
+
+' Resets all the validation errors on a given sheet
+Public Sub Reset()
+
+    Dim ErrorComment As Comment
+    Dim RoyaltyStatement As Worksheet
+    
+    
+    On Error Resume Next
+    Set RoyaltyStatement = Worksheets("Royalty Statement")
+    On Error GoTo 0
+    
+    If (RoyaltyStatement Is Nothing) Then
+        For Each ErrorComment In RoyaltyStatement.Comments
+            ErrorComment.Visible = False
+        Next
+    End If
+    
+    On Error Resume Next
+    Set RoyaltyStatement = Worksheets("Character Map")
+    On Error GoTo 0
+    
+    If (RoyaltyStatement Is Nothing) Then
+        For Each ErrorComment In RoyaltyStatement.Comments
+            ErrorComment.Visible = False
+        Next
+    End If
+    
+End Sub
+
+' Writes out an error message in the form of a comment
+Public Sub WriteError(errorCell As Range, ErrorTitle As String, ErrorMessage As String, Optional ForceColour As Integer)
+
+    errorCell.Worksheet.Unprotect (TemplatePassword)
+    
+    If errorCell.Comment Is Nothing Then
+        errorCell.AddComment
+    End If
+    
+    errorCell.Comment.Visible = False
+    errorCell.Comment.Text ErrorTitle & vbLf & ErrorMessage
+    errorCell.Comment.Shape.TextFrame.AutoSize = True
+    
+    If (ForceColour <> 0) Then
+        errorCell.Interior.ColorIndex = ForceColour
+    Else
+        errorCell.Interior.ColorIndex = 3 ' Red
+    End If
+
+End Sub
+
+
+Public Sub WriteErrorSummary(errorCell As Range, ErrorTitle As String, ErrorMessage As String, IsError As Boolean, IsWarning As Boolean, currentSheet As Worksheet)
+
+Dim ErrorSheet As Worksheet
+Dim StartIndex As Integer
+Dim strError As String
+Dim WS As Worksheet
+Dim SheetExists As Boolean
+Dim ColourIndex As Integer
+    
+'Check if sheet exists and if so set it
+For Each WS In ThisWorkbook.Worksheets
+    If WS.Name = "Validation Log" Then
+        Set ErrorSheet = ThisWorkbook.Worksheets("Validation Log")
+        SheetExists = True
+    End If
+Next
+
+'Only if sheet exists
+If SheetExists = True Then
+    
+    Select Case currentSheet.Name
+        Case "Royalty Statement"
+            StartIndex = TotalRoyaltyErrorCount + 3
+        Case "Character Map"
+            StartIndex = TotalErrorCount + 4
+    End Select
+    
+    If (IsError) Then
+        strError = "Error on Row:" & errorCell.Row & ", Column: " & ColumnLetter(errorCell.Column) & ". Error Message is: " & ErrorTitle & " " & ErrorMessage
+        ColourIndex = 3
+        IsErrorFlag = True
+    ElseIf (IsWarning) Then
+        strError = "Warning on Row:" & errorCell.Row & ", Column: " & ColumnLetter(errorCell.Column) & ". Warning Message is: " & ErrorTitle & " " & ErrorMessage
+        ColourIndex = 11
+        IsWarningFlag = True
+    End If
+
+    ErrorSheet.Unprotect (TemplatePassword)
+    ErrorSheet.Rows(StartIndex).EntireRow.Insert xlShiftDown
+    ErrorSheet.Cells(StartIndex, 2) = strError
+    
+    '******* Create Cell Hyperlink *******
+    Dim gotoCell As String
+    gotoCell = "'" & currentSheet.Name & "'!" & ColumnLetter(errorCell.Column) & errorCell.Row
+    
+    ErrorSheet.Hyperlinks.Add Anchor:=ErrorSheet.Cells(StartIndex, 2), Address:="", SubAddress:=gotoCell
+    '******* Create Cell Hyperlink *******
+    
+    ErrorSheet.Cells(StartIndex, 2).Font.ColorIndex = ColourIndex
+    Call ProtectSheet(ErrorSheet)
+    
+End If
+
+End Sub
+
+Function ColumnLetter(ColumnNumber As Integer) As String
+      
+    '
+    'example usage:
+    '
+    'Dim temp As Integer
+    'temp = Sheets(1).Range("B2").End(xlToRight).Column
+    'MsgBox "The last column of this region is " & _
+    '        ColumnLetter(temp)
+    '
+        
+If ColumnNumber <= 0 Then
+    'negative column number
+    ColumnLetter = ""
+    
+ElseIf ColumnNumber > 16384 Then
+    'column not supported (too big) in Excel 2007
+    ColumnLetter = ""
+    
+ElseIf ColumnNumber > 702 Then
+    ' triple letter columns
+    ColumnLetter = _
+    Chr((Int((ColumnNumber - 1 - 26 - 676) / 676)) Mod 676 + 65) & _
+    Chr((Int((ColumnNumber - 1 - 26) / 26) Mod 26) + 65) & _
+    Chr(((ColumnNumber - 1) Mod 26) + 65)
+
+ElseIf ColumnNumber > 26 Then
+    ' double letter columns
+    ColumnLetter = Chr(Int((ColumnNumber - 1) / 26) + 64) & _
+            Chr(((ColumnNumber - 1) Mod 26) + 65)
+Else
+    ' single letter columns
+    ColumnLetter = Chr(ColumnNumber + 64)
+
+End If
+    
+End Function
+
+
+
+
+Attribute VB_Name = "ValidationRules"
+Option Explicit
+
+' Rule validation engine for analyzing cells on selection
+
+Public Function ExecuteActionRule(currentWorksheet As Worksheet, currentCell As Range) As Boolean
+
+    Dim errorCount As Integer
+    Dim dataItems As Collection
+    Dim dataItem As MetaDataItem
+    Set dataItems = MetaData.GetItems()
+    ExecuteActionRule = True
+    
+    If (currentCell.Cells.Count > 1) Then
+        Exit Function
+    End If
+    
+    For Each dataItem In dataItems
+        If Not dataItem.rangeName = "" Then
+            On Error GoTo HandleInterectError
+            If Not Application.Intersect(currentCell, Range(dataItem.rangeName)) Is Nothing Then
+                If dataItem.RuleName = "StyleGuideNotYetSelected" Then
+                    If Not IsStyleGuideOrPreviousCharacterSelected(currentCell) Then
+                        MsgBox "Please select " & Range("Header_Columns").Cells(1, currentCell.Column - 1) & " first!", vbExclamation, "Selection Error"
+                        Application.EnableEvents = False
+                        currentCell.value = ""
+                        currentWorksheet.Cells(currentCell.Row, currentCell.Column - 1).Select
+                        Application.EnableEvents = True
+                        ExecuteActionRule = False
+                    End If
+                    If IsCharacterAlreadySelected(currentCell) Then
+                        MsgBox currentCell.value + " is already selected!", vbExclamation, "Selection Error"
+                        Application.EnableEvents = False
+                        currentCell.value = ""
+                        Application.EnableEvents = True
+                        ExecuteActionRule = False
+                    End If
+                End If
+            End If
+            
+        End If
+        GoTo NextDataItem
+HandleInterectError:
+        Resume NextDataItem
+NextDataItem:
+    Next dataItem
+End Function
+
+' Rule validation engine for analyzing cells
+Public Function ExecuteRule(currentWorksheet As Worksheet, currentCell As Range, dataItem As MetaDataItem) As Boolean
+
+    ExecuteRule = True
+    
+    If dataItem.RuleName = "SkuShouldHaveAtLeastOneChar" Then
+        If Not SkuIsMappedToAtLeastOneCharacter(currentCell, currentWorksheet) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+    
+    If dataItem.RuleName = "ColumnsShouldHaveSameValues" Then
+    
+        ExecuteRule = ColumnsShouldHaveSameValues(currentCell, dataItem)
+        
+    End If
+    
+    If dataItem.RuleName = "ColumnPairsShouldHaveSameValues" Then
+    
+        ExecuteRule = ColumnPairsShouldHaveSameValues(currentCell, dataItem)
+        
+    End If
+    
+    If dataItem.RuleName = "Date" Then
+        
+        If Not IsValidDate(currentCell, dataItem) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+        
+    End If
+
+   If dataItem.RuleName = "LookupList" Then
+   
+        If Not IsInLookupList(currentCell, dataItem.RuleValues) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+       End If
+   
+   End If
+
+    If dataItem.RuleName = "IsRequired" Then
+    
+        If Trim(currentCell) = "" Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    
+    End If
+
+    If dataItem.RuleName = "WholeNumber" And dataItem.RoyaltyFormula = "" Then
+        Dim Fail As Boolean
+        Fail = False
+        
+        If Trim(currentCell) = "" Then
+            currentCell = 0
+        End If
+        
+        If Not IsNumeric(currentCell) Then
+            Fail = True
+        Else
+            If Not CDbl(currentCell) = CLng(currentCell) Then
+                Fail = True
+            End If
+        End If
+        
+        If Fail = True Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+
+    If dataItem.RuleName = "Decimal" And dataItem.RoyaltyFormula = "" Then
+        If Trim(currentCell) = "" Then
+            currentCell = 0
+        End If
+        
+        If Not IsNumeric(currentCell) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+
+    If dataItem.RuleName = "Percentage" And dataItem.RoyaltyFormula = "" Then
+        If Trim(currentCell) = "" Then
+            currentCell = 0
+        End If
+        
+        If Not (IsNumeric(currentCell) And (currentCell >= 0 And currentCell <= 1)) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+
+    If (dataItem.RuleName = "StrictLookupList") And (dataItem.rangeName <> "Destination_Country") Then
+        If Not IsInLookupList(currentCell, dataItem.RuleValues) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+    
+    ' Validate the country name with case
+    If (dataItem.RuleName = "StrictLookupList") And (dataItem.rangeName = "Destination_Country") Then
+        If Not CountryIsInLookupList(currentCell, dataItem.RuleValues) Then
+                ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+                ExecuteRule = False
+        End If
+    End If
+    
+    If dataItem.RuleName = "WarningLookupList" Then
+
+       If Not IsInLookupList(currentCell, dataItem.RuleValues) And Not IsISBNNewRelease(currentCell, dataItem.rangeName) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+
+    End If
+    
+    If dataItem.RuleName = "IfHasColumnValues" Then
+        
+        If Not HasColumnValues(currentCell, dataItem) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+        
+    End If
+    
+    If dataItem.RuleName = "AllShouldHaveAnyValues" Then
+        
+        If Not AllShouldHaveAnyValues(currentCell, dataItem) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+        
+    End If
+    
+    If dataItem.RuleName = "IfHasRowValues" Then
+    
+        If Not HasRowValues(currentCell, dataItem) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    
+    End If
+    
+    If dataItem.RuleName = "EuropeanArticleNumber" Then
+   
+        If Not IsValidEAN(currentCell) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+   
+    End If
+    
+    If dataItem.RuleName = "InternationalStandardBookNumber" Then
+        If Not IsValidISBN(currentCell) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    
+    End If
+    
+    If dataItem.RuleName = "MaxLength" Then
+    
+        If Len(CStr(currentCell)) > CInt(dataItem.RuleValues(1)) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    
+    End If
+    
+    If dataItem.RuleName = "SetExplicitValue" Then
+          Call SetExplicitValue(currentCell, dataItem.RuleValues)
+    End If
+    
+    If dataItem.RuleName = "ValidateCalculation" Then
+        If Not ValidateCalculation(currentCell, dataItem.RuleValues) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+    
+    If dataItem.RuleName = "IsLinkedUpdateWarning" Then
+        If Not IsLinkedUpdateWarning(currentCell, dataItem.RuleValues) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+    
+    If dataItem.RuleName = "InvalidCharacter" Then
+        If Not InvalidCharacter(currentCell, dataItem.RuleValues) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+    
+    If dataItem.RuleName = "StyleGuideNotYetSelected" Then
+       
+        If Not IsStyleGuideSelected(currentCell) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+
+    End If
+    
+    If dataItem.RuleName = "LookupListSelectionInRange" Then
+        If Not IsLookupListSelectionInRange(currentCell, dataItem) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+    
+    If dataItem.RuleName = "ValidateSkuOnlyOneChar" Then
+       If Not ValidateSkuOnlyOneChar(currentWorksheet, currentCell, dataItem) Then
+            ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+            ExecuteRule = False
+        End If
+    End If
+    
+    currentCell.Worksheet.Unprotect (TemplatePassword)
+        
+    If ExecuteRule = False Then
+        ValidationError.WriteErrorSummary currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage, dataItem.IsError, dataItem.IsWarning, currentWorksheet
+    End If
+    
+End Function
+
+'Character Map Rule that checks to see that the style guide is already selected before selecting a character
+Function IsStyleGuideSelected(currentCell As Range) As Boolean
+    Dim valueFound As Boolean
+    valueFound = False
+    
+    Dim FindWorkSheet As Worksheet
+    Set FindWorkSheet = Worksheets("Character Map")
+    
+    'Ignore rule if the cell is empty
+    If (currentCell.value = "") Or Not (FindWorkSheet.Cells(currentCell.Row, 3) = "") Then
+        valueFound = True
+    End If
+    
+    IsStyleGuideSelected = valueFound
+End Function
+
+'Character Map Rule that checks to see that the style and lower number character columns guide is already selected before selecting a character
+Function IsStyleGuideOrPreviousCharacterSelected(currentCell As Range) As Boolean
+    Dim valueFound As Boolean
+    valueFound = False
+    
+    Dim FindWorkSheet As Worksheet
+    Set FindWorkSheet = Worksheets("Character Map")
+    
+    If Not (FindWorkSheet.Cells(currentCell.Row, currentCell.Column - 1) = "") Then
+        valueFound = True
+    End If
+    
+    IsStyleGuideOrPreviousCharacterSelected = valueFound
+End Function
+
+'Character Map Rule that checks to see that the character is only selected once per row
+Function IsCharacterAlreadySelected(currentCell As Range) As Boolean
+    IsCharacterAlreadySelected = False
+    Dim valueFound As Boolean
+    valueFound = False
+    Dim iColumnCount As Integer
+    iColumnCount = 1
+    
+    Dim FindWorkSheet As Worksheet
+    Set FindWorkSheet = Worksheets("Character Map")
+    Dim startColumn As Integer
+    startColumn = Range("Header_Columns").Find("Royalty Character").Column
+        
+    While (iColumnCount <= 20)
+        If (FindWorkSheet.Cells(currentCell.Row, startColumn + iColumnCount) = "") Then
+            Exit Function
+        End If
+        If Not (startColumn + iColumnCount = currentCell.Column) And (FindWorkSheet.Cells(currentCell.Row, startColumn + iColumnCount) = currentCell.value) Then
+           IsCharacterAlreadySelected = True
+           Exit Function
+        End If
+        iColumnCount = iColumnCount + 1
+    Wend
+End Function
+
+'Character Map Rule that checks to see that the character selected exists in the style guide selected
+Function IsLookupListSelectionInRange(currentCell As Range, dataItem As MetaDataItem) As Boolean
+    Dim characterMapWorksheet As Worksheet
+    Dim character, styleGuideRangeName As String
+    Dim styleGuideRange, found As Range
+    
+    IsLookupListSelectionInRange = False
+    If (currentCell.Row = 6) Then
+        IsLookupListSelectionInRange = False
+    End If
+    
+    character = currentCell.value
+    If (character = "") Then
+        If (Range("Header_Columns").Cells(1, currentCell.Column) = "Character 1") Then
+            IsLookupListSelectionInRange = False
+        Else
+            IsLookupListSelectionInRange = True
+        End If
+        Exit Function
+    End If
+    
+    Set characterMapWorksheet = Worksheets("Character Map")
+    styleGuideRangeName = Replace(characterMapWorksheet.Cells(currentCell.Row, 3), " ", "_")
+    styleGuideRangeName = Replace(styleGuideRangeName, "-", "hyph")
+    styleGuideRangeName = Replace(styleGuideRangeName, "&", "amp")
+    styleGuideRangeName = Replace(styleGuideRangeName, "(", "oparen")
+    styleGuideRangeName = Replace(styleGuideRangeName, ")", "cparen")
+    
+    On Error GoTo ErrorHandler
+    Set styleGuideRange = Range(styleGuideRangeName)
+    Set found = styleGuideRange.Find(character)
+    
+    If Not (found Is Nothing) Then
+        If (found.Cells.Count = 1) Then
+            IsLookupListSelectionInRange = True
+        End If
+    End If
+    
+    Exit Function
+    
+    
+ErrorHandler:
+    
+    
+
+End Function
+
+Public Function SkuIsMappedToAtLeastOneCharacter(CellValue As Range, currentWorksheet As Worksheet) As Boolean
+                                
+    Const startOfCharacterCols As Integer = 4
+    Const maxNumCharacters As Integer = 20
+    
+    Dim foundCharacter As Boolean
+    Dim currentCell As Range
+    Dim colIndex As Integer
+    
+    If Len(Trim(CellValue.value)) > 0 Then
+    
+        For colIndex = startOfCharacterCols To (startOfCharacterCols + maxNumCharacters) Step 1
+            Set currentCell = currentWorksheet.Cells(CellValue.Row, colIndex)
+            If Len(Trim(currentCell.value)) > 0 Then
+                foundCharacter = True
+                Exit For
+            End If
+        Next colIndex
+            
+        SkuIsMappedToAtLeastOneCharacter = foundCharacter
+    Else
+        'if sku is empty then we pass validation
+        SkuIsMappedToAtLeastOneCharacter = True
+    End If
+    
+
+End Function
+
+
+Function ColumnsShouldHaveSameValues(currentCell As Range, dataItem As MetaDataItem) As Boolean
+        
+        ' *** COLUMNS_SHOULD_HAVE_SAME_VALUES ***
+        ' Find the named range which has values we are interested in
+        Dim ruleValue As Variant
+        Dim namedRangeLookup As Range
+        
+        ' Setup return result
+        ColumnsShouldHaveSameValues = True
+        
+        For Each ruleValue In dataItem.RuleValues
+        
+            On Error Resume Next
+            Dim characterMapWorksheet As Worksheet
+            Dim royaltyStatementWorksheet As Worksheet
+            Set royaltyStatementWorksheet = Worksheets("Royalty Statement")
+            Set namedRangeLookup = royaltyStatementWorksheet.Range(CStr(ruleValue))
+            On Error GoTo 0
+            
+            ' D-01904: 13062011 MB Chase file does not have royalty statement sheet
+            If Not StatementHelper.WorkSheetExists("Royalty Statement") Then Exit Function
+            
+            If (namedRangeLookup Is Nothing) Then
+                
+                On Error Resume Next
+                Set characterMapWorksheet = Worksheets("Character Map")
+                Set namedRangeLookup = characterMapWorksheet.Range(CStr(ruleValue))
+                On Error GoTo 0
+                
+            End If
+            
+            Exit For
+            
+        Next ruleValue
+        
+        ' Check to see if we actually found the named range specified in the rule values
+        If (namedRangeLookup Is Nothing) Then
+        
+            ' Fail: If we cannot find the named range we cannot continue
+            ValidationError.WriteError currentCell, "Catastrophic Rule Failure: ColumnsShouldHaveSameValues", "Could not find lookup range in rule values, please report this error to Disney IT"
+            ColumnsShouldHaveSameValues = False
+                    
+        Else
+                    
+            ' We have found the range, now the check if the currentCell.Value is in the named range
+            Dim cellInNamedRange As Range
+            Dim cellStringValueInNamedRange As String
+            Dim currentValueWasFoundInNamedRange As Boolean
+            Dim currentValueThatNeedsToExistInNamedRange As String
+            
+            currentValueWasFoundInNamedRange = False
+            currentValueThatNeedsToExistInNamedRange = CStr(currentCell.value)
+            
+            ' Loop through the range values
+            For Each cellInNamedRange In namedRangeLookup
+            
+                cellStringValueInNamedRange = CStr(cellInNamedRange)
+                If currentValueThatNeedsToExistInNamedRange = cellStringValueInNamedRange Then
+                    
+                    currentValueWasFoundInNamedRange = True
+                    Exit For
+                    
+                End If
+            
+            Next cellInNamedRange
+            
+            ' Find check to see whether we actually found the value, I miss LINQ!
+            If Not currentValueWasFoundInNamedRange Then
+            
+                ' Fail: We could not find the value
+                ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+                ColumnsShouldHaveSameValues = False
+            
+            End If
+                    
+        End If
+
+End Function
+
+
+Function ColumnPairsShouldHaveSameValues(currentCell As Range, dataItem As MetaDataItem) As Boolean
+        
+        ' *** COLUMNS_SHOULD_HAVE_SAME_VALUES ***
+        ' Find the named range which has values we are interested in
+        Dim ruleValue As Variant
+        Dim pairedNamedRange As Range
+        Dim namedRangeLookup As Range
+        Dim pairedNamedRangeLookup As Range
+        
+        ' Setup return result
+        ColumnPairsShouldHaveSameValues = True
+        
+        On Error Resume Next
+        Dim characterMapWorksheet As Worksheet
+        Dim royaltyStatementWorksheet As Worksheet
+        
+        Set characterMapWorksheet = Worksheets("Character Map")
+        Set pairedNamedRange = characterMapWorksheet.Range(CStr(dataItem.RuleValues(1)))
+        Set royaltyStatementWorksheet = Worksheets("Royalty Statement")
+        Set namedRangeLookup = royaltyStatementWorksheet.Range(CStr(dataItem.RuleValues(2)))
+        Set pairedNamedRangeLookup = royaltyStatementWorksheet.Range(CStr(dataItem.RuleValues(3)))
+        On Error GoTo 0
+        
+        ' TK-03691 DEFECT  AFB & MB : 31/05/2011: Error message on SKU Number field when template is validated ==> No Character Map Sheet For APAC!!
+        If Not StatementHelper.WorkSheetExists("Character Map") Then Exit Function
+        
+        If (pairedNamedRange Is Nothing Or namedRangeLookup Is Nothing Or pairedNamedRangeLookup Is Nothing) Then
+            On Error Resume Next
+            Set royaltyStatementWorksheet = Worksheets("Royalty Statement")
+            Set pairedNamedRange = royaltyStatementWorksheet.Range(CStr(dataItem.RuleValues(1)))
+            Set characterMapWorksheet = Worksheets("Character Map")
+            Set namedRangeLookup = characterMapWorksheet.Range(CStr(dataItem.RuleValues(2)))
+            Set pairedNamedRangeLookup = characterMapWorksheet.Range(CStr(dataItem.RuleValues(3)))
+            On Error GoTo 0
+        End If
+        
+        ' Check to see if we actually found the named range specified in the rule values
+        If (pairedNamedRange Is Nothing Or namedRangeLookup Is Nothing Or pairedNamedRangeLookup Is Nothing) Then
+            ' Fail: If we cannot find the named range we cannot continue
+            ValidationError.WriteError currentCell, "Catastrophic Rule Failure: ColumnsShouldHaveSameValues", "Could not find lookup ranges in rule values, please report this error to Disney IT"
+            ColumnPairsShouldHaveSameValues = False
+        Else
+            ' We have found the range, now the check if the currentCell.Value and its pair is in the named range and it pair
+            Dim cellInNamedRange As Range
+            Dim cellStringValueInNamedRange As String
+            Dim cellStringValueInPairedNamedRange As String
+            Dim currentValueWasFoundInColumnPair As Boolean
+            Dim currentValueThatNeedsToExistInNamedRange As String
+            Dim currentValueThatNeedsToExistInPairedNamedRange As String
+            
+            currentValueWasFoundInColumnPair = False
+            currentValueThatNeedsToExistInNamedRange = CStr(currentCell.value)
+            currentValueThatNeedsToExistInPairedNamedRange = CStr(pairedNamedRange(currentCell.Row - pairedNamedRange.Cells.Row + 1).value)
+            
+            ' Loop through the range values
+            For Each cellInNamedRange In namedRangeLookup
+            
+                cellStringValueInNamedRange = CStr(cellInNamedRange)
+                If currentValueThatNeedsToExistInNamedRange = cellStringValueInNamedRange Then
+                    cellStringValueInPairedNamedRange = CStr(pairedNamedRangeLookup(cellInNamedRange.Row - pairedNamedRangeLookup.Cells.Row + 1).value)
+                    If currentValueThatNeedsToExistInPairedNamedRange = cellStringValueInPairedNamedRange Then
+                        currentValueWasFoundInColumnPair = True
+                        Exit For
+                    End If
+                End If
+            
+            Next cellInNamedRange
+            
+            ' Find check to see whether we actually found the value, I miss LINQ!
+            If Not currentValueWasFoundInColumnPair Then
+            
+                ' Fail: We could not find the value
+                If (currentCell.Worksheet.Name = characterMapWorksheet.Name) Then
+                    ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage, 44 'force amber colour on write error on character map
+                Else
+                    ValidationError.WriteError currentCell, dataItem.ErrorTitle, dataItem.ErrorMessage
+                End If
+                'Gets cleared/overwriten by paired columns rule if valid
+                'ValidationError.WriteError pairedNamedRange(currentCell.Row - pairedNamedRange.Cells.Row + 1), dataItem.ErrorTitle, dataItem.ErrorMessage
+                ColumnPairsShouldHaveSameValues = False
+            
+            End If
+                    
+        End If
+
+End Function
+
+' Rule that checks for a valid date
+Function IsValidDate(CellValue As Range, dataItem As MetaDataItem)
+    IsValidDate = IsDate(CellValue) And (CellValue <= CDate(dataItem.RuleValues(2)) And CellValue >= CDate(dataItem.RuleValues(1)))
+End Function
+
+' Rule that makes sure a value is in a lookup list
+Function IsInLookupList(CellValue As Range, RuleValues As Collection)
+    
+    Dim valueFound As Boolean
+    valueFound = False
+    
+    Dim ruleValue As Variant
+    
+    If CellValue.value = "" Or IsNull(CellValue.value) Then
+        valueFound = True
+        GoTo Exit_IsInLookupList
+    End If
+    
+    For Each ruleValue In RuleValues
+        If IsDate(CellValue.value) And IsDate(ruleValue) Then
+            If CDate(Trim(CellValue.value)) = CDate(ruleValue) Then
+                valueFound = True
+                Exit For
+            End If
+        ElseIf CStr(Trim(CellValue.value)) = CStr(ruleValue) Then
+            valueFound = True
+            Exit For
+        End If
+    Next ruleValue
+    
+Exit_IsInLookupList:
+    
+    IsInLookupList = valueFound
+    
+End Function
+
+' Rule that makes sure there are adjacent column values
+Function AllShouldHaveAnyValues(CellValue As Range, dataItem As MetaDataItem)
+
+    AllShouldHaveAnyValues = True
+    
+    Dim CurrentCellValueEmpty As Boolean
+    CurrentCellValueEmpty = (CStr(CellValue.value) = "")
+    
+    If CurrentCellValueEmpty Then
+    
+        Dim AdjacentRangeName As String
+        AdjacentRangeName = dataItem.RuleValues(1)
+            
+        Dim AdjacentRange As Range
+        Set AdjacentRange = CellValue.Worksheet.Range(AdjacentRangeName)
+        
+        Dim AdjacentCellValue As String
+        AdjacentCellValue = AdjacentRange.Cells(CellValue.Row - dataItem.RowStartIndex, 1)
+        
+        Dim AdjacentCellValueEmpty As String
+        AdjacentCellValueEmpty = (AdjacentCellValue = "")
+        
+        If AdjacentCellValueEmpty = False Then
+            AllShouldHaveAnyValues = False
+            Exit Function
+        End If
+    
+    End If
+    
+End Function
+
+Function HasColumnValues(CellValue As Range, dataItem As MetaDataItem)
+
+    HasColumnValues = True
+    
+    Dim CurrentCellValueEmpty As Boolean
+    CurrentCellValueEmpty = (CStr(CellValue.value) = "")
+    
+    If CurrentCellValueEmpty Then
+    
+        Dim AdjacentRangeName As String
+        AdjacentRangeName = dataItem.RuleValues(1)
+            
+        Dim AdjacentRange As Range
+        Set AdjacentRange = CellValue.Worksheet.Range(AdjacentRangeName)
+        
+        Dim AdjacentCellValue As String
+        AdjacentCellValue = AdjacentRange.Cells(CellValue.Row - dataItem.RowStartIndex, 1)
+        
+        Dim AdjacentCellValueEmpty As String
+        AdjacentCellValueEmpty = (AdjacentCellValue = "")
+        
+        If AdjacentCellValueEmpty Then
+            HasColumnValues = False
+            Exit Function
+        End If
+    
+    End If
+    
+End Function
+
+' Rule that makes sure there are adjacent row values
+Function HasRowValues(CellValue As Range, dataItem As MetaDataItem)
+
+    Dim Index As Integer
+    Index = 1
+    
+    Dim rowIndex As Long
+    
+    HasRowValues = True
+    
+    Do While Not Index = dataItem.RuleValues.Count
+    
+        rowIndex = dataItem.RuleValues.Count
+        If (CellValue.Worksheet.Cells(rowIndex + 1, CellValue.Column) = "" _
+            Or Not CellValue.Worksheet.Cells(rowIndex, CellValue.Column) Is Nothing) Then
+            HasRowValues = False
+            Exit Do
+        End If
+    
+    Loop
+
+End Function
+
+' Rule to calculate the validity of EAN/UPC
+Function IsValidEAN(CellValue As Range) As Boolean
+
+    Dim stringValue As String
+    stringValue = CStr(Trim(CellValue))
+    Dim cleanStringValue As String
+    Dim counter As Integer
+    Dim character As String
+        
+    Dim stringLength As Integer
+    stringLength = Len(stringValue)
+    For counter = 1 To stringLength
+        character = Mid(stringValue, counter, 1)
+        If (IsNumeric(character)) Then
+            cleanStringValue = cleanStringValue + character
+        End If
+    Next counter
+    stringValue = cleanStringValue
+
+
+    
+    If stringValue = "" Then 'Evaluates as blank, covered by IsRequiredRule
+        IsValidEAN = True
+        Exit Function
+    End If
+    
+    If IsNumeric(stringValue) Then
+        If (Len(stringValue) = 13 Or Len(stringValue) = 12 Or Len(stringValue) = 8) Then
+            IsValidEAN = ThirteenModTen(stringValue)
+        Else
+            IsValidEAN = False
+        End If
+    Else
+        IsValidEAN = False
+    End If
+
+End Function
+
+' Rule to calculate the validity of a ISBN
+Function IsValidISBN(CellValue As Range) As Boolean
+    
+    If CStr(CellValue) = "" Then 'Evaluates as blank, covered by IsRequiredRule
+        IsValidISBN = True
+        Exit Function
+    End If
+    
+    If (Len(CStr(Trim(CellValue))) = 13) Then
+        IsValidISBN = ThirteenModTen(CStr(Trim(CellValue)))
+    ElseIf (Len(CStr(Trim(CellValue))) = 10) Then
+        IsValidISBN = TenModEleven(CStr(Trim(CellValue)))
+    Else
+        IsValidISBN = False
+    End If
+
+End Function
+
+' Used by EAN/UPC/ISBN
+Function ThirteenModTen(value As String)
+
+    Dim inputValue()
+    Dim weighting()
+    Dim weightedSum()
+    
+    inputValue = Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    weighting = Array(1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3)
+    weightedSum = Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    
+    Dim totalSum As Integer
+    Dim Index As Integer
+    Dim character As String
+        
+    If (Len(value) = 12) Then
+        value = "0" & value
+    End If
+    
+    If (Len(value) = 8) Then
+        value = "00000" & value
+    End If
+    
+    totalSum = 0
+    For Index = 0 To 11
+    
+        character = Mid(value, Index + 1, 1)
+        inputValue(Index) = CInt(character)
+        weightedSum(Index) = inputValue(Index) * weighting(Index)
+        totalSum = totalSum + weightedSum(Index)
+    
+    Next Index
+    totalSum = totalSum + CInt(Mid(value, 13, 1))
+    
+    If Not (totalSum Mod 10 = 0) Then
+        ThirteenModTen = False
+    Else
+        ThirteenModTen = True
+    End If
+
+End Function
+
+' Used by EAN/UPC/ISBN
+Function TenModEleven(value As String)
+
+    Dim inputValue()
+    Dim weighting()
+    Dim weightedSum()
+    
+    inputValue = Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    weighting = Array(10, 9, 8, 7, 6, 5, 4, 3, 2)
+    weightedSum = Array(0, 0, 0, 0, 0, 0, 0, 0, 0)
+    
+    Dim totalSum As Integer
+    Dim Index As Integer
+    Dim character As String
+        
+    totalSum = 0
+    For Index = 0 To 8
+    
+        character = Mid(value, Index + 1, 1)
+        inputValue(Index) = CInt(character)
+        weightedSum(Index) = inputValue(Index) * weighting(Index)
+        totalSum = totalSum + weightedSum(Index)
+    
+    Next Index
+    totalSum = totalSum + CInt(Mid(value, 10, 1))
+    
+    If Not (totalSum Mod 11 = 0) Then
+        TenModEleven = False
+    Else
+        TenModEleven = True
+    End If
+
+End Function
+
+
+Function ForceUpperCase(CellValue As Range)
+    
+    Dim c As Object
+    
+    For Each c In CellValue
+        If UCase(CellValue) <> c.value Then
+             c.value = UCase(CStr(CellValue))
+        End If
+    Next
+
+End Function
+
+Function ReApplyFormula(CellValue As Range, dataItem As MetaDataItem)
+
+Dim strFormula As String
+Dim rowIndex As Long
+
+rowIndex = CellValue.Row
+
+    If Trim(dataItem.RoyaltyFormula) <> "" Then
+        strFormula = Replace(dataItem.RoyaltyFormula, "IF ", "IF")
+        strFormula = Replace(strFormula, "[RowIndex]", rowIndex)
+        
+        If CellValue.Formula = strFormula Then
+            Exit Function
+        Else
+            CellValue.Formula = strFormula
+            'CellValue.NumberFormat = "General"
+        End If
+        
+       ' For Each c In CellValue
+       '     c.Formula = strFormula
+       ' Next
+    End If
+
+
+End Function
+
+Function PreRuleExecution(Target As Range) As Boolean
+    Dim Cell As Object
+    Dim dataItem As MetaDataItem
+    
+    For Each Cell In Target
+        For Each dataItem In MetaData.GetItems
+        
+            If CStr(Trim(Cell.value)) = "" Then
+                GoTo NextCell
+            End If
+                
+            If dataItem.IsRule Then
+                
+               ' Cell.Worksheet.Unprotect
+                
+                If dataItem.IsApplicableToCell(Cell) Then
+                    If dataItem.RuleName = "ForceUpperCase" Then
+                        Call ForceUpperCase(Cell)
+                    End If
+    
+                    If dataItem.RuleName = "ForceCaseToListValue" Then
+                        Call ForceCaseToListValue(Cell)
+                    End If
+                    
+                    If dataItem.RuleName = "ReApplyFormula" Then
+                        Call ReApplyFormula(Cell, dataItem)
+                    End If
+                    
+                    If dataItem.RuleName = "SetDefaultValue" Then
+                        Call SetDefaultValue(Cell, dataItem.RuleValues)
+                    End If
+                    
+                    
+                    Application.StatusBar = "Pre Rule Execution (" & CStr(Cell.Row) & "," & CStr(Cell.Column) & ")"
+                End If
+            End If
+        Next dataItem
+        
+NextCell:
+    Next Cell
+
+End Function
+
+Function ForceCaseToListValue(CellValue As Range) As Boolean
+    Dim rangeName As String
+    Dim ruleValue As Variant
+    Dim c As Object
+    
+    On Error Resume Next
+    
+    If (InStr(1, CellValue.Validation.Formula1, "(") = -1) Then
+        rangeName = CellValue.Validation.Formula1
+    End If
+    
+    On Error GoTo 0
+    
+    If rangeName = "" Then
+        GoTo Exit_ForceCaseToListValue
+    End If
+    
+    For Each c In Range(rangeName)
+        
+        If StrComp(CellValue, c.value, vbBinaryCompare) = 0 Then
+            GoTo Exit_ForceCaseToListValue
+        End If
+        
+        If StrComp(CellValue, c.value, vbTextCompare) = 0 Then
+            CellValue.value = c.value
+            Exit For
+        End If
+    Next c
+   
+Exit_ForceCaseToListValue:
+    ForceCaseToListValue = True
+    
+End Function
+
+Public Function SetDefaultValue(CellValue As Range, RuleValues As Collection) As Boolean
+
+    Dim strDefaultValue As String
+    Dim ruleValue As Variant
+    Dim rowIndex As Long
+
+    rowIndex = CellValue.Row
+    
+    If RuleValues.Count > 1 Then
+        Exit Function
+    End If
+    
+    ruleValue = RuleValues.item(1)
+    strDefaultValue = CStr(ruleValue)
+    
+    If CStr(CellValue.value) = "" Then
+        CellValue.value = strDefaultValue
+    End If
+
+SetDefaultValue = True
+
+End Function
+
+Public Function SetExplicitValue(CellValue As Range, RuleValues As Collection) As Boolean
+
+'DN: Applies a explicit value to a cell when the cell value is null/empty or 0
+
+    Dim strExplicitValue As String
+    Dim ruleValue As Variant
+    Dim rowIndex As Long
+
+    rowIndex = CellValue.Row
+    
+    If RuleValues.Count > 1 Then
+        Exit Function
+    End If
+    
+    ruleValue = RuleValues.item(1)
+    strExplicitValue = CStr(ruleValue)
+    
+    If CStr(CellValue.value) = "" Or CStr(CellValue.value) = 0 Then
+        CellValue.value = strExplicitValue
+    End If
+
+SetExplicitValue = True
+
+End Function
+
+Public Function ValidateCalculation(CellValue As Range, RuleValues As Collection) As Boolean
+
+'JM: 170908 - validates calculations on specific columns
+    Dim rowIndex As Long
+    Dim LeftRangeColumn As Integer
+    Dim LeftDigit As Variant
+    
+    Dim RightRangeColumn As Integer
+    Dim RightDigit As Variant
+    
+    Dim CurrentCellLower As Double
+    Dim CurrentCellMax As Double
+        
+    Dim Op As Variant
+    
+    Dim sheet As Worksheet
+    
+    rowIndex = CellValue.Row
+    
+    If RuleValues.Count < 3 Then
+        Exit Function
+    End If
+    
+    For Each sheet In ThisWorkbook.Worksheets
+        If sheet.Name = "Royalty Statement" Then
+            LeftRangeColumn = sheet.Range(RuleValues.item(1)).Column
+            LeftDigit = sheet.Cells(rowIndex, LeftRangeColumn)
+            RightRangeColumn = sheet.Range(RuleValues.item(2)).Column
+            RightDigit = sheet.Cells(rowIndex, RightRangeColumn)
+            
+            CurrentCellLower = CDbl(CellValue.value) - 0.01
+            CurrentCellMax = CDbl(CellValue.value) + 0.01
+        End If
+    Next
+    
+    Op = RuleValues.item(3)
+    
+    If Op = "/" Then
+        If (RightDigit / LeftDigit) >= CurrentCellLower And (RightDigit / LeftDigit) <= CurrentCellMax Then
+            ValidateCalculation = True
+        Else
+            ValidateCalculation = False
+        End If
+    End If
+    
+    If Op = "+" Then
+        If (RightDigit + LeftDigit) >= CurrentCellLower And (RightDigit + LeftDigit) <= CurrentCellMax Then
+            ValidateCalculation = True
+        Else
+            ValidateCalculation = False
+        End If
+    End If
+    
+    If Op = "-" Then
+        If (RightDigit - LeftDigit) >= CurrentCellLower And (RightDigit - LeftDigit) <= CurrentCellMax Then
+            ValidateCalculation = True
+        Else
+            ValidateCalculation = False
+        End If
+    End If
+    
+    If Op = "*" Then
+        If (RightDigit * LeftDigit) >= CurrentCellLower And (RightDigit * LeftDigit) <= CurrentCellMax Then
+            ValidateCalculation = True
+        Else
+            ValidateCalculation = False
+        End If
+    End If
+         
+End Function
+
+Public Function IsLinkedUpdateWarning(CellValue As Range, RuleValues As Collection) As Boolean
+
+    Dim rowIndex As Long
+    Dim TargetRangeColumn As Integer
+    Dim Splitter As Variant
+    Dim SplitRuleValue As Variant
+    Dim Op As Variant
+    Dim LeftValue As Variant
+    Dim RightValue As Variant
+    
+    Dim Coll As New Collection
+    Dim x As Variant
+    
+    SplitRuleValue = Split(RuleValues.item(1), "/")
+    TargetRangeColumn = SplitRuleValue(0) + 1
+    Splitter = SplitRuleValue(1)
+
+    
+    For Each Op In RuleValues
+        SplitRuleValue = Split(Op, Splitter)
+        LeftValue = SplitRuleValue(0)
+        
+        If LeftValue = CellValue.value Then
+            RightValue = SplitRuleValue(1)
+            Coll.Add (RightValue)
+        End If
+    Next Op
+    
+    Dim CompareField As String
+    CompareField = CellValue.Worksheet.Cells(CellValue.Row, TargetRangeColumn)
+    
+    If CellValue <> "" Or CompareField <> "" Then
+        For Each x In Coll
+            If x = CompareField Then
+                IsLinkedUpdateWarning = True
+                GoTo Exit_IsLinkedUpdateWarning
+            End If
+        Next x
+        
+        IsLinkedUpdateWarning = False
+    Else
+        IsLinkedUpdateWarning = True
+    End If
+    
+Exit_IsLinkedUpdateWarning:
+    
+End Function
+
+
+Public Function InvalidCharacter(CellValue As Range, RuleValues As Collection) As Boolean
+
+Dim x As Variant
+
+For Each x In RuleValues
+    If CellValue = x Then
+        InvalidCharacter = False
+        GoTo Exit_IsLinkedUpdateWarning
+    Else
+        InvalidCharacter = True
+        GoTo Exit_IsLinkedUpdateWarning
+    End If
+Next x
+    
+Exit_IsLinkedUpdateWarning:
+    
+End Function
+
+'ISBN New Release Rule that checks to see that the ISBN selected exists in the New Releases tab
+Function IsISBNNewRelease(currentCell As Range, rangeName As String) As Boolean
+    Dim NewReleaseSheet, RegistryWorkSheet As Worksheet
+    Dim NewReleaseValues As Collection
+    Dim NewReleaseValue, Region, LOB As Variant
+    Dim NewReleaseIndex As Integer
+    Dim hasValues As Boolean
+    
+    IsISBNNewRelease = False
+    
+    If Not CStr(Trim(rangeName)) = "ISBN" Then
+        IsISBNNewRelease = False
+        Exit Function
+    End If
+    
+    Set RegistryWorkSheet = Worksheets("Registry")
+    Set Region = RegistryWorkSheet.Cells(7, 2)
+    Set LOB = RegistryWorkSheet.Cells(9, 2)
+    
+    If Not CStr(Trim(Region)) = "2" Or Not CStr(Trim(LOB)) = "Publications" Then
+        If Not CStr(Trim(Region)) = "4" Then
+            IsISBNNewRelease = False
+            Exit Function
+        End If
+    End If
+    
+    Set NewReleaseSheet = Worksheets(Range("New_Releases_Title").Worksheet.Name)
+    Set NewReleaseValues = New Collection
+    NewReleaseIndex = 4
+    hasValues = True
+    
+    Do While hasValues
+        Dim ISBNCell As Range
+        Set ISBNCell = NewReleaseSheet.Cells(NewReleaseIndex, 3)
+        
+        If CStr(ISBNCell) = "" Then
+            Exit Do
+        End If
+        
+        NewReleaseValues.Add CStr(ISBNCell)
+        NewReleaseIndex = NewReleaseIndex + 1
+    Loop
+    
+    For Each NewReleaseValue In NewReleaseValues
+        If CStr(Trim(currentCell.value)) = CStr(NewReleaseValue) Then
+            IsISBNNewRelease = True
+            Exit For
+        End If
+    Next NewReleaseValue
+    
+    Exit Function
+    
+    
+ErrorHandler:
+    
+End Function
+
+' Function that makes sure the country name with any case is in a lookup list
+Function CountryIsInLookupList(CellValue As Range, RuleValues As Collection)
+    
+    Dim valueFound As Boolean
+    valueFound = False
+    
+    Dim ruleValue As Variant
+    
+    If CellValue.value = "" Or IsNull(CellValue.value) Then
+        valueFound = True
+        GoTo Exit_CountryIsInLookupList
+    End If
+    
+    For Each ruleValue In RuleValues
+        If CStr(Trim(UCase(CellValue.value))) = CStr(UCase(ruleValue)) Then
+            valueFound = True
+            Exit For
+        End If
+    Next ruleValue
+    
+Exit_CountryIsInLookupList:
+    
+    CountryIsInLookupList = valueFound
+    
+End Function
+
+'ValidateSkuOnlyOneChar Rule that checks to see that the SKU Number is mapped against only one character
+Function ValidateSkuOnlyOneChar(currentWorksheet As Worksheet, currentCell As Range, dataItem As MetaDataItem) As Boolean
+    Dim ChangeLogWorksheet, RegistryWorkSheet As Worksheet
+    Dim Region, LOB, RAS As Variant
+    Dim Index, CharacterIndex, SKUIndex As Long
+    Dim endRoyaltyRow As Long
+    Dim changeLogWorksheetName As String
+    changeLogWorksheetName = ChangeLog.GetChangeLogNameSheet(currentWorksheet)
+    
+    Set ChangeLogWorksheet = Worksheets(changeLogWorksheetName)
+    endRoyaltyRow = CLng(ChangeLogWorksheet.Cells(1, 1))
+    
+    ValidateSkuOnlyOneChar = True
+    
+    Set RegistryWorkSheet = Worksheets("Registry")
+    Set Region = RegistryWorkSheet.Cells(7, 2)
+    Set LOB = RegistryWorkSheet.Cells(9, 2)
+    Set RAS = RegistryWorkSheet.Cells(10, 2)
+    
+    If Not CStr(Trim(Region)) = "2" And CStr(Trim(LOB)) = "Merchandise" And CStr(Trim(RAS)) = "IPM" Then
+        CharacterIndex = CLng(dataItem.RowStartIndex)
+        
+        For Index = CharacterIndex + 1 To endRoyaltyRow
+            If Not CLng(currentCell.Row) = CLng(Index) _
+            And CStr(currentWorksheet.Cells(currentCell.Row, CInt(dataItem.RuleValues(1)))) = CStr(currentWorksheet.Cells(Index, CInt(dataItem.RuleValues(1)))) _
+            And Not CStr(currentCell.value) = CStr(currentWorksheet.Cells(Index, currentCell.Column)) Then
+                ValidateSkuOnlyOneChar = False
+                Exit Function
+            End If
+        Next Index
+    Else
+        ValidateSkuOnlyOneChar = True
+        Exit Function
+    End If
+    
+ErrorHandler:
+    
+End Function
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "frmValidate"
+Attribute VB_Base = "0{5C5E64EE-72E2-4E2F-96C2-13CC5E0DA5E2}{9D06FE82-2071-47B1-8202-EE9F26267386}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Sub btnAutoFilter_Click()
+On Error GoTo Err_btnAutoFilter_Click
+        
+        Dim sh As Worksheet
+        Set sh = ThisWorkbook.Worksheets("Royalty Statement")
+        
+        If sh.AutoFilterMode = False Then
+            Call SetAutoFilter("On")
+            btnAutoFilter.Caption = "Hide AutoFilter"
+        Else
+            Call SetAutoFilter("Off")
+             btnAutoFilter.Caption = "Show AutoFilter"
+        End If
+        
+        Call ProtectSheet(sh)
+
+Exit_btnAutoFilter_Click:
+Exit Sub
+
+Err_btnAutoFilter_Click:
+MsgBox "An error has occurred setting the autofilter. The error is: " & _
+    err.Number & ": " & err.Description & ". Please close and re-open the workbook and try again."
+Resume Exit_btnAutoFilter_Click
+
+End Sub
+
+
+
+Private Sub btnValidate_Click()
+'On Error GoTo Err_btnValidate_Click
+    Dim SheetExists As Boolean
+    Dim strMsg As String
+    
+    Call SetAutoFilter("Off")
+    btnAutoFilter.Caption = "Show AutoFilter"
+    
+    Application.Calculation = xlCalculationManual
+    ChangeLog.IterateOverChangeLog
+    Application.Calculation = xlCalculationAutomatic
+    
+Exit_btnValidate_Click:
+Exit Sub
+
+Err_btnValidate_Click:
+MsgBox "An error has occurred in the validation. The error is: " & _
+    err.Number & ": " & err.Description & ". Please close and re-open the workbook and try again."
+Resume Exit_btnValidate_Click:
+
+End Sub
+
+
+
+Private Sub CopySkuButton_Click()
+'Switch events off so we don't mwess with validation
+Application.EnableEvents = False
+    '*************************************************************************************
+    'If the Royalty Statement sheet and Character Sheet does not exist, then exit function
+    '*************************************************************************************
+    On Error GoTo Err_NoSheet_CopySkuButton_Click
+
+    Dim RoyaltySheet As Worksheet:  Set RoyaltySheet = Worksheets("Royalty Statement")
+    Dim CharacterSheet As Worksheet: Set CharacterSheet = Worksheets("Character Map")
+    
+    
+    On Error GoTo Err_CopySkuButton_Click
+        SkuCharacterMap.ReplicateSkuToCharacterMap RoyaltySheet:=RoyaltySheet, CharacterSheet:=CharacterSheet
+
+
+Exit_CopySkuButton_Click:
+'Switch events on again
+Application.EnableEvents = True
+Exit Sub
+
+Err_NoSheet_CopySkuButton_Click:
+MsgBox "Character Map sheet does not exist."
+Resume Exit_CopySkuButton_Click
+
+Err_CopySkuButton_Click:
+MsgBox "An error has occurred copying the SKU information to the Character Map sheet. The error is: " & _
+    err.Number & ": " & err.Description & ". Please close and re-open the workbook and try again."
+Resume Exit_CopySkuButton_Click
+
+End Sub
+
+
+Private Sub UserForm_Initialize()
+
+    '*************************************************************************************
+    'If the Royalty Statement sheet and Character Sheet does not exist, then exit function
+    '*************************************************************************************
+
+On Error GoTo Err_NoSheet_FormLoad
+
+    Dim RoyaltySheet As Worksheet:  Set RoyaltySheet = Worksheets("Royalty Statement")
+    Dim CharacterSheet As Worksheet: Set CharacterSheet = Worksheets("Character Map")
+    Exit Sub
+    
+Err_NoSheet_FormLoad:
+CopySkuButton.Enabled = False
+CopySkuButton.Visible = False
+frmValidate.Height = frmValidate.Height - CopySkuButton.Height
+Exit Sub
+
+End Sub
+
+' InQuest injected base64 decoded content
+' 2j[r
+' y).N
+' .+-I
+' z{Uj[
+' z{Uj[
+' +-"sZ
+' z{Uj[
+' z{Uj[
+' +-"s
+
+INQUEST-PP=macro

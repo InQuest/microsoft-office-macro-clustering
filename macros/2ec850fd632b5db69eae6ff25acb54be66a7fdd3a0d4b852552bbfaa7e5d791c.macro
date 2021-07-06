@@ -1,0 +1,2229 @@
+Attribute VB_Name = "AutoMacros"
+Option Explicit
+
+Private Const mc_sToolbarName As String = "InFormMenu"
+
+Public Sub AutoExec()
+    
+    On Error Resume Next
+    
+    g_iWordVer = iGetWordVer
+    If g_iWordVer >= 12 Then
+        HideToolbar mc_sToolbarName 'hide toolbar
+        ConvertExistingGlossary
+    End If
+    
+End Sub
+'
+Public Sub AutoExit()
+    On Error Resume Next
+    If Not g_objInFormLib Is Nothing Then Set g_objInFormLib = Nothing
+    If Not g_objIntCalc Is Nothing Then Set g_objIntCalc = Nothing
+    Set g_objInfoUtilities = Nothing
+    Set g_objRibbon = Nothing
+    Set g_objEventClass = Nothing
+End Sub
+'
+Public Function iGetWordVer() As Integer
+Dim idx As Integer
+Dim stmp As String
+    On Error Resume Next
+    stmp = Application.Version
+    idx = InStr(stmp, ".") 'always outputs with "."
+    If idx > 0 Then stmp = Left(stmp, idx - 1)
+    iGetWordVer = IIf(IsNumeric(stmp), CInt(stmp), 0)
+End Function
+'
+Public Sub HideToolbar(sToolbarName As String)
+Dim sToolbars() As String
+Dim cb As CommandBar
+Dim ctrl As CommandBarControl
+Dim tpl As Template
+Dim i As Integer
+Dim j As Integer
+Dim stmp As String
+Dim bHideControl As Boolean
+Dim bSkipSaveNormal As Boolean
+
+    On Error Resume Next
+    
+    sToolbars = Split(sToolbarName, "+")
+    
+    For i = 0 To UBound(sToolbars)
+        stmp = sToolbars(i)
+        j = InStr(stmp, "\")
+        If j > 0 Then
+            bHideControl = True
+            Set cb = CommandBars(Left(stmp, j - 1))
+        Else
+            bHideControl = False
+            Set cb = CommandBars(stmp)
+        End If
+        
+        If Not cb Is Nothing Then
+            bSkipSaveNormal = (dir(NormalTemplate.FullName) = "") And cb.Context = NormalTemplate.FullName
+            Set tpl = Templates(cb.Context)
+            CustomizationContext = tpl
+            If bHideControl Then
+                Set ctrl = cb.Controls(Mid(stmp, j + 1))
+                If Not ctrl Is Nothing Then
+                    If ctrl.visible Then ctrl.visible = False
+                    Set ctrl = Nothing
+                End If
+            Else
+                If cb.visible Then cb.visible = False
+            End If
+            If Not bSkipSaveNormal Then tpl.Saved = True
+            CustomizationContext = NormalTemplate
+            Set tpl = Nothing
+            Set cb = Nothing
+        End If
+        
+    Next i
+    
+End Sub
+'
+Private Sub ConvertExistingGlossary()
+Dim sOldPath As String
+Dim sNewPath As String
+Dim aDoc As Document
+
+    On Error GoTo ErrRpt
+
+    If g_iWordVer < 12 Then Exit Sub
+
+    sOldPath = g_sUserTemplatesPath & "glossary.doc"
+    sNewPath = g_sUserTemplatesPath & "glossary.docx"
+
+    'Only execute if glossary.doc exists but glossary.docx does not
+    If dir(sOldPath) <> "" And dir(sNewPath) = "" Then
+        Set aDoc = Documents.Open(sOldPath, , , False, , , , , , , , False)
+        With aDoc
+            .Convert
+            .SaveAs sNewPath, wdFormatXMLDocument, , , False
+            With .ActiveWindow.View
+                .Type = wdPrintView
+                .Zoom.PageFit = wdPageFitBestFit
+            End With
+            .AttachedTemplate = g_sWorkgroupTemplatesPath & "glossary.dotm"
+            .Close wdSaveChanges
+        End With
+    End If
+    
+    Set aDoc = Nothing
+    Exit Sub
+
+ErrRpt:
+    MsgBox Err.Number & " - " & Err.Description & Chr(13) & "ConvertExistingGlossary()"
+End Sub
+Attribute VB_Name = "EventsClass"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public WithEvents InfoStat As Word.Application
+Attribute InfoStat.VB_VarHelpID = -1
+
+
+Private Sub InfoStat_DocumentChange()
+Dim xx As String
+
+    On Error GoTo ErrRpt
+    
+    'bypass this if dealing with Document1 from Word startup
+    If g_bInitDone Then
+    
+        If Documents.Count > 0 And g_iWordVer >= 14 Then
+            'can't work with ActiveDocument if in protected view  26-Mar-2012 hdg
+            'can't use the test below and early bind and support Word 2003, so use the err method
+            'If Not g_objWord.ActiveProtectedViewWindow Is Nothing Then Exit Sub
+            On Error Resume Next
+            If ActiveDocument.Name = "" Then
+                'do nothing
+            End If
+            If Err.Number = 4248 Then Err.Clear: Exit Sub
+            On Error GoTo ErrRpt
+        End If
+        
+        If Documents.Count > 0 Then
+            'work around Word as editor in Outlook (should not happen as we check for and prevent that)
+            With Application
+                If Not .visible Then
+                    If .Windows.Count = 0 Then
+                        Exit Sub
+                    End If
+                End If
+            End With
+        
+            'work around the hidden normal that iManage likes to open
+            On Error GoTo Refresh
+            With ActiveDocument
+                If Not .ActiveWindow.visible Then Exit Sub
+                If .Name = "" Then
+                    'this happens in Word 2003 when it wants to spellcheck textboxes (maybe other times too?)
+                    'text in textbox is inserted into hidden doc for spellchecking
+                    'we don't have an activewindow so code below does not work and we don't need to track this doc anyway
+                    Exit Sub
+                End If
+            End With
+            
+            xx = ActiveDocument.Name
+        End If
+        
+    Else
+        DoLoadInFormRibbon
+    End If
+    
+Refresh:
+    On Error GoTo ErrRpt
+    RefreshGroupInForm
+    Exit Sub
+    
+ErrRpt:
+    MsgBox "doc: " & xx & vbCrLf & "InfoStat_DocumentChange() - " & Err.Description
+End Sub
+
+Attribute VB_Name = "FindContacts"
+'|fffd| Infoware Development Inc., copyright 2008-2010 all rights reserved
+'|fffd| Infoware Canada Inc., copyright 1996-2007 all rights reserved - HDG
+'============================================================
+Option Explicit
+'--
+'
+'<%Lang_Constants%>
+Private Const LC_ErrRpt3 As String = "Routine: "
+Private Const LC_ErrRpt4 As String = "Please report this problem to Infoware"
+Private Const LC_ErrRpt5 As String = "Infoware Problem Report"
+Private Const LC_ErrDLL As String = "File FindContactx.dll is missing or not registered."
+'<%/Lang_Constants%>
+'
+'--
+
+Dim xxInfoFC As Object
+'
+'--
+'Basic call from toolbar and keyboard shortcut
+'insert at cursor in current doc, or use CallBack based on Bookmarks "RecipTable" and "RecipTable2" (see notes re ctype=0 below)
+'
+Public Sub InFormFindContactx()
+    If Application.Documents.Count > 0 Then
+        If StartFindContacts Then
+            xxInfoFC.FindContactx
+            Set xxInfoFC = Nothing
+        End If
+    End If
+End Sub
+
+'
+'--
+'Init FindContactx object, set global xxInfoFC
+'
+Private Function StartFindContacts() As Boolean
+    On Error GoTo ErrExit
+    StartFindContacts = False
+    If xxInfoFC Is Nothing Then
+        'object is not set, do so and return true
+        Set xxInfoFC = CreateObject("InfoFindContactx.clsFindContactx")
+        StartFindContacts = True
+    Else
+        'object is already set, just return true
+        StartFindContacts = True
+    End If
+    Exit Function
+
+ErrExit:
+    If Err.Number = 429 Then
+        InfoErrRpt "StartFindContacts", LC_ErrDLL
+    Else
+        InfoErrRpt "StartFindContacts"
+    End If
+End Function
+
+
+'
+'--
+'Free FindContactx object
+'
+'Public Sub AutoExit()
+'    If Not xxInfoFC Is Nothing Then Set xxInfoFC = Nothing
+'End Sub
+'
+
+'--
+'General Error Reporting
+'v1.1 - changed graphic to vbExclamation to distinguish from InfoBadActionReport
+Private Function InfoErrRpt(SubName As String, Optional comment As String = "")
+Dim errmsg As String
+ 
+    If comment <> "" Then
+        errmsg = comment & vbCrLf & vbCrLf
+    End If
+    
+    errmsg = errmsg & LC_ErrRpt3 & SubName _
+        & vbCrLf & Err.Number & " - " & Err.Description _
+        & vbCrLf & LC_ErrRpt4
+ 
+    MsgBox errmsg, vbExclamation + vbOKOnly, LC_ErrRpt5
+    
+End Function
+
+Attribute VB_Name = "Globals"
+Option Explicit
+'make public globals local to Project
+Option Private Module
+
+'*** Public Globals ***
+
+'Author_List Control Info
+Public g_arrInfoAuthorList() As String
+Public g_iInfoAuthorListCount As Integer
+Public g_bInfoAuthorListInitialized As Boolean
+Public Const gc_bUseAuthorListIdxFile As Boolean = True  'Support Author_List loading from Autotext or IDX File
+
+Public g_objInFormLib As Object
+Public g_objIntCalc As Object
+
+'--
+'control general state of operation
+Public Const gc_bDisplayStatusBarInfo As Boolean = False
+
+'file paths
+Public g_sWorkgroupTemplatesPath As String
+Public g_sUserTemplatesPath As String
+Public g_sFormsPath As String
+
+Public Const wdFormatXMLDocument As Long = 12
+
+Public g_bInitDone As Boolean
+Public g_iDocCount As Integer
+Public g_iWordVer As Integer
+Public g_objRibbon As IRibbonUI
+Public g_objEventClass As New EventsClass
+
+Public g_bLicenseValidated As Boolean
+Public LicenseKey As Boolean
+Public MachineKey As Boolean
+Public g_objInfoUtilities As COMAddIn
+Public Const gc_sInfoUtilProgId As String = "Infoware.Utilities"
+
+Public Const gc_sInFormToolbar As String = "InForm"
+Attribute VB_Name = "GlossarySwap"
+'|fffd| Infoware Development Inc., copyright 2009 all rights reserved - HDG
+'============================================================
+'Notes:
+'Must have both Word User & Workgroup Paths defined
+'for this macro to find GLOSSARY.DOC document
+'The first Column of the Glossary Table
+'   * Must not be empty in any valid row,  Lawyers names
+'    will not show for rows after the first row with
+'    an empty first cell.
+'   * The 1st cell in each row must have only 1 line (no text wrap)
+'
+'UpdateLawyer() is called by the Done() routine in glossary.dot
+' when the Done button is pushed
+'
+'Revision History:
+'1.00   Aug/93  HDG
+'2.00   June/94 update to word 6.0
+'2.10   Feb/96  add Info Block & Fax#
+'               add blank para to eod to fix lost chars
+'2.11   Mar/96  fix to remove deleted authors from author_list
+'2.2    Nov/96  add Modify option & PCDocs fix
+'2.3    Dec/96  add email column
+'2.4    Jan/97  add whoami list and endings
+'2.5    Feb/97  remove law inits from closing
+'2.6    May/97  increase number of lawyers to 100
+'2.7    July/97 fix blank row in table problem
+'2.8    Jan/98  use info from Infolib for firmname
+'2.9    Mar/98  add associate/partner roles
+'3.0    Oct/98  add LSUCno autotext
+'3.1    Apr/99  convert WordBasic to VBA, dialogs to UserForms - JTL
+'3.2    Feb/04  Add hooks and update routines for use of glossary IDX.
+'5.0    15-Feb-10   add checks for Word12 and Docx / Dotm,
+'                   cleanup a little and turn on screen updated during form display
+'5.1    21-Jun-10   force save format if Word 12+
+'---------------------------------------------------------------------
+Option Explicit
+
+Dim m_sDotPath As String
+Dim m_sGlossaryDocExtn As String
+
+Dim tblGlossary As Table
+
+Const iColLSUC As Integer = 8
+Const iColTKID As Integer = 9
+Const iColOFFICE As Integer = 10
+Const iColLANG As Integer = 11
+Const iColGLOSSMAX As Integer = iColLANG
+
+
+'--
+'
+'<%Lang_Constants%>
+Private Const LC_DoNotType As String = "Do not type in the grey columns."
+
+Private Const LC_SB_Loading As String = "Loading Author Options for Standard Glossary Entries" 'Chargement du liste des termes d'avocats
+Private Const LC_SB_SetATDone As String = "Standard AutoText entries set for "
+Private Const LC_SB_NotUpdated As String = "Standard AutoText entries not updated"
+Private Const LC_SB_ModifyLawyer As String = "Modify the Author info in table"
+Private Const LC_SB_NameMust As String = "Note: Name must be filled in"
+Private Const LC_SB_LawyerRemoved As String = "Author removed from table"
+'
+Private Const LC_MBP_ModEmptyList As String = "No Author to Modify"
+Private Const LC_MBP_DelEmptyList As String = "No Author to Delete"
+Private Const LC_MBP_DelLawyer As String = "Delete stored AutoText Information for "
+Private Const LC_MBT_DelLawyer As String = "Author AutoText Info"
+Private Const LC_MBP_LyrExists1 As String = "A glossary entry already exists for '"
+Private Const LC_MBP_LyrExists2 As String = "'.  Please enter another name."
+Private Const LC_MBT_LyrExists As String = "Lawyer Exists"
+Private Const LC_IBT_DelLawyer As String = "Administrative Title"
+Private Const LC_IBP_DelLawyer As String = "Enter title to use:"
+'
+Private Const LC_ErrRpt1 As String = "This glossary document has the wrong number of columns."
+Private Const LC_ErrRpt2 As String = "Problems with Glossary document"
+Private Const LC_ErrRpt3 As String = "Standard Glossary entries Document could not be found.  Please contact Network Support "
+
+Private Const LC_MBT_Gen As String = "Set Current Lawyer"
+Private Const LC_MBP_MustSelect As String = "You must select a Current Lawyer."
+
+'<%/Lang_Constants%>
+'
+'--
+
+Public Sub main()
+Attribute main.VB_Description = "Maintain standard AutoText entries for Lawyer, Secretary ..."
+Attribute main.VB_ProcData.VB_Invoke_Func = "TemplateProject.GlossarySwap.MAIN"
+Dim arrAuthors() As String
+Dim iRows As Integer        'estimate of number of lawyers in table
+Dim iAuthCount As Integer   'actual number of distinct lawyers in table
+Dim idx As Integer
+Dim sCurAuthor As String    'full name of current lawyer
+Dim i As Integer
+Dim choice As Integer
+Dim NoClose As Integer
+Dim bNoEntries As Boolean   'glossary empty flag
+Dim iCurRow As Integer      'currently selected row - not used
+
+'---
+StartMe:
+'    FirmName = GetFirmName$
+    m_sDotPath = ""
+    bNoEntries = False
+    System.Cursor = wdCursorWait
+    With Application
+        .EnableCancelKey = wdCancelDisabled
+        .ScreenUpdating = False
+    End With
+    
+    On Error GoTo ErrExit
+    
+    If g_iWordVer = 0 Then g_iWordVer = iGetWordVer
+
+    'find&open Glossary.doc
+    If LoadGlossaryFile <> -1 Then GoTo Exit2
+
+    'get author list from glossary to repair just incase
+    'this catches issues of lost normal or swap to idx after deployment
+    UpdateAuthorList
+
+    'move to the top
+    Selection.GoTo wdGoToTable, wdGoToFirst
+    Set tblGlossary = Selection.Tables(1)
+    
+    'get number of rows in table (sb number of defined lawyers)
+    iRows = Selection.Information(wdMaximumNumberOfRows)
+    If iRows < 1 Then   'big probs start all over
+        If g_iWordVer >= 15 Then
+            With ActiveDocument.ActiveWindow.ActivePane.View
+                If .Type = wdReadingView Then .Type = wdPrintView
+            End With
+        End If
+        WordBasic.DisableAutoMacros 1   'keep PCdocs away - (no VBA equiv -JTL)
+        ActiveDocument.Close wdDoNotSaveChanges
+        WordBasic.DisableAutoMacros 0   '- (no VBA equiv -JTL)
+        Kill m_sDotPath & IIf(g_iWordVer >= 12, "glossary.docx", "glossary.doc")
+        If LoadGlossaryFile <> -1 Then GoTo Exit2
+    End If
+    
+    '-1 to ignore header row, -1 again to get array to base zero
+    If iRows = 1 Then iRows = 0 Else iRows = iRows - 2
+    ReDim arrAuthors(iRows)
+    idx = -1
+
+    'get cur lawyer, if any
+    On Error Resume Next
+    sCurAuthor = NormalTemplate.AutoTextEntries("Lawyer").Value
+    Err.Clear
+    On Error GoTo ErrExit
+
+    'store Lawyers for Author List dialog box
+    iCurRow = 1
+    For i = 0 To iRows          'store Lawyers for dialog box
+        If MoveNextAuthor(iCurRow) Then
+            'Add Lawyer to array - check if already in list
+            arrAuthors(i) = Selection.Text
+            If arrAuthors(i) = sCurAuthor Then idx = i
+            iAuthCount = i
+        Else
+            'either no more authors, or problems
+            'blnNoEntries = True
+            GoTo ShowList
+        End If
+    Next i
+    
+    Selection.GoTo wdGoToTable, wdGoToFirst
+    If g_iWordVer < 12 Then Options.ButtonFieldClicks = 1      'allow single click
+
+'---
+ShowList:
+    'remove unused rows in array
+    ReDim Preserve arrAuthors(iAuthCount)
+    Application.ScreenUpdating = True
+    Load frmSetCurAuthInfo
+    With frmSetCurAuthInfo
+        .lstAuthors.List = arrAuthors
+        'Initialize to current secretary values
+        On Error Resume Next
+        .SecName = NormalTemplate.AutoTextEntries("SecName").Value
+        .SecInit = NormalTemplate.AutoTextEntries("SecInit").Value
+        .SecPhone = NormalTemplate.AutoTextEntries("SecPhone").Value
+        'If .SecPhone.Text = "" Then .SecPhone.Text = Templates(sGetGlobalTemplateName).AutoTextEntries("firm_phone_prefix")
+        
+        On Error GoTo ErrExit
+
+        'set who's current
+        If idx = -1 Then 'disable buttons if no current lawyer
+            Select Case .lstAuthors.ListCount
+                Case 0
+                Case 1
+                    If Trim(.lstAuthors.List(0)) <> "" Then
+                        EDButtons False
+                    Else
+                        EDButtons True
+                    End If
+                Case Else
+                        EDButtons False
+            End Select
+        Else
+            .lstAuthors.ListIndex = idx
+            EDButtons True
+        End If
+        If bNoEntries Then
+            .lstAuthors.Enabled = False
+            .cmdDelete.Enabled = False
+            .cmdModify.Enabled = False
+        End If
+    End With
+    
+'---
+ReShow:
+    Application.ScreenUpdating = True
+    With frmSetCurAuthInfo
+        .Show
+        choice = CInt(.Tag)     'ask the user whats to do
+
+        'Update secretary info if they did not cancel
+        If choice <> 0 Then
+            On Error Resume Next
+            If .SecName <> NormalTemplate.AutoTextEntries("SecName").Value Then _
+                UpdateGlossary .SecName, "SecName"
+            If .SecInit <> NormalTemplate.AutoTextEntries("SecInit").Value Then _
+                UpdateGlossary .SecInit, "SecInit"
+            If .SecPhone <> NormalTemplate.AutoTextEntries("SecPhone").Value Then _
+                UpdateGlossary .SecPhone, "SecPhone"
+            Selection.GoTo wdGoToTable, wdGoToFirst
+            Err.Clear
+            On Error GoTo ErrExit
+        End If
+    End With
+    Application.ScreenUpdating = False
+
+    NoClose = 0
+    Select Case choice
+        Case -1 'OK Get stored info and update Standard Glossary entries
+            If gc_bDisplayStatusBarInfo Then StatusBar = "Standard AutoText entries set for " & (arrAuthors(frmSetCurAuthInfo.lstAuthors.ListIndex))
+            UpdateLawyer (frmSetCurAuthInfo.lstAuthors.ListIndex)
+        Case 0
+            On Error Resume Next
+            sCurAuthor = NormalTemplate.AutoTextEntries("lawyer")
+            
+            If frmSetCurAuthInfo.lstAuthors.ListCount > 0 And sCurAuthor = "" Then
+                'authors exist, need to select one
+                Beep
+                MsgBox "You must select a Current Lawyer.", vbExclamation, "Set Current Lawyer"
+                frmSetCurAuthInfo.lstAuthors.SetFocus
+                GoTo ReShow
+            End If
+        Case 1  'NEW Add new Lawyer to Glossary.doc
+            If AddAuthor = -1 Then
+                With Selection
+                    .StartOf wdRow, wdMove
+                    .MoveLeft wdCell, 1
+                    .MoveRight wdCell, 1
+                End With
+                UpdateLawyer -1
+                UpdateAuthorList
+            Else
+                choice = 0
+            End If
+        Case 2  'MODIFY Lawyer from Glossary.doc
+            If frmSetCurAuthInfo.lstAuthors.ListIndex = -1 Then
+                MsgBox "No Lawyers to Modify"
+            Else
+                ModLawyer frmSetCurAuthInfo.lstAuthors.ListIndex
+                NoClose = 1
+            End If
+        Case 3  'DELETE Lawyer from Glossary.doc
+            If frmSetCurAuthInfo.lstAuthors.ListIndex = -1 Then
+                MsgBox "No Lawyers to Delete"
+            Else
+                If MsgBox("Delete stored AutoText Information for " & Chr(13) & Chr(10) & "'" & arrAuthors(frmSetCurAuthInfo.lstAuthors.ListIndex) & "' ?", vbYesNo, "Lawyer AutoText Info") = vbYes Then
+                    'deleted current lawyer so clear autotext
+                    If sCurAuthor = frmSetCurAuthInfo.lstAuthors.Text Then ClearAutoText
+                    DelLawyer (frmSetCurAuthInfo.lstAuthors.ListIndex)
+                    idx = frmSetCurAuthInfo.lstAuthors.ListIndex 'get index in case deleted current lawyer
+                Else
+                    GoTo ReShow
+                    'choice = 0  'bailed on delete
+                End If
+            End If
+        Case Else   'CANCEL
+           If gc_bDisplayStatusBarInfo Then StatusBar = "Standard AutoText entries not updated"
+    End Select
+
+    If NoClose = 1 Then GoTo Exit2  'must Let them customize closing
+    GoTo Exit1
+'---
+ErrExit:
+    InfoErrRpt "GlossarySwap.MAIN"
+    GoTo Exit2
+'---
+Exit1:
+    If g_iWordVer >= 15 Then
+        With ActiveDocument.ActiveWindow.ActivePane.View
+            If .Type = wdReadingView Then .Type = wdPrintView
+        End With
+    End If
+    WordBasic.DisableAutoMacros 1   'keep PCdocs away (no VBA equiv - JTL)
+    ActiveDocument.Close wdSaveChanges
+    WordBasic.DisableAutoMacros 0   '(no VBA equiv - JTL)
+'---
+Exit2:
+    Application.ScreenUpdating = True
+    Unload frmSetCurAuthInfo
+    If choice = 3 Then
+        If idx > 0 Then
+            If arrAuthors(idx) = sCurAuthor Then GoTo StartMe 'go again if deleted current lawyer
+        Else
+            If idx = UBound(arrAuthors) Then ClearAutoText   'deleted last lawyer, kill autotext
+        End If
+    End If
+End Sub
+
+Private Sub EDButtons(state As Boolean)
+    With frmSetCurAuthInfo
+        .cmdCancel.Enabled = state
+        .cmdDelete.Enabled = state
+        .cmdModify.Enabled = state
+    End With
+End Sub
+
+Public Sub UpdateAuthor(lines)
+    On Error Resume Next
+    UpdateLawyer lines
+End Sub
+
+'=========================================================
+'Get Info from table and update the Glossary entries
+Public Sub UpdateLawyer(lines)
+
+    If lines > -1 Then
+        Selection.GoTo wdGoToTable, wdGoToFirst
+        If lines > 0 Then Selection.MoveDown wdLine, lines
+        Selection.EndKey wdRow
+        Selection.MoveRight wdCell, 1
+    End If
+    
+    On Error Resume Next
+    'seltype() = 2 means a selection exists (something in the cell)
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "Lawyer" Else RemoveAT "Lawyer"
+    
+    Selection.MoveRight wdCell, 1
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "LawInit" Else RemoveAT "LawInit"
+    
+    Selection.MoveRight wdCell, 1
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "Phone" Else RemoveAT "Phone"
+    
+    Selection.MoveRight wdCell, 1
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "Fax" Else RemoveAT "Fax"
+   
+    Selection.MoveRight wdCell, 1
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "Email" Else RemoveAT "Email"
+    
+    Selection.MoveRight wdCell, 1
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "InfoBlock" Else RemoveAT "InfoBlock"
+    
+    Selection.MoveRight wdCell, 1
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "Closing" Else RemoveAT "Closing"
+    
+    Selection.MoveRight wdCell, 1
+    If Selection.Type = wdSelectionNormal Then DefineAutotext "LSUCno" Else RemoveAT "LSUCno"
+    
+End Sub
+'---
+Private Sub RemoveAT(sIn As String)
+Dim stmp As String
+    On Error Resume Next
+    Err.Clear
+    stmp = NormalTemplate.AutoTextEntries(sIn)
+    If Err.Number = 0 And stmp <> "" Then NormalTemplate.AutoTextEntries(sIn).Delete
+End Sub
+
+
+'----------------------------------------
+'Used to add a new row to the table contained in Glossary.doc
+Private Function AddAuthor()
+Dim choice As Integer
+Dim iRows As Integer
+'Dim x$
+Dim arrRoles() As String
+Const Roles As String = "Admin;Associate;Consultant;Law Clerk;Partner;Planner;Student at Law"
+Const RolesSeparator As String = ";"
+
+    arrRoles = Split(Roles, RolesSeparator)
+    
+    Load frmNewAuthInfo
+    With frmNewAuthInfo
+        .roleidx.List = arrRoles 'role$()
+        On Error Resume Next
+        '.Did.Text = Templates(GetGlobalTemplateName).AutoTextEntries("firm_phone_prefix")
+        .roleidx.ListIndex = 1
+        'frmNewAuthInfo.Ext.Text = "Ext. "
+    
+GetNewLawyer:
+        Application.ScreenUpdating = True
+        frmNewAuthInfo.Show
+        Application.ScreenUpdating = False
+    End With
+    
+    choice = CInt(frmNewAuthInfo.Tag)
+    
+    If choice = -1 Then
+    
+        ' Verify that ALL information is complete
+        If frmNewAuthInfo.AuthName.Text = "" Then
+            Beep
+            If gc_bDisplayStatusBarInfo Then StatusBar = "Note: Name must be filled in"
+            GoTo GetNewLawyer
+        End If
+    
+        ' Insert Info into Table
+        Selection.GoTo wdGoToTable, wdGoToFirst
+        iRows = Selection.Information(wdMaximumNumberOfRows)
+        If iRows = 2 Then
+            With Selection
+                .EndKey wdRow, wdMove
+                .MoveRight wdCell, 1
+            End With
+            If Selection.Type = wdSelectionIP Then
+                'assume start of new table, use empty row
+            Else
+                With Selection
+                    .EndKey wdRow, wdMove
+                    .MoveRight wdCell, 1
+                End With
+            End If
+        Else
+            With Selection
+                .EndKey wdColumn, wdMove
+                .EndKey wdRow, wdMove
+                .MoveRight wdCell, 1
+            End With
+        End If
+        
+        With Selection
+            .TypeText frmNewAuthInfo.AuthName.Text: .MoveRight wdCell, 1
+            .TypeText frmNewAuthInfo.Inits.Text: .MoveRight wdCell, 1
+            .TypeText frmNewAuthInfo.Did.Text: .MoveRight wdCell, 1
+            .TypeText frmNewAuthInfo.Fax.Text: .MoveRight wdCell, 1
+            .TypeText frmNewAuthInfo.Email.Text: .MoveRight wdCell, 1
+    
+            'Setup sample InfoBlock
+            'just do the name & phone for now
+            .TypeText frmNewAuthInfo.AuthName.Text
+            If frmNewAuthInfo.Did.Text <> "" Then
+                .TypeText Chr(11)
+                .TypeText frmNewAuthInfo.Did.Text
+            End If
+         
+            .MoveRight wdCell, 1
+'            .Style = "closing"
+        End With
+        
+'skip closing
+'
+'        'set up sample closing
+'        Select Case frmNewAuthInfo.roleidx.ListIndex
+'            Case 0  'admin
+'                On Error Resume Next
+'                x$ = InputBox("Enter title to use:", "Administrative Title")
+'                InsertAdminInfo frmNewAuthInfo.LyrName.Text, frmNewAuthInfo.Inits.Text, x$
+'            Case 1, 4 'lawyer
+'                InsertLawyerInfo frmNewAuthInfo.LyrName.Text, frmNewAuthInfo.Inits.Text, (arrRoles(frmNewAuthInfo.roleidx.ListIndex))
+'            Case 2, 3, 5, 6 'law clerk,planner,student,consultant
+'                InsertPerInfo frmNewAuthInfo.LyrName.Text, frmNewAuthInfo.Inits.Text, (arrRoles(frmNewAuthInfo.roleidx.ListIndex))
+'        End Select
+
+        With Selection
+            .MoveRight wdCell, 1
+            .TypeText frmNewAuthInfo.LSUCno.Text
+        End With
+    
+    End If
+    Unload frmNewAuthInfo
+    AddAuthor = choice
+End Function
+'
+''--------------------------------------
+'Private Sub InsertLawyerInfo(n$, i$, t$)
+'Dim x$
+'    With Selection
+'        .TypeText "Yours very truly,"
+'        .TypeText Chr(11)
+'        .Font.bold = True
+'        .Font.SmallCaps = True
+'        .TypeText FirmName
+'        .Font.Reset
+'        .TypeText Chr(11) & Chr(11) & Chr(11) & Chr(11)
+'        .Font.SmallCaps = True
+'        .TypeText n$
+'        .Font.Reset
+'        .TypeText Chr(13)
+'        .TypeText UCase(i$) & ":"
+'    End With
+'    On Error Resume Next
+'    x$ = NormalTemplate.AutoTextEntries("SecInit")
+'    If Err.Number = 0 Then Selection.TypeText LCase(x$)
+'    With Selection
+'        .InsertParagraph
+'        .MoveUp Unit:=wdParagraph, Count:=1
+'        .Style = "initials"
+'        .MoveUp Unit:=wdParagraph, Count:=1
+'    End With
+'End Sub
+'
+'Private Sub InsertPerInfo(n$, i$, t$)
+'Dim x$
+'    With Selection
+'        .TypeText "Yours very truly,"
+'        .TypeText Chr(11) & Chr(11) & FirmName & Chr(11)
+'        .TypeText "Per:" & Chr(11) & Chr(11) & Chr(11)
+'        .TypeText n$ & Chr(11) & t$ & Chr(13)
+'        .TypeText UCase(i$) & ":"
+'    End With
+'    On Error Resume Next
+'    x$ = NormalTemplate.AutoTextEntries("SecInit")
+'    If Err.Number = 0 Then Selection.TypeText LCase(x$)
+'    With Selection
+'        .InsertParagraph
+'        .MoveUp Unit:=wdParagraph, Count:=1
+'        .Style = "initials"
+'        .MoveUp Unit:=wdParagraph, Count:=1
+'    End With
+'End Sub
+'
+'Private Sub InsertAdminInfo(n$, i$, t$)
+'Dim x$
+'    With Selection
+'        .TypeText "Yours very truly," & Chr(11) & Chr(11)
+'        .TypeText Chr(11) & Chr(11) & n$ & Chr(11) & t$ & Chr(13)
+'        .TypeText ":"
+'    End With
+'    On Error Resume Next
+'    x$ = NormalTemplate.AutoTextEntries("SecInit")
+'    If Err.Number = 0 Then Selection.TypeText LCase(x$)
+'    With Selection
+'        .InsertParagraph
+'        .MoveUp Unit:=wdParagraph, Count:=1
+'        .Style = "initials"
+'        .MoveUp Unit:=wdParagraph, Count:=1
+'    End With
+'End Sub
+
+Private Sub DelLawyer(lines As Integer)
+Dim iRows As Integer
+    iRows = Selection.Information(wdMaximumNumberOfRows)
+    If lines > 0 Then Selection.MoveDown wdLine, lines
+    With Selection
+        .EndKey wdRow, wdMove
+        .MoveRight wdCell, 1
+        .EndKey wdRow, wdExtend
+    End With
+    If iRows = 2 Then Selection.Range.Delete Else ActiveDocument.Tables(1).Rows(Selection.Information(wdEndOfRangeRowNumber)).Delete
+    If gc_bDisplayStatusBarInfo Then StatusBar = "Lawyer removed from table"
+    UpdateAuthorList
+End Sub
+
+Private Sub ModLawyer(lines As Integer)
+Dim iRows As Integer
+
+    With ActiveWindow.View
+        .Zoom.PageFit = wdPageFitBestFit
+        .ShowFieldCodes = False
+    End With
+    
+    iRows = Selection.Information(wdMaximumNumberOfRows)
+    If lines > 0 Then Selection.MoveDown wdLine, lines
+    
+    With Selection
+        .EndKey wdRow, wdMove
+        .MoveRight wdCell, 1
+    End With
+    
+    If gc_bDisplayStatusBarInfo Then StatusBar = "Modify the Lawyer info in table"
+    
+    With ActiveDocument
+        .Variables.Add "ModRow", CStr(lines)
+        .Saved = True
+    End With
+    
+End Sub
+
+'
+'given text and glossary name update the glossary entry
+'
+Private Sub UpdateGlossary(sNewVal As String, sATName As String)
+    With Selection
+        .EndKey wdStory, wdMove
+        .TypeText sNewVal
+        .HomeKey wdLine, wdExtend
+        DefineAutotext sATName
+        .Range.Cut
+    End With
+End Sub
+
+Public Function LoadGlossaryFile() As Integer
+Dim tsummary As Integer
+Dim sFileName As String
+    
+    LoadGlossaryFile = 0
+    sFileName = ""
+    On Error GoTo LoadModel
+    
+    'in Word12 need to check for docx
+    If g_iWordVer >= 12 Then
+        If dir(g_sUserTemplatesPath & "glossary.docx") <> "" Then
+            sFileName = "glossary.docx"
+            m_sGlossaryDocExtn = ".docx"
+        Else
+            If dir(g_sUserTemplatesPath & "glossary.doc") <> "" Then
+                sFileName = "glossary.doc"
+                m_sGlossaryDocExtn = ".doc"
+            End If
+        End If
+    Else
+        If dir(g_sUserTemplatesPath & "glossary.doc") <> "" Then sFileName = "glossary.doc"
+        m_sGlossaryDocExtn = ".doc"
+    End If
+    If sFileName = "" Then GoTo LoadModel
+    Documents.Open g_sUserTemplatesPath & sFileName, , , False
+    LoadGlossaryFile = -1
+    GoTo CheckDocIsOK
+
+LoadModel:
+    'need a new one
+    On Error GoTo ErrExit
+    If g_iWordVer >= 12 And dir(g_sWorkgroupTemplatesPath & "glossary.dotm") <> "" Then
+         Documents.Add g_sWorkgroupTemplatesPath & "glossary.dotm"
+         sFileName = "glossary.docx"
+    Else
+         Documents.Add g_sWorkgroupTemplatesPath & "glossary.dot"
+         sFileName = "glossary.doc"
+    End If
+    With Options
+        tsummary = .SavePropertiesPrompt
+        If tsummary <> False Then .SavePropertiesPrompt = False
+    End With
+    'need to force format or Word will use default save format
+    ActiveDocument.SaveAs g_sUserTemplatesPath & sFileName, IIf(g_iWordVer >= 12, wdFormatXMLDocument, wdFormatDocument)
+    If tsummary <> False Then Options.SavePropertiesPrompt = True
+    LoadGlossaryFile = -1
+    Exit Function
+    
+'---
+CheckDocIsOK:
+    FixupGlossaryColumnCount 'check that the glossary has the right # of cols
+    Exit Function
+'---
+ErrExit:
+    InfoErrRpt "GlossarySwap.LoadGlossaryFile", LC_ErrRpt3
+    Exit Function
+'---
+Exit_:
+End Function
+
+
+'-------
+'Rebuild "Author_list" autotext entry
+'   Note: Changes selection
+'   Note: Public to call from Glossary autoclose
+'v2.0 check for use of IDX file or autotext for authors list
+'
+Public Sub UpdateAuthorList()
+Dim iRows As Integer    'count of rows in table, count from 1
+Dim i As Integer
+Dim itmp As Integer     'cur row number
+Dim sAuthList As String
+Dim sNewLine As String
+
+    On Error GoTo ErrExit
+    Selection.GoTo wdGoToTable, wdGoToFirst
+    Set tblGlossary = Selection.Tables(1)
+    itmp = 1
+    i = 0
+    iRows = Selection.Information(wdMaximumNumberOfRows) 'bug fix was minus two
+    
+    If Not gc_bUseAuthorListIdxFile Then
+        
+        'use autotext Author_list
+        Do
+            'loop through all the defined authors
+            If Not MoveNextAuthor(itmp) Then Exit Do
+            If sAuthList <> "" Then sNewLine = Chr(11)
+            sAuthList = sAuthList & sNewLine & Selection.Text
+            i = i + 1
+        Loop Until i >= iRows
+    
+        Selection.EndKey wdStory, wdMove
+        If sAuthList <> "" Then
+            With Selection
+                .TypeText sAuthList
+                .MoveUp wdParagraph, 1, wdExtend
+                DefineAutotext "Author_list"
+                .Cut
+            End With
+        Else
+            DefineAutotext "Author_list"
+        End If
+        
+    Else
+        'use Glossary.IDX file
+        'update global array
+        ReDim g_arrInfoAuthorList(iRows)
+        g_iInfoAuthorListCount = 0
+        g_bInfoAuthorListInitialized = False
+        Do
+            'loop through all the defined authors
+            If Not MoveNextAuthor(itmp) Then Exit Do
+            g_arrInfoAuthorList(i) = Selection.Text
+            i = i + 1
+        Loop Until i >= iRows
+        If i > 0 Then
+            g_iInfoAuthorListCount = i
+            ReDim Preserve g_arrInfoAuthorList(i - 1)
+            g_bInfoAuthorListInitialized = True
+        End If
+        'write the idx file
+        Open g_sUserTemplatesPath & "Glossary.Idx" For Output As 1
+        Print #1, g_iInfoAuthorListCount
+        For i = 0 To g_iInfoAuthorListCount - 1
+            Print #1, g_arrInfoAuthorList(i)
+        Next i
+        Close 1
+    End If
+    Exit Sub
+    
+ErrExit:
+    InfoErrRpt "GlossarySwap.UpdateAuthorList"
+End Sub
+
+Private Sub DefineAutotext(sATName As String)
+    On Error Resume Next
+    With NormalTemplate.AutoTextEntries
+        .Item(sATName).Delete
+        .Add sATName, Selection.Range
+    End With
+End Sub
+
+Private Sub ClearAutoText()
+'deletes autotext entries if Last Lawyer deleted from list
+    On Error Resume Next
+    With NormalTemplate.AutoTextEntries
+        .Item("Lawyer").Delete
+        .Item("LawInit").Delete
+        .Item("Phone").Delete
+        .Item("Fax").Delete
+        .Item("Email").Delete
+        .Item("InfoBlock").Delete
+        .Item("Closing").Delete
+        .Item("LSUCno").Delete
+        .Item("Author_list").Delete
+    End With
+End Sub
+
+'-------
+'Advances selection in Glossary Table to next row where LawyerName not blank
+'If selection is already at last author, will move to last row of that author
+'   Modifies arg: iCurRow - row number of currently selected row, count from 1
+'   Returns False if end of table or other problems
+'   Note:   Never creates a new row
+'           iCurRow MUST be set before calling this!
+Private Function MoveNextAuthor(ByRef iCurRow As Integer) As Boolean
+Dim btmp As Boolean
+Dim bIsValid As Boolean
+Dim sNext As String
+    On Error GoTo ErrExit
+    btmp = True
+    Do
+        'skip any rows that contain extra info for same lawyer
+        'make sure next row actually exists
+        sNext = Trim(GetTableCellVal(tblGlossary, iCurRow + 1, 1, bIsValid))
+        If Not bIsValid Then
+            btmp = False
+        Else
+            'advance one row (we start at the lawyer home row)
+            MoveNextRow iCurRow
+        End If
+    Loop Until sNext <> "" Or Not bIsValid
+    MoveNextAuthor = btmp
+    Exit Function
+'---
+ErrExit:
+    MoveNextAuthor = False
+End Function
+
+'-------
+'Advances selection in Glossary Table to next row
+'   Modifies arg: idx - row number of currently selected row
+'   Note:   Creates new row if at end of table
+'   Note:   Leaves text only of first cell selected
+Private Sub MoveNextRow(Optional ByRef idx As Variant)
+    Selection.EndKey wdRow
+    Selection.MoveRight wdCell, 1
+    If Not IsMissing(idx) Then idx = idx + 1
+End Sub
+
+'--------
+'Catch glossary documents based on old templates
+'Add required columns and re-format
+'Adds TKID, City and Language Columns
+'
+'v1.1 -add check for TKID
+Sub FixupGlossaryColumnCount()
+Dim mytable As Table
+Dim i As Integer
+Dim SaveStatus As Boolean
+Dim iColCnt As Integer
+
+    If Not ActiveDocument.Bookmarks.Exists("GlossaryTable") Then Exit Sub
+    SaveStatus = ActiveDocument.Saved
+    
+    ActiveDocument.Bookmarks("GlossaryTable").Select
+    Set mytable = Selection.Tables(1)
+    iColCnt = mytable.Columns.Count
+    If iColCnt >= iColGLOSSMAX Then Exit Sub
+    
+    With Selection
+    
+        'check TKID
+        If iColCnt < iColTKID Then
+             mytable.Rows(1).Select
+            .Collapse wdCollapseEnd
+            .MoveLeft wdCharacter, 1
+            .SelectColumn
+            .InsertColumns
+            .Collapse wdCollapseStart
+            .TypeText "TKID"
+            
+            With mytable.Columns.Last
+                'format remainder of col as normal
+                For i = 2 To mytable.Rows.Count
+                    .Cells(i).Range.Style = wdStyleNormal '"normal"
+                Next
+            End With
+        End If
+       
+        'Check City
+        If mytable.Columns.Count < iColOFFICE Then
+            mytable.Rows(1).Select
+            .Collapse wdCollapseEnd
+            .MoveLeft wdCharacter, 1
+            .SelectColumn
+            .InsertColumns
+            .Collapse wdCollapseStart
+            .TypeText "City"
+            
+            With mytable.Columns.Last
+                'format remainder of col as normal
+                For i = 2 To mytable.Rows.Count
+                    .Cells(i).Range.Style = wdStyleNormal '"normal"
+                    .Cells(i).Range.Shading.BackgroundPatternColorIndex = wdGray25
+                Next
+            End With
+        End If
+    
+        'Check Language
+        If mytable.Columns.Count < iColLANG Then
+            mytable.Rows(1).Select
+            .Collapse wdCollapseEnd
+            .MoveLeft wdCharacter, 1
+            .SelectColumn
+            .InsertColumns
+            .Collapse wdCollapseStart
+            .TypeText "Language"
+            
+            With mytable.Columns.Last
+                For i = 2 To mytable.Rows.Count
+                    .Cells(i).Range.Style = wdStyleNormal '"normal"
+                    .Cells(i).Range.Shading.BackgroundPatternColorIndex = wdGray25
+                Next
+            End With
+        End If
+        
+        mytable.Columns.Last.Select
+        .Columns.Width = InchesToPoints(1)      'language
+        .MoveLeft wdCell, 2, wdMove
+        .Columns(1).Select
+        .Columns.Width = InchesToPoints(0.6)    'city
+        .MoveLeft wdCell, 2, wdMove
+        .Columns(1).Select
+        .Columns.Width = InchesToPoints(0.7)    'TKID#
+        .MoveLeft wdCell, 2, wdMove
+        .Columns(1).Select
+        .Columns.Width = InchesToPoints(0.75)   'LSUC#
+        '.MoveLeft wdColumn, 1, wdMove
+    End With
+    
+    With ActiveDocument.PageSetup
+        .Orientation = wdOrientLandscape
+        .TopMargin = InchesToPoints(0.5)
+        .BottomMargin = InchesToPoints(0.5)
+        .LeftMargin = InchesToPoints(0.2)
+        .RightMargin = InchesToPoints(0.2)
+        .Gutter = InchesToPoints(0)
+        .HeaderDistance = InchesToPoints(0.49)
+        .FooterDistance = InchesToPoints(0.49)
+        .PageWidth = InchesToPoints(14)
+        .PageHeight = InchesToPoints(8.5)
+    End With
+    
+    ActiveWindow.View = wdPageView
+    ActiveWindow.View.Zoom.PageFit = wdPageFitBestFit
+    With Selection
+        .HomeKey wdStory, wdMove
+        If .Information(wdWithInTable) Then GoTo NormalExit
+        .InsertParagraph
+        .Collapse wdCollapseStart
+        .TypeText LC_DoNotType
+    End With
+
+'---
+NormalExit:
+    'make sure still clean if we started that way
+    If SaveStatus And Not ActiveDocument.Saved Then ActiveDocument.Save
+    Exit Sub
+'---
+ErrExit:
+    InfoErrRpt "GlossarySwap.FixupGlossaryColumnCount"
+End Sub
+
+Attribute VB_Name = "Inform"
+'|fffd| Infoware Development Inc., copyright 2009 all rights reserved - HDG
+'============================================================
+Option Explicit
+'--
+'
+'<%Lang_Constants%>
+Private Const LC_ErrDLL As String = "File CalcInt.dll is missing or not registered."
+'<%/Lang_Constants%>
+'
+'--
+
+'Launch new InForm 2010 interface
+'
+Public Sub LitForms()
+    
+    'init our global lib
+    On Error GoTo InFormLibLoad_err
+    If g_objInFormLib Is Nothing Then Set g_objInFormLib = CreateObject("InFormLib2.clsInFormLib")
+    If g_objInFormLib Is Nothing Then GoTo InFormLibLoad_err
+    
+    If Not g_bInitDone Then DoLoadInFormRibbon
+    
+    On Error GoTo ErrRpt
+    g_objInFormLib.LaunchInForm
+    Exit Sub
+    
+InFormLibLoad_err:
+    InfoErrRpt "Infoware InFORM Build Forms" & vbCrLf & "Cannot continue, the InFormLib2.dll library did not load."
+    Application.ScreenUpdating = True
+    Exit Sub
+    
+ErrRpt:
+    InfoErrRpt "InFormRibbon.LitForms()"
+    If Not g_objInFormLib Is Nothing Then Set g_objInFormLib = Nothing
+End Sub
+'
+
+' Launch Custom Form Codes Interface to allow
+' setting of document property to config non idx based custom forms
+'
+Public Sub SetCustomFormCodes()
+
+    If Documents.Count = 0 Then Exit Sub
+
+    'init our global lib
+    On Error GoTo InFormLibLoad_err
+    If g_objInFormLib Is Nothing Then Set g_objInFormLib = CreateObject("InFormLib2.clsInFormLib")
+    If g_objInFormLib Is Nothing Then GoTo InFormLibLoad_err
+    
+    On Error GoTo ErrRpt
+    g_objInFormLib.SetCustomFormCodes
+    Exit Sub
+    
+InFormLibLoad_err:
+    InfoErrRpt "Infoware Court Forms" & vbCrLf & "Cannot continue, the InFormLib2.dll library did not load."
+    Application.ScreenUpdating = True
+    Exit Sub
+    
+ErrRpt:
+    InfoErrRpt "InFormRibbon.SetCustomFormCodes()"
+    If Not g_objInFormLib Is Nothing Then Set g_objInFormLib = Nothing
+End Sub
+'
+
+
+' Provide interface to save current document as Custom Form
+' in last used suite sub folder
+'
+Public Sub SaveCustomForm()
+
+    If Documents.Count = 0 Then Exit Sub
+
+    'init our global lib
+    On Error GoTo InFormLibLoad_err
+    If g_objInFormLib Is Nothing Then Set g_objInFormLib = CreateObject("InFormLib2.clsInFormLib")
+    If g_objInFormLib Is Nothing Then GoTo InFormLibLoad_err
+    
+    On Error GoTo ErrRpt
+    g_objInFormLib.SaveCustomForm
+    Exit Sub
+    
+InFormLibLoad_err:
+    InfoErrRpt "Infoware Court Forms" & vbCrLf & "Cannot continue, the InFormLib2.dll library did not load."
+    Application.ScreenUpdating = True
+    Exit Sub
+    
+ErrRpt:
+    InfoErrRpt "InFormRibbon.SaveCustomForm()"
+    If Not g_objInFormLib Is Nothing Then Set g_objInFormLib = Nothing
+    Exit Sub
+End Sub
+
+'
+'Set some profile doc path globals using InformLib dll
+'
+'Public Sub SetProfilePathInfo(FormDir As String)
+'
+'    On Error GoTo err_rpt
+'    'get profile path & name from dll
+'    With g_InFormLib
+'        g_InForm_ProfPath = .GetProfilePath
+'        g_InForm_ProfName = .GetProfileName(FormDir)
+'        g_InForm_FullProfDirPath = .GetProfileFullPath
+'        g_InForm_ProfileNoMatterDirFiling = .GetProfileNoDir
+'    End With
+'    Exit Sub
+'err_rpt:
+'    InfoErrRpt "SetProfilePathInfo()"
+'End Sub
+
+Attribute VB_Name = "InfowareLib"
+'|fffd| Infoware Development Inc., copyright 2009 all rights reserved - HDG
+'============================================================
+Option Explicit
+
+'Infoware Library of General Tools
+'
+'*** DO NOT add client specific code to this Library
+'
+'v1.0   01-Nov-00   Create library -HDG
+'                   move general code from InfoLib
+'
+'-----------------------------------------------------------
+'Code In Library
+'-----------------------------------------------------------
+'GetWorkGroupPath$()
+'GetStartupPath$()
+'GetInfoFromIdxFile()        -read index text file for list
+'InfoErrRpt()                -General Error Reporting
+'FillAuthors()
+'GetTableCellVal()
+
+'-----------------------------------------------------------
+'
+Public Function GetAutotext(AutotextName) As String
+    On Error Resume Next
+    GetAutotext = ""
+    GetAutotext = NormalTemplate.AutoTextEntries(AutotextName).Value
+End Function
+
+
+'---
+'get authors from autotext entry author_list
+'author_list is maintained by GlossarySwap
+'v2.0 add ability to get from idx file or autotext
+'
+Public Sub FillAuthors(arrAuthors() As String, iAuthorListIdx As Integer)
+Dim sAuthorList As String
+Dim sCurAuthor As String
+Dim i As Integer
+Dim idx As Integer
+
+    On Error Resume Next
+    sCurAuthor = ""
+    sCurAuthor = NormalTemplate.AutoTextEntries("lawyer")
+    iAuthorListIdx = 0
+    
+    On Error GoTo ErrExit
+    If Not gc_bUseAuthorListIdxFile Then
+        'get from autotext
+        On Error Resume Next
+        sAuthorList = NormalTemplate.AutoTextEntries("author_list")
+        On Error GoTo ErrExit
+        If sAuthorList = "" Then
+            If sCurAuthor = "" Then
+                sCurAuthor = "Unknown"
+                'MsgBox "Please use 'Set Current Lawyer Info' in the Special Menu to set your standard AutoText entries", vbInformation, "Set Current Author Info"
+            End If
+            ReDim arrAuthors(0)
+            arrAuthors(0) = sCurAuthor
+            Exit Sub
+        End If
+        ReDim arrAuthors(500)
+        For i = 0 To 500
+            idx = InStr(sCurAuthor, Chr(11))
+            If idx > 0 Then
+                arrAuthors(i) = Left(sAuthorList, idx - 1)
+                sAuthorList = Mid(sAuthorList, idx + 1)
+            Else
+                arrAuthors(i) = sAuthorList
+                If sCurAuthor = arrAuthors(i) Then iAuthorListIdx = i
+                Exit For
+            End If
+            If sCurAuthor = arrAuthors(i) Then iAuthorListIdx = i
+        Next i
+        
+        ReDim Preserve arrAuthors(i)
+    Else
+        'get from idx file, cache in global array
+        If Not g_bInfoAuthorListInitialized Then
+            g_iInfoAuthorListCount = GetInfoFromIdxFile(g_sUserTemplatesPath & "Glossary.Idx", "Author", 1, g_arrInfoAuthorList)
+            If g_iInfoAuthorListCount > -1 Then
+                g_bInfoAuthorListInitialized = True
+            Else
+                g_iInfoAuthorListCount = 0
+                g_bInfoAuthorListInitialized = False
+                If sCurAuthor = "" Then
+                    sCurAuthor = "Unknown"
+                    'MsgBox "Please use 'Set Current Lawyer Info' in the Special Menu to set your standard AutoText entries", vbInformation, "Set Current Author Info"
+                End If
+                ReDim arrAuthors(0)
+                arrAuthors(0) = sCurAuthor
+                Exit Sub
+            End If
+        End If
+        'copy to arg 1 array
+        ReDim arrAuthors(g_iInfoAuthorListCount - 1)
+        For i = 0 To g_iInfoAuthorListCount - 1
+            arrAuthors(i) = g_arrInfoAuthorList(i)
+            If sCurAuthor = arrAuthors(i) Then iAuthorListIdx = i
+        Next i
+    End If
+    Exit Sub
+
+ErrExit:
+    InfoErrRpt "FillAuthors"
+End Sub
+
+'===
+'GetInfoFromIdxFile()
+'read index text file for list of long names and templates available
+'IdxFile - full path to index file to read
+'IdxName - string to display about what file is during loading (status & errors)
+'FormsNumArgs - number of expected elements on row of array
+'Forms() - xD string array of vars to read
+'returns 0 or > as OK and rec count, -1 as Problems
+'
+'v1.1   Mar/02  Add optional arg for field delimiter
+'v2.0   Jan/03  Allow 1 dim array
+'v2.1   Mar/03  make sure that extra extra args (,,) on a single arg call do not break things
+'
+Public Function GetInfoFromIdxFile(IdxFile As String, IdxName As String, _
+                        FormsNumArgs As Integer, Forms() As String, Optional FldDelimiter As String = ",") As Integer
+Dim max As Integer
+Dim idx As Integer
+Dim x As Integer
+Dim pos As Integer
+Dim choice As Integer
+Dim numrecs As Integer
+Dim stmp As String
+Dim onedim As Boolean
+
+On Error GoTo OpenErr
+
+    'setup for 1D or xD array
+    If FormsNumArgs = 1 Then onedim = True Else onedim = False
+    
+    Open IdxFile For Input As 1
+    On Error GoTo ReadErr
+    If gc_bDisplayStatusBarInfo Then StatusBar = "Loading " & IdxName & " List"
+    Input #1, max
+    numrecs = max
+    If max > 0 Then
+        max = max - 1
+    Else
+        idx = 0
+        GoTo ReadErr
+    End If
+        
+    If onedim Then ReDim Forms(max) Else ReDim Forms(max, FormsNumArgs - 1)
+    
+    For idx = 0 To max
+        Line Input #1, stmp
+        If onedim Then
+            Forms(idx) = stmp
+        Else
+            For x = 0 To FormsNumArgs - 1
+                pos = InStr(stmp, FldDelimiter)
+                If pos > 0 Then
+                    'catch comma comma
+                    If pos = 1 Then
+                        Forms(idx, x) = ""
+                    Else
+                        Forms(idx, x) = Left(stmp, pos - 1)
+                    End If
+                    stmp = Mid(stmp, pos + 1)
+                Else
+                    If x = FormsNumArgs - 1 Then
+                        'do last item
+                        Forms(idx, x) = stmp
+                    End If
+                    Exit For 'assume last arg on line
+                End If
+            Next x
+        End If
+        If EOF(1) <> 0 Then Exit For
+    Next idx
+
+Startdiag:
+    Close 1
+    GetInfoFromIdxFile = numrecs
+    If gc_bDisplayStatusBarInfo Then StatusBar = "Select ..."
+    GoTo cleanup
+
+OpenErr:
+    GetInfoFromIdxFile = -1
+    If Err = 76 Or Err = 53 Then
+        'deal with file not found quietly
+        If gc_bDisplayStatusBarInfo Then StatusBar = Err.Description & " - " & "Index file: " & IdxFile
+    Else
+        'anounce other errs
+        MsgBox Str(Err) & Err.Description & " - " & "Index file: " & IdxFile, vbExclamation, "Error opening " & IdxName$ & " Forms"
+    End If
+    ReDim Forms(0, FormsNumArgs - 1)
+    Forms(0, 0) = "Not Installed"
+    GoTo cleanup
+
+ReadErr:
+    GetInfoFromIdxFile = -1
+    Close 1
+    If idx = 0 Then
+        If onedim Then
+            ReDim Forms(0)
+            Forms(0) = "Not Installed"
+        Else
+            ReDim Forms(0, FormsNumArgs - 1)
+            Forms(0, 0) = "Not Installed"
+        End If
+        GoTo cleanup
+    End If
+    MsgBox "Index file: " & IdxFile & " at record " & Str(idx), vbExclamation, "Error reading " & IdxName$ & " Forms"
+    GoTo cleanup
+
+cleanup:
+End Function
+
+'===
+'General Error Reporting
+'
+Public Function InfoErrRpt(SubName As String, Optional comment As String = "")
+Dim errmsg As String
+
+    If comment <> "" Then
+        errmsg = comment & vbCrLf & vbCrLf
+    End If
+    
+    errmsg = errmsg & "Routine: " & SubName _
+        & vbCrLf & Err.Number & " - " & Err.Description _
+        & vbCrLf & "Please report this problem to Infoware"
+
+    MsgBox errmsg, vbInformation + vbOKOnly, "Infoware Problem Report"
+    
+End Function
+
+'----------
+' License Management error reporting
+'----------
+'
+Public Function InfoLicenseErrRpt(SubName As String, Optional comment As String = "")
+Dim errmsg As String
+
+    If comment <> "" Then
+        errmsg = comment & vbCrLf & vbCrLf
+    End If
+    
+    errmsg = errmsg & "Routine: " & SubName _
+        & vbCrLf & "Function unavailable in this version of InFORM."
+
+    MsgBox errmsg, vbInformation + vbOKOnly, "Function unavailable"
+
+End Function
+
+'---
+'v1.1  AH  Pass optional result code
+'       returns empty string if cell empty
+'       returns empty string if invalid row/col passed
+Public Function GetTableCellVal(mytable As Table, rowx As Integer, colx As Integer, Optional IsValid As Variant) As String
+Dim myrange As Range
+Dim tmp As String
+Dim tmpIsValid As Boolean
+
+    On Error GoTo ErrExit
+    tmp = ""
+    tmpIsValid = False
+    With mytable
+        If .Rows.Count >= rowx And .Columns.Count >= colx Then
+            Set myrange = .Cell(rowx, colx).Range
+            With myrange
+                If .Characters.Count > 1 Then
+                    'exclude end of cell marker
+                    .MoveEnd wdCharacter, -1
+                    tmp = .Text
+                End If
+            End With
+            tmpIsValid = True
+        End If
+    End With
+    'fall through to std exit code
+ErrExit:
+    If Not IsMissing(IsValid) Then IsValid = tmpIsValid
+    GetTableCellVal = tmp
+
+End Function
+
+
+'---
+'find global autotext entry and return value
+'optionally return fullname of template entry found in
+'
+'v1.1 29-May-03 fix bug re use of stmp UCase compare
+'
+Public Function GetGlobalAutoText(atext As String, Optional TName As String) As String
+Dim tmplt As Template
+Dim ATEntry As AutoTextEntry
+Dim stmp As String
+
+    stmp = UCase(atext)
+    GetGlobalAutoText = ""
+    
+    For Each tmplt In Application.Templates
+        For Each ATEntry In tmplt.AutoTextEntries
+            If UCase(ATEntry.Name) = stmp Then
+                GetGlobalAutoText = ATEntry.Value
+                If Not IsMissing(TName) Then
+                    TName = tmplt.FullName
+                End If
+                Exit For
+            End If
+        Next
+    Next
+    
+End Function
+
+
+Attribute VB_Name = "LicenseManagement"
+Option Explicit
+
+'----------
+' Functions for license management
+'----------
+'
+Public Sub EnterNewIFLicense()
+
+    On Error GoTo handler_
+    
+    If Not g_objInfoUtilities Is Nothing Then
+        If Not g_objInfoUtilities.Connect Then g_objInfoUtilities.Connect = True
+        g_bLicenseValidated = g_objInfoUtilities.Object.EnterNewKey("InForm", "InForm", "")
+    Else
+        InfoLicenseErrRpt "EnterNewIFLicense()"
+    End If
+    Exit Sub
+
+handler_:
+    InfoLicenseErrRpt "EnterNewIFLicense()"
+End Sub
+
+Public Sub InFormLicense_GetVisible(control As IRibbonControl, ByRef visible As Variant)
+    On Error Resume Next
+    'only display the license button if Utilities component is installed
+    visible = Not (g_objInfoUtilities Is Nothing)
+End Sub
+
+Public Sub CheckIFLicense()
+
+    On Error GoTo handler_
+    If g_objInfoUtilities Is Nothing Or g_iWordVer = 12 Then
+        'Utilities component not installed, so allow passthrough
+        'also allow passthrough for Word 2007
+        g_bLicenseValidated = True
+    Else
+        If Not g_objInfoUtilities.Connect Then g_objInfoUtilities.Connect = True
+        g_bLicenseValidated = g_objInfoUtilities.Object.RunLMCheck("InForm", "InForm", "")
+    End If
+    Exit Sub
+    
+handler_:
+    InfoLicenseErrRpt "CheckNewIFLicense()", Err.Number & " - " & Err.Description
+End Sub
+
+Public Sub getIFLicense()
+Dim addin As Office.COMAddIn
+
+    On Error GoTo handler_
+    
+    If Not g_objInfoUtilities Is Nothing Then
+        If Not g_objInfoUtilities.Connect Then g_objInfoUtilities.Connect = True
+        LicenseKey = addin.Object.GetLicenseKey("InForm", "InForm", "")
+        MachineKey = addin.Object.GetMachineKey("InForm", "InForm", "")
+    Else
+        InfoLicenseErrRpt "GetIFLicense()"
+    End If
+    Exit Sub
+    
+handler_:
+    InfoLicenseErrRpt "GetIFLicense()"
+End Sub
+
+Public Function GetInfowareUtilities() As COMAddIn
+Dim objAddIn As COMAddIn
+Dim iAddInIdx As Integer
+
+    On Error Resume Next
+    For iAddInIdx = 1 To Application.COMAddIns.Count
+        Set objAddIn = Application.COMAddIns(iAddInIdx)
+        If LCase(objAddIn.ProgID) = LCase(gc_sInfoUtilProgId) Then
+            Set GetInfowareUtilities = objAddIn
+            Exit Function
+        End If
+    Next iAddInIdx
+    'if we ended up down here, we didn't find it
+    Set GetInfowareUtilities = Nothing
+    
+End Function
+Attribute VB_Name = "Ribbon"
+Option Explicit
+
+Private Const mc_sToolbarName As String = "InFormMenu"
+
+'----------
+' Event handling & callbacks for Ribbon controls
+'----------
+'
+Public Sub RibbonXOnActionInForm(control As IRibbonControl) ', pressed As Boolean
+
+    If Not g_bInitDone Then DoLoadInFormRibbon
+
+    On Error GoTo handler_
+    If g_bLicenseValidated Then
+        Application.Run control.Tag
+    Else
+        Call CheckIFLicense
+        If g_bLicenseValidated Then
+            Application.Run control.Tag
+        Else
+            InfoLicenseErrRpt control.Tag
+        End If
+    End If
+    Exit Sub
+    
+handler_:
+    MsgBox "RibbonXOnAction() - " & control.Tag, vbExclamation
+End Sub
+
+Private Sub InFormRibbonLoaded(Ribbon As IRibbonUI)
+    On Error Resume Next
+    Set g_objRibbon = Ribbon
+    DoLoadInFormRibbon
+End Sub
+'
+Public Sub DoLoadInFormRibbon()
+Dim i As Integer
+    
+    On Error Resume Next
+    Set g_objInFormLib = CreateObject("InFormLib2.clsInFormLib")
+    If g_objInFormLib Is Nothing Then GoTo InFormLibLoad_err
+
+    On Error GoTo ErrRpt
+    
+    g_iWordVer = iGetWordVer
+    If g_iWordVer >= 12 Then
+        HideToolbar mc_sToolbarName 'hide toolbar
+        'ConvertExistingGlossary 'not needed if Word LX loaded
+    End If
+    
+    'set paths
+    g_sWorkgroupTemplatesPath = Options.DefaultFilePath(wdWorkgroupTemplatesPath) & "\"
+    g_sUserTemplatesPath = Options.DefaultFilePath(wdUserTemplatesPath) & "\"
+    If g_sFormsPath = "" Then
+        g_sFormsPath = g_objInFormLib.sCurFormsPath
+        i = InStrRev(g_sFormsPath, "\", Len(g_sFormsPath) - 1)
+        If i > 0 Then g_sFormsPath = Left(g_sFormsPath, i)
+    End If
+    
+    'license management
+    Set g_objInfoUtilities = GetInfowareUtilities
+    
+    Set g_objEventClass.InfoStat = Word.Application
+    
+    g_bInitDone = True
+    Exit Sub
+
+InFormLibLoad_err:
+    InfoErrRpt "Infoware InFORM Build Forms" & vbCrLf & "Cannot continue, the InFormLib2.dll library did not load."
+    Exit Sub
+
+ErrRpt:
+    MsgBox "DoLoadInFormRibbon() - " & Err.Description
+End Sub
+'
+Private Function FormatFilePath(sIn As String) As String
+    On Error Resume Next
+    If Right(sIn, 1) <> "\" Then
+        FormatFilePath = sIn + "\"
+    Else
+        FormatFilePath = sIn
+    End If
+End Function
+
+Public Sub RefreshGroupInForm()
+    On Error Resume Next
+    RefreshControl "FindPrevPrompt"
+    RefreshControl "FindNextPrompt"
+    RefreshControl "ToggleInstructions"
+    RefreshControl "DraftPrint"
+    RefreshControl "TogglePromptColour"
+    RefreshControl "InterestCalculator"
+End Sub
+'
+Private Sub RefreshControl(sControl As String)
+    On Error Resume Next
+    If Not g_bInitDone Then Exit Sub
+    If sControl <> "" Then g_objRibbon.InvalidateControl sControl
+End Sub
+
+Public Sub InFormButton_GetVisible(control As IRibbonControl, ByRef visible As Variant)
+
+    On Error GoTo ErrRpt
+    If Not g_bInitDone Then Exit Sub
+    visible = False
+    
+    If Documents.Count > 0 And g_iWordVer >= 14 Then
+        'can't work with ActiveDocument if in protected view  26-Mar-2012 hdg
+        'can't use the test below and early bind and support Word 2003, so use the err method
+        'If Not g_objWord.ActiveProtectedViewWindow Is Nothing Then Exit Sub
+        On Error Resume Next
+        If ActiveDocument.Name = "" Then
+            'do nothing
+        End If
+        If Err.Number = 4248 Then Err.Clear: Exit Sub
+        On Error GoTo ErrRpt
+    End If
+    
+    If Documents.Count > 0 Then
+        With Application
+            If .visible And .Windows.Count > 0 Then
+                With ActiveDocument
+                    If .ActiveWindow.visible And Not .Name = "" Then
+                        If InStr(1, .AttachedTemplate.Path, g_sFormsPath, vbTextCompare) Then
+                            visible = True
+                        End If
+                    End If
+                End With
+            End If
+        End With
+    End If
+    Exit Sub
+
+ErrRpt:
+    MsgBox "InFormButton_GetVisible() - " & Err.Description
+End Sub
+
+'
+''----------
+'' Button handlers
+''----------
+''
+'Public Sub RibbonFindPrevPrompt(control As IRibbonControl)
+'    On Error Resume Next
+'    FindPrevPrompt
+'End Sub
+''
+'Public Sub RibbonFindNextPrompt(control As IRibbonControl)
+'    On Error Resume Next
+'    FindNextPrompt
+'End Sub
+''
+'Public Sub RibbonToggleInstructions(control As IRibbonControl)
+'    On Error Resume Next
+'    ToggleInstructions
+'End Sub
+''
+'Public Sub RibbonDraftPrint(control As IRibbonControl)
+'    On Error Resume Next
+'    DraftPrint
+'End Sub
+''
+'Public Sub RibbonTogglePromptColour(control As IRibbonControl)
+'    On Error Resume Next
+'    TogglePromptColour
+'End Sub
+''
+'Public Sub RibbonInterestCalculator(control As IRibbonControl)
+'    On Error Resume Next
+'    InterestCalculator
+'End Sub
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Toolbar"
+'|fffd| Infoware Development Inc., copyright 2009 all rights reserved - HDG
+'============================================================
+'v4.0   24-Apr-99   add standard error handling
+'v4.1   12-Jul-01   add global const to Infolib for bullet config
+'v4.2   22-Oct-01   remove referenced call to InfoErrRpt
+'v4.3   24-Jun-02   remove unused bullet constants.
+'v4.4   22-Sep-09   add Plurals style support in TogglePromptColour()
+'---
+Option Explicit
+
+'--
+'
+'<%Lang_Constants%>
+Private Const LC_ErrDLL As String = "File CalcInt.dll is missing or not registered."
+'<%/Lang_Constants%>
+'
+'--
+
+Private Const mc_ColorAutomatic As Integer = 0
+Private Const mc_PromptColour As Integer = 2   'blue
+Private Const mc_PluralsColour As Integer = 13 'dark red
+
+
+'===
+Private Sub FindPrompt(dir As Boolean, sText As String)
+Dim errmsg As String
+    
+    On Error GoTo ErrExit
+    
+    With Selection.find
+        .ClearFormatting
+        .Style = ActiveDocument.Styles("Prompt")
+        .Text = sText
+        .Forward = dir
+        .Wrap = wdFindContinue
+        .Format = True
+        .Execute
+        .ClearFormatting
+    End With
+    'reset to normal font if Prompt is a Paragraph mark
+    If Asc(Selection.Text) = 13 Then Selection.Font.Reset
+    Exit Sub
+'--
+ErrExit:
+    If Err.Number = 5941 Then
+        MsgBox "No Prompt Fields found!", vbInformation + vbOKOnly, "Find Prompt Field"
+    Else
+        errmsg = "Error finding Prompt field " & "Routine: " & "FindPrompt" _
+        & vbCrLf & Err.Number & " - " & Err.Description _
+        & vbCrLf & "Please report this problem to Infoware"
+
+        MsgBox errmsg, vbInformation + vbOKOnly, "Infoware Problem Report"
+    End If
+End Sub
+'
+Public Sub FindPrevPrompt()
+    'standard is to map to ctrl+, (that's for <)
+    FindPrompt False, ""
+End Sub
+'
+Public Sub FindNextPrompt()
+    'standard is to map to ctrl+. (that's for >)
+    FindPrompt True, ""
+End Sub
+'
+Public Sub DraftPrint()
+    Options.PrintHiddenText = True
+    ActiveDocument.PrintOut
+    Options.PrintHiddenText = False
+End Sub
+'
+Public Sub ToggleInstructions()
+    On Error GoTo ErrRpt
+    
+    If Documents.Count = 0 Then Exit Sub
+    
+    With ActiveWindow.ActivePane.View
+        If .ShowAll Then
+            .ShowAll = False
+            .ShowHiddenText = False
+            'set the other options to remain visible
+            .ShowTabs = True
+            .ShowSpaces = True
+            .ShowParagraphs = True
+            .ShowHyphens = True
+            .ShowObjectAnchors = True
+        Else
+            .ShowHiddenText = Not .ShowHiddenText
+        End If
+        
+        'if all are checked, set Show All to True
+        If .ShowTabs And .ShowSpaces And .ShowParagraphs And .ShowHiddenText And .ShowHyphens And .ShowObjectAnchors Then
+            .ShowAll = True
+        End If
+    End With
+    
+    Exit Sub
+
+ErrRpt:
+    InfoErrRpt "ToggleInstructions()"
+End Sub
+'
+'---
+'Toggle Between Blue & Automatic Color for Prompt Style
+'
+Public Sub TogglePromptColour()
+Dim astyle As Style
+    
+    On Error GoTo TryPlurals
+    Set astyle = ActiveDocument.Styles("Prompt")
+    With astyle.Font
+        If .ColorIndex = mc_PromptColour Then
+            .ColorIndex = mc_ColorAutomatic
+        Else
+            .ColorIndex = mc_PromptColour
+        End If
+    End With
+    
+TryPlurals:
+    On Error GoTo Done
+    Set astyle = ActiveDocument.Styles("Plurals")
+    With astyle.Font
+        If .ColorIndex = mc_PluralsColour Then
+            .ColorIndex = mc_ColorAutomatic
+        Else
+            .ColorIndex = mc_PluralsColour
+        End If
+    End With
+    Exit Sub
+
+Done:
+End Sub
+'
+Public Sub InterestCalculator()
+
+    If Documents.Count = 0 Then Exit Sub
+    
+    'init our calc global lib
+    On Error GoTo CalcLibLoad_err
+    If g_objIntCalc Is Nothing Then Set g_objIntCalc = CreateObject("InfoCalcInt.clsCalcInt")
+    If g_objIntCalc Is Nothing Then GoTo CalcLibLoad_err
+    
+    On Error GoTo ErrRpt
+    g_objIntCalc.CalcInt
+    Exit Sub
+
+CalcLibLoad_err:
+    InfoErrRpt "StartCalculator", LC_ErrDLL
+    Exit Sub
+
+ErrRpt:
+    InfoErrRpt "StartCalculator"
+End Sub
+
+'--
+Public Sub FitBackerOnPage()
+    g_objInFormLib.FitBackerOnPage
+End Sub
+
+Public Sub AddThirdPartyToBack()
+    g_objInFormLib.AddThirdPartyToBack
+End Sub
+
+
+'----------
+' End user support functions
+'----------
+'
+Public Sub ShowInFormVersionInfo()
+    On Error Resume Next
+    If Not g_bInitDone Then DoLoadInFormRibbon
+    g_objInFormLib.ShowInFormVersionInfo
+End Sub
+'
+'Launch Infoware Support website in browser
+Public Sub GoToInfowareSupport()
+    On Error Resume Next
+    If Not g_bInitDone Then DoLoadInFormRibbon
+    g_objInFormLib.GoToInfowareSupport
+End Sub
+'
+Public Sub VerifyLocalInFormInstall()
+    On Error Resume Next
+    If Not g_bInitDone Then DoLoadInFormRibbon
+    g_objInFormLib.VerifyLocalInFormInstall
+End Sub
+'
+Public Function GetCurrentInFormVersion() As String
+Dim sCurrentInFormVersion As String
+Dim idx As Integer
+    On Error Resume Next
+    If Not g_bInitDone Then DoLoadInFormRibbon
+    Call CheckIFLicense
+    If g_bLicenseValidated Then
+        sCurrentInFormVersion = g_objInfoUtilities.Object.GetVersionInfo("InForm")
+        'filter out the XML header + vbCrLf
+        idx = InStr(sCurrentInFormVersion, ">")
+        If idx > 0 Then
+            sCurrentInFormVersion = Mid(sCurrentInFormVersion, idx + 3)
+        End If
+    Else
+        sCurrentInFormVersion = ""
+    End If
+End Function
+Attribute VB_Name = "frmNewAuthInfo"
+Attribute VB_Base = "0{73F7643C-450C-4461-8A6D-BA71E6EED96B}{08F25D5B-2416-4862-B07F-69EF2AE6570B}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Option Explicit
+
+Private Sub cmdCancel_Click()
+    Me.hide
+    Me.Tag = 0
+End Sub
+
+Private Sub cmdOK_Click()
+    Me.hide
+    Me.Tag = -1
+End Sub
+
+Attribute VB_Name = "frmSetCurAuthInfo"
+Attribute VB_Base = "0{8FE15875-2D92-4460-8A41-28B8AE43695C}{1B4CA643-F44F-4450-81C0-098938C8EAF7}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Sub cmdCancel_Click()
+    Select Case CheckForSelection
+        Case -1, 2
+            Me.hide
+            Me.Tag = 0
+        Case 0
+    End Select
+End Sub
+'
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    'Do a Cancel when user clicks the Close box in the title bar.
+    If CloseMode <> vbFormCode Then
+        Cancel = 1
+        cmdCancel_Click
+    End If
+End Sub
+
+Private Sub cmdDelete_Click()
+    Me.hide
+    Me.Tag = 3
+End Sub
+
+Private Sub cmdModify_Click()
+    Me.hide
+    Me.Tag = 2
+End Sub
+
+Private Sub cmdNew_Click()
+    Me.hide
+    Me.Tag = 1
+End Sub
+
+Private Sub cmdOK_Click()
+    Select Case CheckForSelection
+        Case -1
+            Me.hide
+            Me.Tag = -1
+        Case 0
+        Case 2
+            Beep
+            MsgBox "Use New button to add a Lawyer" & vbCrLf & "or click Cancel to close dialog.", vbExclamation, "Set Current Lawyer"
+    End Select
+End Sub
+
+Private Function CheckForSelection() As Integer
+'If Lawyer list is not empty, force a selection
+'before clicking OK or Cancel
+
+    CheckForSelection = -1  'true
+    
+    'test for NULL first row
+    If Me.lstAuthors.ListCount = 1 And (Me.lstAuthors.List(0) = "" Or IsNull(Me.lstAuthors.List(0))) Then
+        CheckForSelection = 2
+        Exit Function
+    End If
+    
+    If Me.lstAuthors.ListCount > 0 And Me.lstAuthors.ListIndex = -1 Then
+        Beep
+        MsgBox "You must select a Current Lawyer.", vbExclamation, "Set Current Lawyer"
+        Me.lstAuthors.SetFocus
+        CheckForSelection = 0
+    End If
+    
+End Function
+
+
+' InQuest injected base64 decoded content
+' +bjX
+' Szjej
+' 	^"{-
+
+INQUEST-PP=macro

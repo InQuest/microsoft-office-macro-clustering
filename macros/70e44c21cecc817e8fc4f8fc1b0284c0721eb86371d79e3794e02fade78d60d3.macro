@@ -1,0 +1,2352 @@
+Attribute VB_Name = "EventClass"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Option Explicit
+Public WithEvents App As Word.Application
+Attribute App.VB_VarHelpID = -1
+
+
+'This event is not available in Word 97.
+Private Sub App_DocumentBeforeClose(ByVal Doc As Document, Cancel As Boolean)
+    On Error Resume Next
+    
+    'Prevent Word from displaying a dialog prompting user to save changes.
+    If Not Doc.Saved Then
+        If MsgBox("This document has been modified. Are you sure you want to cancel and lose all changes?", vbYesNo + vbExclamation, "Cancel Edit") = vbNo Then
+            Cancel = True
+            Exit Sub
+        End If
+        Doc.Saved = True
+    End If
+    'If user quits Word using control box then audit the cancelled edit.
+    If Not gbNormalExit Then AuditCancelEdit
+    
+End Sub
+
+'This event is not available in Word 97.
+Private Sub App_DocumentBeforePrint(ByVal Doc As Document, Cancel As Boolean)
+    On Error Resume Next
+    If Not gbAllowPrint Then
+        Cancel = True
+        MsgBox "You have not been granted privileges to print this document! Contact the vendor to obtain assistance.", vbExclamation, "Edit"
+    'Else
+    '    If gbRepaginateOnPrint Then
+    '        AdjustSigBlockForPrint
+    '    End If
+    '    AuditEvent Doc.Name, "printed to [" & Application.ActivePrinter & "] from edit module"
+    End If
+End Sub
+
+''Word 2000 and later - prevent a user from saving while using view module.
+'Private Sub App_DocumentBeforeSave(ByVal Doc As Document, SaveAsUI As Boolean, Cancel As Boolean)
+'    On Error Resume Next
+'    'Prevent Word from displaying a dialog prompting user to save changes.
+'    If Not Doc.Saved Then Doc.Saved = True
+'End Sub
+
+'Only this event will fire in Word 97 on close.
+Private Sub App_Quit()
+    On Error Resume Next
+    'MsgBox "Quiting Word"
+    'Prevent Word from displaying a dialog prompting user to save changes.
+    If App.Documents.Count > 0 Then
+        If Not App.ActiveDocument.Saved Then App.ActiveDocument.Saved = True
+    End If
+    'If user quits Word using control box then audit the cancelled edit.
+    If Not gbNormalExit Then AuditCancelEdit
+End Sub
+Attribute VB_Name = "RDPEdit"
+Option Explicit
+Private oWord As New EventClass
+Private gbDebug As Boolean 'Set true to pop debug message boxes.
+Global gsIniPath As String 'Path to edit.dot and ini file.
+Global gsCurrentUser As String 'Login name of current RDP/RDV user.
+Private mbExit As Boolean 'Determines if Word should exit after an edit is saved.
+Global gbNormalExit As Boolean 'False if edit has been cancelled by closing Word w/control box.
+Global gbAllowPrint As Boolean 'False by default which does not allow printing from edit module.
+'Call the "NTPEdit.Edit.RepaginateOnPrint" macro to enable repaginate on print.
+'Determines whether repagination occurs for sig block before printing from edit module.
+Global gbRepaginateOnPrint As Boolean
+Global gbPrintOnEdit As Boolean
+Global gbExportOnEdit As Boolean
+Global gbAllowRevisions As Boolean
+Global gbQAOnEdit As Boolean
+Global gbShowBookmarks As Boolean
+
+Public Sub InitSettings(ByVal sIniPath As String, ByVal bPrintOnEdit As Boolean, _
+                ByVal bExportOnEdit As Boolean, ByVal bShowBookmarks As Boolean, _
+                ByVal bDebug As Boolean)
+    On Error Resume Next
+    gsIniPath = sIniPath
+    gbPrintOnEdit = bPrintOnEdit
+    gbExportOnEdit = bExportOnEdit
+    gbShowBookmarks = bShowBookmarks
+    gbDebug = bDebug
+    If gbDebug Then MsgBox "[Word " & Application.Version & "], IniPath=" & gsIniPath & ", PrintOnEdit=" & gbPrintOnEdit & ", ExportOnEdit=" & gbExportOnEdit & ", ShowBookmarks=" & gbShowBookmarks
+End Sub
+
+Public Sub InitEdit()
+    'Initialize the edit module immediately after opening the template.
+    Dim fso As Object 'New FileSystemObject
+    On Error Resume Next
+    Dim objEdit As Object
+    Dim sTemp As String
+    
+    'Setup Word application WithEvents.
+    Set oWord.App = Word.Application
+    
+    If Left$(Application.Version, 1) = "8" Then 'Word 97 macros do not accept parameters.
+        'Use document variables to pass in parameters.
+        Dim oVar As Variable
+        For Each oVar In ActiveDocument.Variables
+            Select Case oVar.Name
+                Case "IniPath"
+                    gsIniPath = oVar.Value
+                    oVar.Delete
+                Case "PrintOnEdit"
+                    gbPrintOnEdit = CBool(oVar.Value)
+                    oVar.Delete
+                Case "ExportOnEdit"
+                    gbExportOnEdit = CBool(oVar.Value)
+                    oVar.Delete
+                Case "ShowBookmarks"
+                    gbShowBookmarks = CBool(oVar.Value)
+                    oVar.Delete
+                Case "Debug"
+                    gbDebug = CBool(oVar.Value)
+                    oVar.Delete
+            End Select
+        Next oVar
+        Set oVar = Nothing
+        If gbDebug Then MsgBox "[Word " & Application.Version & "], IniPath=" & gsIniPath & ", PrintOnEdit=" & gbPrintOnEdit & ", ExportOnEdit=" & gbExportOnEdit & ", ShowBookmarks=" & gbShowBookmarks
+    End If
+
+    'Get the App.Path from the path of edit.dot, this is also the path to the .ini file.
+    'The .ini file will be used by the edit dll to obtain settings.
+    If Len(gsIniPath) < 1 Then
+        Dim oAddIn As AddIn
+        Dim oTemplate As Template
+        For Each oAddIn In AddIns
+           If LCase$(oAddIn.Name) = "rdp.dot" Then
+              gsIniPath = oAddIn.Path & Application.PathSeparator
+              Exit For
+           End If
+        Next
+        If Len(gsIniPath) < 1 Then
+            Set oTemplate = ActiveDocument.AttachedTemplate
+            If Not oTemplate Is Nothing Then
+                If LCase$(oTemplate.Name) = "rdp.dot" Then
+                    gsIniPath = oTemplate.Path & Application.PathSeparator
+                End If
+                Set oTemplate = Nothing
+            End If
+        End If
+        Set oAddIn = Nothing
+        Set oTemplate = Nothing
+        'The following is the only error to be concerned with here.
+        'If Len(gsIniPath) < 1 Then 'Can't continue without ini path.
+        '    MsgBox "Unable to obtain path to initialization file! Please contact the vendor for assistance.", vbCritical + vbApplicationModal, "Edit"
+        '    Application.Quit wdDoNotSaveChanges
+        'End If
+    
+        If Len(gsIniPath) < 1 Then 'Must be testing.
+            gsIniPath = "E:\Develop\Vb\Document Printer\"
+        End If
+    End If
+        
+    If LCase$(Right$(gsIniPath, 3)) <> "ini" Then
+        'Determine ini file to be used, look for RDV first then RDP.
+        If Not (fso.FileExists(gsIniPath) And Right$(gsIniPath, 1) <> "\") Then
+            If Right$(gsIniPath, 1) <> "\" Then gsIniPath = gsIniPath & "\"
+            If fso.FileExists(gsIniPath & "Document Viewer.ini") Then
+                gsIniPath = gsIniPath & "Document Viewer.ini"
+            Else
+                'Must be RDP application.
+                gsIniPath = gsIniPath & "Document Printer.ini"
+            End If
+        End If
+    End If
+    
+    'Get current user name.
+    gsCurrentUser = System.PrivateProfileString(gsIniPath, "Settings", "CurrentUser")
+    
+    'Get DB Settings.
+    #If VBA7 Then
+        Set objEdit = CreateObject("RDPClass_x64.RDPData")
+    #Else
+        Set objEdit = CreateObject("RDPClass.RDPData")
+    #End If
+    If Err.Number = 0 Then
+        If objEdit.Init(gsIniPath) Then
+            sTemp = objEdit.GetAppSetting("PrintOnEdit", "")
+            If LCase$(sTemp) = "true" Or (Len(sTemp) > 0 And sTemp <> "0" And LCase$(sTemp) <> "false") Then
+                gbPrintOnEdit = True
+            End If
+            sTemp = objEdit.GetAppSetting("ExportOnEdit", "")
+            If LCase$(sTemp) = "true" Or (Len(sTemp) > 0 And sTemp <> "0" And LCase$(sTemp) <> "false") Then
+                gbExportOnEdit = True
+            End If
+            sTemp = objEdit.GetAppSetting("AllowRevisionsOnEdit", "")
+            If LCase$(sTemp) = "true" Or (Len(sTemp) > 0 And sTemp <> "0" And LCase$(sTemp) <> "false") Then
+                gbAllowRevisions = True
+            End If
+            sTemp = objEdit.GetAppSetting("QAOnEdit", "")
+            If LCase$(sTemp) = "true" Or (Len(sTemp) > 0 And sTemp <> "0" And LCase$(sTemp) <> "false") Then
+                gbQAOnEdit = True
+            End If
+        End If
+    End If
+    Set objEdit = Nothing
+    
+    'Create an AutoClose macro to prevent prompt to save file on close.
+    CreateAutoCloseMacro
+    'Disable context menu.
+    'Application.CommandBars("Text").Enabled = False
+    
+    ActiveWindow.View.ShowBookmarks = gbShowBookmarks
+    'ActiveWindow.View.ShowHiddenText = True
+    With Options
+        '.ReplaceSelection = False
+        .AllowDragAndDrop = False
+        '.AutoWordSelection = True
+        '.TabIndentKey = True
+        '.Overtype = False
+        'The following command is not available in Word 97.
+        '.AutoKeyboardSwitching = False
+        '.AutoFormatAsYouTypeReplaceQuotes = False
+        '.AutoFormatReplaceQuotes = False
+        '.CheckGrammarAsYouType = False
+        '.CheckGrammarWithSpelling = False
+        '.CheckSpellingAsYouType = False
+        .CreateBackup = False
+        .SaveNormalPrompt = False
+        .SavePropertiesPrompt = False
+    End With
+    
+    'Automatically cancel the edit and close Word if 45 minutes elapses.
+    'No dialog or prompt - time limit expired, period.
+    Application.OnTime When:=Now() + TimeValue("00:45:00"), _
+       Name:="RDP.RDPEdit.CancelExpiredEdit", Tolerance:=0
+    
+    Set fso = Nothing
+    If Err.Number > 0 Then Err.Clear
+End Sub
+
+Sub AutoExpire()
+    On Error Resume Next
+    'Automatically cancel the edit and close Word if 45 minutes elapses.
+    'No there is no dialog or prompt - time limit expired period.
+    Application.OnTime When:=Now() + TimeValue("00:45:00"), _
+       Name:="RDP.RDPEdit.CancelExpiredEdit", Tolerance:=0
+End Sub
+
+Sub AutoClose()
+    On Error GoTo Err_AutoClose
+    If Not ActiveDocument.Saved Then
+        'No dialog here since the time limit has expired for this edit.
+        'MsgBox "This document has been modified! All changes will be discarded?", vbInformation + vbOKOnly, "RDP Edit"
+        ActiveDocument.Saved = True
+    End If
+    Exit Sub
+   
+Err_AutoClose:
+    MsgBox "Error in AutoClose(): #" & Err.Number & " - " & Err.Description, vbExclamation + vbApplicationModal, "RDP Edit"
+
+End Sub
+
+Sub CreateAutoCloseMacro()
+    On Error Resume Next
+    Dim objModule As Object 'VBComponent
+    If Left$(Application.Version, 1) = "8" Then
+        'Remove all modules - for Word 97 only.
+        For Each objModule In ActiveDocument.VBProject.VBComponents
+            'Debug.Print objModule.Name
+            If objModule.Name <> "ThisDocument" Then
+                ActiveDocument.VBProject.VBComponents.Remove objModule
+            End If
+        Next objModule
+        Set objModule = ActiveDocument.VBProject.VBComponents.Add(1)
+        objModule.CodeModule.AddFromString ("Sub AutoClose" & vbCrLf & _
+                                          "ActiveDocument.Saved = True" & vbCrLf & _
+                                          "End Sub")
+        Set objModule = Nothing
+    End If
+End Sub
+
+Sub AllowPrinting()
+    On Error Resume Next
+    'Document can be printed from within Word editing module.
+    gbAllowPrint = True
+End Sub
+
+Sub RepaginateOnPrint()
+    On Error Resume Next
+    'Document should be repaginated upon printing.
+    gbRepaginateOnPrint = True
+End Sub
+
+Sub RepaginateForSigBlock()
+    On Error Resume Next
+    'Called from RDP menu.
+    AdjustSigBlockForPrint True
+End Sub
+
+Sub EditDemographics()
+Attribute EditDemographics.VB_Description = "Macro to allow user to update demographic-related document properties and bookmarks."
+Attribute EditDemographics.VB_ProcData.VB_Invoke_Func = "RDP.RDPEdit.UpdateDemographics"
+    'This function loads demographics into the form frmEditDemographics for DP docs.
+    On Error GoTo Err_EditDemographics
+    'Dim oBookmark As Bookmark
+    Dim strTemp As String
+    Dim sSaveFormat As String
+    Dim iCnt As Integer
+    
+    'List all file converters on this system.
+    'Dim o As FileConverter
+    'For Each o In FileConverters
+    ' Debug.Print o.Name & " " & o.CanSave & " - " & o.ClassName
+    'Next o
+    
+    If Application.Documents.Count < 1 Then
+        MsgBox "There are no active documents!", vbExclamation, "RDP Edit"
+        Exit Sub
+    End If
+    
+    If LCase$(Right$(ActiveDocument.Name, 3)) = "doc" Then
+        'Dictaphone EET document.
+        'frmEditDemographics.Enabled = False
+        If Not frmEditDemographics.mbLoaded Then
+            If Not GetFieldsFromDB() Then
+                MsgBox "Unable to retrieve editable fields from the database!", vbExclamation + vbApplicationModal, "RDP Edit"
+            Else
+                If PropIsValid("DictatorSignature") Then
+                    frmEditDemographics.txtSignature.Text = ActiveDocument.CustomDocumentProperties("DictatorSignature")
+                Else
+                    'DisableTextBox frmUpdate.txtSignature
+                End If
+                
+                If PropIsValid("ByLine") Then
+                    frmEditDemographics.txtByLine1.Text = ActiveDocument.CustomDocumentProperties("ByLine")
+                Else
+                    DisableTextBox frmEditDemographics.txtByLine1
+                End If
+                
+                If PropIsValid("Department") Then
+                    frmEditDemographics.txtByLine2.Text = ActiveDocument.CustomDocumentProperties("Department")
+                Else
+                    DisableTextBox frmEditDemographics.txtByLine2
+                End If
+                
+                If PropIsValid("Resident") Then
+                    frmEditDemographics.txtResidentSig.Text = ActiveDocument.CustomDocumentProperties("Resident")
+                Else
+                    DisableTextBox frmEditDemographics.txtResidentSig
+                End If
+                
+                If PropIsValid("ResidentByLine") Then
+                    frmEditDemographics.txtResidentByLine.Text = ActiveDocument.CustomDocumentProperties("ResidentByLine")
+                Else
+                    DisableTextBox frmEditDemographics.txtResidentByLine
+                End If
+            
+                If PropIsValid("AttendingSig") Then
+                    frmEditDemographics.txtAttendingSig.Text = ActiveDocument.CustomDocumentProperties("AttendingSig")
+                ElseIf PropIsValid("AttDrName") Then
+                    strTemp = ActiveDocument.CustomDocumentProperties("AttDrName")
+                    If InStr(strTemp, ",") > 0 Then
+                        frmEditDemographics.txtAttendingSig.Text = Trim$(Mid$(strTemp, InStr(strTemp, ", ") + 2) & " " & Left$(strTemp, InStr(strTemp, ", ") - 1))
+                    Else
+                        frmEditDemographics.txtAttendingSig.Text = strTemp
+                    End If
+                Else
+                    'DisableTextBox frmUpdate.txtSignature
+                End If
+            
+            End If
+        End If
+        'frmEditDemographics.Enabled = True
+        frmEditDemographics.mbLoaded = True
+        frmEditDemographics.Show
+    Else
+        MsgBox "Unknown document format!", vbExclamation, "RDP Edit"
+    End If
+   
+Exit_EditDemographics:
+    On Error Resume Next
+    'Set oBookmark = Nothing
+    Exit Sub
+
+Err_EditDemographics:
+    MsgBox "Error in EditDemographics() while loading demographics information for editing: #" & Err.Number & " - " & Err.Description, vbExclamation + vbApplicationModal, "RDP Edit"
+    Resume Exit_EditDemographics
+   
+End Sub
+
+Sub ViewComments()
+Attribute ViewComments.VB_ProcData.VB_Invoke_Func = "RDP.RDPEdit.ViewComments"
+    'This function currently only applies to Dictaphone EET documents.
+    On Error GoTo Err_ViewComments
+    Dim strComments As String
+    Dim lPos As Long
+    
+    If Application.Documents.Count < 1 Then
+        MsgBox "There are no active documents!", vbExclamation, "RDP Edit"
+        Exit Sub
+    End If
+    
+    strComments = ActiveDocument.BuiltInDocumentProperties("Comments")
+    If Len(strComments) > 0 Then
+        strComments = Trim$(strComments)
+        lPos = InStr(1, strComments, "<<QA>>")
+        If lPos > 0 Then
+            strComments = Mid(strComments, 1, lPos - 1)
+        End If
+        If Len(strComments) > 0 Then
+            frmViewComments.lblView.Caption = strComments
+            If System.PrivateProfileString("", "HKEY_CURRENT_USER\Software\RDP\Settings", "AutoCommentView") = "Yes" Then
+                frmViewComments.chkAutoView.Value = True
+            End If
+            frmViewComments.Show
+        Else
+            MsgBox "There are no comments for this document.", vbOKOnly + vbApplicationModal + vbInformation, "RDP Edit"
+        End If
+    Else
+        MsgBox "There are no comments for this document.", vbOKOnly + vbApplicationModal + vbInformation, "RDP Edit"
+    End If
+    Exit Sub
+    
+Err_ViewComments:
+    MsgBox "Error in ViewComments(): #" & Err.Number & " - " & Err.Description, vbOKOnly + vbInformation, "RDP Edit"
+    
+End Sub
+
+Function PropExists(strPropName As String) As Boolean
+    On Error GoTo Err_PropExists:
+    Dim sValue As String
+    
+    sValue = ActiveDocument.CustomDocumentProperties(strPropName)
+    PropExists = True
+    Exit Function
+    
+Err_PropExists:
+    PropExists = False
+    
+End Function
+
+Function LastFromPatientFullName(strFullName As String) As String
+    On Error GoTo Err_LastFromPatientFullName
+    Dim lPos As Integer
+    
+    lPos = InStr(1, strFullName, ",")
+    If lPos > 0 Then
+        LastFromPatientFullName = Mid$(strFullName, 1, lPos - 1)
+    Else
+        LastFromPatientFullName = ""
+    End If
+    Exit Function
+    
+Err_LastFromPatientFullName:
+    LastFromPatientFullName = ""
+    
+End Function
+
+Function FirstFromPatientFullName(strFullName As String) As String
+    On Error GoTo Err_FirstFromPatientFullName
+    Dim lPos, lPos2 As Integer
+    
+    lPos = InStr(1, strFullName, ",")
+    If lPos > 0 Then
+        lPos2 = InStr(lPos + 2, strFullName, " ")
+        If lPos2 > 0 Then
+            FirstFromPatientFullName = Trim$(Mid$(strFullName, lPos + 1, lPos2 - lPos))
+        Else
+            FirstFromPatientFullName = Trim$(Mid$(strFullName, lPos + 1))
+        End If
+    Else
+        FirstFromPatientFullName = ""
+    End If
+    Exit Function
+    
+Err_FirstFromPatientFullName:
+    FirstFromPatientFullName = ""
+    
+End Function
+
+Function MiddleFromPatientFullName(strFullName As String) As String
+    On Error GoTo Err_MiddleFromPatientFullName
+    Dim lPos, lPos2 As Integer
+    
+    lPos = InStr(1, strFullName, ",")
+    If lPos > 0 Then
+        lPos2 = InStr(lPos + 2, strFullName, " ")
+        If lPos2 > 0 Then
+            MiddleFromPatientFullName = Trim$(Mid$(strFullName, lPos2 + 1))
+        Else
+            MiddleFromPatientFullName = ""
+        End If
+    Else
+        MiddleFromPatientFullName = ""
+    End If
+    Exit Function
+    
+Err_MiddleFromPatientFullName:
+    MiddleFromPatientFullName = ""
+    
+End Function
+
+Function FirstFromDictSignature(ByVal strDictSig As String) As String
+    On Error GoTo Err_FirstFromDictSignature
+    Dim lPos As Long
+    Dim aTemp As Variant
+    'John J. Smith, M.D.
+    
+    lPos = InStr(1, strDictSig, ",")
+    If lPos > 0 Then
+        strDictSig = Left$(strDictSig, lPos - 1)
+    End If
+    
+    If Len(strDictSig) > 0 Then
+        aTemp = Split(strDictSig, " ")
+        Select Case UBound(aTemp)
+            Case Is > 0
+                FirstFromDictSignature = aTemp(0)
+            Case Else
+                FirstFromDictSignature = ""
+        End Select
+    End If
+    Exit Function
+    
+Err_FirstFromDictSignature:
+    FirstFromDictSignature = ""
+    
+End Function
+
+Function MiddleFromDictSignature(ByVal strDictSig As String) As String
+    On Error GoTo Err_MiddleFromDictSignature
+    Dim lPos As Long
+    Dim aTemp As Variant
+    'John J. Smith, M.D.
+    
+    lPos = InStr(1, strDictSig, ",")
+    If lPos > 0 Then
+        strDictSig = Left$(strDictSig, lPos - 1)
+    End If
+    
+    If Len(strDictSig) > 0 Then
+        aTemp = Split(strDictSig, " ")
+        Select Case UBound(aTemp)
+            Case Is >= 2
+                MiddleFromDictSignature = aTemp(1)
+            Case Else
+                MiddleFromDictSignature = ""
+        End Select
+    End If
+    Exit Function
+    
+Err_MiddleFromDictSignature:
+    MiddleFromDictSignature = ""
+    
+End Function
+
+Function LastFromDictSignature(strDictSig As String) As String
+    On Error GoTo Err_LastFromDictSignature
+    Dim lPos As Long
+    Dim aTemp As Variant
+    'John J. Smith, M.D.
+    'last name is text between last space before the first comma and
+    'the comma itself
+    
+    lPos = InStr(1, strDictSig, ",")
+    If lPos > 0 Then
+        strDictSig = Left$(strDictSig, lPos - 1)
+    End If
+    
+    If Len(strDictSig) > 0 Then
+        aTemp = Split(strDictSig, " ")
+        LastFromDictSignature = aTemp(UBound(aTemp))
+    End If
+    Exit Function
+    
+Err_LastFromDictSignature:
+    LastFromDictSignature = ""
+    
+End Function
+
+Function PropIsValid(strPropName As String) As Boolean
+    On Error GoTo Err_PropIsValid
+    If PropExists(strPropName) Then
+        If Len(ActiveDocument.CustomDocumentProperties(strPropName)) > 0 Then
+            If InStr(1, ActiveDocument.CustomDocumentProperties(strPropName), "/") > 0 Then
+                If IsDate(ActiveDocument.CustomDocumentProperties(strPropName)) Then
+                    ActiveDocument.CustomDocumentProperties(strPropName) = Format$(ActiveDocument.CustomDocumentProperties(strPropName), "mm/dd/yyyy")
+                    PropIsValid = True
+                Else
+                    PropIsValid = False
+                End If
+            Else
+                If Len(Trim$(ActiveDocument.CustomDocumentProperties(strPropName))) > 0 Then
+                    PropIsValid = True
+                Else
+                    PropIsValid = False
+                End If
+            End If
+        Else
+            PropIsValid = False
+        End If
+    Else
+        PropIsValid = False
+    End If
+    Exit Function
+    
+Err_PropIsValid:
+    PropIsValid = False
+    
+End Function
+
+Function GetMultiProperty(strPreferredProp As String, strSecondProp As String) As String
+    On Error GoTo Err_GetMultiProperty
+    If PropIsValid(strPreferredProp) Then
+        GetMultiProperty = ActiveDocument.CustomDocumentProperties(strPreferredProp)
+    ElseIf PropIsValid(strSecondProp) Then
+        GetMultiProperty = ActiveDocument.CustomDocumentProperties(strSecondProp)
+    Else
+        GetMultiProperty = ""
+    End If
+    Exit Function
+    
+Err_GetMultiProperty:
+    GetMultiProperty = ""
+    
+End Function
+
+Public Sub AddPropIfDoesntExist(strPropName As String)
+    On Error GoTo Err_AddPropIfDoesntExist
+    If Not PropExists(strPropName) Then
+        ActiveDocument.CustomDocumentProperties.Add strPropName, False, msoPropertyTypeString, " "
+    End If
+    Exit Sub
+    
+Err_AddPropIfDoesntExist:
+    MsgBox "Error in AddPropIfDoesntExist(), document property not added: #" & Err.Number & " - " & Err.Description, vbExclamation + vbApplicationModal, "RDP Edit"
+    
+End Sub
+
+Public Function GetBookmark(ByVal sName As String, ByRef sValue As String) As Boolean
+    On Error GoTo Err_GetBookmark
+    
+    If ActiveDocument.ProtectionType = wdAllowOnlyComments Then
+        ActiveDocument.Unprotect "RDP123RDP123"
+    End If
+    sValue = Trim$(ActiveDocument.Bookmarks.Item(sName).Range.Text)
+    GetBookmark = True
+    
+Exit_GetBookmark:
+    Exit Function
+    
+Err_GetBookmark:
+    sValue = ""
+    GetBookmark = False
+    Resume Exit_GetBookmark
+    
+End Function
+
+Public Function CustomPropExists(sFieldName As String) As Boolean
+    On Error GoTo Err_CustomPropExists
+    Dim sValue As String
+    
+    sValue = Trim$(ActiveDocument.CustomDocumentProperties(sFieldName).Value)
+    CustomPropExists = True
+    Exit Function
+    
+Err_CustomPropExists:
+    CustomPropExists = False
+    
+End Function
+
+Public Function GetCustomProp(ByVal sName As String, ByRef sValue As String) As Boolean
+    On Error GoTo Err_GetCustomProp
+    
+    sValue = Trim$(ActiveDocument.CustomDocumentProperties(sName).Value)
+    GetCustomProp = True
+    Exit Function
+    
+Err_GetCustomProp:
+    sValue = ""
+    GetCustomProp = False
+    
+End Function
+
+Public Function Nz(varValue As Variant, varDefault As Variant) As Variant
+    On Error Resume Next
+    If IsNull(varValue) Then
+        Nz = varDefault
+    ElseIf IsEmpty(varValue) Then
+        Nz = varDefault
+    Else
+        Nz = varValue
+    End If
+End Function
+
+Public Function ReplaceText(ByVal sSource As String, ByVal sToReplace As String, ByVal sReplaceWith As String) As String
+    'Replace() does not exist in Word 97 so had to write one.
+    On Error GoTo Err_ReplaceText
+    Dim lPos As Long
+    Dim sTempBefore, sTempAfter As String
+    
+    ReplaceText = sSource
+    If sToReplace <> sReplaceWith Then
+        lPos = InStr(ReplaceText, sToReplace)
+        Do While lPos > 0
+            sTempBefore = Mid$(ReplaceText, 1, lPos - 1)
+            sTempAfter = Mid$(ReplaceText, lPos + Len(sToReplace))
+            ReplaceText = sTempBefore & sReplaceWith & sTempAfter
+            lPos = InStr(ReplaceText, sToReplace)
+        Loop
+    End If
+    Exit Function
+    
+Err_ReplaceText:
+    ReplaceText = sSource
+    
+End Function
+
+Public Function RevInStr(ByVal sSource As String, ByVal sFind As String) As Long
+    'InStrRev() does not exist in Word 97 so had to write one.
+    On Error GoTo Err_RevInStr
+    Dim lPos As Long
+    
+    If Len(Trim$(sSource)) > 0 And Len(Trim$(sFind)) > 0 Then
+        lPos = InStr(sSource, sFind)
+        If lPos > 0 Then
+            For lPos = Len(sSource) To 1 Step -1
+                If Mid$(sSource, lPos, Len(sFind)) = sFind Then
+                    Exit For
+                End If
+            Next lPos
+            RevInStr = lPos
+        End If
+    End If
+    Exit Function
+    
+Err_RevInStr:
+    RevInStr = sSource
+    
+End Function
+
+Private Sub CheckError(txtBox As TextBox)
+    On Error Resume Next
+    If (Err.Number <> 0) Or (txtBox.Text = "") Then
+        txtBox.BackColor = &HE0E0E0
+        txtBox.Enabled = False
+        Err.Description = ""
+    End If
+End Sub
+
+Sub DisableTextBox(oTextBox As TextBox)
+    On Error Resume Next
+    oTextBox.Enabled = False
+    oTextBox.BackColor = &H80000004
+End Sub
+
+Sub EnableTextBox(oTextBox As TextBox)
+    On Error Resume Next
+    oTextBox.Enabled = True
+    oTextBox.BackColor = &H80000005
+End Sub
+
+Sub DisableMaskedEdit(oMaskedEdit As MaskEdBox)
+    On Error Resume Next
+    oMaskedEdit.Enabled = False
+    oMaskedEdit.BackColor = &H80000004
+End Sub
+
+Sub EnableMaskedEdit(oMaskedEdit As MaskEdBox)
+    On Error Resume Next
+    oMaskedEdit.Enabled = True
+    oMaskedEdit.BackColor = &H80000005
+End Sub
+
+Public Sub AuditCancelEdit(Optional bExpired As Boolean = False)
+    On Error GoTo Err_AuditCancelEdit
+    'bExpired indicates that the edit time has elasped since the document was opened.
+    'Dim oAddIn As AddIn
+    Dim fso As Object 'New FileSystemObject
+    Dim oTemplate As Template
+    Dim clsRDP As Object 'RDPClass.RDPData
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    If Application.Documents.Count < 1 Then
+        'MsgBox "There are no active documents!", vbExclamation, "RDP Edit"
+        Exit Sub
+    End If
+    
+    On Error Resume Next
+    #If VBA7 Then
+        Set clsRDP = CreateObject("RDPClass_x64.RDPData")
+    #Else
+        Set clsRDP = CreateObject("RDPClass.RDPData")
+    #End If
+    If Err.Number <> 0 Then
+        If Not bExpired Then
+            MsgBox "Unable to load RDPClass.dll, make sure this dll is in the system path and registered.", vbCritical + vbApplicationModal, "RDP Edit"
+        End If
+        Exit Sub
+    End If
+    On Error GoTo Err_AuditCancelEdit
+    
+    'Initialize the class to get settings and connect to the database.
+    If clsRDP.Init(gsIniPath) Then
+        gbNormalExit = True
+        If clsRDP.GetDocumentRecordset(ActiveDocument.Name) Then
+            With clsRDP.rs
+                clsRDP.cn.BeginTrans
+                .Fields("Status") = Null
+                .Fields("StatusDate") = Null
+                .Update
+                clsRDP.cn.CommitTrans
+                clsRDP.AccessLog ![SiteId], ![DocumentId], ![DocRevision], IIf(Not bExpired, "Edit cancelled by local user", "Edit time expired [45 minutes]")
+            End With
+        End If 'clsRDP.GetDocumentRecordset
+    End If 'clsRDP.Init(gsIniPath)
+    
+Exit_AuditCancelEdit:
+    On Error Resume Next
+    'Set oAddIn = Nothing
+    Set oTemplate = Nothing
+    Set clsRDP = Nothing
+    Set fso = Nothing
+    Exit Sub
+    
+Err_AuditCancelEdit:
+    Resume Exit_AuditCancelEdit
+    
+End Sub
+
+Public Sub CancelEdit()
+Attribute CancelEdit.VB_ProcData.VB_Invoke_Func = "RDP.RDPEdit.CancelEdit"
+    On Error Resume Next
+    If Not ActiveDocument.ReadOnly Then
+        If Not ActiveDocument.Saved Then
+            If MsgBox("This document has been modified. Are you sure you want to cancel and lose all changes?", vbYesNo + vbExclamation, "Cancel Edit") = vbNo Then
+                Exit Sub
+            End If
+        End If
+        AuditCancelEdit
+    End If
+    If Not frmEditDemographics Is Nothing Then
+        Unload frmEditDemographics
+        Set frmEditDemographics = Nothing
+    End If
+    Application.Quit wdDoNotSaveChanges
+End Sub
+
+Public Sub CancelExpiredEdit()
+    On Error Resume Next
+    AuditCancelEdit True
+    If Not frmEditDemographics Is Nothing Then
+        Unload frmEditDemographics
+        Set frmEditDemographics = Nothing
+    End If
+    Application.Quit wdDoNotSaveChanges
+End Sub
+
+Public Function AuditEvent(ByVal sDocumentName As String, ByVal sMsg As String) As Boolean
+    On Error Resume Next
+    Dim objEdit As Object 'NTPEdit.Edit
+    
+    #If VBA7 Then
+        Set objEdit = CreateObject("NTPEdit_x64.Edit")
+    #Else
+        Set objEdit = CreateObject("NTPEdit.Edit")
+    #End If
+    If Err.Number <> 0 Then
+        MsgBox "Unable to load NTPEdit.dll, make sure this dll is in the application path and properly registered. Click Start->Run and type: regsvr32 " & gsIniPath & "ntpedit.dll to register this component.", vbCritical + vbApplicationModal, "Edit - Save Edit"
+        Exit Function
+    End If
+    On Error GoTo Err_AuditEvent
+    
+    'Initialize the class to get settings and connect to the database.
+    If objEdit.Init(gsIniPath) Then
+        If objEdit.AuditEvent(sDocumentName, sMsg) Then
+            AuditEvent = True
+        Else
+            Debug.Print objEdit.LastStatus
+        End If
+    End If 'objEdit.Init(sIniFile)
+    
+Exit_AuditEvent:
+    On Error Resume Next
+    Set objEdit = Nothing
+    Exit Function
+    
+Err_AuditEvent:
+    MsgBox "AuditEvent() error, " & Err.Description, vbCritical + vbApplicationModal, "Edit"
+    Resume Exit_AuditEvent
+    
+End Function
+
+Public Sub SaveAndExit()
+Attribute SaveAndExit.VB_ProcData.VB_Invoke_Func = "RDP.RDPEdit.SaveAndExit"
+    On Error GoTo Err_SaveAndExit
+    Dim sPath As String
+    Dim sDocFileName As String
+    Dim bSaveChanges As Boolean
+    Dim sQARules As String
+    Dim bPrint As Boolean
+    Dim bExport As Boolean
+    Dim bAllowRevisions As Boolean
+    Dim bApplyQARules As Boolean
+    
+    frmSaveAndExit.Show
+    bSaveChanges = frmSaveAndExit.bSaveChanges
+    bPrint = frmSaveAndExit.chkPrint.Value
+    bExport = frmSaveAndExit.chkExport.Value
+    bAllowRevisions = frmSaveAndExit.chkEdit.Value
+    bApplyQARules = frmSaveAndExit.chkApplyQARules.Value
+    Unload frmSaveAndExit
+    
+    If bSaveChanges Then
+        sPath = ActiveDocument.Path & Application.PathSeparator
+        sDocFileName = ActiveDocument.Name
+        'If Not ActiveDocument.Saved Then
+        '    ActiveDocument.Save
+        'End If
+        If SaveEditToRDP(bPrint, bExport, bAllowRevisions, bApplyQARules, sQARules) Then
+            If Len(sQARules) > 0 Then
+                If MsgBox(sQARules & vbCrLf & "Document was saved, click OK to continue and exit or click Cancel to return to edit mode.", vbInformation + vbOKCancel, "QA Rules") = vbCancel Then
+                    gbNormalExit = False
+                    Documents.Open FileName:=sPath & sDocFileName, ReadOnly:=False, AddToRecentFiles:=False, ConfirmConversions:=False
+                    LockUserEdit sDocFileName
+                    Exit Sub
+                End If
+            End If
+            
+            MsgBox "Document successfully saved!", vbInformation + vbApplicationModal, "RDP Edit - Success"
+            If Not frmEditDemographics Is Nothing Then
+                Unload frmEditDemographics
+                Set frmEditDemographics = Nothing
+            End If
+            Application.Quit
+        Else
+            MsgBox "Document was not saved! Please retry again later or contact the vendor for assistance.", vbCritical + vbApplicationModal, "RDP Edit - Failure"
+            gbNormalExit = False
+            If mbExit Then
+                If Not frmEditDemographics Is Nothing Then
+                    Unload frmEditDemographics
+                    Set frmEditDemographics = Nothing
+                End If
+                Application.Quit
+            End If
+        End If
+    End If
+    Exit Sub
+    
+Err_SaveAndExit:
+    MsgBox "Error in SaveAndExit(): #" & Err.Number & " - " & Err.Description, vbCritical + vbApplicationModal, "RDP Edit"
+    
+End Sub
+
+Public Function GetFieldsFromDB() As Boolean
+    On Error GoTo Err_GetFieldsFromDB
+    Dim clsRDP As Object 'RDPClass.RDPData
+    Dim fld As Object 'ADODB.Field
+    Dim fso As Object 'New FileSystemObject
+    Dim sRDPAppPath As String
+    Dim sTemp As String
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    On Error Resume Next
+    #If VBA7 Then
+        Set clsRDP = CreateObject("RDPClass_x64.RDPData")
+    #Else
+        Set clsRDP = CreateObject("RDPClass.RDPData")
+    #End If
+    If Err.Number <> 0 Then
+        MsgBox "Unable to load RDPClass.dll, make sure this dll is in the application path and properly registered.", vbCritical + vbApplicationModal, "RDP Edit"
+        Exit Function
+    End If
+    On Error GoTo Err_GetFieldsFromDB
+    
+    'Initialize the class to get settings and connect to the database.
+    If clsRDP.Init(gsIniPath) Then
+        If clsRDP.GetDocumentRecordset(ActiveDocument.Name) Then
+            With clsRDP.rs
+                Set fld = .Fields("PatientName")
+                    frmEditDemographics.txtPatFirstName = FirstFromPatientFullName(Nz(fld.Value, ""))
+                    frmEditDemographics.txtPatMiddleInitial = MiddleFromPatientFullName(Nz(fld.Value, ""))
+                    frmEditDemographics.txtPatLastName = LastFromPatientFullName(Nz(fld.Value, ""))
+                    
+                Set fld = .Fields("MRN")
+                    If Len(Trim$(frmEditDemographics.txtMRN)) < 1 Then 'Not already populated.
+                        'Update it if we didn't have a fullmrn.
+                        frmEditDemographics.txtMRN = Nz(fld.Value, "")
+                    End If
+                
+                Set fld = .Fields("DOB")
+                    If Not IsNull(fld.Value) Then
+                        frmEditDemographics.mskDOB = Format$(fld.Value, "mm/dd/yyyy")
+                    End If
+                    
+                Set fld = .Fields("SSN")
+                    frmEditDemographics.txtSSN = Nz(fld.Value, "")
+                    
+                Set fld = .Fields("AccountNum")
+                    frmEditDemographics.txtVisitID = Nz(fld.Value, "")
+                    
+                Set fld = .Fields("AdmitDate")
+                    If Not IsNull(fld.Value) Then
+                        frmEditDemographics.mskAdmitDate = Format$(fld.Value, "mm/dd/yyyy")
+                    End If
+                    
+                Set fld = .Fields("DateOfService")
+                If Not IsNull(fld.Value) Then
+                    frmEditDemographics.mskServiceDate = Format$(fld.Value, "mm/dd/yyyy")
+                End If
+                
+                Set fld = .Fields("DischargeDate")
+                    If Not IsNull(fld.Value) Then
+                        frmEditDemographics.mskDischargeDate = Format$(fld.Value, "mm/dd/yyyy")
+                    End If
+                    
+                Set fld = .Fields("DictatorName")
+                    sTemp = Nz(fld.Value, "")
+                    If InStr(sTemp, ", ") > 0 Then
+                        frmEditDemographics.txtSignature = Trim$(Mid$(sTemp, InStr(sTemp, ", ") + 2) & " " & Left$(sTemp, InStr(sTemp, ", ") - 1))
+                    Else
+                        frmEditDemographics.txtSignature = sTemp
+                    End If
+                
+                Set fld = .Fields("DictatorId")
+                    sTemp = Nz(fld.Value, "")
+                    frmEditDemographics.txtDictatorId = sTemp
+                
+                Set fld = .Fields("AttendingName")
+                    sTemp = Nz(fld.Value, "")
+                    If InStr(sTemp, ", ") > 0 Then
+                        frmEditDemographics.txtAttendingSig = Trim$(Mid$(sTemp, InStr(sTemp, ", ") + 2) & " " & Left$(sTemp, InStr(sTemp, ", ") - 1))
+                    Else
+                        frmEditDemographics.txtAttendingSig = sTemp
+                    End If
+                
+                Set fld = .Fields("AttendingId")
+                    sTemp = Nz(fld.Value, "")
+                    frmEditDemographics.txtAttendingId = sTemp
+                    
+                GetFieldsFromDB = True
+            End With 'clsRDP.rs
+        End If 'clsRDP.GetDocumentRecordset
+    Else
+        MsgBox "GetFieldsFromDB(): " & clsRDP.LastStatus, vbCritical + vbApplicationModal, "RDP Edit - Error Connecting To Database"
+    End If 'clsRDP.Init(gsIniPath)
+    
+Exit_GetFieldsFromDB:
+    On Error Resume Next
+    Set clsRDP = Nothing
+    Set fld = Nothing
+    Set fso = Nothing
+    Exit Function
+    
+Err_GetFieldsFromDB:
+    MsgBox "Error accessing RDP database - GetFieldsFromDB(): #" & Err.Number & " - " & Err.Description, vbCritical + vbApplicationModal, "RDP Edit"
+    GetFieldsFromDB = False
+    Resume Exit_GetFieldsFromDB
+    
+End Function
+
+Public Function SaveEditToRDP(ByVal bPrint As Boolean, ByVal bExport As Boolean, _
+ ByVal bAllowRevisions As Boolean, ByVal bApplyQARules As Boolean, ByRef sQARules As String) As Boolean
+    On Error GoTo Err_SaveEditToRDP
+    Dim oTemplate As Template
+    Dim clsRDP As Object 'RDPClass.RDPData
+    Dim objModule As Object 'VBComponent
+    Dim fld As Object 'ADODB.Field
+    Dim fso As Object 'New FileSystemObject
+    Dim sDocFileName As String
+    Dim sPath As String
+    Dim sRDPAppPath As String
+    Dim sStatus As String
+    Dim aStatus As Variant
+    Dim strTemp As String
+    Dim strTemp2 As String
+    Dim strTemp3 As String
+    Dim strMsg As String
+    Dim aFields() As String
+    Dim iCnt As Integer
+    Dim lPos As Long
+    Dim dtServerDate As Date
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    sDocFileName = ActiveDocument.Name
+    sPath = ActiveDocument.Path & Application.PathSeparator
+    
+    On Error Resume Next
+    #If VBA7 Then
+        Set clsRDP = CreateObject("RDPClass_x64.RDPData")
+    #Else
+        Set clsRDP = CreateObject("RDPClass.RDPData")
+    #End If
+    If Err.Number <> 0 Then
+        MsgBox "Unable to load RDPClass.dll, make sure this dll is in the application path and properly registered.", vbCritical + vbApplicationModal, "RDP Edit - Save Edit To RDP"
+        Exit Function
+    End If
+    
+    If Left$(Application.Version, 1) = "8" And ActiveDocument.SaveFormat = wdFormatDocument Then
+        'Remove all modules including the one added by InitEdit() for Word 97 only.
+        For Each objModule In ActiveDocument.VBProject.VBComponents
+            'Debug.Print objModule.Name
+            If objModule.Name <> "ThisDocument" Then
+                ActiveDocument.VBProject.VBComponents.Remove objModule
+            End If
+        Next objModule
+        Set objModule = Nothing
+    End If
+    Err.Clear
+    On Error GoTo Err_SaveEditToRDP
+    
+    'Initialize the class to get settings and connect to the database.
+    If clsRDP.Init(gsIniPath) Then
+        dtServerDate = clsRDP.GetAppSetting("currentdate", Now)
+        If clsRDP.GetDocumentRecordset(ActiveDocument.Name) Then
+            
+            If IsNull(clsRDP.rs.Fields("Status")) Or IsNull(clsRDP.rs.Fields("StatusDate")) Then
+                strMsg = "This document edit lock was cancelled by an administrative user! Please close the document and try the edit again."
+            ElseIf DateDiff("n", clsRDP.rs.Fields("StatusDate"), dtServerDate) > 45 Then
+                With clsRDP.rs
+                    clsRDP.cn.BeginTrans
+                    .Fields("Status") = Null
+                    .Fields("StatusDate") = Null
+                    .Update
+                    clsRDP.cn.CommitTrans
+                    clsRDP.AccessLog ![SiteId], ![DocumentId], ![DocRevision], "Edit time expired or edit lock previously cancelled"
+                End With
+                strMsg = "The time allowed (45 minutes) for editing this document has expired or the edit lock was cancelled by an administrative user! [Server Date: " & Format$(dtServerDate, "mm/dd/yyyy hh:nn:ss") & "]"
+            Else 'Make sure another admin user hasn't broken the original edit lock.
+                sStatus = Nz(clsRDP.rs.Fields("Status"), "")
+                If InStr(sStatus, "|") > 0 Then
+                    aStatus = Split(sStatus, "|")
+                    If UBound(aStatus) < 2 Then
+                        ReDim Preserve aStatus(2)
+                    End If
+                Else
+                    ReDim aStatus(2)
+                End If
+                If LCase(aStatus(0)) = "edit" Then
+                    'Obtain the user login name from the Status column, "Login (Full Name)".
+                    lPos = InStr(aStatus(1), "(")
+                    If lPos > 0 Then
+                        strTemp = LCase$(Trim$(Left$(aStatus(1), lPos - 1)))
+                    Else
+                        strTemp = ""
+                    End If
+                    If strTemp <> Trim$(LCase$(gsCurrentUser)) Then
+                        strMsg = "This document edit lock was cancelled by an administrative user! Please close the document and try the edit again later. The document was locked for edit by user '" & aStatus(1) & "' on [" & Nz(clsRDP.rs.Fields("StatusDate"), #1/1/1900#) & "] from IP/Computer [" & aStatus(2) & "]"
+                    End If
+                Else
+                    strMsg = "This document edit lock was cancelled by an administrative user! Please close the document and try the edit again later. The document was locked for edit by user '" & aStatus(1) & "' on [" & Nz(clsRDP.rs.Fields("StatusDate"), #1/1/1900#) & "] from IP/Computer [" & aStatus(2) & "]"
+                End If
+            End If
+            
+            If Len(strMsg) > 0 Then 'ERROR FROM ABOVE VALIDATION.
+                mbExit = True
+                MsgBox strMsg, vbExclamation, "RDP Edit"
+                
+            Else
+            
+                clsRDP.cn.BeginTrans
+                ReDim Preserve aFields(1, 0)
+                aFields(0, 0) = "RDPEdit"
+                aFields(1, 0) = Format$(dtServerDate, "mm/dd/yyyy hh:nn:ss")
+                With clsRDP.rs
+                    Set fld = .Fields("PatientName")
+                    If GetCustomProp("PatientFullName", strTemp) Then
+                       fld.Value = IIf(Len(strTemp) > 0, strTemp, Null)
+                    End If
+                    If GetCustomProp("PatientLastName", strTemp) Then
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Demographic.LastName"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                    If GetCustomProp("PatientFirstName", strTemp) Then
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Demographic.FirstName"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                    If GetCustomProp("PatientMiddleInitial", strTemp) Then
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Demographic.MiddleInitial"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                    
+                    Set fld = .Fields("MRN")
+                    If GetCustomProp("PatientMRN", strTemp) Then
+                       fld.Value = IIf(Len(strTemp) > 0, strTemp, Null)
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Demographic.FullMRN"
+                       aFields(1, iCnt) = strTemp
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Demographic.MRN"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                      
+                    Set fld = .Fields("SSN")
+                    If GetCustomProp("SSN", strTemp) Then
+                       fld.Value = IIf(Len(strTemp) > 0, strTemp, Null)
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Demographic.SSN"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                      
+                    Set fld = .Fields("DOB")
+                    If GetCustomProp("DOB", strTemp) Then
+                        fld.Value = IIf(Len(strTemp) > 0, strTemp, Null)
+                        iCnt = iCnt + 1
+                        ReDim Preserve aFields(1, iCnt)
+                        aFields(0, iCnt) = "Demographic.DOB"
+                        aFields(1, iCnt) = Format$(strTemp, "mm/dd/yyyy")
+                    End If
+                      
+                    Set fld = .Fields("AccountNum")
+                    If GetCustomProp("VisitID", strTemp) Then
+                       fld.Value = IIf(Len(strTemp) > 0, strTemp, Null)
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Encounter.FullVisitId"
+                       aFields(1, iCnt) = strTemp
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Encounter.VisitId"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                      
+                    Set fld = .Fields("AdmitDate")
+                    If GetCustomProp("VisitAdmitDate", strTemp) Then
+                       If IsDate(strTemp) Then
+                          fld.Value = strTemp
+                       Else
+                          fld.Value = Null
+                       End If
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Encounter.AdmitDate"
+                       aFields(1, iCnt) = Format$(strTemp, "mm/dd/yyyy hh:nn:ss")
+                    ElseIf GetCustomProp("AdmitDate", strTemp) Then
+                       If IsDate(strTemp) Then
+                          fld.Value = strTemp
+                       Else
+                          fld.Value = Null
+                       End If
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Encounter.AdmitDate"
+                       aFields(1, iCnt) = Format$(strTemp, "mm/dd/yyyy hh:nn:ss")
+                    End If
+                    
+                    Set fld = .Fields("DateOfService")
+                    If GetCustomProp("DateOfService", strTemp) Then
+                       If IsDate(strTemp) Then
+                          fld.Value = strTemp
+                       Else
+                          fld.Value = Null
+                       End If
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Encounter.DateOfService"
+                       aFields(1, iCnt) = Format$(strTemp, "mm/dd/yyyy hh:nn:ss")
+                    End If
+                    
+                    Set fld = .Fields("DischargeDate")
+                    If GetCustomProp("DischargeDate", strTemp) Then
+                       If IsDate(strTemp) Then
+                          fld.Value = strTemp
+                       Else
+                          fld.Value = Null
+                       End If
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Encounter.DischargeDate"
+                       aFields(1, iCnt) = Format$(strTemp, "mm/dd/yyyy hh:nn:ss")
+                    End If
+                      
+                    Set fld = .Fields("DictatorName")
+                    If GetCustomProp("DictatorSignature", strTemp) Then
+                       strTemp2 = LastFromDictSignature(strTemp)
+                       If Len(strTemp2) > 0 Then
+                          strTemp3 = FirstFromDictSignature(strTemp)
+                          If Len(strTemp3) > 0 Then
+                            strTemp = Trim$(strTemp2 & ", " & strTemp3)
+                          Else
+                            strTemp = Trim$(strTemp2)
+                          End If
+                       End If
+                       If Len(strTemp) > 0 Then
+                          fld.Value = strTemp
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.DictatorName"
+                          aFields(1, iCnt) = strTemp
+                          If GetCustomProp("DictatorSignature", strTemp) Then
+                             iCnt = iCnt + 1
+                             ReDim Preserve aFields(1, iCnt)
+                             aFields(0, iCnt) = "Document.DictatorLastName"
+                             aFields(1, iCnt) = LastFromDictSignature(strTemp)
+                             iCnt = iCnt + 1
+                             ReDim Preserve aFields(1, iCnt)
+                             aFields(0, iCnt) = "Document.DictatorFirstName"
+                             aFields(1, iCnt) = FirstFromDictSignature(strTemp)
+                          End If
+                       Else
+                          fld.Value = Null
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.DictatorName"
+                          aFields(1, iCnt) = ""
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.DictatorLastName"
+                          aFields(1, iCnt) = ""
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.DictatorFirstName"
+                          aFields(1, iCnt) = ""
+                       End If
+                    End If
+                    
+                    Set fld = .Fields("DictatorId")
+                    If GetCustomProp("DictatorId", strTemp) Then
+                       If Len(strTemp) > 0 Then
+                          fld.Value = strTemp
+                       Else
+                          fld.Value = Null
+                       End If
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Document.DictatorId"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                    
+                    Set fld = .Fields("AttendingName")
+                    If GetCustomProp("AttendingSig", strTemp) Then
+                       'Save Attending Sig Name.
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Document.AttendingDrSig"
+                       aFields(1, iCnt) = strTemp
+                       'Reformat as Attending Last, First.
+                       strTemp2 = LastFromDictSignature(strTemp)
+                       If Len(strTemp2) > 0 Then
+                          strTemp3 = FirstFromDictSignature(strTemp)
+                          If Len(strTemp3) > 0 Then
+                             strTemp = Trim$(strTemp2 & ", " & strTemp3)
+                          Else
+                             strTemp = strTemp2
+                          End If
+                       End If
+                       If Len(strTemp) > 0 Then
+                          fld.Value = strTemp
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.AttendingDrName"
+                          aFields(1, iCnt) = strTemp
+                          If GetCustomProp("AttendingSig", strTemp) Then
+                             iCnt = iCnt + 1
+                             ReDim Preserve aFields(1, iCnt)
+                             aFields(0, iCnt) = "Document.AttDrLast"
+                             aFields(1, iCnt) = LastFromDictSignature(strTemp)
+                             iCnt = iCnt + 1
+                             ReDim Preserve aFields(1, iCnt)
+                             aFields(0, iCnt) = "Document.AttDrFirst"
+                             aFields(1, iCnt) = FirstFromDictSignature(strTemp)
+                          End If
+                       Else
+                          fld.Value = Null
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.AttendingDrName"
+                          aFields(1, iCnt) = ""
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.AttDrLast"
+                          aFields(1, iCnt) = ""
+                          iCnt = iCnt + 1
+                          ReDim Preserve aFields(1, iCnt)
+                          aFields(0, iCnt) = "Document.AttDrFirst"
+                          aFields(1, iCnt) = ""
+                       End If
+                    End If
+                    
+                    Set fld = .Fields("AttendingId")
+                    If GetCustomProp("AttendingId", strTemp) Then
+                       If Len(strTemp) > 0 Then
+                          fld.Value = strTemp
+                       Else
+                          fld.Value = Null
+                       End If
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Encounter.AttDrId"
+                       aFields(1, iCnt) = strTemp
+                    End If
+                           
+                    Set fld = .Fields("RouteStatus")
+                    If bPrint Or bExport Then
+                       fld.Value = Null
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Document.RouteStatus"
+                       aFields(1, iCnt) = ""
+                    End If
+                   
+                    Set fld = .Fields("DocRevision")
+                    If bAllowRevisions Then
+                        If fld.Value >= 99 Then
+                           'Set the revision back so doc can be overwritten.
+                           fld.Value = 1
+                           iCnt = iCnt + 1
+                           ReDim Preserve aFields(1, iCnt)
+                           aFields(0, iCnt) = "Document.RevisionCount"
+                           aFields(1, iCnt) = "1"
+                        End If
+                    Else
+                       fld.Value = 99 'Indicates a customer edit.
+                       iCnt = iCnt + 1
+                       ReDim Preserve aFields(1, iCnt)
+                       aFields(0, iCnt) = "Document.RevisionCount"
+                       aFields(1, iCnt) = "99"
+                    End If
+                    
+                    .Fields("Status") = Null
+                    .Fields("StatusDate") = Null
+                    .Fields("EditDate") = Format$(dtServerDate, "mm/dd/yyyy hh:nn:ss")
+                    
+                    .Update
+                    clsRDP.cn.CommitTrans
+                    
+                    If Not ActiveDocument.Saved Then
+                        ActiveDocument.Save
+                    End If
+                    gbNormalExit = True
+                    'Must close the document so it can be opened by RDPClass method.
+                    ActiveDocument.Close SaveChanges:=wdSaveChanges, OriginalFormat:=wdOriginalDocumentFormat
+                    If clsRDP.ReplaceDocTag(sDocFileName, sPath, aFields) Then
+                        SaveEditToRDP = True
+                        If bPrint Or bExport Then
+                            clsRDP.cn.BeginTrans
+                            .Fields("Printed") = Not bPrint
+                            .Fields("Exported") = Not bExport
+                            .Fields("Exported2") = Not bExport
+                            .Fields("Exported3") = Not bExport
+                            .Update
+                            clsRDP.cn.CommitTrans
+                        End If
+                        clsRDP.AccessLog ![SiteId], ![DocumentId], ![DocRevision], "Edited successfully"
+                        If bApplyQARules Then
+                            sQARules = clsRDP.UpdateRouteStatus(sDocFileName)
+                        End If
+                    
+                    Else
+                        MsgBox "SaveEditToRDP() error: " & clsRDP.LastStatus, vbCritical + vbApplicationModal, "RDP Edit - Error Inserting Edit"
+                        clsRDP.AccessLog ![SiteId], ![DocumentId], ![DocRevision], "Edit failed - " & clsRDP.LastStatus
+                    End If
+                End With 'clsRDP.rs
+            End If 'If Len(strMsg) = 0 Then
+        Else
+            MsgBox "Error locating document in RDP database. Last error: " & clsRDP.LastStatus, vbExclamation, "RDP Edit"
+        End If 'clsRDP.GetDocumentRecordset
+    Else
+        MsgBox "SaveEditToRDP: " & clsRDP.LastStatus, vbCritical + vbApplicationModal, "RDP Edit - Error Connecting To Database"
+    End If 'clsRDP.Init(gsIniPath)
+    
+Exit_SaveEditToRDP:
+    On Error Resume Next
+    If Not SaveEditToRDP And Application.Documents.Count < 1 Then
+        Documents.Open FileName:=sPath & sDocFileName, ReadOnly:=False, AddToRecentFiles:=False, ConfirmConversions:=False
+        'ActiveDocument.AttachedTemplate = sRDPAppPath & "rdp.dot"
+    End If
+    'Set oAddIn = Nothing
+    Set oTemplate = Nothing
+    Set clsRDP = Nothing
+    Set fld = Nothing
+    Set fso = Nothing
+    Exit Function
+    
+Err_SaveEditToRDP:
+    MsgBox "Error accessing RDP database - SaveEditToRDP(): #" & Err.Number & " - " & Err.Description, vbCritical + vbApplicationModal, "Edit - Save Edit To RDP"
+    SaveEditToRDP = False
+    Resume Exit_SaveEditToRDP
+    
+End Function
+
+'Override the default functionality.
+Sub FilePrint()
+    On Error Resume Next
+    If Not gbAllowPrint Then
+        MsgBox "You are not authorized to print this document locally!", vbExclamation, "Document Security"
+    Else
+        If gbRepaginateOnPrint Then
+            AdjustSigBlockForPrint
+        End If
+        If Application.Dialogs(wdDialogFilePrint).Show(60000) = -1 Then 'OK was pressed.
+            'Word 97 does not fire the App_DocumentBeforePrint() event.
+            AuditEvent ActiveDocument.Name, "printed to [" & Application.ActivePrinter & "] from view module"
+        End If
+    End If
+End Sub
+
+'Override the default functionality.
+Sub FileSave()
+    On Error Resume Next
+    If Not ActiveDocument.Saved Then ActiveDocument.Saved = True
+    MsgBox "You are not authorized to save this document locally!", vbExclamation, "Document Security"
+End Sub
+
+'Override the default functionality.
+Sub FileSaveAs()
+    On Error Resume Next
+    If Not ActiveDocument.Saved Then ActiveDocument.Saved = True
+    MsgBox "You are not authorized to save this document locally!", vbExclamation, "Document Security"
+End Sub
+
+'Override the default functionality.
+Sub DocClose()
+' DocClose Macro
+' Prompts to save the document and then closes the active window
+    'WordBasic.DocClose
+    If Not ActiveDocument.Saved Then ActiveDocument.Saved = True
+End Sub
+
+Public Sub PrintWithCopyText()
+    On Error Resume Next
+    Dim sText As String
+    
+    If Not gbAllowPrint Then
+        MsgBox "You have not been granted privileges to print this document! Contact the vendor to obtain assistance.", vbExclamation, "Edit"
+    Else
+        If WordCustomPropExists("CopyText") Then
+            sText = InputBox$("Type the number (1-5) corresponding to the copy text to insert or type the desired text in the box:" & vbCrLf & vbCrLf & _
+                "1: ORIGINAL" & vbCrLf & _
+                "2: CHART COPY" & vbCrLf & _
+                "3: PHYSICIAN COPY" & vbCrLf & _
+                "4: ATTENDING COPY" & vbCrLf & _
+                "5: EXTRA COPY" & vbCrLf, "Print With Copy Text", "1")
+            If Len(sText) > 0 Then
+                Select Case sText
+                    Case "1"
+                        sText = "ORIGINAL"
+                    Case "2"
+                        sText = "CHART COPY"
+                    Case "3"
+                        sText = "PHYSICIAN COPY"
+                    Case "4"
+                        sText = "ATTENDING COPY"
+                    Case "5"
+                        sText = "EXTRA COPY"
+                End Select
+                ActiveDocument.CustomDocumentProperties("CopyText") = sText & " "
+                UpdateFields
+                Application.PrintPreview = True
+            Else
+                ActiveDocument.CustomDocumentProperties("CopyText") = " "
+            End If
+        ElseIf WordCustomPropExists("DPCCText") Then
+            sText = InputBox$("Type the number (1-5) corresponding to the copy text to insert or type the desired text in the box:" & vbCrLf & vbCrLf & _
+                "1: ORIGINAL" & vbCrLf & _
+                "2: CHART COPY" & vbCrLf & _
+                "3: PHYSICIAN COPY" & vbCrLf & _
+                "4: ATTENDING COPY" & vbCrLf & _
+                "5: EXTRA COPY" & vbCrLf, "Print With Copy Text", "1")
+            If Len(sText) > 0 Then
+                Select Case sText
+                    Case "1"
+                        sText = "ORIGINAL"
+                    Case "2"
+                        sText = "CHART COPY"
+                    Case "3"
+                        sText = "PHYSICIAN COPY"
+                    Case "4"
+                        sText = "ATTENDING COPY"
+                    Case "5"
+                        sText = "EXTRA COPY"
+                End Select
+                ActiveDocument.CustomDocumentProperties("DPCCText") = sText & " "
+                UpdateFields
+                Application.PrintPreview = True
+            Else
+                ActiveDocument.CustomDocumentProperties("DPCCText") = " "
+            End If
+        Else
+            MsgBox "The copy text document marker does not exist in this document. Please contact the vendor to have this added to the document template.", vbInformation, "Print With Copy Text"
+        End If
+    End If
+End Sub
+
+Public Sub UpdateFields()
+    On Error Resume Next
+    Dim oSection As Section
+    
+    If Application.Documents.Count > 0 Then
+        ActiveDocument.Fields.Update
+        For Each oSection In ActiveDocument.Sections
+            With oSection
+                .Headers(wdHeaderFooterFirstPage).Range.Fields.Update
+                .Footers(wdHeaderFooterFirstPage).Range.Fields.Update
+                .Headers(wdHeaderFooterPrimary).Range.Fields.Update
+                .Footers(wdHeaderFooterPrimary).Range.Fields.Update
+                .Range.Fields.Update
+            End With
+        Next oSection
+    End If
+    Set oSection = Nothing
+End Sub
+
+Public Sub AdjustSigBlockForPrint(Optional bInteractive As Boolean = False)
+    'This routine will locate the signature block and determine if the pagination
+    'needs to be adjusted to make sure the signature block is not orphaned and
+    'to make sure at least 2 lines of text are carried to the last page if needed.
+    'This is dependent on the active print driver in Word.
+    On Error GoTo Err_AdjustSigBlockForPrint
+    Dim i As Integer
+    Dim iLines As Integer 'Consecutive lines that are not blank lines.
+    Dim iTotalLines As Integer 'Total lines that are not blank lines.
+    Dim bFound As Boolean
+    
+    If Application.Documents.Count < 1 Then
+        If bInteractive Then MsgBox "There are no active documents!", vbExclamation, "Adjust Signature Block"
+        Exit Sub
+    End If
+    
+    If Selection.Information(wdNumberOfPagesInDocument) < 2 Then
+        If gbDebug Then MsgBox "Adjust page breaking for sig block skipped - document is less than 2 pages", vbInformation, "Adjust Signature Block"
+        Exit Sub
+    End If
+    
+    'Prevent the screen from updating until done.
+    Application.ScreenUpdating = False
+    
+    'Remove any previous "RDPSigBlock" bookmark - just to be safe.
+    If ActiveDocument.Bookmarks.Exists("RDPSigBlock") Then
+        ActiveDocument.Bookmarks("RDPSigBlock").Delete
+    End If
+    
+    'Attempt to locate "RRStartSigBlock" bookmark which marks sig block start.
+    If ActiveDocument.Bookmarks.Exists("RRStartSigBlock") Then
+        If gbDebug Then MsgBox "Adjust page breaking for sig block - located 'RRStartSigBlock' bookmark (start of signature block)", vbInformation, "Adjust Signature Block"
+        Selection.GoTo What:=wdGoToBookmark, Name:="RRStartSigBlock"
+        bFound = True
+    End If
+    
+    If Not bFound And WordStyleInUse("RRSigBlock") Then
+        'Attempt to locate signature block (look for "RRSigBlock" paragraph style).
+        If gbDebug Then MsgBox "Adjust page breaking for sig block - search for 'RRSigBlock' style (start of signature block)", vbInformation, "Adjust Signature Block"
+        Selection.HomeKey Unit:=wdStory, Extend:=wdMove
+        With Selection.Find
+            .ClearFormatting
+            .Replacement.ClearFormatting
+            .Style = Application.ActiveDocument.Styles("RRSigBlock")
+            .Text = ""
+            .Forward = True
+            .Wrap = wdFindStop
+            .Format = True
+            .MatchCase = False
+            .MatchWholeWord = False
+            .MatchWildcards = False
+            .MatchSoundsLike = False
+            .MatchAllWordForms = False
+            .Execute
+            If .Found Then
+                bFound = True
+            End If
+            .ClearFormatting
+        End With '.Selection.Find
+    End If
+    If Not bFound And WordStyleInUse("RRSigBlockStyle") Then
+        'Attempt to locate signature block (look for "RRSigBlock" paragraph style).
+        If gbDebug Then MsgBox "Adjust page breaking for sig block - search for 'RRSigBlockStyle' style (start of signature block)", vbInformation, "Adjust Signature Block"
+        Selection.HomeKey Unit:=wdStory, Extend:=wdMove
+        With Selection.Find
+            .ClearFormatting
+            .Replacement.ClearFormatting
+            .Style = Application.ActiveDocument.Styles("RRSigBlockStyle")
+            .Text = ""
+            .Forward = True
+            .Wrap = wdFindStop
+            .Format = True
+            .MatchCase = False
+            .MatchWholeWord = False
+            .MatchWildcards = False
+            .MatchSoundsLike = False
+            .MatchAllWordForms = False
+            .Execute
+            If .Found Then
+                bFound = True
+            End If
+            .ClearFormatting
+        End With '.Selection.Find
+    End If
+    
+    If Not bFound Then 'Search for signature line as a last resort.
+        'If bInteractive Then MsgBox "Warning! Adjust page breaking to prevent orphaned signature - failed to locate a signature block in document", vbExclamation, "Adjust Signature Block"
+        Selection.HomeKey Unit:=wdStory, Extend:=wdMove
+        Selection.Find.Execute "|" & String(20, "_"), False, False, False, False, False, True, wdFindStop, False
+        If Selection.Find.Found Then
+            bFound = True
+            If gbDebug Then MsgBox "Adjust page breaking - located '|" & String(20, "_") & "', assumed to be signature block", vbInformation, "Adjust Signature Block"
+        End If
+    End If
+    
+    If bFound Then 'Signature block was found so check pagination.
+        If gbDebug Then MsgBox "Signature block found, set bookmark then remove any existing hard page breaks", vbInformation, "Adjust Signature Block"
+        Selection.Collapse wdCollapseStart
+        ActiveDocument.Bookmarks.Add Name:="RDPSigBlock", Range:=Selection.Range
+        
+        'Remove any existing hard page breaks.
+        If gbDebug Then Log "Removing any existing hard page breaks from document"
+        Selection.HomeKey Unit:=wdStory, Extend:=wdMove
+        Selection.Find.ClearFormatting
+        Selection.Find.Execute "^m", False, False, False, False, False, True, wdFindStop, False, "", wdReplaceAll
+        ActiveDocument.Repaginate
+        
+        If gbDebug Then Log "Return to start of signature block"
+        Selection.GoTo What:=wdGoToBookmark, Name:="RDPSigBlock"
+        ActiveDocument.Bookmarks("RDPSigBlock").Delete
+        Selection.Collapse wdCollapseStart
+        
+        'Move left and up until body text is found.
+        Do While Selection.MoveUp(Unit:=wdLine, Count:=1) > 0
+            'Move up a line at a time to verify page breaking.
+            Selection.HomeKey Unit:=wdLine, Extend:=wdMove
+            bFound = False
+            If Selection.Range.Style <> "RRCCBlock" And Selection.Range.Style <> "RRSigBlock" And _
+             Selection.Range.Style <> "RRCCBlockStyle" And Selection.Range.Style <> "RRSigBlockStyle" Then
+                'If the selection is within a table that is not a CC or sig
+                'style then do not try to deal with page breaking.
+                If Selection.Information(wdWithInTable) Then
+                    ActiveDocument.Undo 'Undo remove page breaks.
+                    bFound = False
+                    If bInteractive Then MsgBox "Error! Adjust page breaking - a table was encountered above the signature block, automated pagination cancelled!", vbCritical, "Adjust Signature Block"
+                    Exit Do
+                Else
+                    For i = 1 To ActiveDocument.Bookmarks("\Line").Range.Characters.Count
+                        Select Case Asc(ActiveDocument.Bookmarks("\Line").Range.Characters(i).Text)
+                            Case 33 To 126 'Printable characters.
+                                'Not a blank line.
+                                iLines = iLines + 1
+                                bFound = True
+                                Exit For
+                        End Select
+                    Next i
+                End If
+            Else 'Skip this line.
+                iTotalLines = 0
+            End If
+            If Not bFound Then
+                'Prevent total lines being considered unless lines are not consecutive.
+                iTotalLines = iTotalLines + iLines
+                iLines = 0
+            End If
+            
+            If iTotalLines >= 2 Or iLines > 3 Then
+                bFound = True
+                Exit Do
+            End If
+        Loop
+        
+        If bFound Then
+            If iTotalLines >= 2 Then
+                Selection.MoveDown Unit:=wdLine, Count:=1
+            ElseIf iLines > 3 Then
+                'Should be 4 lines at this point.
+                Selection.MoveDown Unit:=wdLine, Count:=2
+            End If
+            
+            '.ActiveDocument.BuiltInDocumentProperties ("Number of pages")
+            '.Selection.Information (wdNumberOfPagesInDocument)
+            ActiveDocument.Repaginate
+            If Selection.Information(wdActiveEndPageNumber) <> Selection.Information(wdNumberOfPagesInDocument) Then
+                'The sig block is not on the same page with 2 or more lines of text.
+                If gbDebug Then MsgBox "Adjust page breaking for sig block - inserting hard page break", vbInformation, "Adjust Signature Block"
+                Selection.HomeKey Unit:=wdLine, Extend:=wdMove
+                If Selection.Bookmarks("\Para").Range.ListFormat.ListType <> 0 Then
+                    'Paragraph is a numbered/bulleted list - hard page could adversely affect numbering.
+                    Selection.Bookmarks("\Para").Range.Select
+                    Selection.Collapse wdCollapseStart
+                End If
+                Selection.InsertBreak wdPageBreak
+            End If
+        End If
+        ActiveDocument.Repaginate
+    
+    Else
+        If bInteractive Then MsgBox "Error! Adjust page breaking - unable to locate signature block", vbCritical, "Adjust Signature Block"
+    End If 'bFound
+    
+Exit_AdjustSigBlockForPrint:
+    On Error Resume Next
+    Selection.HomeKey Unit:=wdStory, Extend:=wdMove
+    Application.ScreenUpdating = False
+    Exit Sub
+    
+Err_AdjustSigBlockForPrint:
+    If bInteractive Then MsgBox "Error in AdjustSigBlockForPrint() was caused by " & Err.Source & ", error #" & Err.Number & _
+        " - " & Err.Description
+    Resume Exit_AdjustSigBlockForPrint
+    
+End Sub
+
+Private Function WordStyleInUse(ByVal sName As String) As Boolean
+    On Error GoTo Err_WordStyleInUse
+    ' Note: Character case is utilized with styles.
+    ' For example, "mystyle" is different from "MYSTYLE".
+    WordStyleInUse = ActiveDocument.Styles(sName).InUse
+    Exit Function
+   
+Err_WordStyleInUse:
+    WordStyleInUse = False
+   
+End Function
+
+Public Function WordCustomPropExists(sFieldName As String) As Boolean
+    On Error GoTo Err_WordCustomPropExists
+    Dim sValue As String
+    
+    sValue = Trim$(ActiveDocument.CustomDocumentProperties(sFieldName).Value)
+    WordCustomPropExists = True
+    Exit Function
+    
+Err_WordCustomPropExists:
+    WordCustomPropExists = False
+    
+End Function
+
+Private Sub LockUserEdit(Optional sDocFileName As String = "")
+    On Error Resume Next
+    Dim objEdit As Object 'RDP.Edit
+    Dim sResult As String
+    
+    #If VBA7 Then
+        Set objEdit = CreateObject("RDPClass_x64.RDPData")
+    #Else
+        Set objEdit = CreateObject("RDPClass.RDPData")
+    #End If
+    If Err.Number <> 0 Then
+        MsgBox "Unable to load RDPClass.dll, make sure this dll is in the application path and properly registered. Click Start->Run and type: regsvr32 RDPClass.dll to register this component.", vbCritical + vbApplicationModal, "Edit - Save Edit"
+        Exit Sub
+    End If
+    On Error GoTo Err_LockUserEdit
+    
+    If Len(sDocFileName) < 1 Then
+        sDocFileName = ActiveDocument.Name
+    End If
+    If objEdit.Init(gsIniPath) Then
+        If Not objEdit.LockEdit(sDocFileName, sResult) Then
+            MsgBox "Unable to lock document for edit. " & sResult, vbExclamation, "Lock Edit"
+        End If
+    Else
+        MsgBox "Unable to connect to database: " & objEdit.LastStatus, vbCritical + vbApplicationModal, "Lock User Edit"
+    End If
+    
+Exit_LockUserEdit:
+    On Error Resume Next
+    Set objEdit = Nothing
+    Exit Sub
+    
+Err_LockUserEdit:
+    MsgBox "Error (LockUserEdit): " & Err.Description, vbExclamation, "Lock User Edit"
+    Resume Exit_LockUserEdit
+    
+End Sub
+
+'IMPLEMENT STRING FUNCTIONS NOT AVAILABLE IN WORD 97 VBA.
+'Split         Split a string into a variant array.
+'InStrRev      Similar to InStr but searches from end of string.
+'Replace       To find a particular string and replace it.
+'Reverse       To reverse a string.
+Public Function InStrRev(ByVal sIn As String, ByVal _
+   sFind As String, Optional nStart As Long = 1, _
+    Optional bCompare As Integer = 0) As Long
+    'bCompare As VbCompareMethod = vbBinaryCompare
+    Dim nPos As Long
+
+    sIn = Reverse(sIn)
+    sFind = Reverse(sFind)
+
+    nPos = InStr(nStart, sIn, sFind, bCompare)
+    If nPos = 0 Then
+        InStrRev = 0
+    Else
+        InStrRev = Len(sIn) - nPos - Len(sFind) + 2
+    End If
+End Function
+
+Public Function Join(Source() As String, _
+    Optional sDelim As String = " ") As String
+
+    Dim nC As Long
+    Dim sOut As String
+
+    For nC = LBound(Source) To UBound(Source) - 1
+        sOut = sOut & Source(nC) & sDelim
+    Next
+
+    Join = sOut & Source(nC)
+End Function
+
+Public Function Replace(ByVal sIn As String, ByVal sFind As _
+    String, ByVal sReplace As String, Optional nStart As _
+     Long = 1, Optional nCount As Long = -1, _
+     Optional bCompare As Integer = 0) As String
+    'bCompare As VbCompareMethod = vbBinaryCompare
+    Dim nC As Long, nPos As Long
+    Dim nFindLen As Long, nReplaceLen As Long
+
+    nFindLen = Len(sFind)
+    nReplaceLen = Len(sReplace)
+
+    If (sFind <> "") And (sFind <> sReplace) Then
+        nPos = InStr(nStart, sIn, sFind, bCompare)
+        Do While nPos
+            nC = nC + 1
+            sIn = Left(sIn, nPos - 1) & sReplace & _
+             Mid(sIn, nPos + nFindLen)
+            If nCount <> -1 And nC >= nCount Then Exit Do
+            nPos = InStr(nPos + nReplaceLen, sIn, sFind, _
+              bCompare)
+        Loop
+    End If
+
+    Replace = sIn
+End Function
+
+Public Function Reverse(ByVal sIn As String) As String
+    Dim nC As Long
+    Dim sOut As String
+
+    For nC = Len(sIn) To 1 Step -1
+        sOut = sOut & Mid(sIn, nC, 1)
+    Next nC
+
+    Reverse = sOut
+End Function
+
+Function Split(ByVal sIn As String, Optional ByVal sDelim As String = " ", _
+ Optional ByVal nLimit As Long = -1, Optional ByVal bCompare As Integer = 0) As Variant
+    'bCompare As VbCompareMethod = vbBinaryCompare
+    Dim nC As Long
+    Dim nPos As Long
+    Dim nDelimLen As Long
+    Dim sOut() As String
+
+    If sDelim <> "" Then
+        nDelimLen = Len(sDelim)
+        nPos = InStr(1, sIn, sDelim, bCompare)
+        Do While nPos
+            ReDim Preserve sOut(nC)
+            sOut(nC) = Left(sIn, nPos - 1)
+            sIn = Mid(sIn, nPos + nDelimLen)
+            nC = nC + 1
+            If nLimit <> -1 And nC >= nLimit Then Exit Do
+            nPos = InStr(1, sIn, sDelim, bCompare)
+        Loop
+    End If
+
+    ReDim Preserve sOut(nC)
+    sOut(nC) = sIn
+
+    Split = sOut
+End Function
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+
+Attribute VB_Name = "frmEditDemographics"
+Attribute VB_Base = "0{143996DA-A9CB-4DFC-8A8E-3AAD251647CC}{CA47AE27-1146-49E0-B9FE-31B9CE7A15E7}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Public mbLoaded As Boolean
+Dim mstrFullName As String
+
+Private Sub cmdSave_Click()
+    On Error GoTo Err_cmdSave_Click
+    Dim sTagFileName As String
+    
+    'Update the document properties fields.
+    If Not UpdateProperties Then
+        MsgBox "An error occured while attempting to update the document properties. Please try again.", vbInformation, "RDP Edit - Update Document Properties"
+        Exit Sub
+    End If
+    
+    Me.Caption = Me.Caption & "  Successful"
+    'Unload Me
+    Me.Hide
+    Exit Sub
+    
+Err_cmdSave_Click:
+    MsgBox "Error saving changes to demographics: " & Err.Description, vbExclamation + vbApplicationModal, "RDP Edit - Update Demographics Save"
+    
+End Sub
+
+Private Sub cmdCancel_Click()
+    On Error Resume Next
+    'Unload Me
+    mbLoaded = False
+    Me.Hide
+End Sub
+
+Private Function UpdateProperties() As Boolean
+    On Error GoTo Err_UpdateProperties
+    'strFullName holds the patient's full name (Last, First MI)
+    'which is created from First MI Last.
+    Dim oSection As Section
+    Dim oHeaderFooter As HeaderFooter
+    
+    If txtPatLastName.Enabled Then
+        txtPatLastName = Trim$(txtPatLastName)
+        If Not PropExists("PatientLastName") Then
+            ActiveDocument.CustomDocumentProperties.Add "PatientLastName", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("PatientLastName").Value = txtPatLastName
+        mstrFullName = txtPatLastName
+    Else
+        mstrFullName = ""
+    End If
+    
+    If txtPatFirstName.Enabled Then
+        txtPatFirstName = Trim$(txtPatFirstName)
+        If Not PropExists("PatientFirstName") Then
+            ActiveDocument.CustomDocumentProperties.Add "PatientFirstName", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("PatientFirstName").Value = txtPatFirstName
+        If Len(mstrFullName) > 0 And Len(txtPatFirstName) > 0 Then
+            mstrFullName = mstrFullName & ", " & txtPatFirstName
+        End If
+    End If
+    
+    If txtPatMiddleInitial.Enabled Then
+        txtPatMiddleInitial = Trim$(txtPatMiddleInitial)
+        If Not PropExists("PatientMiddleInitial") Then
+            ActiveDocument.CustomDocumentProperties.Add "PatientMiddleInitial", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("PatientMiddleInitial").Value = txtPatMiddleInitial
+        If Len(mstrFullName) > 0 And Len(txtPatMiddleInitial) > 0 Then
+            mstrFullName = mstrFullName & " " & txtPatMiddleInitial
+        End If
+    End If
+    
+    If Not PropExists("PatientFullName") Then
+        ActiveDocument.CustomDocumentProperties.Add "PatientFullName", False, msoPropertyTypeString, ""
+    End If
+    ActiveDocument.CustomDocumentProperties("PatientFullName") = mstrFullName
+    
+    If txtMRN.Enabled Then
+        txtMRN = Trim$(txtMRN)
+        If Not PropExists("FullMRN") Then
+            ActiveDocument.CustomDocumentProperties.Add "FullMRN", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("FullMRN") = txtMRN
+        
+        If Not PropExists("PatientMRN") Then
+            ActiveDocument.CustomDocumentProperties.Add "PatientMRN", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("PatientMRN") = txtMRN
+    End If
+    
+    If txtVisitID.Enabled Then
+        txtVisitID = Trim$(txtVisitID)
+        If Not PropExists("FullVisitID") Then
+            ActiveDocument.CustomDocumentProperties.Add "FullVisitID", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("FullVisitID") = txtVisitID
+        
+        If Not PropExists("VisitID") Then
+            ActiveDocument.CustomDocumentProperties.Add "VisitID", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("VisitID") = txtVisitID
+    End If
+    
+    If mskDOB.Enabled Then
+        If Not PropExists("DOB") Then
+            ActiveDocument.CustomDocumentProperties.Add "DOB", False, msoPropertyTypeString, ""
+        End If
+        
+        If Not PropExists("DemoDOB") Then
+            ActiveDocument.CustomDocumentProperties.Add "DemoDOB", False, msoPropertyTypeString, ""
+        End If
+        If IsDate(mskDOB) Then
+            ActiveDocument.CustomDocumentProperties("DOB") = mskDOB.Text
+            ActiveDocument.CustomDocumentProperties("DemoDOB") = mskDOB.Text
+        End If
+    End If
+     
+    If txtSSN.Enabled Then
+        txtSSN = Trim$(txtSSN)
+        If Not PropExists("SSN") Then
+            ActiveDocument.CustomDocumentProperties.Add "SSN", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("SSN") = txtSSN
+    End If
+     
+    If mskAdmitDate.Enabled Then
+        If Not PropExists("VisitAdmitDate") Then
+            ActiveDocument.CustomDocumentProperties.Add "VisitAdmitDate", False, msoPropertyTypeString, ""
+        End If
+        
+        If Not PropExists("DocAdmitDate") Then
+            ActiveDocument.CustomDocumentProperties.Add "DocAdmitDate", False, msoPropertyTypeString, ""
+        End If
+        If IsDate(mskAdmitDate) Then
+            ActiveDocument.CustomDocumentProperties("VisitAdmitDate") = mskAdmitDate
+            ActiveDocument.CustomDocumentProperties("DocAdmitDate") = mskAdmitDate
+            If PropExists("AdmitDate") Then
+                ActiveDocument.CustomDocumentProperties("AdmitDate") = mskAdmitDate
+            End If
+            If PropExists("VisitDate") Then
+                ActiveDocument.CustomDocumentProperties("VisitDate") = mskAdmitDate
+            End If
+        End If
+    End If
+     
+    If mskServiceDate.Enabled Then
+        If Not PropExists("ServiceDate") Then
+            ActiveDocument.CustomDocumentProperties.Add "ServiceDate", False, msoPropertyTypeString, ""
+        End If
+        
+        If Not PropExists("DateOfService") Then
+            ActiveDocument.CustomDocumentProperties.Add "DateOfService", False, msoPropertyTypeString, ""
+        End If
+        If IsDate(mskServiceDate) Then
+            ActiveDocument.CustomDocumentProperties("ServiceDate") = mskServiceDate
+            ActiveDocument.CustomDocumentProperties("DateOfService") = mskServiceDate
+        End If
+    End If
+     
+    If mskDischargeDate.Enabled Then
+        If Not PropExists("DischargeDate") Then
+            ActiveDocument.CustomDocumentProperties.Add "DischargeDate", False, msoPropertyTypeString, ""
+        End If
+        
+        If Not PropExists("DocDischargeDate") Then
+            ActiveDocument.CustomDocumentProperties.Add "DocDischargeDate", False, msoPropertyTypeString, ""
+        End If
+        If IsDate(mskDischargeDate) Then
+            ActiveDocument.CustomDocumentProperties("DischargeDate") = mskDischargeDate
+            ActiveDocument.CustomDocumentProperties("DocDischargeDate") = mskDischargeDate
+        End If
+    End If
+     
+    'Add the DocRoom property if it doesn't exist.
+    If Not PropExists("DocRoom") Then
+        ActiveDocument.CustomDocumentProperties.Add "DocRoom", False, msoPropertyTypeString, ""
+    End If
+    
+    If Not PropExists("Room") Then
+        ActiveDocument.CustomDocumentProperties.Add "Room", False, msoPropertyTypeString, ""
+    End If
+     
+    If txtSignature.Enabled Then
+        txtSignature = Trim$(txtSignature)
+        If Not PropExists("DictatorSignature") Then
+            ActiveDocument.CustomDocumentProperties.Add "DictatorSignature", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("DictatorSignature") = txtSignature
+    End If
+     
+    If txtDictatorId.Enabled Then
+        txtDictatorId = Trim$(txtDictatorId)
+        If Not PropExists("DictatorId") Then
+            ActiveDocument.CustomDocumentProperties.Add "DictatorId", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("DictatorId") = txtDictatorId
+    End If
+     
+    If txtByLine1.Enabled Then
+        txtByLine1 = Trim$(txtByLine1)
+        If Not PropExists("ByLine") Then
+            ActiveDocument.CustomDocumentProperties.Add "ByLine", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("ByLine") = txtByLine1.Text
+    End If
+     
+    If txtByLine2.Enabled Then
+        txtByLine2 = Trim$(txtByLine2)
+        If Not PropExists("Department") Then
+            ActiveDocument.CustomDocumentProperties.Add "Department", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("Department") = txtByLine2.Text
+    End If
+     
+    If txtResidentSig.Enabled Then
+        txtResidentSig = Trim$(txtResidentSig)
+        If Not PropExists("Resident") Then
+            ActiveDocument.CustomDocumentProperties.Add "Resident", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("Resident") = txtResidentSig.Text
+    End If
+     
+    If txtResidentByLine.Enabled Then
+        txtResidentByLine = Trim$(txtResidentByLine)
+        If Not PropExists("ResidentByLine") Then
+            ActiveDocument.CustomDocumentProperties.Add "ResidentByLine", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("ResidentByLine") = txtResidentByLine.Text
+    End If
+     
+    If txtAttendingSig.Enabled Then
+        txtAttendingSig = Trim$(txtAttendingSig)
+        If Not PropExists("AttendingSig") Then
+            ActiveDocument.CustomDocumentProperties.Add "AttendingSig", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("AttendingSig") = txtAttendingSig
+        If PropExists("AttDrLast") Then
+            ActiveDocument.CustomDocumentProperties("AttDrLast") = LastFromDictSignature(txtAttendingSig)
+        End If
+        If PropExists("AttDrFirst") Then
+            ActiveDocument.CustomDocumentProperties("AttDrFirst") = FirstFromDictSignature(txtAttendingSig)
+        End If
+        If PropExists("AttDrName") Then
+            ActiveDocument.CustomDocumentProperties("AttDrName") = Trim$(LastFromDictSignature(txtAttendingSig) & IIf(Len(LastFromDictSignature(txtAttendingSig)) > 0, ", ", "") & Trim$(FirstFromDictSignature(txtAttendingSig)) & " " & MiddleFromDictSignature(txtAttendingSig))
+        End If
+    End If
+     
+    If txtAttendingId.Enabled Then
+        txtAttendingId = Trim$(txtAttendingId)
+        If Not PropExists("AttendingId") Then
+            ActiveDocument.CustomDocumentProperties.Add "AttendingId", False, msoPropertyTypeString, ""
+        End If
+        ActiveDocument.CustomDocumentProperties("AttendingId") = txtAttendingId
+    End If
+     
+    'Update the fields in the body text.
+    ActiveDocument.Fields.Update
+    
+    'Update the fields in the headers and footers.
+    For Each oSection In ActiveDocument.Sections
+        For Each oHeaderFooter In oSection.Headers
+            oHeaderFooter.Range.Fields.Update
+        Next oHeaderFooter
+        For Each oHeaderFooter In oSection.Footers
+            oHeaderFooter.Range.Fields.Update
+        Next oHeaderFooter
+    Next oSection
+    UpdateProperties = True
+    
+Exit_UpdateProperties:
+    On Error Resume Next
+    Set oHeaderFooter = Nothing
+    Set oSection = Nothing
+    Exit Function
+    
+Err_UpdateProperties:
+    UpdateProperties = False
+    MsgBox "Error updating properties for document: #" & Err.Number & " - " & Err.Description, vbExclamation + vbApplicationModal, "RDP Edit - Update Properties"
+    Resume Exit_UpdateProperties
+    
+End Function
+Attribute VB_Name = "frmSaveAndExit"
+Attribute VB_Base = "0{6D2615BC-C16C-400B-B3E0-91F19BE4A12D}{5C809016-4D97-4D23-A8A5-74A8FE9D24B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Option Explicit
+Public bSaveChanges As Boolean
+
+Private Sub cmdNo_Click()
+    bSaveChanges = False
+    Me.Hide
+End Sub
+
+Private Sub cmdYes_Click()
+    bSaveChanges = True
+    Me.Hide
+End Sub
+
+Private Sub UserForm_Initialize()
+    On Error Resume Next
+    chkPrint.Value = gbPrintOnEdit
+    chkExport.Value = gbExportOnEdit
+    chkEdit = gbAllowRevisions
+    chkApplyQARules = gbQAOnEdit
+End Sub
+
+Attribute VB_Name = "frmViewComments"
+Attribute VB_Base = "0{E8DB1509-38B7-4FA8-A137-43301DAAB240}{839DA4A5-F194-46B2-A47E-42B80857B298}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+Option Explicit
+
+Private Sub chkAutoView_Click()
+    On Error GoTo Err_chkAutoView_Click
+    If chkAutoView.Value Then
+        System.PrivateProfileString("", "HKEY_CURRENT_USER\Software\RDP\Settings", "AutoCommentView") = "Yes"
+    Else
+        System.PrivateProfileString("", "HKEY_CURRENT_USER\Software\RDP\Settings", "AutoCommentView") = "No"
+    End If
+    Exit Sub
+    
+Err_chkAutoView_Click:
+    MsgBox "Unexpected error attempting to set RDP AutoCommentView setting in registry: #" & Err.Number & " - " & Err.Description, vbExclamation + vbApplicationModal, "RDP Edit - Auto View Comments"
+    
+End Sub
+
+Private Sub cmdClear_Click()
+    On Error GoTo Err_cmdClear_Click
+    ActiveDocument.BuiltInDocumentProperties("Comments") = ""
+    Unload Me
+    Exit Sub
+    
+Err_cmdClear_Click:
+    MsgBox "Unexpected error attempting to clear document comments property: #" & Err.Number & " - " & Err.Description, vbExclamation + vbApplicationModal, "RDP Edit - Clear Document Comments"
+    
+End Sub
+
+Private Sub cmdOK_Click()
+    Unload Me
+End Sub
+
+' InQuest injected base64 decoded content
+' hrAh
+' Z+aJ
+' bz{E
+' YMjg
+
+INQUEST-PP=macro

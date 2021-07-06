@@ -1,0 +1,296 @@
+Attribute VB_Name = "MarkitData"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Const cERR_MSG As String = "MarkITData Error"
+
+Public Function LoadDoc(ByVal aMarkitXmlFileNamePath As String) As MSXML2.DOMDocument60
+    On Error GoTo ErrHandler
+    Dim lXmlDoc As MSXML2.DOMDocument60
+    Set lXmlDoc = New MSXML2.DOMDocument60
+    With lXmlDoc
+        Call .setProperty("SelectionLanguage", "XPath")
+        .async = False
+        Call .Load(aMarkitXmlFileNamePath)
+        If .parseError.ErrorCode <> 0 Then
+            Call MsgBox("Error loading xml: " & .parseError.reason, vbOKOnly, cERR_MSG)
+            Exit Function
+        End If
+    End With
+    Set LoadDoc = lXmlDoc
+    GoTo CleanUp
+ErrHandler:
+    Call MsgBox("Error loading " & aMarkitXmlFileNamePath, vbOKOnly, cERR_MSG)
+    Set LoadDoc = Nothing
+CleanUp:
+End Function
+
+Public Function GetXmlDomText(ByRef aXmlNode As IXMLDOMElement, Optional ByVal aField As String = "") As String
+    On Error Resume Next
+    If aField = "" Then
+        GetXmlDomText = aXmlNode.Text
+    Else
+        GetXmlDomText = aXmlNode.selectSingleNode(aField).Text
+    End If
+    On Error GoTo 0
+End Function
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "CommandButton2, 14, 1, MSForms, CommandButton"
+Option Explicit
+
+Private Const mNOW_DATE_OFFSET As Integer = 1
+Private Const mFILE_DIR_OFFSET As Integer = 2
+Private Const mEFFECTIVE_DATE_OFFSET As Integer = 4
+
+Private Const mDEPOSIT_START_TENOR_OFFSET As Integer = 6
+Private Const mDEPOSIT_DAY_COUNT_CONV_OFFSET As Integer = 8
+Private Const mDEPOSIT_CALENDARS_OFFSET As Integer = 9
+
+Private Const mSWAP_FREQ_OFFSET As Integer = 11
+Private Const mSWAP_START_TENOR_OFFSET As Integer = 12
+Private Const mSWAP_DAY_COUNT_CONV_OFFSET As Integer = 14
+Private Const mSWAP_CALENDARS_OFFSET As Integer = 15
+
+Private Const mBROWSE_ERR_MSG As String = "File Browse Error"
+Private Const mCURVE_ERR_MSG As String = "Interest Rate Curve Error"
+Private Const mDOWNLOAD_ERR_MSG As String = "Markit Download Error"
+
+
+Private Sub CommandButton2_Click()
+    On Error GoTo ErrHandler
+    Dim lFileDialog As FileDialog, strSelectedBrowseItem As String
+    Set lFileDialog = Application.FileDialog(msoFileDialogFolderPicker)
+
+    With lFileDialog
+        .AllowMultiSelect = False
+        .Title = "Browse for Markit File Directory"
+        .ButtonName = "Select"
+        If .Show = -1 Then
+            strSelectedBrowseItem = lFileDialog.SelectedItems(1)
+        Else            'the user pressed Cancel
+            Exit Sub
+        End If
+    End With
+    
+    'Set the object variable to Nothing.
+    Set lFileDialog = Nothing
+    
+    'first write the folder path out to the cell
+    Dim lWks As Worksheet: Set lWks = Application.ActiveSheet
+    Dim lDomesticCurrency As Range: Set lDomesticCurrency = lWks.Range("NX_L_DomesticCurrency")
+    lDomesticCurrency.Offset(mFILE_DIR_OFFSET).Value = strSelectedBrowseItem
+    lDomesticCurrency.Offset(mFILE_DIR_OFFSET).Select
+    
+    Exit Sub
+ErrHandler:
+    Call MsgBox("Error browsing for Directory: " & Err.Description, vbOKOnly, mBROWSE_ERR_MSG)
+End Sub
+
+Private Sub CommandButton1_Click()
+    On Error GoTo ErrorHandler
+    
+    Dim lWks As Worksheet: Set lWks = Application.ActiveSheet
+    
+    lWks.Calculate
+    Dim lDomesticCurrency As Range: Set lDomesticCurrency = lWks.Range("NX_L_DomesticCurrency")
+    Dim lNowDate As Variant: lNowDate = lDomesticCurrency.Offset(mNOW_DATE_OFFSET).Value2
+    Dim lDownloadDate As Variant: lDownloadDate = Application.Run("nxLibSubTenor", lNowDate, "1BD", "NONE", "NONE")(1)
+    Dim strDownloadDate As String: strDownloadDate = VBA.Format(lDownloadDate, "yyyymmdd")
+    
+    Dim lFileName As String: lFileName = "InterestRates_" & lDomesticCurrency.Value & "_" & strDownloadDate
+    Dim vaCashSpotDate As Variant, vaCashStartTenor, vaCashCalendar As Variant
+    Dim vaSwapSpotDate As Variant, vaSwapStartTenor, vaSwapCalendar As Variant
+    
+    'Download data from Markit.com
+    Application.StatusBar = "Downloading data from Markit.com"
+    If Not QueryMarkit(lDomesticCurrency.Offset(mFILE_DIR_OFFSET).Value, lFileName & ".zip") Then Exit Sub
+    
+    'Get Markit data
+    Application.StatusBar = "Reading Markit data form directory"
+    Dim lMarkitData As New MarkitData
+    Dim lInterestRateCurveDoc As MSXML2.DOMDocument60: Set lInterestRateCurveDoc = lMarkitData.LoadDoc(lDomesticCurrency.Offset(mFILE_DIR_OFFSET).Value & "\" & lFileName & ".xml")
+    If lInterestRateCurveDoc Is Nothing Then GoTo CleanUp
+    
+    'Get global peroperties
+    Application.StatusBar = "Getting global peroperties"
+'    Dim lEffectiveasof As Variant: lEffectiveasof = lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/effectiveasof"))
+'    Dim lCurrency As Variant: lCurrency = lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/currency"))
+'    lDomesticCurrency.Offset(mEFFECTIVE_DATE_OFFSET).Value = lEffectiveasof
+    'TTPro 16240 SNAC LIBOR Curve issue
+    lDomesticCurrency.Offset(mEFFECTIVE_DATE_OFFSET).Formula = "=C7"
+    
+    'Get deposits properties
+    Application.StatusBar = "Getting deposits properties"
+    'lDomesticCurrency.Offset(mDEPOSIT_SPOT_DATE_OFFSET).Value = lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/deposits/spotdate"))
+    lDomesticCurrency.Offset(mDEPOSIT_DAY_COUNT_CONV_OFFSET).Value = lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/deposits/daycountconvention"))
+    vaCashCalendar = GetCalendars(lInterestRateCurveDoc.selectNodes("interestRateCurve/deposits/calendars"), lMarkitData)
+    vaCashSpotDate = CLng(CDate(lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/deposits/spotdate"))))
+    vaCashStartTenor = Application.Run("nxLibGetBusinessDayCount", lNowDate, vaCashSpotDate, vaCashCalendar)(1)
+    lDomesticCurrency.Offset(mDEPOSIT_CALENDARS_OFFSET).Value = vaCashCalendar
+    lDomesticCurrency.Offset(mDEPOSIT_START_TENOR_OFFSET).Value = CStr(vaCashStartTenor) & "BD"
+    
+    'Get swaps properties
+    Application.StatusBar = "Getting swaps properties"
+    lDomesticCurrency.Offset(mSWAP_FREQ_OFFSET).Value = lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/swaps/fixedpaymentfrequency"))
+    'lDomesticCurrency.Offset(mSWAP_SPOT_DATE_OFFSET).Value = lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/swaps/spotdate"))
+    lDomesticCurrency.Offset(mSWAP_DAY_COUNT_CONV_OFFSET).Value = lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/swaps/fixeddaycountconvention"))
+    vaSwapCalendar = GetCalendars(lInterestRateCurveDoc.selectNodes("interestRateCurve/swaps/calendars"), lMarkitData)
+    vaSwapSpotDate = CLng(CDate(lMarkitData.GetXmlDomText(lInterestRateCurveDoc.selectSingleNode("interestRateCurve/swaps/spotdate"))))
+    vaSwapStartTenor = Application.Run("nxLibGetBusinessDayCount", lNowDate, vaCashSpotDate, vaSwapCalendar)(1)
+    lDomesticCurrency.Offset(mSWAP_CALENDARS_OFFSET).Value = vaSwapCalendar
+    lDomesticCurrency.Offset(mSWAP_START_TENOR_OFFSET).Value = CStr(vaSwapStartTenor) & "BD"
+    
+    'Get curvepoints data
+    Application.StatusBar = "Getting curvepoints data"
+    Dim lDepositCurveList As IXMLDOMNodeList: Set lDepositCurveList = lInterestRateCurveDoc.selectNodes("interestRateCurve/deposits/curvepoint")
+    Dim lSwapCurveList As IXMLDOMNodeList: Set lSwapCurveList = lInterestRateCurveDoc.selectNodes("interestRateCurve/swaps/curvepoint")
+    
+    Dim lWriteRange As Range: Set lWriteRange = lWks.Range("NX_L_WriteAnchor")
+    Dim lDepositeCount As Integer: lDepositeCount = lDepositCurveList.Length
+    
+    'Clear data area
+    Application.StatusBar = "Clear data area"
+    If lWriteRange.CurrentRegion.Rows.Count > 2 Then
+        lWriteRange.CurrentRegion.Resize(lWriteRange.CurrentRegion.Rows.Count - 2).Offset(2).ClearContents
+    End If
+    
+    'Write deposits data
+    Application.StatusBar = "Writing swaps data"
+    Dim lCurveData As Variant: lCurveData = GetCurveData(lDepositCurveList, lMarkitData)
+    lWriteRange.Offset(1).Resize(UBound(lCurveData) + 1, 3).Value = lCurveData
+    Dim lRow As Integer: lRow = lWriteRange.Offset(1, 3).Resize(UBound(lCurveData) + 1).Row
+    lWriteRange.Offset(1, 3).Resize(UBound(lCurveData) + 1).Formula = "=nxInstrumentCashTenor($N$21 & ""."" & E" & lRow & ",$C$6,G" & lRow & ",E" & lRow & ",$N$21)"
+    
+    'Write swaps data
+    Application.StatusBar = "Writing deposits data"
+    lCurveData = GetCurveData(lSwapCurveList, lMarkitData)
+    lWriteRange.Offset(lDepositeCount + 1).Resize(UBound(lCurveData) + 1, 3).Value = lCurveData
+    lRow = lWriteRange.Offset(lDepositeCount + 1, 3).Row
+    lWriteRange.Offset(lDepositeCount + 1, 3).Resize(UBound(lCurveData) + 1).Formula = "=nxInstrumentIRSTenor($N$43 & ""."" & E" & lRow & ",$C$6,E" & lRow & ",G" & lRow & ",$N$43)"
+    
+    'Set time of update
+    lWks.Range("NX_L_Updated").Value = Now
+    lWks.Range("NX_L_Updated").Select
+    lWks.Calculate
+    
+    GoTo CleanUp
+ErrorHandler:
+    Call MsgBox("Error getting Markit data: " & Err.Description, vbOKOnly, mCURVE_ERR_MSG)
+CleanUp:
+    Application.StatusBar = False
+    Set lMarkitData = Nothing
+    Set lDepositCurveList = Nothing
+    Set lSwapCurveList = Nothing
+End Sub
+
+Private Function GetCalendars(ByRef aCalendarNodeList As IXMLDOMNodeList, ByRef aMarkitData As MarkitData) As String
+    Dim lCalendars As String: lCalendars = ""
+    Dim lNode As IXMLDOMNode
+    Dim lSep As String: lSep = ""
+    Set lNode = aCalendarNodeList.NextNode()
+    Do
+        lCalendars = lCalendars & lSep & TranslateCalendars(aMarkitData.GetXmlDomText(lNode, "calendar"))
+        lSep = ","
+        Set lNode = aCalendarNodeList.NextNode()
+    Loop While Not lNode Is Nothing
+    
+    GetCalendars = lCalendars
+End Function
+
+Private Function TranslateCalendars(ByVal aCal As String) As String
+    Select Case aCal
+        Case "TYO": TranslateCalendars = "JPTK"
+        Case Else: TranslateCalendars = "NONE"
+    End Select
+End Function
+
+Private Function GetCurveData(ByRef aCurveNodeList As IXMLDOMNodeList, ByRef aMarkitData As MarkitData) As Variant
+    Dim lIRDateArray As Variant: ReDim lIRDateArray(0 To aCurveNodeList.Length - 1, 0 To 2)
+    Dim lNode As IXMLDOMNode
+    Dim i As Integer
+    For i = 0 To aCurveNodeList.Length - 1
+        Set lNode = aCurveNodeList.Item(i)
+        lIRDateArray(i, 0) = aMarkitData.GetXmlDomText(lNode, "tenor")
+        lIRDateArray(i, 1) = aMarkitData.GetXmlDomText(lNode, "maturitydate")
+        lIRDateArray(i, 2) = aMarkitData.GetXmlDomText(lNode, "parrate")
+    Next i
+    GetCurveData = lIRDateArray
+End Function
+
+Private Function QueryMarkit(ByVal aZipDir As String, ByVal aFileName As String) As Boolean
+    On Error GoTo ErrorHandler
+    
+    Dim lServerDoc As New ServerXMLHTTP60
+    Dim lZipFile As String: lZipFile = aZipDir & "\" & aFileName
+    Dim lRequest As String: lRequest = "https://www.markit.com/news/" & aFileName
+    
+    Call lServerDoc.Open("POST", lRequest, False)
+    Call lServerDoc.setRequestHeader("Content-Type", "application/x-www-form-urlencoded")
+    
+    Dim lNumRetry As Integer: lNumRetry = 0
+    Do
+        Call lServerDoc.send(lRequest)
+        lNumRetry = lNumRetry + 1
+    Loop Until lServerDoc.readyState = 4 Or lNumRetry = 5
+    
+    If (Left$(lServerDoc.responseText, 2) = "PK") Then ' A ZIP file
+            On Error Resume Next
+            Call VBA.MkDir(aZipDir)
+            On Error GoTo 0
+            Dim inputFile() As Byte
+            inputFile = lServerDoc.responseBody
+            Dim filenumber As Integer
+            filenumber = FreeFile
+            
+            Open lZipFile For Binary Access Write As #filenumber
+            Put #filenumber, 1, inputFile
+            Close #filenumber
+            Set lServerDoc = Nothing
+            Dim g_objHelper As Object
+            Set g_objHelper = CreateObject("NumeriXProMarkitAdaptorLibrary.NumeriXProMarkitAdaptorHelper")
+            Call g_objHelper.Unzip(lZipFile, aZipDir)
+            Kill (lZipFile)
+            QueryMarkit = True
+    Else
+        GoTo ErrorHandler
+    End If
+    
+    Exit Function
+ErrorHandler:
+    Call MsgBox("Error downloading Markit data: " & Err.Description, vbOKOnly, mDOWNLOAD_ERR_MSG)
+    QueryMarkit = False
+End Function
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' ?~,^u
+
+INQUEST-PP=macro

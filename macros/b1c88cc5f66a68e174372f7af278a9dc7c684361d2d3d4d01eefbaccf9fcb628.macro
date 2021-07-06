@@ -1,0 +1,247 @@
+Attribute VB_Name = "NewMacros"
+Sub RunSpellcheck()
+
+Dim oSection As Section, OriginalRange As Range
+
+'If no documents open, quit macro
+If Documents.Count = 0 Then
+    Exit Sub
+End If
+
+Set oDoc = ActiveDocument
+
+'Check what type of protection - if any - has been applied
+Select Case oDoc.ProtectionType
+
+    'If not protected, or if protected for tracked changes,
+    'run spellchecker and quit
+    '-------------
+    Case wdNoProtection, wdAllowOnlyRevisions
+        If Options.CheckGrammarWithSpelling Then
+            oDoc.CheckGrammar
+        Else
+            oDoc.CheckSpelling
+        End If
+        Application.ScreenUpdating = True
+        Application.ScreenRefresh
+        If oDoc.SpellingErrors.Count = 0 Then
+            If Options.CheckGrammarWithSpelling Then
+                MsgBox "The spelling and grammar check is complete", _
+                        vbInformation
+            Else
+                MsgBox "The spelling check is complete", vbInformation
+            End If
+        End If
+        System.Cursor = wdCursorNormal
+        Exit Sub
+    '-------------
+    Case wdAllowOnlyComments
+        'Don't want to run spellchecker if protected for comments
+         Exit Sub
+End Select
+
+Set OriginalRange = Selection.Range
+System.Cursor = wdCursorWait
+
+'-------------
+'-------------
+'If we've got this far, it's protected for forms
+'Now unprotect the document
+oDoc.Unprotect Password:="3333"
+oDoc.SpellingChecked = False
+
+'Check each section for its protection property -
+'which you can get even after unprotecting the document.
+'If the section was protected, call a subroutine to spellcheck the formfields.
+'if it wasn't, spellcheck the section
+StatusBar = "Spellchecking document ..."
+For Each oSection In oDoc.Sections
+    If oSection.ProtectedForForms Then
+        Call CheckProtectedSection(oSection)
+        If Cancelled Then
+            'Boolean variable returned by CheckProtectedSection
+            'procedure if user pressed Cancel button
+            Exit For
+        End If
+    Else
+        If oSection.Range.SpellingErrors.Count > 0 Then
+            Application.ScreenUpdating = True
+            oSection.Range.CheckSpelling
+            If oSection.Range.SpellingErrors.Count > 0 Then
+                'User pressed Cancel button
+                '(Pressing Ignore reduces the count, pressing Cancel doesn't)
+                Exit For
+            End If
+        End If
+    End If
+Next oSection
+
+'Re-protect the document
+oDoc.Protect Type:=wdAllowOnlyFormFields, NoReset:=True
+OriginalRange.Select
+Application.ScreenUpdating = True
+Application.ScreenRefresh
+If oDoc.Range.SpellingErrors.Count = 0 Then
+    If Options.CheckGrammarWithSpelling Then
+        MsgBox "The spelling and grammar check is complete", _
+                vbInformation
+    Else
+        MsgBox "The spelling check is complete", vbInformation
+    End If
+End If
+
+'Release variables from memory
+System.Cursor = wdCursorNormal
+Cancelled = False
+CorrectedError = vbNullString
+Set MyRange = Nothing
+
+End Sub
+
+Private Sub CheckProtectedSection(oSection As Section)
+
+Dim FmFld As FormField, FmFldCount As Long, Pos As Long
+
+'check only the text formfields,
+'don't check listboxes and checkboxes - this speeds up the code
+Application.ScreenUpdating = False
+For Each FmFld In oSection.Range.FormFields
+    'Check to see if the field is a text formfield
+    If FmFld.Type = wdFieldFormTextInput Then
+        'Check if the field is a 'real' text field (no date, formula etc);
+        'and that it is enabled for text input
+        If FmFld.TextInput.Type = wdRegularText And FmFld.Enabled Then
+            'The following subroutine won't be called if Word 97 is in use
+            If Not Left$(Application.Version, 1) = "8" Then
+                Call TurnNoProofingOff(FmFld)
+            End If
+            FmFld.Range.SpellingChecked = False
+
+            'Change the language constant in the following line if necessary;
+            'when you type the = sign, a list of all supported language
+            'constants will appear, and you can choose one from the list.
+            FmFld.Range.LanguageID = wdEnglishUS
+            'Or whichever language is appropriate for you
+
+            'If the current form field contains errors, spellcheck the text in it
+            If FmFld.Range.SpellingErrors.Count > 0 Then
+                'The following condition is to allow for a Word 97 bug, which
+                'was fixed in 2000; (and in the latest Word 97 patches). If
+                'the formfield is in a table and contains more than one
+                'paragraph, then spellchecking it will crash Word 97
+                If Left$(Application.Version, 1) = "8" _
+                          And FmFld.Range.Paragraphs.Count > 1 _
+                          And FmFld.Range.Tables.Count > 0 Then
+                    Call Word97TableBugWorkaround(FmFld)
+                    If Cancelled Then Exit Sub
+                Else
+                    'Set a range to the formfield's range in case the user
+                    'accidentally destroys the formfield by overtyping its entire
+                    'contents
+                    Set MyRange = FmFld.Range
+                    FmFldCount = oSection.Range.FormFields.Count
+                    Application.ScreenUpdating = True
+
+                    FmFld.Range.CheckSpelling
+
+                    If IsObjectValid(FmFld) Then
+                        If FmFld.Range.SpellingErrors.Count > 0 Then
+                            'User pressed Cancel button. (Pressing Ignore
+                            'reduces the count, pressing Cancel doesn't)
+                            Cancelled = True
+                            Exit Sub
+                        End If
+                    Else
+                        'If formfield was destroyed because user overtyped its
+                        'entire contents
+                        CorrectedError = MyRange.Text
+                        If Len(CorrectedError) = 0 Then
+                            CorrectedError = MyRange.Words(1).Text
+                        End If
+
+                        'Formfields should really NEVER be preceded by a tab;
+                        'design your forms so that each formfield is in its own
+                        'table cell (removing borders as necessary). However, to
+                        'cater for any legacy forms you may have, the following
+                        'loop works around the possibility that it might be
+                        'preceded by a tab
+                        Pos = InStr(CorrectedError, vbTab)
+                        Do While Pos > 0
+                            CorrectedError = Mid$(CorrectedError, Pos + 1)
+                            Pos = InStr(CorrectedError, vbTab)
+                        Loop
+
+                        'If formfield was destroyed when the user corrected the
+                        'spelling, reinstate it, and put the user's correction into its
+                        'result. Note that although Undo reinstates the Formfield
+                        'itself, if the Formfield is preceded by a tab, It doesn't
+                        'reinstate the FmFld object, hence the need to do a count
+                        '(although, as previously stated, in a well-designed form,
+                        'formfields should never be preceded by a tab, as it's
+                        'better use table cells (removing borders as necessary).
+                        Do While Not FmFldCount = _
+                                oSection.Range.FormFields.Count
+                            oDoc.Undo
+                        Loop
+
+                        'Also due to a Word bug, if the formfield is preceded by a
+                        'tab, the text within the formfield may now be selected
+                        'without the formfield itself being selected!
+                        'Hence the following convoluted workaround
+                        If Selection.FormFields.Count = 0 Then
+                            Selection.MoveRight unit:=wdCharacter
+                            Selection.MoveLeft unit:=wdCharacter, Extend:=True
+                        End If
+                        If Not IsObjectValid(FmFld) Then
+                            Set FmFld = Selection.FormFields(1)
+                        End If
+                        FmFld.Result = CorrectedError
+                    End If
+                End If
+                Application.ScreenUpdating = False
+            End If
+        End If
+    End If
+Next FmFld
+
+End Sub
+
+Private Sub TurnNoProofingOff(FmFld As FormField)
+    'This subroutine is called only in Word 2000 and above
+    FmFld.Range.NoProofing = False
+End Sub
+
+Private Sub Word97TableBugWorkaround(FmFld As FormField)
+
+'Unlink formfield (convert to text)
+Set MyRange = FmFld.Range
+FmFld.Range.Fields(1).Unlink
+Application.ScreenUpdating = True
+MyRange.CheckSpelling
+If MyRange.SpellingErrors.Count > 0 Then
+    'User pressed Cancel button
+    '(Pressing Ignore reduces the count, pressing Cancel doesn't)
+    Cancelled = True
+End If
+CorrectedError = MyRange.Text
+'Undo to reinstate the formfield
+Do While Not IsObjectValid(FmFld)
+    oDoc.Undo
+Loop
+FmFld.Range.Fields(1).Result.Text = CorrectedError
+Application.ScreenUpdating = False
+
+End Sub
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' Z+aJ
+
+INQUEST-PP=macro

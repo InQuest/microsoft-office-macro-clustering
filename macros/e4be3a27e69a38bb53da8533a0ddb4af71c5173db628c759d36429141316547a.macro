@@ -1,0 +1,947 @@
+Attribute VB_Name = "Diagramm1"
+Attribute VB_Base = "0{00020821-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Modul1"
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmdGetMeasureData, 6, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmdDisconnect, 8, 2, MSForms, CommandButton"
+Attribute VB_Control = "cmdConnect, 21, 8, MSForms, CommandButton"
+
+Option Explicit
+Option Base 1
+'----------------------------------------------------------------------------------------
+' Global Constants
+'----------------------------------------------------------------------------------------
+Const OPC_DS_CACHE = 1
+Const OPC_DS_DEVICE = 2
+' Const NUM_ITEMS = 6
+
+' Const BLOCK_SIZE = 200
+
+Const COL_DB2 = 1
+Const COL_DB3 = 2
+
+Const ITERATE_LIMIT = 10000
+Const OPC_QUAL_GOOD = 192
+
+Public ServerObj As OPCServer
+Public MyGroupInfoColl As New Collection
+
+Private lReadings As Long
+Private lReadDBCalls As Long
+
+'----------------------------------------------------------------------------------------
+' Global Variables
+'----------------------------------------------------------------------------------------
+Dim ServerConnected As Boolean
+
+Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+Private Sub cmdConnect_Click()
+    Call cmdServerConnect
+End Sub
+
+Private Sub cmdDisconnect_Click()
+    ServerDisconnect
+End Sub
+
+Private Sub cmdGetMeasureData_Click()
+'    RefreshMeasureData
+    
+    ' Connect to Server
+    cmdServerConnect
+    
+    ' Read variables
+    ReadVar
+        
+    ' Doesn't matter what happened. We will disconnect!
+    Call ServerDisconnect
+End Sub
+
+
+'----------------------------------------------------------------------------------------
+' Sub cmdServerConnect()
+' Purpose: Connect to OPC_server
+'----------------------------------------------------------------------------------------
+Sub cmdServerConnect()
+
+If Not ServerConnected Then
+    On Error GoTo ErrorHandler
+    '--------------------------------------------------------OPC-------------------------
+    Set ServerObj = New OPCServer                           'OPC
+    ServerObj.Connect ("OPC.SimaticNet")                    'OPC
+    '--------------------------------------------------------OPC-------------------------
+    If ServerObj Is Nothing Then
+        ServerConnected = False
+    Else
+        ServerConnected = True
+    End If
+Else
+    MsgBox "Server is already connected", vbInformation, "Message"
+End If
+
+Exit Sub
+ErrorHandler:
+    MsgBox Err.Description + Chr(13) + " Can't connect to server", vbCritical, "ERROR"
+End Sub
+
+'----------------------------------------------------------------------------------------
+' Sub ServerDisconnect()
+' Purpose: Close OPC_server
+'----------------------------------------------------------------------------------------
+Public Sub ServerDisconnect()
+    
+    Dim pError() As Long
+    Dim Group As OPCGroup
+    Dim OPCItem As OPCItem
+    Dim iteminfo As New clsItemManagement
+    Dim i As Long
+    Dim lCount As Long
+    
+    If ServerConnected Then
+        On Error GoTo ErrorHandler
+        
+        ' Remove the OPCItems
+        For Each Group In ServerObj.OPCGroups
+            On Error Resume Next
+            Set iteminfo = MyGroupInfoColl.Item(Group.Name)
+            Group.OPCItems.Remove UBound(iteminfo.GetItemInfos()), iteminfo.GetItemServerHandles(), pError
+        Next
+        ServerObj.OPCGroups.RemoveAll
+        ServerObj.Disconnect
+        
+        ServerConnected = False
+        Erase pError
+    Else
+        MsgBox " No server connected !", 48, "Message"
+    End If
+
+    lCount = MyGroupInfoColl.Count
+    For i = 1 To lCount
+        MyGroupInfoColl.Remove (1)
+    Next
+    
+    Exit Sub
+    
+ErrorHandler:
+        MsgBox Err.Description + Chr(13) + "Can't close server!", vbCritical, "ERROR"
+        
+        ' In every case we must delete the internal list in order to connect
+        ' to the server one more time.
+        lCount = MyGroupInfoColl.Count
+        For i = 1 To lCount
+            MyGroupInfoColl.Remove (1)
+        Next
+End Sub
+
+
+
+'----------------------------------------------------------------------------------------
+' Sub ReadVar()
+' Purpose: Reads the given Variables and fills it into the cells
+'----------------------------------------------------------------------------------------
+Public Function ReadVar() As Boolean
+   
+On Local Error GoTo ErrorHandler
+    
+    Dim DBHead() As Variant
+    Dim DBData() As Variant
+    
+    Dim DB2Addresses As Range
+    Dim DB3Addresses As Range
+    Dim Kopf As Range
+    Dim Werte As Range
+    
+    Me.Range("Status").Value = "Reading/Filling data"
+
+    Set Kopf = Me.Range("Head")
+    Set Werte = Me.Range("Werte")
+    ' Clear cell-values
+    Kopf.Clear
+    Werte.Clear
+   
+    lReadings = lReadings + 1
+    
+    Set DB2Addresses = Me.Range("AddressTags2")
+    Set DB3Addresses = Me.Range("AddressTags3")
+    
+    ' Add the groups HEAD_DB2 and DATA_DB2 for reading DB2 and save the data in
+    ' DBHead and DBData
+    lReadDBCalls = 1
+    If ReadDB("HEAD_DB2", DB2Addresses.Cells(1, 1).Value, "DATA_DB2", _
+                DB2Addresses.Cells(2, 1).Value, DBHead, DBData) = True Then
+        ' Write DB2 in 3rd column
+        Call WriteDBToSheet(COL_DB2, DBHead, DBData)
+        
+        Erase DBHead
+        Erase DBData
+        
+        lReadDBCalls = 3
+        ' Add the groups HEAD_DB3 and DATA_DB3 for reading DB3 and save the data in
+        ' DBHead and DBData
+        If ReadDB("HEAD_DB3", DB3Addresses.Cells(1, 1).Value, "DATA_DB3", _
+                    DB3Addresses.Cells(2, 1).Value, DBHead, DBData) = True Then
+            ' Write DB3 in 4th column
+            Call WriteDBToSheet(COL_DB3, DBHead, DBData)
+        End If
+        Me.Range("Status").Value = "Done: Successfully"
+        ReadVar = True
+    Else
+        ReadVar = False
+        Me.Range("Status").Value = "Error occured"
+    End If
+
+    Exit Function
+
+ErrorHandler:
+    Me.Range("Status").Value = "Error occured"
+    ReadVar = False
+End Function
+
+'----------------------------------------------------------------------------------------
+' Sub WriteDBToSheet()
+' Purpose: Fills the Sheet with the data-arrays
+' Parameters:
+'   - lCol: The column
+'   - DBHead: HeadData of the DB
+'   - DBData: MeasureData of the DB
+'----------------------------------------------------------------------------------------
+Private Sub WriteDBToSheet(ByVal lCol As Long, ByRef DBHead() As Variant, ByRef DBData() As Variant)
+    Dim i, j As Long
+    Dim val As Variant
+    Dim strValues() As String
+    Dim strVal As Variant
+    Dim Werte As Range
+    Dim Kopf As Range
+    Dim Head() As Variant
+    Dim Data() As Variant
+    Dim lTimeBase As Long
+    
+    Head = DBHead
+    Data = DBData
+    
+    Set Kopf = Me.Range("Head")
+    Set Werte = Me.Range("Werte")
+
+    ' Output - Head
+    For Each val In Head
+        val = Replace(val, "{", "")
+        val = Replace(val, "}", "")
+        strValues = Split(CStr(val), "|")
+        lTimeBase = CLng(strValues(0))
+        
+        i = 0
+        For Each strVal In strValues
+            i = i + 1
+            Kopf(i, lCol).Value = strVal
+            
+            Call Kopf(i, lCol).BorderAround(xlContinuous, xlThin)
+        Next
+    Next
+    
+    ' Output - Data
+    For Each val In Data
+        val = Replace(val, "{", "")
+        val = Replace(val, "}", "")
+        strValues = Split(CStr(val), "|")
+        
+        i = 0
+        For Each strVal In strValues
+            i = i + 1
+            Werte(i, 1).Value = i
+            Werte(i, 2).Value = (i - 1) * lTimeBase
+            
+            Werte(i, lCol + 2).Value = CDbl(strVal)
+            
+            Call Werte(i, 1).BorderAround(xlContinuous, xlThin)
+            Call Werte(i, 2).BorderAround(xlContinuous, xlThin)
+            Call Werte(i, lCol + 2).BorderAround(xlContinuous, xlThin)
+        Next
+    Next
+    
+End Sub
+
+'----------------------------------------------------------------------------------------
+' Function ReadDB()
+' Purpose: Reads the DBs from Step7; adding a group and items; saving the DB-values in
+'           DBHead and DBData
+' Parameters:
+'   - strGroupNameHead: Name of the group to give; this will be the identifier (key)
+'                   of the internal list to manage the ItemIDs and Itemserverhandles in one group
+'   - strItemIDHead: The item identifier of the head datas
+'   - strGroupNameData: Group name for the measure datas
+'   - strItemIDData: item identifier of the measure datas
+'   - DBHead: array to hold all head datas
+'   - DBData: array to hold all measure datas
+' Return value:
+'   Boolean - everything worked fine or not.
+'----------------------------------------------------------------------------------------
+Private Function ReadDB(ByVal strGroupNameHead As String, ByVal strItemIDHead As String, _
+                        ByVal strGroupNameData As String, ByVal strItemIDData As String, _
+                        ByRef DBHead() As Variant, ByRef DBData() As Variant) As Boolean
+        
+    Dim bError As Boolean
+    Dim ErrorString As String
+    Dim Value() As Variant
+    Dim pError() As Long
+    Dim pQualities() As Integer
+    Dim pTimeStamps() As Date
+    Dim objHeadGroup As OPCGroup
+    Dim objDataGroup As OPCGroup
+    Dim MyGroupInfo As New clsItemManagement
+    Dim strHead As String
+    Dim i As Long
+    
+    bError = False
+    
+    ' Add HeadGroup
+    Call AddOPCGroup(strGroupNameHead, objHeadGroup)
+    If Not objHeadGroup Is Nothing Then
+        ' Add Items
+        If AddOPCItem(objHeadGroup, strItemIDHead, 0, 1) = True Then
+            ' Read the amount of measure-datas
+            On Error Resume Next
+            Set MyGroupInfo = MyGroupInfoColl.Item(objHeadGroup.Name)
+            
+            ' In order not to have a endless loop, we will limit the iterations to ITERATE_LIMIT
+            i = 0
+            Do
+                i = i + 1
+                '--------------------------------------------------------OPC-----------------------------
+                objHeadGroup.SyncRead OPC_DS_DEVICE, UBound(MyGroupInfo.GetItemInfos()), _
+                                        MyGroupInfo.GetItemServerHandles(), Value, pError, _
+                                        pQualities, pTimeStamps
+                '--------------------------------------------------------OPC-----------------------------
+            Loop Until (pQualities(1) = OPC_QUAL_GOOD Or pError(1) <> 0 Or i = ITERATE_LIMIT)
+            
+'            Me.Range("Perf").Cells(lReadings, lReadDBCalls).Value = i
+            
+            If Err.Number <> 0 Or pError(1) <> 0 Then
+                bError = True
+            Else
+                DBHead = Value
+                ' Application-defined
+                strHead = Value(1)
+                strHead = Replace(strHead, "{", "")
+                strHead = Replace(strHead, "}", "")
+            End If
+        Else
+            bError = True
+        End If
+    Else
+        bError = True
+    End If
+    
+    If bError Or UBound(DBHead) < 1 Or pError(1) <> 0 Then
+        MsgBox "Error with " & strGroupNameHead & vbCr & vbCr & "Aborting", vbCritical
+        Call ServerDisconnect
+        ReadDB = False
+        Exit Function
+    End If
+    
+    ' Add DataGroup
+    Call AddOPCGroup(strGroupNameData, objDataGroup)
+    If Not objDataGroup Is Nothing Then
+        ' Add Items
+        ' Caution: The last one of HeadData is the count for the datas
+        If UBound(Split(strHead, "|")) < 2 Then
+            Call MsgBox("Didn't get head values!" & vbCr & "Aborting", vbCritical)
+        Else
+            If AddOPCItem(objDataGroup, strItemIDData, CLng(Split(strHead, "|")(2)), 1) = True Then
+                ' Read the amount of measure-datas
+                On Error Resume Next
+                Set MyGroupInfo = MyGroupInfoColl.Item(objDataGroup.Name)
+            
+                ' In order not to have a endless loop, we will limit the iterations to ITERATE_LIMIT
+                i = 0
+                Do
+                    i = i + 1
+                    '--------------------------------------------------------OPC-----------------------------
+                    objDataGroup.SyncRead OPC_DS_DEVICE, UBound(MyGroupInfo.GetItemInfos()), _
+                                            MyGroupInfo.GetItemServerHandles(), Value, pError, _
+                                            pQualities, pTimeStamps
+                    '--------------------------------------------------------OPC-----------------------------
+                Loop Until (pQualities(1) = OPC_QUAL_GOOD Or pError(1) <> 0 Or i = ITERATE_LIMIT)
+                
+                'Me.Range("Perf").Cells(lReadings, lReadDBCalls + 1).Value = i
+
+                If Err.Number <> 0 Or pError(1) <> 0 Then
+                    bError = True
+                Else
+                    DBData = Value
+                End If
+            Else
+                bError = True
+            End If
+        End If
+    Else
+        bError = True
+    End If
+    ReadDB = True
+    If bError Or pError(1) <> 0 Then
+        MsgBox "Error with " & strGroupNameData & vbCr & ServerObj.GetErrorString(pError(1)) & _
+            vbCr & vbCr & "Aborting", vbCritical
+        ReadDB = False
+    End If
+            
+
+End Function
+
+'----------------------------------------------------------------------------------------
+' Sub AddOPCGroup()
+' Purpose: Adds a group to the opc server
+' Parameters:
+'   - strGroupNameHead: Name of the group to give
+'   - objGroup: OPCGroup-Object, which will be set to the added group
+'----------------------------------------------------------------------------------------
+Sub AddOPCGroup(ByVal strGroupName As String, ByRef objGroup As OPCGroup)
+
+    Dim GroupObj As OPCGroup
+    Set objGroup = Nothing
+
+    If Not ServerConnected Then
+        MsgBox " No server connected !" + Chr(13) + "Connect to server before adding groups!", 48, "Message"
+        Exit Sub
+    End If
+    
+    On Error GoTo ErrorHandler
+    '--------------------------------------------------------OPC-------------------------
+    ServerObj.OPCGroups.DefaultGroupIsActive = True             'OPC
+    Set GroupObj = ServerObj.OPCGroups.Add(strGroupName)
+    '--------------------------------------------------------OPC-------------------------
+    
+    Set objGroup = GroupObj
+    
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Can't add group !", vbCritical, "ERROR"
+End Sub
+
+'----------------------------------------------------------------------------------------
+' Sub AddOPCItem()
+' Purpose: Adds items to the group
+' Parameters:
+'   - objGroup: Group to which we want to add items
+'   - strId: Identifier of the item to add
+'   - lItemRange: Range of the item; if it is 0, then the range is given in strId;
+'           the amount of Items beginning at point x in the DB is the "range of items"
+'   - lItems: Number of items to add (caution: do not mistake lItems for lItemRange!)
+' Return value:
+'   Boolean: either it worked fine or not.
+' Misc.:
+'   Now the function will only add ONE item with the given range.
+'   You have to change the marked code inside to add more than one item!!!
+'----------------------------------------------------------------------------------------
+Function AddOPCItem(ByVal objGroup As OPCGroup, ByVal strId As String, _
+                ByVal lItemRange As Long, ByVal lItems As Long) As Boolean
+    
+    Dim ii As Long
+    Dim ErrorString As String
+    Dim ErrorItem As Boolean
+    
+    Dim ClientHandle() As Long
+    Dim AccPath() As String
+    Dim ReqDataTypes() As Integer
+    Dim ItemID() As String
+    
+    Dim AdressTags As Variant
+    Dim pError() As Long
+    Dim pQualities() As Integer
+    Dim pTimeStamps() As Date
+    Dim ItemServerHandle() As Long
+        
+    Dim Value() As Variant
+    
+    Dim MyGroupInfo As New clsItemManagement
+    
+    ReDim ReqDataTypes(lItems)
+    ReDim ItemID(lItems)
+    ReDim ClientHandle(lItems)
+    ReDim AccPath(lItems)
+    ReDim ItemServerHandle(lItems)
+    
+    If Not ServerConnected Then
+        MsgBox "AddOPCItem: No server connected !", 48, "Message"
+        AddOPCItem = False
+        Exit Function
+    End If
+    
+    If objGroup Is Nothing Then
+        MsgBox "AddOPCItem: Given group is not set -> exiting!", 48, "Message"
+        AddOPCItem = False
+        Exit Function
+    End If
+    
+    '--------------------------------------------------------OPC-------------------------
+    
+    ' Add array
+    For ii = 1 To lItems                                    'OPC
+        
+        ' *******************************
+        ' Change Code here, when you want to add more than one item
+        ' e.g. Get IDs from a couple of cells
+        ' *******************************
+        If lItemRange = 0 Then
+            ItemID(ii) = strId
+        Else
+            ItemID(ii) = CStr(strId & "," & lItemRange)
+        End If
+        
+        AccPath(ii) = ""                                    'OPC
+        ReqDataTypes(ii) = vbString                         'OPC
+        ClientHandle(ii) = ii                               'OPC
+    Next ii                                                 'OPC
+    '--------------------------------------------------------OPC-------------------------
+    'Set ItemCollection = GroupObj.OPCItems                  'OPC
+    objGroup.OPCItems.AddItems lItems, ItemID, ClientHandle, ItemServerHandle, pError, ReqDataTypes, AccPath
+    '--------------------------------------------------------OPC-------------------------
+ 
+    If pError(1) <> 0 Then
+        ErrorString = ServerObj.GetErrorString(pError(1))
+        MsgBox ErrorString, vbCritical, "ERROR"
+        AddOPCItem = False
+    Else
+        ' Save the Itemidentifiers and their handles in the GroupInfo-Collection;
+        ' the group name will be the identifier of the items in it;
+        ' Caution: the group name _must_ be unique!
+        Call MyGroupInfo.SetItemInfos(ItemID)
+        Call MyGroupInfo.SetItemServerHandles(ItemServerHandle)
+        MyGroupInfoColl.Add MyGroupInfo, objGroup.Name
+        AddOPCItem = True
+    End If
+    Erase pError
+End Function
+'
+''----------------------------------------------------------------------------------------
+'' Sub cmdSyncRead()
+'' Purpose: Synchronous reading
+''----------------------------------------------------------------------------------------
+'Sub cmdSyncRead(cmd As Integer, _
+'                index As Integer, _
+'                PLCtoPC As Integer, _
+'                ReadStatus As Integer)
+'
+'Dim ErrorString As String
+'Dim Value() As Variant
+'Dim pError() As Long
+'Dim pQualities() As Integer
+'Dim pTimeStamps() As Date
+'Dim WorkSpaceX As Range
+'Set WorkSpaceX = Range("WorkSpace")
+'
+''Reset status tag
+'ReadStatus = 0
+'
+'On Error GoTo ErrorHandler
+''--------------------------------------------------------OPC-----------------------------
+'GroupObj.SyncRead OPC_DS_CACHE, NUM_ITEMS, ItemServerHandle, Value, pError, pQualities, pTimeStamps
+''--------------------------------------------------------OPC-----------------------------
+'
+'If pError(1) <> 0 Then
+'    ErrorString = ServerObj.GetErrorString(pError(1))
+'    MsgBox ErrorString
+'    'Read item failed
+'    ReadStatus = 1
+'Else
+'
+'    'Get status of PLC interface
+'    If ((Value(3) And 1) = 1) Then
+'        PLCtoPC = 1
+'    Else
+'        PLCtoPC = 0
+'    End If
+'
+'    'Write data from PLC interface to EXCEL
+'    If cmd = 1 Then
+'        'Write index
+'        WorkSpaceX.Cells(index, 1).Value = index
+'
+'        'Period in ms
+'        If (index = 1) Then
+'            WorkSpaceX.Cells(index, 2).Value = 0
+'        Else
+'            WorkSpaceX.Cells(index, 2).Value = Value(6) + WorkSpaceX.Cells(index - 1, 2)
+'        End If
+'
+'        'Distance in increments
+'        WorkSpaceX.Cells(index, 3).Value = Value(4)
+'
+'        'Velocity in revolutions per minute
+'        WorkSpaceX.Cells(index, 4).Value = _
+'                ((Value(4)) / Value(6)) * (60000 / [IncPerRevolution].Value)
+'
+'        'Calculate weight to display
+'        If index = 1 Then
+'            [Display_Qx].Value = WorkSpaceX.Cells(index, 4).Value
+'        Else
+'            [Display_Qx].Value = [Display_Qx].Value * (index - 1) / index _
+'                                    + WorkSpaceX.Cells(index, 4).Value / index
+'        End If
+'
+'
+'        'Trigger
+'        ' Write Q0
+'        If (Value(5) And 1) = 1 Then
+'            WorkSpaceX.Cells(index, 5).Value = 1
+'        Else
+'            WorkSpaceX.Cells(index, 5).Value = 0
+'        End If
+'        ' Write Q1
+'        If (Value(5) And 2) = 2 Then
+'            WorkSpaceX.Cells(index, 6).Value = 1
+'        Else
+'            WorkSpaceX.Cells(index, 6).Value = 0
+'        End If
+'        ' Write Q2
+'        If (Value(5) And 4) = 4 Then
+'            WorkSpaceX.Cells(index, 7).Value = 1
+'        Else
+'            WorkSpaceX.Cells(index, 7).Value = 0
+'        End If
+'        ' Write Q3
+'        If (Value(5) And 8) = 8 Then
+'            WorkSpaceX.Cells(index, 8).Value = 1
+'        Else
+'            WorkSpaceX.Cells(index, 8).Value = 0
+'        End If
+'
+'    End If
+'
+'    'Read item was successfull
+'    ReadStatus = 2
+'
+'End If
+'Erase pError
+'
+'Exit Sub
+'ErrorHandler:
+' MsgBox Err.Description + Chr(13) + " Can't read the Item value !", vbCritical, "ERROR"
+''Read item failed
+' ReadStatus = 1
+'End Sub
+'
+'
+'
+'''----------------------------------------------------------------------------------------
+''' Sub cmdSyncWrite()
+''' Purpose: Synchronous writing
+'''----------------------------------------------------------------------------------------
+''Sub cmdSyncWrite(cmd As Integer, index As Integer, WriteStatus As Integer)
+''Dim Value(NUM_ITEMS) As Variant
+''Dim perror() As Long
+''Dim ErrorString As String
+''Dim NumItems As Long
+''Dim Tmp As String
+''
+''WriteStatus = 0
+''
+''If Not ItemAdded Then
+''    MsgBox "No Item found ! ", 48, "Message"
+''    Exit Sub
+''End If
+''
+'''Set interface to require data
+''If cmd = 1 Then
+''    Value(2) = 1
+''Else
+''    Value(2) = 0
+''End If
+'''Assign index
+''Value(1) = index
+''
+''NumItems = 2
+''On Error GoTo ErrorHandler
+''GroupObj.SyncWrite NumItems, ItemServerHandle, Value, perror
+''If perror(1) <> 0 Then
+''    ErrorString = ServerObj.GetErrorString(perror(1))
+''    MsgBox ErrorString
+''    'Write item failed
+''    WriteStatus = 1
+''Else
+''    'Write item was successfull
+''    WriteStatus = 2
+''End If
+''
+''Erase perror
+''
+''Exit Sub
+''ErrorHandler:
+''    MsgBox Err.Description + Chr(13) + " Can't write the Item value !", vbCritical, "ERROR"
+''    'Write item failed
+''    WriteStatus = 1
+''End Sub
+'
+''----------------------------------------------------------------------------------------
+''RefreshMeasureData()
+''----------------------------------------------------------------------------------------
+'Public Sub RefreshMeasureData()
+'
+''Define tags
+'Dim ii As Integer
+'Dim PLCtoPC As Integer
+'Dim Trails As Integer
+'Dim Status As Integer
+'
+'Dim TRAILMAX As Range
+'Set TRAILMAX = [TrailMaxX]
+'
+'Dim MaxIndexVBA As Range
+'Set MaxIndexVBA = [MaxIndex]
+'
+'Dim WorkSpaceX As Range
+'Set WorkSpaceX = Range("WorkSpace")
+'
+'On Error GoTo ErrorHandler
+'
+'' Start process
+'[DispStatus].Value = "Busy: Start Execution"
+'
+''Create EXCEL table
+'With WorkSpaceX.Borders(xlEdgeLeft)
+'    .LineStyle = xlContinuous
+'    .Weight = xlThin
+'    .ColorIndex = xlAutomatic
+'End With
+'With WorkSpaceX.Borders(xlEdgeTop)
+'    .LineStyle = xlContinuous
+'    .Weight = xlThin
+'    .ColorIndex = xlAutomatic
+'End With
+'With WorkSpaceX.Borders(xlEdgeBottom)
+'    .LineStyle = xlContinuous
+'    .Weight = xlThin
+'    .ColorIndex = xlAutomatic
+'End With
+'With WorkSpaceX.Borders(xlEdgeRight)
+'    .LineStyle = xlContinuous
+'    .Weight = xlThin
+'    .ColorIndex = xlAutomatic
+'End With
+'With WorkSpaceX.Borders(xlInsideVertical)
+'    .LineStyle = xlContinuous
+'    .Weight = xlThin
+'    .ColorIndex = xlAutomatic
+'End With
+'With WorkSpaceX.Borders(xlInsideHorizontal)
+'    .LineStyle = xlContinuous
+'    .Weight = xlThin
+'    .ColorIndex = xlAutomatic
+'End With
+'
+''Clear contents
+'WorkSpaceX.ClearContents
+'[Display_Qx].Value = 0
+'
+''Create connection to the OPC Server
+'cmdServerConnect
+'If ServerConnected = False Then
+'    [DispStatus].Value = "Aborted: Can|fffd|t connect OPC-Server"
+'    Exit Sub
+' End If
+'[DispStatus].Value = "Busy: Connected"
+'
+''Create Group
+'cmdAddGroup
+'If GroupAdded = False Then
+'    'Disconnect OPC-Server
+'    ServerDisconnect
+'    [DispStatus].Value = "Aborted: Can|fffd|t create OPC group"
+'    Exit Sub
+'End If
+'
+''Create Items
+'cmdAddItem
+'If ItemAdded = False Then
+'    'Disconnect OPC-Server
+'    ServerDisconnect
+'    [DispStatus].Value = "Aborted: Can|fffd|t add items"
+'    Exit Sub
+'End If
+'
+'
+''Calculate max number of data rows
+'If (MaxIndexVBA.Value > WorkSpaceX.Rows.Count) Then
+'    MaxIndexVBA.Value = WorkSpaceX.Rows.Count
+'End If
+'
+''------------------------------
+''Main loop to scan measure data
+'For ii = 1 To MaxIndexVBA.Value
+'
+'    'Display status
+'    [DispStatus].Value = "Busy: Get value(" & ii & ")"
+'
+'    '----------------------------------
+'    'Verify if interface to PLC is free
+'    Trails = 0
+'    Status = 0
+'    PLCtoPC = &HFF
+'    'Read until Interface was still busy after TRAILMAX trails or an error occured
+'    Do Until ((Trails > TRAILMAX.Value) Or PLCtoPC = 0 Or Status = 1)
+'        'Read controlbyte from PLC
+'        cmdSyncRead 0, ii, PLCtoPC, Status
+'
+'        'Wait 5 ms
+'        Sleep (5)
+'
+'        'Increment trails
+'        Trails = Trails + 1
+'
+'    Loop
+'    'Verify results
+'    If ((Trails > TRAILMAX.Value) Or Status = 1) Then
+'        [DispStatus].Value = "Aborted: Interface is busy or faulty of value(" & ii & ")"
+'        ServerDisconnect
+'        MsgBox "Aborted: Interface is busy or faulty of value(" & ii & ")" & Chr(13) _
+'                        & "Status=" & Status & " Trails=" & Trails, vbCritical, "ERROR"
+'        Exit Sub
+'    End If
+'
+'    '--------------------------------------------
+'    'Write "Request" and "index" to PLC interface
+'    Status = 0
+'    cmdSyncWrite 1, ii, Status
+'    'Verify results
+'    If Status = 1 Then
+'        [DispStatus].Value = "Aborted: Can't write command for value(" & ii & ")"
+'        ServerDisconnect
+'        MsgBox "Aborted: Can't write to PLC interface" & Chr(13), vbCritical, "ERROR"
+'        Exit Sub
+'    End If
+'
+'    'Verify if interface to PLC has new data
+'    Trails = 0
+'    Status = 0
+'    PLCtoPC = &HFF
+'    'Read until Interface was still busy after TRAILMAX trails or an error occured
+'    Do Until ((Trails > TRAILMAX.Value) Or PLCtoPC = 1 Or Status = 1)
+'        'Read controlbyte from PLC
+'        cmdSyncRead 0, ii, PLCtoPC, Status
+'
+'        'Wait 5 ms
+'        Sleep (5)
+'
+'        'Increment trails
+'        Trails = Trails + 1
+'    Loop
+'    'Verify results
+'    If ((Trails > TRAILMAX.Value) Or Status = 1) Then
+'        [DispStatus].Value = "Aborted: Interface is busy or faulty of value(" & ii & ")"
+'        ServerDisconnect
+'        MsgBox "Aborted: Interface is busy or faulty of value(" & ii & ")" & Chr(13) _
+'                        & "Status=" & Status & " Trails=" & Trails, vbCritical, "ERROR"
+'        Exit Sub
+'    End If
+'
+'    '------------------------------------------
+'    'Write new data to EXCEL
+'    Trails = 0
+'    Status = 0
+'    Do Until ((Trails > TRAILMAX.Value) Or Status > 0)
+'        'Read measure data from PLC and assign it to the concerned ECXEL cells
+'        cmdSyncRead 1, ii, PLCtoPC, Status
+'        'Increment trails
+'        Trails = Trails + 1
+'    Loop
+'    'Verify results
+'    If ((Trails > TRAILMAX.Value) Or Status = 1) Then
+'        [DispStatus].Value = "Aborted: Cant't read value(" & ii & ")"
+'        ServerDisconnect
+'        MsgBox " Aborted:Can't finish process" & Chr(13) _
+'                        & "Status=" & Status & " Trails=" & Trails, vbCritical, "ERROR"
+'        Exit Sub
+'    End If
+'
+'    '-------------------
+'    'Clear PLC interface
+'    Status = 0
+'    cmdSyncWrite 0, ii, Status
+'    'Verify results
+'    If Status = 1 Then
+'        [DispStatus].Value = "Aborted: Can't write command for value(" & ii & ")"
+'        ServerDisconnect
+'        MsgBox "Aborted: Can't write to PLC interface" & Chr(13), vbCritical, "ERROR"
+'        Exit Sub
+'    End If
+'
+'Next ii
+'
+''-----------------------------------
+''Disconnect connection to OPC Server
+'ServerDisconnect
+'[DispStatus].Value = "Done: Successfully"
+'
+'Exit Sub
+'ErrorHandler:
+'    MsgBox Err.Description + Chr(13) + " Can't finish process", vbCritical, "ERROR"
+'End Sub
+'
+'
+''----------------------------------------------------------------------------------------
+''Adjust()
+''----------------------------------------------------------------------------------------
+'Public Sub AdjustQx(col As Integer)
+'
+'Dim index As Integer
+'Dim WorkSpaceX As Range
+'Set WorkSpaceX = Range("WorkSpace")
+'
+'For index = 1 To WorkSpaceX.Rows.Count
+'    If (WorkSpaceX.Cells(index, col).Value <> "" And [Display_Qx].Value <> 0) Then
+'        WorkSpaceX.Cells(index, col).Value = [Display_Qx].Value
+'    End If
+'Next index
+'
+'End Sub
+
+
+
+Attribute VB_Name = "clsItemManagement"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Private ItemID() As String
+Private ItemServerHandle() As Long
+
+Public Function GetItemInfos() As String()
+    GetItemInfos = ItemID
+End Function
+Public Sub SetItemInfos(ByRef Items() As String)
+    ItemID = Items
+End Sub
+Public Function GetItemServerHandles() As Long()
+    GetItemServerHandles = ItemServerHandle
+End Function
+Public Sub SetItemServerHandles(ByRef ItemHandles() As Long)
+    ItemServerHandle = ItemHandles
+End Sub
+
+
+INQUEST-PP=macro

@@ -1,0 +1,1534 @@
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Option Explicit
+Option Compare Text
+
+Private Sub Workbook_AddinInstall()
+'    MsgBox "AddinInstall"
+End Sub
+
+Private Sub Workbook_AddinUninstall()
+On Error Resume Next
+Dim AddinName As String
+    AddinName = AddIns(ThisAddinName).FullName
+    CloseEuroXL
+    If Application.LibraryPath = AddIns(ThisAddinName).Path Then 'im Makroverz. installiert
+        If InStr(1, Dir(Application.LibraryPath & "\Euroxl.hlp"), "EuroXL", vbTextCompare) > 0 Then Kill Application.LibraryPath & "\Euroxl.hlp"
+        If InStr(1, Dir(Application.LibraryPath & "\Euroxl.cnt"), "EuroXL", vbTextCompare) > 0 Then Kill Application.LibraryPath & "\Euroxl.cnt"
+        If InStr(1, Dir(Application.LibraryPath & "\Euroxl.gid"), "EuroXL", vbTextCompare) > 0 Then Kill Application.LibraryPath & "\Euroxl.gid"
+        If InStr(1, Dir(Application.LibraryPath & "\Euroxl.ini"), "EuroXL", vbTextCompare) > 0 Then Kill Application.LibraryPath & "\Euroxl.ini"
+        If InStr(1, Dir(AddIns(ThisAddinName).FullName), "EuroXL", vbTextCompare) > 0 Then Kill AddIns(ThisAddinName).FullName
+    Else  'nicht im ExcelVerz. installiert
+        If vbYes = MsgBox(GetLangStr(134) & Application.LibraryPath & GetLangStr(135), 36, GetLangStr(132)) Then '"EuroXL wurde deinstalliert. Sollen die Programmdateien aus " & application.librarypath & " gel|fffd|scht werden ?"
+            Do While InStr(1, Dir(Application.LibraryPath & "\EuroXL*.*"), "EuroXL", vbTextCompare) > 0
+                Kill Application.LibraryPath & Dir(Application.LibraryPath & "\EuroXL*.*")
+            Loop
+        End If
+    End If
+    Exit Sub
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+'wird in Excel2000 nur im *.xls aufgerufen, NCIHT im *.xla.
+'daf|fffd|r r|fffd|ckgriff auf "Auto_CLose" (Modul "Menus")
+    CloseEuroXL
+End Sub
+
+Attribute VB_Name = "E2M"
+Option Explicit
+
+'alle geladenen Dateien, alle Tabellen in DM umwandeln
+Public Sub E2M_TransformAllBooks()
+Attribute E2M_TransformAllBooks.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim wb As Workbook
+    For Each wb In Workbooks
+        Call E2M_TransformBook(wb)
+    Next wb
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'alle Tabellen der aktiven Datei in DM umwandeln
+Public Sub E2M_TransformActiveBook()
+Attribute E2M_TransformActiveBook.VB_ProcData.VB_Invoke_Func = " \n14"
+    Call E2M_TransformBook(ActiveWorkbook)
+End Sub
+
+'die aktive Tabelle in DM umwandeln
+Public Sub E2M_TransformActiveSheet()
+Attribute E2M_TransformActiveSheet.VB_ProcData.VB_Invoke_Func = " \n14"
+    Call E2M_StartTransformSheet(ActiveSheet)
+End Sub
+
+'alle Zellen im markierten Bereich in DM umwandeln
+Public Sub E2M_TransformSelection()
+Attribute E2M_TransformSelection.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim c As Range, toChange As Range, toCopy As Range
+    Set toChange = UsedRange(Selection, ActiveSheet)
+    toChange.Select
+    If CopyFlag Then
+        Set toCopy = Selection
+        EuroXL_OpenDlgCellshift
+        If CellShift = 0 Then Exit Sub
+        toCopy.Copy
+        toCopy.Insert shift:=CellShift
+        Application.CutCopyMode = False
+        Set toCopy = Nothing
+    End If
+    For Each c In toChange
+        Call E2M_TransformCell(c)
+    Next c
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'ein bestimmtes Workbook in DM umwandeln
+Private Sub E2M_TransformBook(wb As Workbook)
+On Error GoTo ErrorTrap
+Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        Call E2M_StartTransformSheet(ws)
+    Next ws
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'ein bestimmtes Worksheet in DM umwandeln
+Private Sub E2M_StartTransformSheet(ws As Worksheet)
+On Error GoTo ErrorTrap
+Dim nws As Worksheet
+Dim toTest As Range
+
+    Set toTest = ws.Range(ws.Cells(1, 1), ws.Cells.SpecialCells(xlLastCell))
+    If toTest.Columns.Count = 1 And toTest.Rows.Count = 1 Then Exit Sub
+    If ContainsCurrency(toTest, ESymbol) Then
+        If CopyFlag Then
+            Set nws = E2M_CopyWorksheet(ws)
+            Call E2M_TransformSheet(nws)
+        Else
+            Call E2M_TransformSheet(ws)
+        End If
+    End If
+    If InStr(toTest.NumberFormatLocal, ESymbol) Then toTest.NumberFormatLocal = MFormat
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'ein bestimmtes Worksheet in DM umwandeln
+Private Sub E2M_TransformSheet(ws As Worksheet)
+On Error GoTo ErrorTrap
+Dim R As Range
+    
+    For Each R In ws.Range("A1", ws.Cells.SpecialCells(xlLastCell))
+        Call E2M_TransformCell(R)
+    Next R
+    Cells(1, 1).Activate
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'alle Zellen in einem bestimmten Bereich umwandeln
+Private Sub E2M_TransformCell(c As Range)
+'in E2M f|fffd|r Zuweisungen immer "NuberFormatLocal" verwenden, nicht "NumberFromat"
+On Error GoTo ErrorTrap
+    
+    If Not IsNumeric(c.Value) Then Exit Sub         'wenn c.Value nicht numerisch ist, gibts nichts zum umgerechnen
+    If c.NumberFormatLocal = "@" Then Exit Sub      '"@" = explizites Textformat. nicht umrechnen.
+    
+    If DetectCurrency Then                                          'W|fffd|hrungserkennung gew|fffd|nscht:
+        If Left(c.Text, 1) = "#" Then                               'Spalte breit & hoch genug machen, sonst steht nur "###" in c.Text
+            c.EntireColumn.AutoFit
+            c.EntireRow.AutoFit
+        End If
+        If Not IsCurrencyNumeric(c.Text, ESymbol) Then Exit Sub                  'nur wenn c.Value UND c.Text numerisch sind, liegt ein Format vor, das umgerechnet werden soll.
+        If InStr(c.Text, ESymbol) > 0 Then                          'W|fffd|hrung:
+            If Not (InStr(c.Formula, "=") = 1) Then                 'keine Formel:
+'Round                If DoRound Then                                     'Rundung gew|fffd|nscht:
+'Round                    c.Value = Round(c.Value * EuroFaktor, NumDigits) 'dann umrechnen + runden
+'Round                Else                                                ' Keine Rundung:
+'Round                    c.Value = c.Value * EuroFaktor                  'dann umrechnen
+'Round                End If
+                c.Value = c.Value * EuroFaktor                  'dann umrechnen
+                c.NumberFormatLocal = MFormat                       'und W|fffd|hrungsformat setzen
+            Else                                                    'Formel:
+                If ChangeFormula Then c.NumberFormatLocal = MFormat 'W|fffd|hrungsformat nur wenn gew|fffd|nscht setzen
+            End If
+        End If
+    
+    Else                                                            'W|fffd|hrungserkennung nicht gew|fffd|nscht:
+        If IsEmpty(c.Value) Then Exit Sub                           'sonst werden unn|fffd|tige nullen geschrieben
+        If Not (InStr(c.Formula, "=") = 1) Then                     'keine Formel:
+            c.Value = c.Value * EuroFaktor                          'dann umrechnen
+            c.NumberFormatLocal = MFormat                           'und W|fffd|hrungsformat setzen
+        Else                                                        'Formel:
+            If ChangeFormula Then c.NumberFormatLocal = MFormat     'W|fffd|hrungsformat nur wenn gew|fffd|nscht setzen
+        End If
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'die Spalte der aktiven Zelle in DM umwandeln
+Public Sub E2M_TransformActiveCol()
+Attribute E2M_TransformActiveCol.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim R As Range
+Dim lc As Range
+Dim ac As Range
+Dim arow As Integer, acol As Integer
+
+    Set ac = ActiveCell
+    arow = ac.Row
+    acol = ac.Column
+    If CopyFlag Then
+        ac.EntireColumn.Select
+        Selection.Copy
+        Selection.Insert shift:=xlToRight
+        Application.CutCopyMode = False
+        Selection.Cells(1, 1).Activate
+        Set ac = ActiveCell
+    End If
+    Set lc = Selection.SpecialCells(xlLastCell)
+    ac.Activate
+    For Each R In ActiveSheet.Range(Cells(1, ActiveCell.Column), Cells(lc.Row, ActiveCell.Column))
+        Call E2M_TransformCell(R)
+    Next R
+    If InStr(ActiveCell.EntireColumn.NumberFormatLocal, ESymbol) Then ActiveCell.EntireColumn.NumberFormatLocal = MFormat
+    Cells(arow, acol).Select
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'die Zeile der aktiven Zelle in DM umwandeln
+Public Sub E2M_TransformActiveRow()
+Attribute E2M_TransformActiveRow.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim R As Range
+Dim lc As Range
+Dim ac As Range
+Dim arow As Integer, acol As Integer
+
+    Set ac = ActiveCell
+    arow = ac.Row
+    acol = ac.Column
+    If CopyFlag Then
+        ac.EntireRow.Select
+        Selection.Copy
+        Selection.Insert shift:=xlDown
+        Application.CutCopyMode = False
+        Selection.Cells(1, 1).Activate
+        Set ac = ActiveCell
+    End If
+    Set lc = Selection.SpecialCells(xlLastCell)
+    ac.Activate
+    For Each R In ActiveSheet.Range(Cells(ActiveCell.Row, 1), Cells(ActiveCell.Row, lc.Column))
+        Call E2M_TransformCell(R)
+    Next R
+    If InStr(ActiveCell.EntireRow.NumberFormatLocal, ESymbol) Then ActiveCell.EntireRow.NumberFormatLocal = MFormat
+    Cells(arow, acol).Select
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'Das benutzerfefinierte EuroFormat im markierten Bereich setzen
+Public Sub E2M_SetFormat()
+Attribute E2M_SetFormat.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    Selection.NumberFormatLocal = MFormat
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'pr|fffd|fen, ob es Zellen im Aktiven Sheet gibt, die umgerechnet werden k|fffd|nnen
+Public Sub E2M_SheetContainsCurrency()
+Attribute E2M_SheetContainsCurrency.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim toTest As Range
+
+    Set toTest = ActiveSheet.Range(ActiveSheet.Cells(1, 1), ActiveSheet.Cells.SpecialCells(xlLastCell))
+    'If toTest.Columns.Count = 1 And toTest.Rows.Count = 1 Then Exit Sub
+    If ContainsCurrency(toTest, ESymbol) Then
+        Call MsgBox(GetLangStr(105) & ActiveSheet.Name & GetLangStr(106), 64, "EuroXL", "euroxl.hlp", "5")
+    Else
+        Call MsgBox(GetLangStr(105) & ActiveSheet.Name & GetLangStr(107), 48, "EuroXL", "euroxl.hlp", "5")
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'pr|fffd|fen, ob es Zellen im markierten Bereich gibt, die umgerechnet werden k|fffd|nnen
+Public Sub E2M_RangeContainsCurrency()
+Attribute E2M_RangeContainsCurrency.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim s$, toTest As Range
+    s = GetLangStr(110) & Selection.Address(rowAbsolute:=False, columnAbsolute:=False) & Chr(13) & Chr(13)
+    Set toTest = UsedRange(Selection, ActiveSheet)
+    toTest.Select
+    If ContainsCurrency(Selection, ESymbol) Then
+        Call MsgBox(s & GetLangStr(108), 64, "EuroXL", "euroxl.hlp", "5")
+    Else
+        Call MsgBox(s & GetLangStr(108), 48, "EuroXL", "euroxl.hlp", "5")
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'Ein bestimmtes Worksheet kopieren, an den namen des Alten "_[eurosymbol]" anh|fffd|ngen, das neue "*_DM" benennen
+Private Function E2M_CopyWorksheet(ws As Worksheet) As Worksheet
+On Error GoTo ErrorTrap
+Dim ns As Worksheet
+    ws.Select
+    ws.Copy Before:=ws
+    Set ns = Sheets(ws.Index - 1)
+    ns.Name = ws.Name & "_DM"
+    ws.Name = ws.Name & "_EUR"
+    Set E2M_CopyWorksheet = ns
+    Exit Function
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Function
+
+'pr|fffd|fen, ob alle Zellen in der Selektion umgerechnet werden k|fffd|nnen
+Public Sub E2M_WholeRangeTransformable()
+Attribute E2M_WholeRangeTransformable.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim nf$, nfl$, s$
+    If IsNull(Selection.NumberFormat) Then
+        nf = GetLangStr(113) '"unbekannt oder gemischt"
+    Else
+        nf = Selection.NumberFormat
+    End If
+    If IsNull(Selection.NumberFormatLocal) Then
+        nfl = GetLangStr(113) '"unbekannt oder gemischt"
+    Else
+        nfl = Selection.NumberFormatLocal
+    End If
+    s = GetLangStr(110) & Selection.Address(rowAbsolute:=False, columnAbsolute:=False) & Chr(13) & Chr(13)
+    s = s & GetLangStr(111) & nf & Chr(13)
+    s = s & GetLangStr(112) & nfl & Chr(13) & Chr(13)
+    If InStr(Selection.NumberFormatLocal, ESymbol) Then
+        s = s & GetLangStr(114) '"Bereich wird vollst|fffd|ndig in Euro umgerechnet"
+        Call MsgBox(s, 64, GetLangStr(116), "euroxl.hlp", "5") 'EuroXL Umrechnung Ok
+    Else
+        s = s & GetLangStr(115) '"Bereich wird nicht vollst|fffd|ndig in Euro umgerechnet"
+        Call MsgBox(s, 48, GetLangStr(117), "euroxl.hlp", "5") '"EuroXL WARNUNG"
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+Attribute VB_Name = "EuroXLMain"
+Option Explicit
+
+Private pEuroFaktor As Double       'umrechnungsfaktor
+Private pEFormat As String          'Formatstring f|fffd|r Euroformat
+Private pMFormat As String          'Formatstring f|fffd|r DM-format
+Private pMSymbol As String          'W|fffd|hrungssymbol f|fffd|r DM
+Private pESymbol As String          'W|fffd|hrungssymbol f|fffd|r Euro
+Private pCopyFlag As Boolean        'Kopiern vor umrechnen
+Private pCellShift As Long          'nach rechts oer unten
+Private pChangeFormula As Boolean   'In Formeln anderes W|fffd|hrungsformat setzen
+Private pDetectCurrency As Boolean  'alle Zahlen umrechnen
+Private pRegName As String          'RegName
+Private pRegID As Long              'zugeh|fffd|rige Nummer
+Private pDoRound As Boolean         'Rundung an/aus
+Private pNumDigits As Integer       'Anzahl der Stellen f|fffd|r Rundung
+
+Public Const LangCol = 3            '2=DE, 3=FR
+Public Const ThisAddinName = "EuroXL"
+
+'EXCEL97: Einstellungen f|fffd|r Statusleisten
+Public CBpos1!, CBpos2!, CBvis1!, CBvis2!, CBtop1!, CBtop2!, CBleft1!, CBleft2!, _
+       CBrowindex1!, CBrowindex2!, CBWidth1!, CBWidth2!
+Public E2MBarName, M2EBarName As String 'namen der CmdBars (sprachabh|fffd|ngig)
+
+Public Property Let EuroFaktor(Value As Double)
+    pEuroFaktor = Value
+End Property
+
+Public Property Get EuroFaktor() As Double
+    If pEuroFaktor = 0 Then ReadINI
+    EuroFaktor = pEuroFaktor
+End Property
+
+Public Property Let EFormat(Value As String)
+    pEFormat = Value
+End Property
+
+Public Property Get EFormat() As String
+    If pEFormat = "" Then ReadINI
+    EFormat = pEFormat
+End Property
+
+Public Property Let MFormat(Value As String)
+    pMFormat = Value
+End Property
+
+Public Property Get MFormat() As String
+    If pMFormat = "" Then ReadINI
+    MFormat = pMFormat
+End Property
+
+Public Property Let MSymbol(Value As String)
+    pMSymbol = Value
+End Property
+
+Public Property Get MSymbol() As String
+    If pMSymbol = "" Then ReadINI
+    MSymbol = pMSymbol
+End Property
+
+Public Property Let ESymbol(Value As String)
+    pESymbol = Value
+End Property
+
+Public Property Get ESymbol() As String
+    If pESymbol = "" Then ReadINI
+    ESymbol = pESymbol
+End Property
+
+Public Property Let CopyFlag(Value As Boolean)
+    CommandBars("Worksheet Menu Bar").Controls("E&uro").Controls(1).state = CInt(Value)
+    pCopyFlag = Value
+End Property
+
+Public Property Get CopyFlag() As Boolean
+    If IsEmpty(pCopyFlag) Then ReadINI
+    CopyFlag = pCopyFlag
+End Property
+
+Public Property Let CellShift(Value As Long)
+    pCellShift = Value
+End Property
+
+Public Property Get CellShift() As Long
+    If IsEmpty(pCellShift) Then ReadINI
+    CellShift = pCellShift
+End Property
+
+Public Property Let ChangeFormula(Value As Boolean)
+    CommandBars("Worksheet Menu Bar").Controls("E&uro").Controls(2).state = Value
+    pChangeFormula = Value
+End Property
+
+Public Property Get ChangeFormula() As Boolean
+    If IsEmpty(pChangeFormula) Then ReadINI
+   ChangeFormula = pChangeFormula
+End Property
+
+Public Property Let DetectCurrency(Value As Boolean)
+    CommandBars("Worksheet Menu Bar").Controls("E&uro").Controls(3).state = Value
+    pDetectCurrency = Value
+End Property
+
+Public Property Get DetectCurrency() As Boolean
+    If IsEmpty(pDetectCurrency) Then ReadINI
+   DetectCurrency = pDetectCurrency
+End Property
+
+Public Property Let RegName(Value As String)
+    pRegName = Value
+End Property
+
+Public Property Get RegName() As String
+    If pRegName = "" Then ReadINI
+    RegName = pRegName
+End Property
+
+Public Property Let RegID(Value As Long)
+    pRegID = Value
+End Property
+
+Public Property Get RegID() As Long
+    If IsEmpty(pRegID) Then ReadINI
+    RegID = pRegID
+End Property
+
+Public Sub EuroXL_ShowHelpTopic1()
+Attribute EuroXL_ShowHelpTopic1.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    Shell ("winhlp32 " & ThisWorkbook.Path & "\euroxl.hlp")
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+Public Sub EuroXL_CopyFlag()
+Attribute EuroXL_CopyFlag.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    Application.ScreenUpdating = False
+    CopyFlag = Not CopyFlag
+    Application.ScreenUpdating = True
+    Call WriteINI
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+Public Sub EuroXL_ChangeFormula()
+Attribute EuroXL_ChangeFormula.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    Application.ScreenUpdating = False
+    ChangeFormula = Not ChangeFormula
+    Application.ScreenUpdating = True
+    Call WriteINI
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+Public Sub EuroXL_DetectCurrency()
+Attribute EuroXL_DetectCurrency.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    Application.ScreenUpdating = False
+    DetectCurrency = Not DetectCurrency
+    Application.ScreenUpdating = True
+    Call WriteINI
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+Public Sub EuroXL_DialogOpen()
+Attribute EuroXL_DialogOpen.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    frmEinstellungen.Show
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+Public Sub EuroXL_OpenDlgCellshift()
+Attribute EuroXL_OpenDlgCellshift.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    frmCellShift.Show
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+Public Function ContainsCurrency(R As Range, Symbol As String)
+Attribute ContainsCurrency.VB_ProcData.VB_Invoke_Func = " \n14"
+'Pr|fffd|fen, ob ein Worksheet Felder mit W|fffd|hrungsformat enth|fffd|lt
+On Error Resume Next
+Dim c As Range
+    ContainsCurrency = False
+    For Each c In R
+        If InStr(c.NumberFormatLocal, Symbol) Then
+            c.Activate
+            ContainsCurrency = True
+            Exit Function
+        End If
+    Next c
+End Function
+
+Public Function UsedRange(R As Range, ws As Worksheet) As Range
+Attribute UsedRange.VB_ProcData.VB_Invoke_Func = " \n14"
+'gibt ein Rangeobjet zur|fffd|ck, das vom Begin der |fffd|bergebenen Range
+'bis zum letzten benutzen row/col des Blatts reicht
+On Error GoTo ErrorTrap
+Dim c1 As Long, c2 As Long, r1 As Long, r2 As Long
+Dim ResRange As Range, lc As Range
+    If R.Areas.Count > 1 Then Call MsgBox(GetLangStr(104), vbInformation, GetLangStr(100))
+    c1 = R.Column
+    c2 = c1 + R.Columns.Count - 1
+    r1 = R.Row
+    r2 = r1 + R.Rows.Count - 1
+    Set lc = ws.Cells.SpecialCells(xlLastCell)
+    If lc.Column < c2 Then c2 = lc.Column
+    If lc.Row < r2 Then r2 = lc.Row
+    If lc.Column < c1 Then c1 = lc.Column
+    If lc.Row < r1 Then r1 = lc.Row
+    Set UsedRange = ws.Range(ws.Cells(r1, c1), ws.Cells(r2, c2))
+    Exit Function
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Function
+
+Function IsCurrencyNumeric(s As String, Symbol As String) As Boolean
+'IsNumeric unter Ber|fffd|cksichtigung der W|fffd|hrungsformate lt. Einstellungen
+Dim pos As Long, rest As String
+    If IsNumeric(s) Then
+        IsCurrencyNumeric = True
+    Else
+        'schmeisse w|fffd|hrungssymbol raus und pr|fffd|fe nochmal
+        pos = InStr(1, s, Symbol, vbTextCompare)
+        If (pos > 0) Then
+            rest = Left(s, pos - 1) + Right(s, Len(s) - (pos - 1 + Len(Symbol)))
+            IsCurrencyNumeric = IsNumeric(rest)
+            Exit Function
+        Else
+            IsCurrencyNumeric = False
+        End If
+    End If
+End Function
+
+Public Function GetLangStr(ByVal Row As Long)
+    GetLangStr = ThisWorkbook.Sheets("traducion").Cells(Row, LangCol)
+End Function
+
+Attribute VB_Name = "M2E"
+
+Option Explicit
+
+'alle geladenen Dateien, alle Tabellen in Euro umwandeln
+Public Sub M2E_TransformAllBooks()
+Attribute M2E_TransformAllBooks.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim wb As Workbook
+    For Each wb In Workbooks
+        Call M2E_TransformBook(wb)
+    Next wb
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100) 'GetLangStr(101,LangCol) / GetLangStr(100,LangCol)
+End Sub
+
+'alle Tabellen der aktiven Datei in Euro umwandeln
+Public Sub M2E_TransformActiveBook()
+Attribute M2E_TransformActiveBook.VB_ProcData.VB_Invoke_Func = " \n14"
+    Call M2E_TransformBook(ActiveWorkbook)
+End Sub
+
+'die aktive Tabelle in Euro umwandeln
+Public Sub M2E_TransformActiveSheet()
+Attribute M2E_TransformActiveSheet.VB_ProcData.VB_Invoke_Func = " \n14"
+    Call M2E_StartTransformSheet(ActiveSheet)
+End Sub
+
+'alle Zellen im markierten Bereich in Euro umwandeln
+Public Sub M2E_TransformSelection()
+Attribute M2E_TransformSelection.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim c As Range, toChange As Range, toCopy As Range
+Application.ScreenUpdating = True
+    Set toChange = UsedRange(Selection, ActiveSheet)
+    toChange.Select
+    If CopyFlag Then
+        Set toCopy = Selection
+        EuroXL_OpenDlgCellshift
+        If CellShift = 0 Then Exit Sub '0 = nicht initialsiert
+        toCopy.Copy
+        toCopy.Insert shift:=CellShift
+        Application.CutCopyMode = False
+        Set toCopy = Nothing
+    End If
+    Set toChange = Selection
+    For Each c In toChange
+        Call M2E_TransformCell(c)
+    Next c
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'ein bestimmtes Workbook in Euro umwandeln
+Private Sub M2E_TransformBook(wb As Workbook)
+On Error GoTo ErrorTrap
+Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        Call M2E_StartTransformSheet(ws)
+    Next ws
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'ein bestimmtes Worksheet in Euro umwandeln
+Private Sub M2E_StartTransformSheet(ws As Worksheet)
+On Error GoTo ErrorTrap
+Dim nws As Worksheet
+Dim toTest As Range
+
+    Set toTest = ws.Range(ws.Cells(1, 1), ws.Cells.SpecialCells(xlLastCell))
+    If toTest.Columns.Count = 1 And toTest.Rows.Count = 1 Then Exit Sub
+    If ContainsCurrency(toTest, MSymbol) Then
+        If CopyFlag Then
+            Set nws = M2E_CopyWorksheet(ws)
+            Call M2E_TransformSheet(nws)
+        Else
+            Call M2E_TransformSheet(ws)
+        End If
+    End If
+    If InStr(toTest.NumberFormatLocal, MSymbol) Then toTest.NumberFormat = EFormat
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'ein bestimmtes Worksheet in Euro umwandeln
+Private Sub M2E_TransformSheet(ws As Worksheet)
+On Error GoTo ErrorTrap
+Dim R As Range
+    
+    'Zellen umwandeln
+    For Each R In ws.Range("A1", ws.Cells.SpecialCells(xlLastCell))
+        Call M2E_TransformCell(R)
+    Next R
+    Cells(1, 1).Activate
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'alle Zellen in einem betimmten Bereich in Euro umwandeln
+Private Sub M2E_TransformCell(c As Range)
+On Error GoTo ErrorTrap
+'in M2E f|fffd|r Zuweisungen immer "NumberFormat" verwenden, nicht "NumberFromatLocal"
+    
+    If Not IsNumeric(c.Value) Then Exit Sub     'wenn c.Value nicht numerisch ist, gibts nichts zum umgerechnen
+    If c.NumberFormatLocal = "@" Then Exit Sub  ' "@" = explizites Textformat. nicht umrechnen.
+    
+    If DetectCurrency Then                                      'W|fffd|hrungserkennung gew|fffd|nscht:
+        If Left(c.Text, 1) = "#" Then                           'Spalte breit & hoch genug machen, sonst steht nur "###" in c.Text
+            c.EntireColumn.AutoFit
+            c.EntireRow.AutoFit
+        End If
+        If Not IsCurrencyNumeric(c.Text, MSymbol) Then Exit Sub                  'nur wenn c.Value UND c.Text numerisch sind, liegt ein Format vor, das umgerechnet werden soll.
+        If InStr(c.Text, MSymbol) > 0 Then                      'W|fffd|hrung:
+            If Not (InStr(c.Formula, "=") = 1) Then             'keine Formel:
+'Round                If DoRound Then                                 'Rundung gew|fffd|nscht:
+'Round                    c.Value = Round(c.Value / EuroFaktor, NumDigits) 'dann umrechnen + runden
+'Round                Else                                            ' Keine Rundung:
+'Round                    c.Value = c.Value / EuroFaktor              'dann umrechnen
+'Round                End If
+                c.Value = c.Value / EuroFaktor              'dann umrechnen
+                c.NumberFormat = EFormat                        'und W|fffd|hrungsformat setzen
+            Else                                                'Formel:
+                If ChangeFormula Then c.NumberFormat = EFormat  'W|fffd|hrungsformat nur wenn gew|fffd|nscht setzen
+            End If
+        End If
+    Else                                                        'keine W|fffd|hrungserkennung gew|fffd|nscht:
+        If IsEmpty(c.Value) Then Exit Sub                       'sonst werden unn|fffd|tige nullen geschrieben
+        If Not (InStr(c.Formula, "=") = 1) Then                 'keine Formel:
+            c.Value = c.Value / EuroFaktor                      'dann umrechnen
+            c.NumberFormat = EFormat                            'und W|fffd|hrungsformat setzen
+        Else                                                    'Formel:
+            If ChangeFormula Then c.NumberFormat = EFormat      'W|fffd|hrungsformat nur wenn gew|fffd|nscht setzen
+        End If
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'die Spalte der aktiven Zelle in Euro umwandeln
+Public Sub M2E_TransformActiveCol()
+Attribute M2E_TransformActiveCol.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim R As Range
+Dim lc As Range
+Dim ac As Range
+Dim arow As Integer, acol As Integer
+
+    Set ac = ActiveCell
+    arow = ac.Row
+    acol = ac.Column
+    If CopyFlag Then
+        ac.EntireColumn.Select
+        Selection.Copy
+        Selection.Insert shift:=xlToRight
+        Application.CutCopyMode = False
+        Selection.Cells(1, 1).Activate
+        Set ac = ActiveCell
+    End If
+    Set lc = Selection.SpecialCells(xlLastCell)
+    ac.Activate
+    For Each R In ActiveSheet.Range(Cells(1, ActiveCell.Column), Cells(lc.Row, ActiveCell.Column))
+        Call M2E_TransformCell(R)
+    Next R
+    If InStr(ActiveCell.EntireColumn.NumberFormatLocal, MSymbol) Then ActiveCell.EntireColumn.NumberFormat = EFormat
+    Cells(arow, acol).Select
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'die Zeile der aktiven Zelle in Euro umwandeln
+Public Sub M2E_TransformActiveRow()
+Attribute M2E_TransformActiveRow.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim R As Range
+Dim lc As Range
+Dim ac As Range
+Dim arow As Integer, acol As Integer
+
+    Set ac = ActiveCell
+    arow = ac.Row
+    acol = ac.Column
+    If CopyFlag Then
+        ac.EntireRow.Select
+        Selection.Copy
+        Selection.Insert shift:=xlDown
+        Application.CutCopyMode = False
+        Selection.Cells(1, 1).Activate
+        Set ac = ActiveCell
+    End If
+    Set lc = Selection.SpecialCells(xlLastCell)
+    ac.Activate
+    For Each R In ActiveSheet.Range(Cells(ActiveCell.Row, 1), Cells(ActiveCell.Row, lc.Column))
+        Call M2E_TransformCell(R)
+    Next R
+    If InStr(ActiveCell.EntireRow.NumberFormatLocal, MSymbol) Then ActiveCell.EntireRow.NumberFormat = EFormat
+    Cells(arow, acol).Select
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'Das Benutzerfefinierte EuroFormat im markierten Bereich setzen
+Public Sub M2E_SetFormat()
+Attribute M2E_SetFormat.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    Selection.NumberFormat = EFormat
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'pr|fffd|fen, ob es Zellen im aktiven Sheet gibt, die umgerechnet werden k|fffd|nnen
+Public Sub M2E_SheetContainsCurrency()
+Attribute M2E_SheetContainsCurrency.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim toTest As Range
+
+    Set toTest = ActiveSheet.Range(ActiveSheet.Cells(1, 1), ActiveSheet.Cells.SpecialCells(xlLastCell))
+    If ContainsCurrency(toTest, MSymbol) Then
+                    '105="Tabelle "
+        Call MsgBox(GetLangStr(105) & ActiveSheet.Name & GetLangStr(120), 64, "EuroXL", "euroxl.hlp", "5") ' "enth|fffd|lt umrechenbare DM-W|fffd|hrungsformate."
+    Else
+        Call MsgBox(GetLangStr(105) & ActiveSheet.Name & GetLangStr(121), 48, "EuroXL", "euroxl.hlp", "5") '" enth|fffd|lt keine umrechenbaren DM-W|fffd|hrungsformate!"
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'pr|fffd|fen, ob es Zellen im markierten Bereich gibt, die umgerechnet werden k|fffd|nnen
+Public Sub M2E_RangeContainsCurrency()
+Attribute M2E_RangeContainsCurrency.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim s$
+Dim toTest As Range
+        '110="Markierter Bereich: "
+    s = GetLangStr(110) & Selection.Address(rowAbsolute:=False, columnAbsolute:=False) & Chr(13) & Chr(13)
+    Set toTest = UsedRange(Selection, ActiveSheet)
+    toTest.Select
+    If ContainsCurrency(toTest, MSymbol) Then
+        Call MsgBox(s & GetLangStr(122), 64, "EuroXL", "euroxl.hlp", "5") '"Der markierte Bereich enth|fffd|lt umrechenbare DM-W|fffd|hrungsformate."
+    Else
+        Call MsgBox(s & GetLangStr(123), 48, "EuroXL", "euroxl.hlp", "5") '"Der markierte Bereich enth|fffd|lt keine umrechenbaren DM-W|fffd|hrungsformate!"
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+'Ein bestimmtes Worksheet kopieren, an den namen des Alten "_DM" anh|fffd|ngen, das neue "*_[eurosymbol]" benennen
+Private Function M2E_CopyWorksheet(ws As Worksheet) As Worksheet
+On Error GoTo ErrorTrap
+Dim ns As Worksheet
+    ws.Select
+    ws.Copy Before:=ws
+    Set ns = Sheets(ws.Index - 1)
+    ns.Name = ws.Name & "_EUR"
+    ws.Name = ws.Name & "_DM"
+    Set M2E_CopyWorksheet = ns
+    Exit Function
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Function
+
+'pr|fffd|fen, ob alle Zellen in der Selektion umgerechnet werden k|fffd|nnen
+Public Sub M2E_WholeRangeTransformable()
+Attribute M2E_WholeRangeTransformable.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+Dim nf$, nfl$, s$
+    If IsNull(Selection.NumberFormat) Then
+        nf = GetLangStr(113) '"unbekannt oder gemischt"
+    Else
+        nf = Selection.NumberFormat
+    End If
+    If IsNull(Selection.NumberFormatLocal) Then
+        nfl = GetLangStr(113) '"unbekannt oder gemischt"
+    Else
+        nfl = Selection.NumberFormatLocal
+    End If
+        '110="markierter Bereich: "
+    s = GetLangStr(110) & Selection.Address(rowAbsolute:=False, columnAbsolute:=False) & Chr(13) & Chr(13)
+    s = s & GetLangStr(111) & nf & Chr(13) '111="Zahlenformat International: "
+    s = s & GetLangStr(112) & nfl & Chr(13) & Chr(13) '112="Zahlenformat National: "
+    If InStr(Selection.NumberFormatLocal, MSymbol) Then
+        s = s & GetLangStr(124) '"Bereich wird vollst|fffd|ndig in Euro umgerechnet."
+        Call MsgBox(s, 64, GetLangStr(116), "euroxl.hlp", "5") '"EuroXL Umrechung OK"
+    Else
+        s = s & GetLangStr(125) '"Bereich wird NICHT vollst|fffd|ndig in Euro umgerechnet !"
+        Call MsgBox(s, 48, GetLangStr(117), "euroxl.hlp", "5") '"EuroXL WARNUNG"
+    End If
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & GetLangStr(101), vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+Attribute VB_Name = "Menus"
+'ein menubar ist unsichtbar im XLA vorhanden.
+'dieser muss in die normale Menuleiste (=CommandBars("Worksheet Menu Bar"))
+'kopiert werden.
+'Teile aus diesem Menu werden in Knopfleisten (E2MBar und M2EBar) kopiert.
+'
+'Beim schliessen muss das alles r|fffd|ckg|fffd|ngig gemacht werden, um immer beim
+'n|fffd|chsten |fffd|ffnen wieder eine konstistente Basis zu haben. (um zu verhindern, dass
+'user dauerhaft menus verstellen).
+
+Sub Auto_Open()
+    InitCmdBar
+End Sub
+
+Sub Auto_Close()
+    CloseEuroXL
+End Sub
+
+Sub MakeCmdBars()
+'erzeugt zwei symbolleisten namens (E2MBar und M2EBar) mit dem inhalt der
+'Submenus "DM-Euro" und "Euro->DM"
+'die Eintr|fffd|ge der Submenus aus dem Versteckten Menu werden dazu in die
+'neuen Symbolleisten kopiert.
+On Error GoTo ErrorTrap
+Dim E2MBar, M2EBar  As CommandBar
+Dim Ctrl As CommandBarButton
+
+    E2MBarName = CommandBars("Worksheet Menu Bar").Controls("Euro").Controls(4).Caption
+    Set E2MBar = CommandBars.Add(E2MBarName, msoBarTop, False, True)
+    For Each Ctrl In Application.CommandBars("Euro").Controls(1).Controls(4).Controls
+        Ctrl.Copy bar:=E2MBar
+    Next
+    For Each Ctrl In E2MBar.Controls
+        Ctrl.Style = msoButtonIcon
+    Next
+    With E2MBar
+        .Controls(7).BeginGroup = True
+        .Controls(10).BeginGroup = True
+        .Position = CBpos1
+        .Top = CBtop1
+        .Left = CBleft1
+        If CBpos1 = msoBarFloating Then
+            .Width = CBWidth1
+        Else
+            .RowIndex = CBrowindex1
+        End If
+        .Visible = CBvis1
+    End With
+    
+    M2EBarName = CommandBars("Worksheet Menu Bar").Controls("E&uro").Controls(5).Caption
+    Set M2EBar = CommandBars.Add(M2EBarName, msoBarTop, False, True)
+    For Each Ctrl In Application.CommandBars("Euro").Controls(1).Controls(5).Controls
+        Ctrl.Copy bar:=M2EBar
+    Next
+    For Each Ctrl In M2EBar.Controls
+        Ctrl.Style = msoButtonIcon
+    Next
+    With M2EBar
+        .Controls(7).BeginGroup = True
+        .Controls(10).BeginGroup = True
+        .Position = CBpos2
+        .Top = CBtop2
+        .Left = CBleft2
+        If CBpos1 = msoBarFloating Then
+            .Width = CBWidth2
+        Else
+            .RowIndex = CBrowindex2
+        End If
+        .Visible = CBvis2
+    End With
+    Exit Sub
+    
+ErrorTrap:
+    On Error Resume Next
+    MsgBox Err.Description
+    If CMDBarIsThere(E2MBarName) Then E2MBar.Delete
+    If CMDBarIsThere(M2EBarName) Then M2EBar.Delete
+End Sub
+
+Private Sub SetCMDParams(c As CommandBarControl, s As String, ByVal TextRow As Integer, HlpCont As Integer)
+'hilfsfunktion f|fffd|r InitCmdBar
+    With c
+        .OnAction = s
+        .Caption = GetLangStr(TextRow)
+        .HelpFile = "euroxl.hlp"
+        .HelpContextID = HlpCont
+    End With
+End Sub
+
+Public Sub InitCmdBar()
+On Error GoTo ErrorTrap
+Dim i%
+    With CommandBars("Euro").Controls(1)
+        Call SetCMDParams(.Controls(1), "EuroXL_CopyFlag", 1, 101)
+        Call SetCMDParams(.Controls(2), "EuroXL_ChangeFormula", 2, 117)
+        Call SetCMDParams(.Controls(3), "EuroXL_DetectCurrency", 3, 118)
+        '-----
+        With .Controls(4)  'E2M
+            .Caption = GetLangStr(4)
+             'Selection
+            Call SetCMDParams(.Controls(1), "E2M_TransformSelection", 10, 102)
+            'Col
+            Call SetCMDParams(.Controls(2), "E2M_TransformActiveCol", 11, 103)
+            'Row
+            Call SetCMDParams(.Controls(3), "E2M_TransformActiveRow", 12, 104)
+            'Sheet
+            Call SetCMDParams(.Controls(4), "E2M_TransformActiveSheet", 13, 105)
+            'AllSheets
+            Call SetCMDParams(.Controls(5), "E2M_TransformActiveBook", 14, 106)
+            'AllBooks
+            Call SetCMDParams(.Controls(6), "E2M_TransformAllBooks", 15, 107)
+            'CheckSelection
+            Call SetCMDParams(.Controls(7), "E2M_RangeContainsCurrency", 16, 108)
+            'CheckSheet
+            Call SetCMDParams(.Controls(8), "E2M_SheetContainsCurrency", 17, 109)
+            'CheckWholeRange
+            Call SetCMDParams(.Controls(9), "E2M_WholeRangeTransformable", 18, 110)
+            'SetNationalFormat
+            Call SetCMDParams(.Controls(10), "E2M_SetFormat", 20, 111)
+        End With 'controls(4) 'E2M
+        With .Controls(5) 'M2E
+            .Caption = GetLangStr(5)
+            'Selection
+            Call SetCMDParams(.Controls(1), "M2E_TransformSelection", 10, 102)
+            'Col
+            Call SetCMDParams(.Controls(2), "M2E_TransformActiveCol", 11, 103)
+            'Row
+            Call SetCMDParams(.Controls(3), "M2E_TransformActiveRow", 12, 104)
+            'Sheet
+            Call SetCMDParams(.Controls(4), "M2E_TransformActiveSheet", 13, 105)
+            'AllSheets
+            Call SetCMDParams(.Controls(5), "M2E_TransformActiveBook", 14, 106)
+            'AllBooks
+            Call SetCMDParams(.Controls(6), "M2E_TransformAllBooks", 15, 107)
+            'CheckSelection
+            Call SetCMDParams(.Controls(7), "M2E_RangeContainsCurrency", 16, 108)
+            'CheckSheet
+            Call SetCMDParams(.Controls(8), "M2E_SheetContainsCurrency", 17, 109)
+            'CheckWholeRange
+            Call SetCMDParams(.Controls(9), "M2E_WholeRangeTransformable", 18, 110)
+            'SetNationalFormat
+            Call SetCMDParams(.Controls(10), "M2E_SetFormat", 19, 111)
+        End With 'controls(5) 'M2E
+        '------
+        'Einstellungen
+        Call SetCMDParams(.Controls(6), "EuroXL_DialogOpen", 6, 112)
+        'Info
+        Call SetCMDParams(.Controls(7), "Reg_ShowDlg", 7, 113)
+        'Hilfe
+        Call SetCMDParams(.Controls(8), "EuroXL_ShowHelpTopic1", 8, 114)
+        'deinstall
+        Call SetCMDParams(.Controls(9), "Reg_Deinstall", 9, 115)
+    End With 'CommandBars("E&uro").Controls(1)
+    
+    'Pr|fffd|fen ob Euro-Menu schon da
+    If MenuIsThere Then
+        MsgBox "menubar vorhanden"
+    Else
+        Application.CommandBars("Euro").Controls(1).Copy bar:=Application.CommandBars("Worksheet Menu Bar"), Before:=8
+        DoEvents
+        CommandBars("Euro").Visible = False
+        CommandBars("Euro").Enabled = False
+    End If
+    Call ReadINI
+    MakeCmdBars
+    If Not Reg_CheckRegistered Then Reg_ShowDlg
+    Exit Sub
+
+ErrorTrap:
+    MsgBox GetLangStr(102) & Error(Err) & GetLangStr(103), vbExclamation + vbOKOnly, GetLangStr(100)
+    Resume Next
+End Sub
+
+Public Sub CloseEuroXL()
+On Error Resume Next
+    Call WriteINI
+    If CMDBarIsThere(E2MBarName) Then CommandBars(E2MBarName).Delete
+    If CMDBarIsThere(M2EBarName) Then CommandBars(M2EBarName).Delete
+    If MenuIsThere Then CommandBars("Worksheet Menu Bar").Controls("E&uro").Delete
+    CommandBars("Euro").Delete
+End Sub
+
+Public Function XLAisThere() As Boolean
+On Error Resume Next
+Dim ad As Object
+    
+    XLAisThere = False
+    For Each ad In Application.AddIns
+        If InStr(ad.Name, "EuroXL") > 0 Then
+            XLAisThere = ((InStr(Dir(ad.FullName), "EuroXL") > 0) And (InStr(Dir(ad.FullName), "EuroXL") > 0))
+            Exit Function
+        End If
+    Next ad
+End Function
+
+Public Function XLAisInstalled() As Boolean
+On Error Resume Next
+Dim ad As Object
+    XLAisInstalled = False
+    For Each ad In Application.AddIns
+        If InStr(ad.Name, "EuroXL") > 0 Then
+            XLAisInstalled = ad.Installed
+            Exit Function
+        End If
+    Next ad
+End Function
+
+Public Function MenuIsThere() As Boolean
+On Error GoTo ErrorTrap
+Dim c As Object
+    MenuIsThere = False
+    For Each c In CommandBars("Worksheet Menu Bar").Controls
+        If c.Caption = "E&uro" Then
+            MenuIsThere = True
+            Exit Function
+        End If
+    Next c
+    Exit Function
+ErrorTrap:
+    MenuIsThere = False
+End Function
+
+Public Function CMDBarIsThere(ByVal BarName As String) As Boolean
+On Error Resume Next
+Dim c As Control
+    CMDBarIsThere = False
+    For Each c In CommandBars
+        If c.Name = BarName Then
+            CMDBarIsThere = True
+            Exit Function
+        End If
+    Next c
+End Function
+Attribute VB_Name = "Register"
+Option Explicit
+Option Compare Text
+
+Public Sub Reg_OpenHelp()
+Attribute Reg_OpenHelp.VB_ProcData.VB_Invoke_Func = " \n14"
+    Call Application.Help("euroxl.hlp", "8")
+End Sub
+
+Public Sub Reg_SaveDlg()
+Attribute Reg_SaveDlg.VB_ProcData.VB_Invoke_Func = " \n14"
+    RegName = frmInfo.txtRegName.Text
+    If "" = frmInfo.txtRegID.Text Then
+        RegID = 0
+    Else
+        RegID = CLng(frmInfo.txtRegID.Text)
+    End If
+    WriteINI
+End Sub
+
+Public Sub Reg_ShowDlg()
+Attribute Reg_ShowDlg.VB_ProcData.VB_Invoke_Func = " \n14"
+    frmInfo.txtRegName.Text = RegName
+    If RegID = 0 Then
+        frmInfo.txtRegID.Text = ""
+    Else
+        frmInfo.txtRegID.Text = RegID
+    End If
+    frmInfo.Show
+End Sub
+
+Public Function Reg_CheckRegistered() As Boolean
+Attribute Reg_CheckRegistered.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim RName As String
+Dim RID As Long
+    Reg_CheckRegistered = False
+    RName = RegName
+    RID = RegID
+    If RID = Reg_MakeID(RName) Then
+        Reg_CheckRegistered = True
+    Else
+        RegName = GetLangStr(41)
+        RegID = 0
+    End If
+End Function
+
+Private Function Reg_MakeID(N As String) As Long
+Dim res As Long, i As Long, Limit As Integer
+    N = "MuDiKuh" + N + "GoodGod"
+    Limit = Len(N)
+    If Limit > 120 Then Limit = 120
+    For i = 1 To Limit
+        res = res + CLng(Asc(N)) * CLng(77777)
+    Next i
+    Reg_MakeID = res
+End Function
+
+Private Sub Reg_test()
+Dim N As String
+    N = InputBox("name", "")
+    MsgBox "TestName: " & N & " TestReg: " & CStr(Reg_MakeID(N))
+End Sub
+Public Sub Reg_Deinstall()
+Attribute Reg_Deinstall.VB_ProcData.VB_Invoke_Func = " \n14"
+On Error GoTo ErrorTrap
+    
+    'deinstall nur wenn richtig installiert.
+    If Not XLAinList Then
+        Call MsgBox(GetLangStr(130) & Chr(13) & Chr(13) & GetLangStr(131), 64, "EuroXL Installation", "EuroXL.hlp", 12) 'Sie haben die Datei 'EuroXL**.xla' direkt ge|fffd|ffnet. EuroXL ist daher nicht dauerhaft installiert. / "Um EuroXL dauerhaft zu installieren, |fffd|ffnen Sie bitte die Datei 'Install.xla'. N|fffd|heres in der Datei liesmich.txt.
+        Exit Sub
+    End If
+    
+    If vbNo = MsgBox(GetLangStr(133), 36, GetLangStr(132), "EuroXL.hlp", 12) Then 'EuroXL Deinstallation
+        Exit Sub
+    End If
+    
+    AddIns(ThisAddinName).Installed = False
+    MsgBox GetLangStr(136), 32, GetLangStr(136) 'EuroXL wurde erfolgreich deinstalliert.
+    Exit Sub
+ErrorTrap:
+    MsgBox Err.Description, vbExclamation + vbOKOnly, GetLangStr(100)
+End Sub
+
+Public Function XLAinList() As Boolean
+Attribute XLAinList.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim ad As Object
+    XLAinList = False
+    For Each ad In Application.AddIns
+        If InStr(ad.Name, "EuroXL") > 0 Then
+            XLAinList = True
+            Exit Function
+        End If
+    Next ad
+End Function
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+Option Explicit
+
+Attribute VB_Name = "frmCellShift"
+Attribute VB_Base = "0{3B162472-5463-11D5-97F3-525405E3BA32}{3B162460-5463-11D5-97F3-525405E3BA32}"
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+Option Explicit
+
+Private Sub SetLanguage()
+    Me.Caption = GetLangStr(50)
+    optDown.Caption = GetLangStr(51)
+    optRight.Caption = GetLangStr(52)
+    cmdOk.Caption = GetLangStr(53)
+    cmdOk.ControlTipText = GetLangStr(54)
+    cmdCancel.Caption = GetLangStr(55)
+    cmdCancel.ControlTipText = GetLangStr(56)
+End Sub
+
+Private Sub cmdCancel_Click()
+    CellShift = 0
+    Me.Hide
+End Sub
+
+Private Sub cmdOk_Click()
+    If optDown.Value = True Then
+        CellShift = xlDown
+    Else
+        CellShift = xlToRight
+    End If
+    Me.Hide
+End Sub
+
+Private Sub UserForm_Activate()
+    If CellShift = xlDown Then
+        optDown = True
+    Else
+        optRight = True
+    End If
+End Sub
+
+Private Sub UserForm_Initialize()
+    SetLanguage
+End Sub
+Attribute VB_Name = "frmEinstellungen"
+Attribute VB_Base = "0{3B162476-5463-11D5-97F3-525405E3BA32}{3B162468-5463-11D5-97F3-525405E3BA32}"
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+Option Explicit
+
+Private Sub SetLangeuage()
+
+    Me.Caption = GetLangStr(60)
+    Frame1.Caption = GetLangStr(61)
+    lbl1.Caption = GetLangStr(62)
+    lbl2.Caption = GetLangStr(63)
+    txtEuroFaktor.ControlTipText = GetLangStr(64)
+    
+    Frame2.Caption = GetLangStr(65)
+    lbl3.Caption = GetLangStr(66)
+    lbl4.Caption = GetLangStr(67)
+    txtEuroFormatString.ControlTipText = GetLangStr(68)
+    txtDmFormatString.ControlTipText = GetLangStr(69)
+    
+    Frame3.Caption = GetLangStr(70)
+    lbl5.Caption = GetLangStr(71)
+    lbl6.Caption = GetLangStr(72)
+    txtCurrencySymbol.ControlTipText = GetLangStr(73)
+    txtEuroSymbol.ControlTipText = GetLangStr(74)
+    
+    cmdOk.Caption = GetLangStr(75)
+    cmdOk.ControlTipText = GetLangStr(76)
+    cmdCancel.Caption = GetLangStr(77)
+    cmdCancel.ControlTipText = GetLangStr(78)
+    cmdRestore.Caption = GetLangStr(81)
+    cmdRestore.ControlTipText = GetLangStr(82)
+    cmdHelp.Caption = GetLangStr(79)
+    cmdHelp.ControlTipText = GetLangStr(80)
+    
+End Sub
+
+Private Sub cmdCancel_Click()
+    Me.Hide
+End Sub
+
+Private Sub cmdHelp_Click()
+On Error GoTo ErrorTrap
+    Call Application.Help("euroxl.hlp", "6")
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & ". Bearbeitung beendet.", vbExclamation + vbOKOnly, "EuroXL Fehler"
+End Sub
+
+Private Sub cmdOk_Click()
+On Error GoTo ErrorTrap
+    EuroFaktor = CDbl(txtEuroFaktor.Text)
+    EFormat = txtEuroFormatString.Text
+    MFormat = txtDmFormatString.Text
+    MSymbol = txtCurrencySymbol.Text
+    ESymbol = txtEuroSymbol.Text
+    WriteINI
+    Me.Hide
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & ". Bearbeitung beendet.", vbExclamation + vbOKOnly, "EuroXL Fehler"
+    Resume Next
+End Sub
+
+Private Sub cmdRestore_Click()
+On Error GoTo ErrorTrap
+    txtEuroFaktor.Text = Format(GetLangStr(90), "General Number") 'EuroFaktor
+    txtEuroFormatString.Text = GetLangStr(91) 'EFormat
+    txtDmFormatString.Text = GetLangStr(92) 'MFormat
+    txtCurrencySymbol.Text = GetLangStr(93) 'MSymbol
+    txtEuroSymbol.Text = "|fffd|" 'ESymbol
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & ". Bearbeitung beendet.", vbExclamation + vbOKOnly, "EuroXL Fehler"
+    Resume Next
+End Sub
+
+Private Sub UserForm_Activate()
+On Error GoTo ErrorTrap
+    txtEuroFaktor.Text = Format(EuroFaktor, "General Number")
+    txtEuroFormatString.Text = EFormat
+    txtDmFormatString.Text = MFormat
+    txtCurrencySymbol.Text = MSymbol
+    txtEuroSymbol.Text = ESymbol
+    Exit Sub
+ErrorTrap:
+    MsgBox Error(Err) & ". Bearbeitung beendet.", vbExclamation + vbOKOnly, "EuroXL Fehler"
+    Resume Next
+End Sub
+
+Private Sub UserForm_Initialize()
+    SetLangeuage
+End Sub
+Attribute VB_Name = "frmInfo"
+Attribute VB_Base = "0{3B16246E-5463-11D5-97F3-525405E3BA32}{3B16246A-5463-11D5-97F3-525405E3BA32}"
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+Option Explicit
+
+Private Sub cmdInfo1_Click()
+'Schon gut
+    Me.Hide
+End Sub
+
+Private Sub cmdInfo2_Click()
+'Hilfe
+    Reg_OpenHelp
+End Sub
+
+Private Sub cmdInfo3_Click()
+'OK
+    Call Reg_SaveDlg
+    Me.Hide
+End Sub
+
+Private Sub SetLanguage()
+    Me.Caption = GetLangStr(30)
+    lblInfo1.Caption = GetLangStr(31)
+    lblInfo2.Caption = GetLangStr(32)
+    lblInfo3.Caption = GetLangStr(33)
+    lblInfo4.Caption = GetLangStr(34)
+    cmdInfo1.Caption = GetLangStr(35)
+    cmdInfo1.ControlTipText = GetLangStr(36)
+    cmdInfo2.Caption = GetLangStr(37)
+    cmdInfo2.ControlTipText = GetLangStr(38)
+    cmdInfo3.Caption = GetLangStr(39)
+    cmdInfo3.ControlTipText = GetLangStr(40)
+End Sub
+
+Private Sub UserForm_Initialize()
+    SetLanguage
+End Sub
+Attribute VB_Name = "ini"
+Option Explicit
+
+Declare Function WritePrivateProfileString Lib "kernel32" Alias "WritePrivateProfileStringA" (ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpString As Any, ByVal lpFileName As String) As Long
+Attribute WritePrivateProfileString.VB_ProcData.VB_Invoke_Func = " \n14"
+Declare Function GetPrivateProfileInt Lib "kernel32" Alias "GetPrivateProfileIntA" (ByVal lpApplicationName As String, ByVal lpKeyName As String, ByVal nDefault As Long, ByVal lpFileName As String) As Long
+Attribute GetPrivateProfileInt.VB_ProcData.VB_Invoke_Func = " \n14"
+Declare Function GetPrivateProfileString Lib "kernel32" Alias "GetPrivateProfileStringA" (ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpDefault As String, ByVal lpReturnedString As String, ByVal nSize As Long, ByVal lpFileName As String) As Long
+Attribute GetPrivateProfileString.VB_ProcData.VB_Invoke_Func = " \n14"
+
+Public Sub WriteINI()
+Attribute WriteINI.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim FName As String
+'ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpString As Any, ByVal lpFileName As String) As Long
+    FName = ThisWorkbook.Path & "\EuroXL.ini"
+    Call WritePrivateProfileString("EuroXL", "EuroFaktor", CStr(EuroFaktor), FName)
+    Call WritePrivateProfileString("EuroXL", "EFormat", CStr(EFormat), FName)
+    Call WritePrivateProfileString("EuroXL", "MFormat", CStr(MFormat), FName)
+    Call WritePrivateProfileString("EuroXL", "MSymbol", CStr(MSymbol), FName)
+    Call WritePrivateProfileString("EuroXL", "ESymbol", CStr(ESymbol), FName)
+    Call WritePrivateProfileString("EuroXL", "CopyFlag", CStr(CInt(CopyFlag)), FName)
+    Call WritePrivateProfileString("EuroXL", "Cellshift", CStr(CInt(CellShift)), FName)
+    Call WritePrivateProfileString("EuroXL", "ChangeFormula", CStr(CInt(ChangeFormula)), FName)
+    Call WritePrivateProfileString("EuroXL", "DetectCurrency", CStr(CInt(DetectCurrency)), FName)
+    Call WritePrivateProfileString("EuroXL", "RegName", RegName, FName)
+    Call WritePrivateProfileString("EuroXL", "RegID", CStr(RegID), FName)
+'Round    Call WritePrivateProfileString("EuroXL", "DoRound", CStr(CInt(DoRound)), FName)
+'Round    Call WritePrivateProfileString("EuroXL", "NumDigits", CStr(NumDigits), FName)
+    
+    'EXCEL97: CommandBareinstellungen
+    Call WritePrivateProfileString("EuroXL", "CBpos1", CStr(CommandBars(E2MBarName).Position), FName)
+    Call WritePrivateProfileString("EuroXL", "CBpos2", CStr(CommandBars(M2EBarName).Position), FName)
+    Call WritePrivateProfileString("EuroXL", "CBvis1", CStr(CInt(CommandBars(E2MBarName).Visible)), FName)
+    Call WritePrivateProfileString("EuroXL", "CBvis2", CStr(CInt(CommandBars(M2EBarName).Visible)), FName)
+    Call WritePrivateProfileString("EuroXL", "CBtop1", CStr(CommandBars(E2MBarName).Top), FName)
+    Call WritePrivateProfileString("EuroXL", "CBtop2", CStr(CommandBars(M2EBarName).Top), FName)
+    Call WritePrivateProfileString("EuroXL", "CBleft1", CStr(CommandBars(E2MBarName).Left), FName)
+    Call WritePrivateProfileString("EuroXL", "CBleft2", CStr(CommandBars(M2EBarName).Left), FName)
+    Call WritePrivateProfileString("EuroXL", "CBrowindex1", CStr(CommandBars(E2MBarName).RowIndex), FName)
+    Call WritePrivateProfileString("EuroXL", "CBrowindex2", CStr(CommandBars(M2EBarName).RowIndex), FName)
+    Call WritePrivateProfileString("EuroXL", "CBwidth1", CStr(CommandBars(E2MBarName).Width), FName)
+    Call WritePrivateProfileString("EuroXL", "CBwidth2", CStr(CommandBars(M2EBarName).Width), FName)
+End Sub
+
+Public Sub ReadINI()
+Attribute ReadINI.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim FName As String
+Dim res$, ok!
+    FName = ThisWorkbook.Path & "\EuroXL.ini"
+    
+    res = Space(100)
+    ok = GetPrivateProfileString("EuroXL", "EuroFaktor", CDbl(GetLangStr(90)), res, 100, FName)
+    res = Trim(res)   'blanks rausschmeissen
+    If Len(res) > 0 Then EuroFaktor = CDbl(Left(res, Len(res) - 1)) 'linefeed rausschmei|fffd|en
+    
+    res = Space(100)
+    ok = GetPrivateProfileString("EuroXL", "EFormat", GetLangStr(91), res, 100, FName)
+    res = Trim(res)   'blanks rausschmeissen
+    If Len(res) > 0 Then EFormat = Left(res, Len(res) - 1) 'linefeed rausschmei|fffd|en
+    
+    res = Space(100)
+    ok = GetPrivateProfileString("EuroXL", "MFormat", GetLangStr(92), res, 100, FName)
+    res = Trim(res)   'blanks rausschmeissen
+    If Len(res) > 0 Then MFormat = Left(res, Len(res) - 1) 'linefeed rausschmei|fffd|en
+    
+    res = Space(100)
+    ok = GetPrivateProfileString("EuroXL", "MSymbol", GetLangStr(93), res, 100, FName)
+    res = Trim(res)   'blanks rausschmeissen
+    If Len(res) > 0 Then MSymbol = Left(res, Len(res) - 1) 'linefeed rausschmei|fffd|en
+
+    res = Space(100)
+    ok = GetPrivateProfileString("EuroXL", "ESymbol", "|fffd|", res, 100, FName)
+    res = Trim(res)   'blanks rausschmeissen
+    If Len(res) > 0 Then ESymbol = Left(res, Len(res) - 1) 'linefeed rausschmei|fffd|en
+
+    CopyFlag = CBool(GetPrivateProfileInt("EuroXL", "CopyFlag", 0, FName))
+    CellShift = CBool(GetPrivateProfileInt("EuroXL", "Cellshift", 0, FName))
+    ChangeFormula = CBool(GetPrivateProfileInt("EuroXL", "ChangeFormula", -1, FName))
+    DetectCurrency = CBool(GetPrivateProfileInt("EuroXL", "DetectCurrency", -1, FName))
+    
+    res = Space(100)
+    ok = GetPrivateProfileString("EuroXL", "RegName", GetLangStr(41), res, 100, FName)
+    res = Trim(res)   'blanks rausschmeissen
+    If Len(res) > 0 Then RegName = Left(res, Len(res) - 1) 'linefeed rausschmei|fffd|en
+
+    RegID = GetPrivateProfileInt("EuroXL", "RegID", 0, FName)
+
+'Round    DoRound = CBool(GetPrivateProfileInt("EuroXL", "DoRound", 0, FName))
+'Round    NumDigits = GetPrivateProfileInt("EuroXL", "NumDigits", 2, FName)
+
+    'EXCEL97: CommandBareinstellungen
+    CBpos1 = GetPrivateProfileInt("EuroXL", "CBpos1", 4, FName)
+    CBpos2 = GetPrivateProfileInt("EuroXL", "CBpos2", 4, FName)
+    CBvis1 = GetPrivateProfileInt("EuroXL", "CBvis1", -1, FName)
+    CBvis2 = GetPrivateProfileInt("EuroXL", "CBvis2", -1, FName)
+    CBtop1 = GetPrivateProfileInt("EuroXL", "CBtop1", 150, FName)
+    CBtop2 = GetPrivateProfileInt("EuroXL", "CBtop2", 150, FName)
+    CBleft1 = GetPrivateProfileInt("EuroXL", "CBleft1", 380, FName)
+    CBleft2 = GetPrivateProfileInt("EuroXL", "CBleft2", 110, FName)
+    CBrowindex1 = GetPrivateProfileInt("EuroXL", "CBrowindex1", -1, FName)
+    CBrowindex2 = GetPrivateProfileInt("EuroXL", "CBrowindex2", -1, FName)
+    CBWidth1 = GetPrivateProfileInt("EuroXL", "CBwidth1", 285, FName)
+    CBWidth2 = GetPrivateProfileInt("EuroXL", "CBwidth2", 285, FName)
+End Sub
+
+' InQuest injected base64 decoded content
+' jwAj
+
+INQUEST-PP=macro

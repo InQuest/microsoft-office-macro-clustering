@@ -1,0 +1,1867 @@
+Attribute VB_Name = "Ark1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Worksheet_BeforeRightClick(ByVal Target As Excel.Range, Cancel As Boolean)
+On Error GoTo Abort
+CommandBars("MyShortcut").ShowPopup
+Cancel = True
+
+Exit Sub
+Abort:
+DeleteShortcut
+End Sub
+
+
+
+Attribute VB_Name = "Ark2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Ark3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Module1"
+Option Explicit
+Public Const sLSFAddress As String = "= R4"
+Public Const sMAAddress As String = "= R5"
+Public Const sMSAddress As String = "= R6"
+Public dLSFTarget As Double    'Target for Lime Saturation Factor
+Public dMATarget As Double     'Target for alumina module
+Public dMSTarget As Double     'Target for silica module
+Public bAbort As Boolean       'Flag to stop action
+Public lSelected As Long       'The number of selected raw materials
+Public bMatChange As Boolean   'True if the user selects new or deselects old materials
+Public lRel1Con As Long        'Number of constraints type 1
+Public lRel2Con As Long        'Number of constraints type 2
+Public lRel3Con As Long        'Number of constraints type 3
+Public arMats(1 To 8, 1 To 3)  'Variant array for the raw materials.
+Public arRel1(1 To 20, 1 To 3) 'Array with constraints < =. Make more than 20 rows if you want.
+Public arRel2(1 To 20, 1 To 3) 'Array with constraints =
+Public arRel3(1 To 20, 1 To 3) 'Array with constraints > =
+Public InputBoxCol As New Collection    'Used when validating text box input.
+Sub Auto_open()
+'Executes automatically when
+'the workbook is opened.
+Application.ScreenUpdating = False
+Worksheets(1).Activate
+With Cells
+   'Delete old content in "Result"
+   .Clear
+   'Make background colour white
+   .Interior.ColorIndex = 2
+   .Interior.Pattern = xlSolid
+End With
+'Make the right click popup menu
+ShortCutMenu.StartShortCut
+Application.ScreenUpdating = True
+MsgBox "Right click to see the popup menu"
+End Sub
+Sub Start()
+'This procedure executes, when the user selects "Make a Mix"
+'in the popup menu on the sheet "Result".
+
+On Error GoTo ErrorHandle
+
+'Reset arrays with constraints
+lRel1Con = 0
+lRel2Con = 0
+lRel3Con = 0
+
+'Fill the raw materials array from the
+'table with raw materials in sheet "Materials"
+'Actually a class collection would be better
+'suited than an array, because the raw materials
+'can have all sorts of properties, however this
+'example is so simple, that an array will do nicely.
+FillMatArray
+If bAbort Then
+   bAbort = False
+   Exit Sub
+End If
+
+'Let the user select raw materials
+frmListBox.Show
+If bAbort Then
+   bAbort = False
+   Exit Sub
+End If
+
+'Let the user set chemical
+'constraints for the raw mix
+frmChemicalTargets.Show
+
+'Change the popup menu
+ShortCutMenu.ShortcutRawMix
+
+'Delete this once you are tired of seeing it :-)
+MsgBox "Click the right mouse button to see your options"
+
+'Further action is determined by the user's
+'use of the popup menu. If you want to track
+'that action start in the menu's module, and
+'take it from there.
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure Start, Module1"
+End Sub
+Sub FillMatArray()
+'Fills the materials array with raw material
+'names and the cell addresses for adjustable tonnes.
+Dim lCount As Long   'Counter
+Dim rMats As Range   'Range variable for materials
+
+On Error GoTo ErrorHandle
+
+'Find the range with raw materials
+Set rMats = Range("materials").Offset(1, 0)
+
+'If the cell for the first material name is
+'empty, we exit.
+If IsEmpty(rMats) Then
+   MsgBox "The first cell in the raw materials " & _
+   "table is empty. Projects aborted."
+   bAbort = True
+   GoTo BeforeExit
+End If
+
+'If the next cell has content, we extend the
+'range to the last cell with content. If not,
+'we abort - you cannot make a mix with only
+'1 raw material!
+If Len(rMats.Offset(1, 0).Value) > 0 Then
+   Set rMats = Range(rMats, rMats.End(xlDown))
+Else
+   MsgBox "You cannot make a mix with just 1 raw material!"
+   bAbort = True
+   GoTo BeforeExit
+End If
+
+'Fill the array with material names, a boolean flag and
+'the cell address for the adjustable tonnes.
+With rMats
+   For lCount = 1 To .Count
+      'Name
+      arMats(lCount, 1) = .Item(lCount).Value
+      'Flag for used or not - at this time all false
+      arMats(lCount, 2) = False
+      'Cell address for adjustable tonnes. This is used
+      'in the lists with constraints. In this case the
+      'cells are in column M.
+      arMats(lCount, 3) = "=" & .Item(lCount).Offset(0, 12).Address
+   Next
+End With
+
+BeforeExit:
+Set rMats = Nothing
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure FillMatarray, Module1"
+bAbort = True
+Resume BeforeExit
+End Sub
+Sub WriteResult()
+'Deletes any old result tables on sheet 1
+'and writes new ones. This procedure is
+'called, when Solver has done its work.
+Dim lCount As Long         'Counter
+Dim lRow As Long           'Counter
+Dim sSheet As String       'String for formulas
+Dim arChem(1 To 6, 1 To 2) 'The array that will hold the table for chemical results
+Dim arMatTable             'Array for raw materials, tonnes, percent and price
+Dim rChemTable As Range    'Range for chemical results
+Dim rMatTable As Range     'Range for raw materials table
+Dim rTonnes As Range       'Range with tonnes
+Dim rPercent As Range      'Range with percents
+Dim rPrice As Range        'Range with prices for the mix
+
+On Error GoTo ErrorHandle
+
+Application.ScreenUpdating = False
+Worksheets(1).Activate
+
+'If it says "Raw mix" in A1 and the flag for new
+'material selections is false, we exit.
+If Range("A1").Value = "Raw mix" And bMatChange = False Then Exit Sub
+
+With Cells
+   .Clear   'Delete old content
+   'Make background colour white
+   .Interior.ColorIndex = 2
+   .Interior.Pattern = xlSolid
+End With
+
+'If you change the name of the sheet "Materials"
+'you must change it here too.
+sSheet = "=Materials!"
+
+'Fill the array that will make the top table
+'on the sheet "Result"
+arChem(1, 1) = "Raw mix"
+arChem(2, 1) = "LSF"
+arChem(2, 2) = sSheet & "R4"
+arChem(3, 1) = "MA"
+arChem(3, 2) = sSheet & "R5"
+arChem(4, 1) = "MS"
+arChem(4, 2) = sSheet & "R6"
+arChem(5, 1) = "Tonnes"
+arChem(5, 2) = "= totaltonnes"
+arChem(6, 1) = "Price/t"
+arChem(6, 2) = "= price"
+
+'Set the ranges for tonnes, percents and prices.
+'We will use them to look up cell addresses for formulas.
+Set rTonnes = Range("totaltonnes").Offset(1, 0)
+Set rTonnes = rTonnes.Resize(lSelected)
+Set rPercent = rTonnes.Offset(0, 1)
+Set rPrice = rTonnes.Offset(0, 2)
+
+'The second array for the second table
+'on the sheet "Result".
+'The arMatTable's rows are dimensioned to
+'the number of selected raw materials plus
+'1 for the header row.
+ReDim arMatTable(1 To lSelected + 1, 1 To 4)
+
+'The header row in the raw materials table
+arMatTable(1, 1) = "Raw materials"
+arMatTable(1, 2) = "Tonnes"
+arMatTable(1, 3) = "Percent"
+arMatTable(1, 4) = "Price"
+
+'We now loop the arMats array and add selected
+'materials to the arMatTable array.
+lRow = 2
+For lCount = 1 To UBound(arMats)
+   'If the material is selected
+   If arMats(lCount, 2) = True Then
+      arMatTable(lRow, 1) = arMats(lCount, 1)
+      arMatTable(lRow, 2) = sSheet & rTonnes.Item(lCount).Address
+      arMatTable(lRow, 3) = sSheet & rPercent.Item(lCount).Address
+      arMatTable(lRow, 4) = sSheet & rPrice.Item(lCount).Address
+      'Increment the row counter
+      lRow = lRow + 1
+   End If
+Next
+
+'Now we set our output tables
+Set rChemTable = Range("A1:B6")
+Set rMatTable = Range("A8:D8")
+Set rMatTable = rMatTable.Resize(UBound(arMatTable))
+
+'Copy from the arrays to the ranges.
+rChemTable.Formula = arChem
+rMatTable.Formula = arMatTable
+'Format numbers
+rChemTable.NumberFormat = "0.00"
+rMatTable.NumberFormat = "0.00"
+Columns("A:A").EntireColumn.AutoFit
+'Make cell borders
+MakeBorders rChemTable
+MakeBorders rMatTable
+
+BeforeExit:
+On Error Resume Next
+Set rTonnes = Nothing
+Set rPercent = Nothing
+Set rPrice = Nothing
+Erase arChem
+Erase arMatTable
+Application.ScreenUpdating = True
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure WriteResult, Module1"
+Resume BeforeExit
+End Sub
+Sub MakeBorders(ByVal rTable As Range)
+'Makes borders around the cells in the
+'Result table.
+
+On Error GoTo ErrorHandle
+
+With rTable
+   .Borders(xlEdgeLeft).LineStyle = xlContinuous
+   .Borders(xlEdgeTop).LineStyle = xlContinuous
+   .Borders(xlEdgeRight).LineStyle = xlContinuous
+   .Borders(xlEdgeBottom).LineStyle = xlContinuous
+   .Borders(xlInsideVertical).LineStyle = xlContinuous
+   .Borders(xlInsideHorizontal).LineStyle = xlContinuous
+End With
+
+BeforeExit:
+Set rTable = Nothing
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure MakeBorders"
+Resume BeforeExit
+End Sub
+Attribute VB_Name = "ShortCutMenu"
+Option Explicit
+Sub StartShortCut()
+'Creates the right-click shortcut menu, when
+'the workbook is opened. This menu has only
+'one item to chose from at this point.
+Dim myBar As CommandBar
+Dim myItem As CommandBarControl
+
+On Error GoTo ErrorHandle
+
+DeleteShortcut
+
+Set myBar = CommandBars.Add _
+  (Name:="MyShortcut", Position:=msoBarPopup, Temporary:=True)
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Make a Mix"
+    .OnAction = "Module1.Start"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 133
+End With
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & vbNewLine & _
+"Procedure StartShortcut.", vbCritical, "Error"
+End Sub
+Sub ShortcutRawMix()
+'Creates the right-click shortcut menu that
+'appears when making a raw mix.
+Dim myBar As CommandBar
+Dim myItem As CommandBarControl
+
+On Error GoTo ErrorHandle
+
+DeleteShortcut
+
+Set myBar = CommandBars.Add _
+  (Name:="MyShortcut", Position:=msoBarPopup, Temporary:=True)
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Solve"
+    .OnAction = "SolverCode.MakeMix"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 645
+End With
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Reset"
+    .OnAction = "CancelAll"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 155
+End With
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Solution type"
+    .OnAction = "Minimize"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 990
+End With
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Chemical constraints"
+    .OnAction = "ChemicalConstraints"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 385
+End With
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Raw material constraints"
+    .OnAction = "RawMatConstraints"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 385
+End With
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Show/delete constraints"
+    .OnAction = "ShowConstraints"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 940
+End With
+
+Set myItem = myBar.Controls.Add(Type:=msoControlButton)
+With myItem
+    .Caption = "Select raw materials"
+    .OnAction = "SelectMat"
+    .Style = msoButtonIconAndCaption
+    .FaceId = 990
+End With
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & vbNewLine & _
+"Procedure ShortcutRawMix", vbCritical, "Error"
+End Sub
+Sub DeleteShortcut()
+    On Error Resume Next
+    CommandBars("MyShortcut").Delete
+End Sub
+Sub CancelAll()
+Erase arMats
+Erase arRel1
+Erase arRel2
+Erase arRel3
+lSelected = 0
+lRelation = 0
+bMatChange = False
+lRelation = 3
+Worksheets(1).Activate
+With Cells
+   .Clear   'Delete old content
+   'Make background colour white
+   .Interior.ColorIndex = 2
+   .Interior.Pattern = xlSolid
+End With
+StartShortCut
+End Sub
+Sub ChemicalConstraints()
+frmChemicalTargets.Show
+End Sub
+Sub RawMatConstraints()
+frmSetConstraints.Show
+End Sub
+Sub SelectMat()
+frmListBox.Show
+End Sub
+Sub ShowConstraints()
+On Error Resume Next
+frmShowConstraints.Show
+End Sub
+Sub Minimize()
+frmMinimize.Show
+End Sub
+Attribute VB_Name = "SolverCode"
+'*************************************
+'This module contains the macros for
+'writing constraints to the sheet and
+'for controlling Solver.
+'*************************************
+Option Explicit
+Public lRelation As Long        '1 = maximize, 2 = minimize, 3 = match specific value
+Dim bRel1 As Boolean, bRel2 As Boolean, bRel3 As Boolean, bRel4 As Boolean  'Flags
+Dim sAdjust As String            'String with addresses for adjustable cells
+'Arrays for constraints
+Dim arA1, arB1, arA2, arB2, arA3, arB3, arA4, arB4, arA5, arB5
+'Ranges for constraints
+Dim rA1 As Range, rB1 As Range, rA2 As Range, rB2 As Range
+Dim rA3 As Range, rB3 As Range, rA4 As Range, rB4 As Range, rA5 As Range, rB5 As Range
+Sub MakeMix()
+'This procedure executes, when the user selects
+'Solve in the popup menu.
+
+On Error GoTo ErrorHandle
+
+'Any old constraints in the sheet are deleted
+DeleteOldConstraints
+
+'Make the constraint arrays that will be
+'inserted into the sheet as two column tables.
+MakeArrays
+
+If bRel1 Or bRel2 Or bRel3 Or bRel4 Then
+   'Write constraint tables
+   ConstraintTables
+End If
+
+'Make the string with adjustable cell addresses
+AdjustString
+
+'Call Solver to find a solution
+MixSolve
+
+'Write tables to sheet "Result"
+Module1.WriteResult
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure MakeMix, module SolverCode"
+End Sub
+Private Sub DeleteOldConstraints()
+Dim lNumber As Long
+Dim rCon As Range
+
+On Error GoTo ErrorHandle
+
+'Anu old constraints will be written below the cells
+'named 'relation1, relation2, relation3 and relation4.
+'The following loop checks all 4 ranges and deletes
+'any old constraints.
+'There is no such thing as relation 4 or 5, but we use it
+'for chemical constraints and flows > = 0, and the names
+'allow us to include them in the following loop.
+For lNumber = 1 To 5
+   Set rCon = Range("relation" & lNumber).Offset(1, 0)
+   If Len(rCon.Value) > 0 Then
+      'If more than 1 row, extend to bottom
+      'and 1 column to the right.
+      If Len(rCon.Offset(1, 0).Value) > 0 Then
+         Set rCon = Range(rCon, rCon.Offset(0, 1))
+         Set rCon = Range(rCon, rCon.End(xlDown))
+      Else
+         'One row only
+         Set rCon = Range(rCon, rCon.Offset(0, 1))
+      End If
+      'Delete the constraints
+      rCon.ClearContents
+   End If
+Next
+
+BeforeExit:
+Set rCon = Nothing
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure DeleteOldConstraints, module SolverCode"
+Resume BeforeExit
+End Sub
+Private Sub MakeArrays()
+'This procedure makes arrays with constraints
+'that will be inserted as tables later.
+'Every array will be copied in one swift
+'operation to a range with the same dimensions.
+'Doing it this way is much faster than filling
+'the ranges cell by cell.
+Dim lRow As Long           'Row counter
+Dim lCon As Long           'Row counter
+Dim lChemTargets As Long   'Counter
+
+On Error GoTo ErrorHandle
+
+bRel1 = False
+bRel2 = False
+bRel3 = False
+bRel4 = False
+
+'Relation 1 constraints
+If lRel1Con > 0 Then
+   'Resize the arrays to the number
+   'of relation 1 constraints.
+   ReDim arA1(1 To lRel1Con, 1 To 1)
+   ReDim arB1(1 To lRel1Con, 1 To 1)
+   lCon = 1
+   For lRow = 1 To UBound(arRel1)
+      If Len(arRel1(lRow, 2)) > 0 Then
+         'The address of the cell that must have
+         'a value < = whatever
+         arA1(lCon, 1) = arRel1(lRow, 2)
+         'The constraint value
+         arB1(lCon, 1) = arRel1(lRow, 3)
+         'Increment the row counter
+         lCon = lCon + 1
+      End If
+   Next
+   bRel1 = True
+End If
+
+'If any relation 2 constraints
+If lRel2Con > 0 Then
+   ReDim arA2(1 To lRel2Con, 1 To 1)
+   ReDim arB2(1 To lRel2Con, 1 To 1)
+   lCon = 1
+   For lRow = 1 To UBound(arRel2)
+      If Len(arRel2(lRow, 2)) > 0 Then
+         'The address of the cell that must have
+         'a value = whatever
+         arA2(lCon, 1) = arRel2(lRow, 2)
+         'The constraint value
+         arB2(lCon, 1) = arRel2(lRow, 3)
+         'Increment the row counter
+         lCon = lCon + 1
+      End If
+   Next
+   bRel2 = True
+End If
+
+'If any relation 3 constraints.
+If lRel3Con > 0 Then
+   ReDim arA3(1 To lRel3Con, 1 To 1)
+   ReDim arB3(1 To lRel3Con, 1 To 1)
+   lCon = 1
+   'Add the user defined > = constraints
+   For lRow = 1 To UBound(arRel3)
+      If Len(arRel3(lRow, 2)) > 0 Then
+         'The address of the cell that must have
+         'a value > = whatever
+         arA3(lCon, 1) = arRel3(lRow, 2)
+         'The constraint value
+         arB3(lCon, 1) = arRel3(lRow, 3)
+         'Increment the row counter
+         lCon = lCon + 1
+      End If
+   Next
+   bRel3 = True
+End If
+
+'Chemical constraints.
+If dLSFTarget > 0 Then lChemTargets = lChemTargets + 1
+If dMATarget > 0 Then lChemTargets = lChemTargets + 1
+If dMSTarget > 0 Then lChemTargets = lChemTargets + 1
+
+ReDim arA4(1 To lChemTargets, 1 To 1)
+ReDim arB4(1 To lChemTargets, 1 To 1)
+lCon = 1
+If dLSFTarget > 0 Then
+   arA4(1, 1) = sLSFAddress
+   arB4(1, 1) = dLSFTarget
+   lCon = lCon + 1
+End If
+If dMATarget > 0 Then
+   arA4(lCon, 1) = sMAAddress
+   arB4(lCon, 1) = dMATarget
+   lCon = lCon + 1
+End If
+If dMSTarget > 0 Then
+   arA4(lCon, 1) = sMSAddress
+   arB4(lCon, 1) = dMSTarget
+End If
+
+If lChemTargets > 0 Then
+   bRel4 = True
+End If
+
+'In addition to any user defined > = constraints
+'we set one for each raw material, that the
+'flow must be > = 0. Otherwise Solver would
+'happily work with negative flows to find
+'a solution. You can ask Solver to assume
+'non negative values, but if you want to
+'introduce a bleed (negative flow) of some
+'kind, you would be in trouble. If you want
+'some flows to be negative, you must raise
+'a flag so it will not get a constraint
+'below this comment. This could for instance
+'be another Boolean in the arMats array.
+'Add > = 0 constraints
+
+ReDim arA5(1 To lSelected, 1 To 1)
+ReDim arB5(1 To lSelected, 1 To 1)
+lCon = 1
+For lRow = 1 To UBound(arMats)
+   If arMats(lRow, 2) = True Then
+      arA5(lCon, 1) = arMats(lRow, 3)
+      arB5(lCon, 1) = 0
+      'Increment the row counter
+      lCon = lCon + 1
+   End If
+Next
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & "Procedure MakeArrays, module SolverCode"
+End Sub
+Private Sub ConstraintTables()
+'Writes the constraints to the sheet
+'as two column tables. This is done
+'by copying every array to a range
+'with the same dimensions. Fast!
+
+On Error GoTo ErrorHandle
+
+'If any relation 1 constraints
+If bRel1 Then
+   'Set the range for the constraint cells
+   Set rA1 = Range("relation1").Offset(1, 0)
+   'Resize the range to the same number of
+   'rows as the arrays that will be copied.
+   Set rA1 = rA1.Resize(lRel1Con)
+   Set rB1 = rA1.Offset(0, 1)
+   'Copy the arrays to the ranges:
+   rA1.Formula = arA1
+   rB1.Value = arB1
+End If
+
+If bRel2 Then
+   Set rA2 = Range("relation2").Offset(1, 0)
+   Set rA2 = rA2.Resize(lRel2Con)
+   Set rB2 = rA2.Offset(0, 1)
+   rA2.Formula = arA2
+   rB2.Value = arB2
+End If
+
+If bRel3 Then
+   Set rA3 = Range("relation3").Offset(1, 0)
+   Set rA3 = rA3.Resize(lRel3Con)
+   Set rB3 = rA3.Offset(0, 1)
+   rA3.Formula = arA3
+   rB3.Value = arB3
+End If
+
+'Chemical constraints. In this example there
+'can be max 3, so if you add more chemical
+'targets you will have to modify this code too.
+If bRel4 Then
+   Set rA4 = Range("relation4").Offset(1, 0)
+   Set rA4 = rA4.Resize(UBound(arA4))
+   Set rB4 = rA4.Offset(0, 1)
+   rA4.Formula = arA4
+   rB4.Value = arB4
+End If
+
+'The internally set flow constraint
+'Slows must be > = zero.
+Set rA5 = Range("relation5").Offset(1, 0)
+Set rA5 = rA5.Resize(lSelected)
+Set rB5 = rA5.Offset(0, 1)
+rA5.Formula = arA5
+rB5.Value = arB5
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure ConstraintTable, module SolverCode"
+End Sub
+Private Sub AdjustString()
+'Makes the comma delimited text string with
+'addresses for the adjustable cells.
+'Also gives each adjustable cell a seed value.
+Dim lCount As Long
+Dim rAdjust As Range
+
+On Error GoTo ErrorHandle
+
+sAdjust = Empty
+
+'First we delete any old tonnes
+Set rAdjust = Range("totaltonnes").Offset(1, 0)
+Set rAdjust = rAdjust.Resize(UBound(arMats))
+rAdjust.ClearContents
+
+'Find the first selected material
+For lCount = 1 To UBound(arMats)
+   If arMats(lCount, 2) = True Then
+      With rAdjust.Item(lCount)
+         sAdjust = .Address
+         'Seed value. Sometimes Solver freaks out
+         'if there is an error in a target cell,
+         'and this could occur if there is a division
+         'by zero, so it is a good precaution to
+         'give each adjustable cell a seed valus.
+         .Value = 1
+         Exit For
+      End With
+   End If
+Next
+
+'The rest of the selected materials
+For lCount = lCount + 1 To UBound(arMats)
+   If arMats(lCount, 2) = True Then
+         With rAdjust.Item(lCount)
+         sAdjust = sAdjust & "," & .Address
+         'Seed value
+         .Value = 1
+      End With
+   End If
+Next
+
+BeforeExit:
+Set rAdjust = Nothing
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure AdjustString, module SolverCode"
+Resume BeforeExit
+End Sub
+Private Sub MixSolve()
+'Defines the problem and calls Solver
+Dim dPrecision As Double   'Variable for solution precision
+Dim iSolution As Integer   'Gets the value returned from Solver
+Dim bSolved As Boolean     'Flag
+Dim lTimes As Long         'Counter
+Dim sMsg As String         'String variable for messagebox
+Dim sTarget As String      'String variable for target cell address
+
+On Error GoTo ErrorHandle
+
+Application.ScreenUpdating = False
+Worksheets(2).Activate
+
+'It is important to reset Solver so
+'it will not use old parameters.
+SolverReset
+
+If lRelation = 0 Then lRelation = 3
+If lRelation = 3 Then
+   sTarget = Range("pctsum").Address
+Else
+   sTarget = Range("price").Address
+End If
+
+'=< constraints
+If bRel1 Then
+    solveradd cellref:=rA1.Address, relation:=1, formulatext:=rB1.Address
+End If
+
+'Equal to (=) constraints
+If bRel2 Then
+    solveradd cellref:=rA2.Address, relation:=2, formulatext:=rB2.Address
+End If
+
+'>= constraints
+If bRel3 Then
+    solveradd cellref:=rA3.Address, relation:=3, formulatext:=rB3.Address
+End If
+
+'Chemical constraints
+solveradd cellref:=rA4.Address, relation:=2, formulatext:=rB4.Address
+
+'Program constraints for all flows to be > = 0
+solveradd cellref:=rA5.Address, relation:=3, formulatext:=rB5.Address
+
+'lRelation 3 is standard
+If lRelation = 3 Then
+   'The target cell is the sum of percentages and will always be = 100 %
+   'If you don't need a target cell with a specific value, you can just
+   'use a dummy as target, say cell IV65000, write 1 in the cell, and
+   'write "ValueOf:=1" below.
+   'You cannot just skip the line below, because it contains the reference
+   'to the adjustable cells.
+   SolverOk SetCell:=sTarget, MaxMinVal:=3, ValueOf:=100, ByChange:=sAdjust
+Else  'In this case minimize price
+   SolverOk SetCell:=sTarget, MaxMinVal:=lRelation, ByChange:=sAdjust
+End If
+
+'The demand for precision. If no solution, we reduce the
+'precision and try again up to 6 times.
+dPrecision = 0.000000001
+
+'Start the loop.
+Do Until bSolved
+   lTimes = lTimes + 1
+   If lTimes = 7 Then
+      MsgBox "Solver didn't find a solution despite 6 attempts " & vbNewLine & _
+      "with reduced demand for precision."
+      Exit Do
+   End If
+   
+   solverOptions MaxTime:=32760, Iterations:=32760, Precision:=dPrecision, AssumeLinear _
+   :=False, StepThru:=False, Estimates:=1, Derivatives:=1, SearchOption:=1, _
+   IntTolerance:=2, Scaling:=True, Convergence:=0.0001, AssumeNonNeg:=False
+   
+   'The following command returns the Solver answer as an integer, and
+   'we take corresponding action. The alternative is to write:
+   'SolverSolve(False), and then Solver's built in dialogue will pop up.
+   iSolution = SolverSolve(True)
+      
+   Select Case iSolution
+      Case 0
+         bSolved = True
+         If lTimes = 1 Then
+            MsgBox "Solver found a solution."
+         Else
+            If lTimes = 2 Then
+               sMsg = " time"
+            Else
+               sMsg = " times"
+            End If
+            MsgBox "Solver found a solution when the demand for precision " & vbNewLine & _
+            "was reduced " & lTimes - 1 & sMsg & "."
+         End If
+         Exit Do
+      Case 1
+         bSolved = True
+         MsgBox "Solver has converged to the current solution.  All constraints are satisfied."
+          Exit Do
+      Case 2
+         bSolved = True
+         MsgBox "Solver cannot improve the current solution.  All constraints are satisfied."
+         Exit Do
+      Case 3
+         MsgBox "Stop chosen when the maximum iteration limit was reached."
+         Exit Do
+      Case 4
+         MsgBox "The Objective Cell values do not converge. " & vbNewLine & _
+         "It may help with a flow constraint - e.g. for the total production."
+         Exit Do
+      Case 5
+         'Solver did not find a solution. We reduce the demand for precision
+         'by a factor 10 and try again (up to 6 times).
+         dPrecision = dPrecision * 10
+      Case 6
+         'The following shouldn't occur unless VBA was
+         'interrupted by the user.
+         MsgBox "Solver stopped at user|fffd|s request."
+         Exit Do
+      Case 7
+         'The following should be impossible, because we use a non
+         'linear model, but here it is in case you want to change model.
+         MsgBox "The linearity conditions required by this LP Solver are not satisfied."
+         Exit Do
+      Case 8
+         'Very unlikely unless you change this demo to something much bigger!
+         MsgBox "The problem is too large for Solver to handle."
+         Exit Do
+      Case 9
+         MsgBox "Solver encountered an error value in a target or constraint cell." & vbNewLine & _
+         "At times it may be necessary to close the wokbook and make a new start. " & vbNewLine & _
+         "It can also be a chemical constraint that cannot be satisfied resulting in division by zero."
+         Exit Do
+      Case 10
+         MsgBox "Stop chosen when the maximum time limit was reached."
+         Exit Do
+      Case 11
+         MsgBox "There is not enough memory available to solve the problem."
+         Exit Do
+      Case 12
+         MsgBox "Solver.dll is used by another Excel program."
+         Exit Do
+      Case 13
+         MsgBox "Error in model. Please verify that all cells and constraints are valid."
+         Exit Do
+      Case Else
+         MsgBox "Solver Return value was " & iSolution & ". At " & vbNewLine & _
+         "http://www.solver.com/content/basic-solver-solversolve-function you can see what it means."
+   End Select
+Loop
+
+BeforeExit:
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure MixSolve, module SolverCode"
+Resume BeforeExit
+End Sub
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "clTextBoxClass"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'****************************************************************
+'This class ensures that only numbers can go into text boxes that
+'require numbers. It also converts commas to periods if need be,
+'but then you have to add some code to the InputTextBox_keypress
+'procedure.
+'****************************************************************
+Option Explicit
+Public WithEvents InputTextBox As MSForms.TextBox
+Attribute InputTextBox.VB_VarHelpID = -1
+Private mvarPaste As Boolean
+Private mvarText As String
+Private Sub InputTextBox_keypress _
+(ByVal KeyAscii As MSForms.ReturnInteger)
+'Allows only numbers and comma.
+'Ascii 44 is comma. Ascii 45 is minus,
+'and not accepted.
+
+Select Case KeyAscii
+   Case 44, 46 To 57
+   Case Else
+      KeyAscii = 0
+End Select
+
+'The text is saved
+sText = InputTextBox.Text
+
+End Sub
+Private Sub InputTextBox_BeforeDropOrPaste _
+(ByVal Cancel As MSForms.ReturnBoolean, _
+ByVal Action As MSForms.fmAction, _
+ByVal data As MSForms.DataObject, _
+ByVal X As Single, ByVal Y As Single, _
+ByVal Effect As MSForms.ReturnEffect, _
+ByVal Shift As Integer)
+
+'If the user is about to paste something, we raise a flag
+bPaste = True
+
+End Sub
+Private Sub InputTextBox_Change()
+'This procedure executes when the
+'content of a text box has been changed.
+
+'If the paste flag is true, we undo the change
+If bPaste Then
+   bPaste = False
+   InputTextBox.Text = sText
+End If
+
+End Sub
+'*******************************
+'Properties section
+'*******************************
+Property Get bPaste() As Boolean
+   bPaste = mvarPaste
+End Property
+Property Let bPaste(ByVal vData As Boolean)
+   mvarPaste = vData
+End Property
+Property Get sText() As String
+   sText = mvarText
+End Property
+Property Let sText(ByVal vData As String)
+   mvarText = vData
+End Property
+Attribute VB_Name = "frmChemicalTargets"
+Attribute VB_Base = "0{3102FCD5-C7DF-4825-AA14-D160B5210D28}{0F87C65C-B61A-4CFF-AD7C-41B2A61885EA}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'***************************************************
+'This UserForm allows the user to set chemical
+'constraints for the raw mix. In this case only
+'LSF, MA and MS, which are short for Lime
+'Saturation Factor, Alumina Module and Silica Module.
+'See the formulas in the spreadsheet.
+'***************************************************
+Option Explicit
+Private Sub UserForm_Initialize()
+Dim ctl As Control
+Dim InputBoxEvt As clTextBoxClass
+
+On Error GoTo ErrorHandle
+
+Me.Caption = "Chemical targets for the mix"
+Label1.Caption = "Normal values for LSF would be 95 - 100, 1.3 to 1.8 for MA and e.g. 2.5 for MS. " & vbNewLine & _
+"LSF stands for Lime Saturation Factor, MA for Alumina Modulus and MS for Silica Modulus."
+Label2.Caption = "LSF"
+Label3.Caption = "MA"
+Label4.Caption = "MS"
+
+If dLSFTarget > 0 Then
+   TextBox1.Text = dLSFTarget
+End If
+If dMATarget > 0 Then
+   TextBox2.Text = dMATarget
+End If
+If dMSTarget > 0 Then
+   TextBox3.Text = dMSTarget
+End If
+
+'We loop through the form's controls
+'to find the text boxes. Text boxes are added
+'to the textbox class that will accept numerical
+'values only.
+For Each ctl In Me.Controls
+   'If it is a text box
+   If TypeOf ctl Is MSForms.TextBox Then
+      'We make a new instance of the text box class
+      Set InputBoxEvt = New clTextBoxClass
+      'and connects it to this text box
+      Set InputBoxEvt.InputTextBox = ctl
+      'which we add to the collection, InputBoxCol
+      InputBoxCol.Add InputBoxEvt
+   End If
+Next
+
+BeforeExit:
+Set InputBoxEvt = Nothing
+Set ctl = Nothing
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure UserForm_Initialize, frmChemicalTargets"
+Resume BeforeExit
+End Sub
+Private Sub cmdOK_Click()
+
+On Error GoTo ErrorHandle
+
+'If the user wrote anything, convert the input from
+'strings to values of the datatype Double. If empty
+'or zero set the variable to empty.
+With TextBox1
+   If Len(.Text) > 0 And .Text <> "0" Then
+      dLSFTarget = CDbl(TextBox1.Text)
+   Else
+      dLSFTarget = Empty
+   End If
+End With
+
+With TextBox2
+   If Len(.Text) > 0 And .Text <> "" Then
+      dMATarget = CDbl(.Text)
+   Else
+      dMATarget = Empty
+   End If
+End With
+
+With TextBox3
+   If Len(.Text) > 0 And .Text <> "0" Then
+      dMSTarget = CDbl(.Text)
+   Else
+      dMSTarget = Empty
+   End If
+End With
+
+Unload Me 'Close the form
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure cmdOK_Click, frmChemicalTargets"
+End Sub
+Private Sub cmdCancel_Click()
+Unload Me
+End Sub
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+'If the user closes the form by clicking the X
+'at the top right.
+cmdCancel_Click
+End Sub
+
+Attribute VB_Name = "frmListBox"
+Attribute VB_Base = "0{1EE20EBB-D8E4-4096-A47C-E7549357EB22}{07938E62-5F97-4C45-A1C9-188DE90C3A9D}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'***************************************************
+'This UserForm allows the user to select raw
+'materials for the mix. The rule of thumb is,
+'that for X chemical targets you need X+1
+'raw materials, but of course you also need
+'raw materials with the right chemical composition.
+'In practise you would always need chalk or lime to
+'get CaO, something rich in alumina (e.g. kaolin,
+'clay, bauxite or fly ash), something rich in silica
+'(e.g. sand and/or flyash) and something rich in
+'iron like iron ore, pyrite ash or bauxite.
+'If you have more then X+1 raw materials, there
+'may be no limit to the number of possible
+'solutions, and you will need some material flow
+'constraint, e.g. a fixed flow to one or more
+'materials. However not if you are minimizing
+'the price!
+Option Explicit
+Private Sub UserForm_Initialize()
+
+On Error GoTo ErrorHandle
+
+Me.Caption = "Select raw materials"
+
+'Fill the listbox
+FillListBox
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure UserForm_Initialize, frmListBox"
+bAbort = True
+Unload Me
+End Sub
+Sub FillListBox()
+Dim lCount As Long
+
+On Error GoTo ErrorHandle
+
+'Loop through the materials array and
+'add material names to the listbox.
+With ListBox1
+   For lCount = 1 To UBound(arMats)
+      If Len(arMats(lCount, 1)) > 0 Then
+         .AddItem arMats(lCount, 1)
+         'If a raw material is already in use
+         'it is preselected on the list.
+         If arMats(lCount, 2) = True Then
+            ListBox1.Selected(lCount - 1) = True
+         End If
+      Else
+         Exit For
+      End If
+   Next
+End With
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure FillListBox, frmListBox"
+bAbort = True
+Unload Me
+End Sub
+Private Sub ListBox1_Change()
+   'The flag bMatChange is used, when we
+   'consider if it is necessary to write
+   'new tables to the result sheet.
+   If lSelected > 0 Then bMatChange = True
+End Sub
+Private Sub cmdOK_Click()
+Dim lCount As Long
+
+On Error GoTo ErrorHandle
+
+'Reset the number of selected materials
+lSelected = 0
+
+'Loop through the listbox items. If selected the
+'flag for used is set in the materials array.
+With ListBox1
+   For lCount = 0 To .ListCount - 1
+      If .Selected(lCount) Then
+         arMats(lCount + 1, 2) = True
+         'Increment the number of selected materials
+         lSelected = lSelected + 1
+      Else
+         'Set the used flag to False
+         arMats(lCount + 1, 2) = False
+      End If
+   Next
+End With
+
+'Issue a warning if < 2 selected
+If lSelected < 2 Then
+   MsgBox "You need at least 2 raw materials for a mix"
+   Exit Sub
+End If
+
+'Close the form
+Unload Me
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure cmdOK_Click, frmListBox"
+End Sub
+Private Sub cmdCancel_Click()
+bAbort = True
+Unload Me
+End Sub
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+'If the user closes the form by clicking the X
+'at the top right.
+If CloseMode = 0 Then
+   cmdCancel_Click
+End If
+End Sub
+Attribute VB_Name = "frmMinimize"
+Attribute VB_Base = "0{3748EEE4-D0EF-49B3-BF58-FD8C68DE873C}{0FB86127-4079-4E45-8CAB-0F8FEA43BED8}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'************************************
+'This UserForm allows the user to
+'select either a standard solution
+'or to minimize the price per tonne.
+'************************************
+Option Explicit
+Private Sub UserForm_Initialize()
+If lRelation = 0 Or lRelation = 3 Then
+   OptionButton1.Value = True
+ElseIf lRelation = 2 Then
+   OptionButton2.Value = True
+End If
+End Sub
+Private Sub cmdOK_Click()
+If OptionButton1.Value = True Then
+   lRelation = 3
+Else
+   lRelation = 2
+End If
+Unload Me
+End Sub
+Private Sub cmdCancel_Click()
+Unload Me
+End Sub
+
+Attribute VB_Name = "frmSetConstraints"
+Attribute VB_Base = "0{84D81AD8-8601-4868-B738-22CEF0F1A940}{A358202D-69B0-4FAD-B0AD-F3F0854FEDFF}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'*****************************************************
+'This UserForm allows the user to set flow constraints
+'for raw materials and/or the raw mix as a whole.
+'*****************************************************
+Option Explicit
+Dim sConflict As String  'String with old constraint in case of conflicting constraints
+Dim bConflict As Boolean 'True if the constraint conflicts with an older one
+Dim arList               'The ComboBox will be set = this array
+Private Sub UserForm_Initialize()
+Dim InputBoxEvt As New clTextBoxClass
+
+On Error GoTo ErrorHandle
+
+'If there are no raw materials selected
+If lSelected = 0 Then Exit Sub
+
+'Fill the ComboBoxes
+FillCombos
+
+Me.Caption = "Set raw material constraints"
+
+'Disables the OK button. When a value is written
+'in TextBox1, the button will be enabled.
+cmdOK.Enabled = False
+
+'Add TextBox1 to the clTextBoxClass to ensure
+'that only valid numeric values can be entered.
+Set InputBoxEvt.InputTextBox = TextBox1
+InputBoxCol.Add InputBoxEvt
+
+'It now exists in the collection, so we set
+'this instance to nothing.
+Set InputBoxEvt = Nothing
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure UserForm_Initialize, frmSetConstraints"
+End Sub
+Sub FillCombos()
+Dim lCount As Long
+Dim lRow As Long
+
+On Error GoTo ErrorHandle
+
+'The array arList will be used to fill
+'the ComboBox. The number of items is
+'set = the number of selected raw materials
+'plus one for the raw mix as a whole.
+'With each raw material name we store
+'the address of the adjustable cell.
+'This will not be displayed, but will be
+'used when we write a constraint.
+ReDim arList(0 To lSelected, 0 To 1)
+
+'Fills ComboBox1 with the names of
+'selected raw materials.
+With ComboBox1
+   For lCount = 1 To UBound(arMats)
+      If Len(arMats(lCount, 1)) > 0 And arMats(lCount, 2) = True Then
+         arList(lRow, 0) = arMats(lCount, 1)
+         arList(lRow, 1) = arMats(lCount, 3)
+         lRow = lRow + 1
+      End If
+   Next
+   'It should also be possible to wish tonnes in total,
+   'so the raw mix as a whole is added.
+   arList(lRow, 0) = "Raw mix"
+   arList(lRow, 1) = "= totaltonnes"
+   .List = arList
+   .Text = .List(0)
+End With
+
+With ComboBox2
+   .AddItem "="
+   .AddItem "< ="
+   .AddItem "> ="
+   .Text = .List(0)
+End With
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure FillCombos, frmSetConstraints"
+End Sub
+Private Sub TextBox1_Change()
+   If Len(TextBox1.Text) > 0 Then
+      cmdOK.Enabled = True
+   Else
+      cmdOK.Enabled = False
+   End If
+End Sub
+Private Sub cmdOK_Click()
+
+On Error GoTo ErrorHandle
+
+bConflict = False
+
+'By passing the array to another procedure
+'we avoid writing code for each array.
+Select Case ComboBox2.Text
+   Case "< ="
+      WriteConstraint arRel1, 1
+   Case "="
+      WriteConstraint arRel2, 2
+   Case "> ="
+      WriteConstraint arRel3, 3
+End Select
+
+If bConflict Then
+   With Label2
+      .Visible = True
+      .Caption = "Constraint not set"
+      .BackColor = &HFF&
+   End With
+End If
+
+'By emptying TextBox1 we
+'also disable the OK button.
+TextBox1.Text = Empty
+'Set focus on the close button.
+cmdCancel.SetFocus
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure cmdOK_Click, frmSetConstraints"
+End Sub
+Sub WriteConstraint(ByRef TheArray As Variant, ByVal lRel As Long)
+'Write the new constraint to the right constraint array
+'unless the array is full or the constraint conflicts
+'logically with an older constraint.
+Dim bFull As Boolean
+Dim lCount As Long
+
+bFull = True
+'Check if array is full
+For lCount = 1 To UBound(TheArray)
+   If Len(TheArray(lCount, 1)) = 0 Then
+      bFull = False
+      Exit For
+   End If
+Next
+
+'If the array is full we exit
+If bFull Then
+   MsgBox "The maximum of " & UBound(TheArray) & " has been reached for " & vbNewLine & _
+          ComboBox2.Text & " constraints. The constraint was not set."
+   Exit Sub
+End If
+
+'Check if the constraint is in logical
+'conflict with an older constraint.
+bConflict = CheckLogic
+
+'If there is a conflict, we give the user a message
+'with the older constraint in the string variable sConflict.
+If bConflict Then
+   MsgBox "The constraint conflicts with an older constraint:" & vbNewLine & _
+   sConflict & vbNewLine & "The constraint was not set."
+   Exit Sub
+End If
+
+'If no conflict we store the new constraint
+For lCount = 1 To UBound(TheArray)
+   If Len(TheArray(lCount, 1)) = 0 Then
+      'The raw material's name
+      TheArray(lCount, 1) = ComboBox1.Text
+      'The cell address with the adjustable tonnes
+      'is stored in the arList array with a leading "="
+      TheArray(lCount, 2) = arList(ComboBox1.ListIndex, 1)
+      'The constraint value (tonnes)
+      TheArray(lCount, 3) = CDbl(TextBox1.Text)
+      Exit For
+   End If
+Next
+
+With Label2
+   .BackColor = &H80FF80
+   .Caption = "Constraint was set"
+   .Visible = True
+End With
+
+'Keeps track of the number of constraints
+Select Case lRel
+   Case 1
+      lRel1Con = lRel1Con + 1
+   Case 2
+      lRel2Con = lRel2Con + 1
+   Case 3
+      lRel3Con = lRel3Con + 1
+End Select
+
+End Sub
+Private Function CheckLogic() As Boolean
+'Checks if the new constrint conflicts
+'with an older one making a solution impossible.
+Dim lCount As Long
+Dim lRel As Long
+Dim dVal As Double
+Dim sString As String
+
+'Empty the message string
+sConflict = Empty
+
+'The string to look for in older
+'constraints.
+If ComboBox1.Text = "Raw mix" Then
+   sString = "= totaltonnes"
+Else
+   sString = arList(ComboBox1.ListIndex, 1)
+End If
+
+Select Case ComboBox2.Text
+   Case "< ="
+      lRel = 1
+   Case "="
+      lRel = 2
+   Case "> ="
+      lRel = 3
+End Select
+
+'The value in TextBox1
+dVal = CDbl(TextBox1.Text)
+
+'First we loop the array for "=" constraints
+For lCount = 1 To UBound(arRel2)
+   'If there is a match
+   If arRel2(lCount, 2) = sString Then
+      Select Case lRel
+         Case 1 'If the new constraint is a < = type
+            If dVal < arRel2(lCount, 3) Then
+               sConflict = " = " & arRel2(lCount, 3)
+               Exit For
+            End If
+         Case 2 '=
+            If arRel2(lCount, 3) <> dVal Then
+               sConflict = " = " & arRel2(lCount, 3)
+               Exit For
+            End If
+         Case 3 '> =
+            If dVal > arRel2(lCount, 3) Then
+               sConflict = " = " & arRel2(lCount, 3)
+               Exit For
+            End If
+      End Select
+   End If
+Next
+
+'If no conflict was found, the sConflict string is
+'empty, and we loop the array for "< =" type constraints.
+If Len(sConflict) = 0 Then
+   For lCount = 1 To UBound(arRel1)
+      If arRel1(lCount, 2) = sString Then
+         Select Case lRel
+            'We skip < = constraints because they
+            'will not conflict. The lowest value
+            'will "win".
+            Case 2 '=
+               If dVal > arRel1(lCount, 3) Then
+                  sConflict = " < = " & arRel1(lCount, 3)
+                  Exit For
+               End If
+            Case 3 '> =
+               If dVal > arRel1(lCount, 3) Then
+                  sConflict = " < = " & arRel1(lCount, 3)
+               End If
+         End Select
+      End If
+   Next
+End If
+
+'If no conflict was found, the sConflict string is
+'empty, and we loop the array for "> =" type constraints.
+If Len(sConflict) = 0 Then
+   For lCount = 1 To UBound(arRel3)
+      If arRel3(lCount, 2) = sString Then
+         Select Case lRel
+            'We skip > = constraints, because the
+            'highest value will "win".
+            Case 1
+               If dVal < arRel3(lCount, 3) Then
+                  sConflict = " > = " & arRel3(lCount, 3)
+                  Exit For
+               End If
+            Case 2
+               If dVal < arRel3(lCount, 3) Then
+                  sConflict = " > =" & arRel3(lCount, 3)
+               End If
+         End Select
+      End If
+   Next
+End If
+
+'If it is a constraint for raw mix, we check
+'in a different way. There will be a conflict
+'if any raw material has constraint with more
+'tonnes than the raw mix.
+If ComboBox1.Text = "Raw mix" And Len(sConflict) = 0 Then
+   If lRel = 1 Or lRel = 2 Then
+      For lCount = 1 To UBound(arRel2)
+         If dVal < arRel2(lCount, 3) Then
+               sConflict = "Tonnes of raw mix cannot be less than tonnes of a raw material." & vbNewLine & _
+               "There is a conflict with an older constraint."
+            Exit For
+         End If
+      Next
+   End If
+   If Len(sConflict) = 0 Then
+      If lRel = 1 Or lRel = 2 Then
+         For lCount = 1 To UBound(arRel3)
+            If dVal < arRel3(lCount, 3) Then
+               sConflict = "Tonnes of raw mix cannot be less than tonnes of a raw material." & vbNewLine & _
+               "There is a conflict with an older constraint."
+               Exit For
+            End If
+         Next
+      End If
+   End If
+End If
+
+'If a logical conflict was found, sConflict will
+'display the old constraint.
+If Len(sConflict) > 0 And ComboBox1.Text <> "Raw mix" Then
+   sConflict = ComboBox1.Text & " tonnes" & sConflict
+   CheckLogic = True
+End If
+If ComboBox1.Text = "Raw mix" And Len(sConflict) > 0 Then
+   CheckLogic = True
+End If
+
+Exit Function
+ErrorHandle:
+MsgBox Err.Description & " Function CheckLogic, frmSetConstraints"
+End Function
+Private Sub cmdCancel_Click()
+Unload Me
+End Sub
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+'If the user closes the form by clicking the X
+'at the top right.
+cmdCancel_Click
+End Sub
+Attribute VB_Name = "frmShowConstraints"
+Attribute VB_Base = "0{7E172357-A635-4EA0-BBCD-254046441F92}{DB12FF81-1192-47CA-99BC-D782A8996788}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'*********************************************
+'This userform shows all flow constraints,
+'and the user can delete constraints.
+'Deleting constraints may be necessary to
+'find a solution or to avoid logical
+'conflict between constraints.
+'*********************************************
+Option Explicit
+Dim bFirst As Boolean
+Dim lCondCount As Long  'The number of constraints
+Dim arFirst             'Array with all flow constraints
+Dim arSecond            'Second array with constraints
+Private Sub UserForm_Initialize()
+
+On Error GoTo ErrorHandle
+
+'The listbox gets 5 columns matching the array
+'with all constraints. The last 2 columns get
+'a width = zero, so they aren't visible.
+ListBox1.ColumnCount = 5
+
+lCondCount = 0
+MakeFirst
+If bAbort Then
+   bAbort = False
+   Unload Me
+   Exit Sub
+End If
+ListBox1.List = arFirst
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure UserForm_Initialize, frmShowConstraints"
+End Sub
+Sub MakeFirst()
+Dim lCount As Long
+Dim lRow As Long
+
+'Find the total number of flow constraints.
+lCondCount = lRel1Con + lRel2Con + lRel3Con
+If lCondCount = 0 Then
+   MsgBox "There are no constraints to show"
+   bAbort = True
+   Exit Sub
+End If
+
+'Dimension the array to hold all constraints.
+'The first 3 columns will be displayed in the
+'listbox.
+'If the user wants to delete a constraint, we
+'must be able to find the constaint in the
+'constraint array, so the 4th column identifies
+'the original array, and the fifth column identifies
+'the row number in the original array.
+'For ease we use 0 as base, because the listbox does,
+'and therefore Ubound will be lCount - 1.
+ReDim arFirst(0 To lCondCount - 1, 0 To 4)
+
+'Now we fill arFirst with all flow constraints
+'starting with relation 1 constraints.
+For lCount = 1 To UBound(arRel1)
+   If Len(arRel1(lCount, 1)) > 0 Then
+      'Copy the constraint
+      'First the material name
+      arFirst(lRow, 0) = arRel1(lCount, 1)
+      'The relation < =
+      arFirst(lRow, 1) = "< ="
+      'Tonnes
+      arFirst(lRow, 2) = arRel1(lCount, 3)
+      'ID of the original constraint array
+      arFirst(lRow, 3) = 1
+      'The constraint's row number
+      arFirst(lRow, 4) = lCount
+      lRow = lRow + 1
+   End If
+Next
+
+'Relation 2 constraints
+For lCount = 1 To UBound(arRel2)
+   If Len(arRel2(lCount, 1)) > 0 Then
+      'Copy the constraint
+      arFirst(lRow, 0) = arRel2(lCount, 1)
+      'The relation =
+      arFirst(lRow, 1) = "="
+      'Tonnes
+      arFirst(lRow, 2) = arRel2(lCount, 3)
+      'ID of the original constraint array
+      arFirst(lRow, 3) = 2
+      'The constraint's row number
+      arFirst(lRow, 4) = lCount
+      lRow = lRow + 1
+   End If
+Next
+
+'Relation 3 constraints
+For lCount = 1 To UBound(arRel3)
+   If Len(arRel3(lCount, 1)) > 0 Then
+      'Copy the constraint
+      arFirst(lRow, 0) = arRel3(lCount, 1)
+      'The relation > =
+      arFirst(lRow, 1) = "> ="
+      'Tonnes
+      arFirst(lRow, 2) = arRel3(lCount, 3)
+      'ID of the original constraint array
+      arFirst(lRow, 3) = 3
+      'The constraint's row number
+      arFirst(lRow, 4) = lCount
+      lRow = lRow + 1
+   End If
+Next
+
+'Raises flag
+bFirst = True
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure MakeFirst, frmShowConstraints"
+End Sub
+Private Sub cmdOK_Click()
+'Delete a constraint and fill the
+'listbox with the remaining constraints
+'- if any. To avoid empty lines we copy
+'from one array to another before filling
+'the listbox.
+
+On Error GoTo ErrorHandle
+
+'First we need to know which array matches
+'the present listbox.
+If bFirst Then
+   'By passing the array to another
+   'procedure we save some code,
+   'because next time it will be
+   'arSecond.
+   DeleteConstraint arFirst
+   'If there are any constraints left,
+   'copy them to arSecond
+   If lCondCount > 0 Then
+      CopyArray arFirst, arSecond
+   End If
+   bFirst = False
+Else
+   DeleteConstraint arSecond
+   If lCondCount > 0 Then
+      CopyArray arSecond, arFirst
+   End If
+   bFirst = True
+End If
+
+'If there are no constraints left
+'we close the userform.
+If lCondCount = 0 Then Unload Me
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure cmdOK_Click, frmShowConstraints"
+End Sub
+Private Sub DeleteConstraint(ByRef TheArray)
+Dim lCount As Long
+Dim lRow As Long
+Dim lRelRow As Long  'The row in the arRelX to be deleted
+Dim lRel As Long
+
+On Error GoTo ErrorHandle
+
+lRow = ListBox1.ListIndex
+lRel = TheArray(lRow, 3)
+lRelRow = TheArray(lRow, 4)
+
+'It suffices to delete the second column.
+'The second column
+'is checked when constraints are set.
+Select Case lRel
+   Case 1
+      arRel1(lRelRow, 2) = Empty
+      'Update number of relation 1 constraints
+      lRel1Con = lRel1Con - 1
+   Case 2
+      arRel2(lRelRow, 2) = Empty
+      lRel2Con = lRel2Con - 1
+   Case 3
+      arRel3(lRelRow, 2) = Empty
+      lRel3Con = lRel3Con - 1
+End Select
+
+'Empty the first column in the array
+'that matched the listbox
+TheArray(lRow, 1) = Empty
+
+'Update the total number of constraints
+lCondCount = lCondCount - 1
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure DeleteConstraint, frmShowConstraints"
+End Sub
+Private Sub CopyArray(ByRef arFrom, ByRef arTo)
+Dim lRow As Long
+Dim lRow2 As Long
+Dim lCol As Long
+
+On Error GoTo ErrorHandle
+
+ReDim arTo(0 To lCondCount - 1, 0 To 4)
+
+'Copy the remaining constraints from one
+'array to the other.
+For lRow = 0 To UBound(arFrom)
+   If Len(arFrom(lRow, 1)) > 0 Then
+      For lCol = 0 To 4
+         arTo(lRow2, lCol) = arFrom(lRow, lCol)
+      Next
+      lRow2 = lRow2 + 1
+   End If
+Next
+
+ListBox1.List = arTo
+
+Exit Sub
+ErrorHandle:
+MsgBox Err.Description & " Procedure CopyArray, frmShowConstraints"
+End Sub
+Private Sub cmdCancel_Click()
+Unload Me
+End Sub
+
+
+INQUEST-PP=macro

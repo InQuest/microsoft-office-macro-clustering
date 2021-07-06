@@ -1,0 +1,1236 @@
+Attribute VB_Name = "EsteLibro"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Workbook_WindowDeactivate(ByVal Wn As Excel.Window)
+    ActiveWorkbook.Saved = True
+    Application.DisplayAlerts = False
+    Application.DisplayFullScreen = False
+    Application.WindowState = xlMaximized
+    
+    'If ActiveWorkbook.Saved = False Then
+    '    ' Cuidado! hay cambios que no se han grabado.
+    '    Dim Retorno
+    '    Retorno = MsgBox("Se han realizado cambios que se perder|fffd|n si no" + vbCr + _
+    '                     "guarda el documento." + vbCr + _
+    '                     "|fffd|Desea cerrar excel y perder los cambios?", vbYesNo + vbQuestion, _
+    '                     "Cambios realizados")
+    '    If Retorno = vbNo Then
+    '        Wn.Activate
+    '    End If
+    '
+    'Else
+    '    Application.DisplayAlerts = False
+    '    Application.DisplayFullScreen = False
+    '    Application.WindowState = xlMaximized
+    'End If
+End Sub
+Attribute VB_Name = "LISTADO"
+Const MaxEspais = 10
+
+' Funci|fffd|n que procesa el archivo de intercambio para los listados analiticos.
+
+Public Sub ProcesarFile(fichero As String)
+  
+  Dim CanalDOC As Integer
+  Dim dir As String
+  Dim doc As String
+  Dim Line As String
+
+  'Abrimos el Documento
+  On Error Resume Next
+  CanalDOC = FreeFile
+  Open fichero For Input As CanalDOC
+  If Err.Number <> 0 Then
+        MsgBox "Error No se puede abrir el Documento:" + Chr$(13) + fichero + Chr$(13), vbCritical, "Error de A3 Excel"
+        Exit Sub 'End
+  End If
+  i = 1
+  
+  On Error GoTo ControlError
+  
+  While Not EOF(CanalDOC)
+    Line Input #CanalDOC, Line
+    TratarLineaF Line
+  Wend
+
+ControlError:
+    If Err.Number <> 0 Then
+       MsgBox "Error Numero= " + Str$(Err.Number) + Chr$(13) + Err.Description, vbCritical, "Error de Ms Office"
+       Exit Sub 'End
+    End If
+   Close #CanalDOC
+   
+End Sub
+
+'Tratamos cada una de las lineas de fichero de intercambio.
+
+Sub TratarLineaF(Line As String)
+    Dim Valor As String '256
+    Dim CeldaActiva As String '10
+    Dim SaltarColumna As Boolean '1
+    Dim SaltarFila As Boolean '1
+    Dim SaltarHoja As Boolean '1
+    Dim i As Integer
+    Dim si As Integer
+
+    SaltarColumna = False
+    SaltarFila = False
+    SaltarHoja = False
+
+
+    i = InStr(Line, ",")
+    Valor = Left$(Line, i - 1)
+       
+    si = i + 1
+    i = InStr(si, Line, ",")
+    CeldaActiva = Mid$(Line, si, i - si)
+
+    If UCase(Mid(Line, i + 1, 1)) = "S" Then SaltarColumna = True
+    If UCase(Mid(Line, i + 3, 1)) = "S" Then SaltarFila = True
+    If UCase(Mid(Line, i + 5, 1)) = "S" Then SaltarHoja = True
+
+    PushValor Valor, CeldaActiva, SaltarColumna, SaltarFila, SaltarHoja
+End Sub
+
+' Insertamos el valor/Formula dentro de una celda concreta.
+
+Public Sub PushValor(Valor As String _
+                    , CeldaActiva As String _
+                    , SaltarColumna As Boolean _
+                    , SaltarFila As Boolean _
+                    , SaltarHoja As Boolean)
+    
+    On Error Resume Next
+    
+    ' NOS POSICIONAMOS SOBRE LA CELDA ESPECIFICADA
+    TraducirCeldaRC CeldaActiva
+    If Len(Trim(CeldaActiva)) > 0 Then Application.Range(Trim(CeldaActiva)).Select
+    
+    ' INSERTAMOS VALOR
+    If Len(Trim(Valor)) > 0 Then
+        If FormatoValorRC(Valor) Then
+            ' En el caso de Formula con Referencia fila/columna
+            Application.ActiveCell.FormulaR1C1 = Trim(Valor)
+        Else
+            Application.ActiveCell = Trim(Valor)
+        End If
+    End If
+       
+    ' ACTIVAMOS LA SIGUIENTE CELDA.
+    If SaltarColumna Then
+        Application.Cells(Application.ActiveCell.Row, Application.ActiveCell.Column + 1).Select
+    End If
+    If SaltarFila Then
+        ' Es como si realizaramos un retorno de carro. augmentamos la fila pero en la col 1
+        Application.Cells(Application.ActiveCell.Row + 1, 1).Select
+    End If
+    
+    ' INSERTAMOS UN SALTO DE PAGINA
+    If SaltarHoja Then
+        ActiveWindow.SelectedSheets.HPageBreaks.Add Before:=ActiveCell
+        ActiveWindow.SelectedSheets.VPageBreaks.Add Before:=ActiveCell
+    End If
+    
+    On Error GoTo 0
+End Sub
+
+' Retorna el valor o resultado de la formula de una celda concreta
+
+Public Function ObtenerValor(Valor As String _
+                    , Celda As String) As String 'GetValor
+     
+    TraducirCeldaRC Celda
+    ' Si no me especifican una celda, deberemos coger la celda activa
+    If Len(Trim(Celda)) = 0 Then Celda = Application.ActiveCell.Address
+    
+    ObtenerValor = Application.Range(Celda).Value + "~" + Celda
+End Function
+
+' Permite traducir el direccionamiento de una celda
+' Soporta formato RC(fila/columna) y contenido -1 (Todo el rango).
+
+Sub TraducirCeldaRC(Celda As String)
+    
+    Dim r As Integer
+    Dim C As Integer
+    
+    If Len(Trim(Celda)) <> 0 Then
+        If FormatoCeldaRC(Celda, r, C) Then
+            ' si el formato es Fila/Columna, traducimos.
+            If r > 0 And C > 0 Then Celda = Application.Cells(r, C).Address
+            If r = 0 And C = 0 Then Celda = ""
+            If r = 0 And C > 0 Then Celda = Application.Columns(C).Address
+            If r > 0 And C = 0 Then Celda = Application.Rows(r).Address
+        End If
+    End If
+End Sub
+
+Function FormatoValorRC(Valor As String) As Boolean
+    FormatoValorRC = False
+    If Left(Valor, 1) = "~" Then
+        FormatoValorRC = True
+        Valor = Right(Valor, Len(Valor) - 1)
+    End If
+End Function
+
+Function FormatoCeldaRC(Celda As String, r As Integer, C As Integer) As Boolean
+    
+    Dim ri As Integer
+    Dim ci As Integer
+    r = 0
+    C = 0
+    FormatoCeldaRC = False
+    If Left(Celda, 1) = "~" Then
+        FormatoCeldaRC = True
+        ri = InStr(1, UCase(Celda), "R")
+        ci = InStr(1, UCase(Celda), "C")
+        If ri > 0 And ci > 0 And ri > ci Then Exit Function
+        If ri <> 0 Then
+            If ci = 0 Then
+                r = val(Right(Celda, Len(Celda) - ri))
+            Else
+                r = val(Mid(Celda, ri + 1, ci - ri))
+            End If
+        End If
+        If ci <> 0 Then
+            C = val(Right(Celda, Len(Celda) - ci))
+        End If
+
+    End If
+End Function
+
+' Permite traducir el direccionamiento de un Rango
+' Soporta formato RC(fila/columna) y contenido -1 (Todo el rango).
+
+Public Function TraducirRangoRC(Rango As String) As String
+    
+    Dim Celda1 As String
+    Dim Celda2 As String
+    
+    TraducirRangoRC = ""
+    If Len(Trim(Rango)) <> 0 Then
+        If Left(Rango, 2) = "-1" Then
+            TraducirRangoRC = RangoTotal
+        Else
+            FormatoRangoRC Rango, Celda1, Celda2
+            If Len(Trim(Celda1)) = 0 And Len(Trim(Celda2)) = 0 Then TraducirRangoRC = ""
+            If Len(Trim(Celda1)) > 0 And Len(Trim(Celda2)) = 0 Then TraducirRangoRC = Celda1 & ":" & Celda1
+            If Len(Trim(Celda1)) > 0 And Len(Trim(Celda2)) > 0 Then TraducirRangoRC = Celda1 & ":" & Celda2
+        End If
+    Else
+        ' Si no se especifica Rango a la entrada devolvemos la seleccion actual.
+        TraducirRangoRC = Application.Selection.Address
+    End If
+End Function
+
+Sub FormatoRangoRC(Rango As String, Celda1 As String, Celda2 As String)
+    
+    Dim i As Integer
+  
+        i = InStr(1, Rango, ":")
+        If i = 0 Then
+            Celda1 = Trim(Rango)
+            TraducirCeldaRC Celda1
+        Else
+            Celda1 = Left(Rango, i - 1)
+            TraducirCeldaRC Celda1
+            Celda2 = Right(Rango, Len(Rango) - i)
+            If Len(Trim(Celda2)) > 0 Then TraducirCeldaRC Celda2
+        End If
+End Sub
+
+Function TransformarRangoFilas(Rango As String) As String
+    Dim Celda1 As String
+    Dim Celda2 As String
+    
+    If Len(Trim(Rango)) <> 0 Then
+        FormatoRangoRC Rango, Celda1, Celda2
+        If Len(Trim(Celda1)) = 0 Or Len(Trim(Celda2)) = 0 Then
+            TransformarRangoFilas = ""
+        Else
+           TransformarRangoFilas = "$" & Application.Range(Celda1).Row & ":$" & Application.Range(Celda2).Row
+        End If
+    End If
+End Function
+
+' Obtenemos el rango maximo usado por el usuario
+' Utilizaremos este rango siempre que el usuario utilice las funciones
+' del listador analitico, pasandole un -1 como rango de trabajo.
+
+Function RangoTotal() As String
+    Dim Fil As Integer
+    Dim Col As Integer
+    Dim FilMax As Integer
+    Dim ColMax As Integer
+    Dim FilMaxIt As Integer
+    Dim ColMaxIt As Integer
+    Dim StopFil As Boolean
+    Dim StopCol As Boolean
+    ' se trata de buscar en la hoja activa el rango maximo
+    ' es decir si encuentro mas de 4 casilla vacias hacia abajo o acia la derecha ya he salido del rango
+    StopFil = False
+    Fil = 1
+    While Not StopFil
+        StopCol = False
+        Col = 1
+        ColMaxIt = 0
+        While Not StopCol
+           If Len(Application.Cells(Fil, Col).Text) = 0 Then
+                ColMaxIt = ColMaxIt + 1
+                If ColMaxIt > MaxEspais Then
+                    StopCol = True
+                    If Col > ColMax + MaxEspais Then ColMax = Col - MaxEspais - 1
+                    If ColMaxIt = Col Then
+                        FilMaxIt = FilMaxIt + 1
+                        If FilMaxIt > MaxEspais Then
+                            FilMax = Fil - MaxEspais - 1
+                            StopFil = True
+                        End If
+                    End If
+                End If
+           Else
+                ColMaxIt = 0
+                FilMaxIt = 0
+           End If
+           Col = Col + 1
+        Wend
+        ColMaxIt = 0
+        Fil = Fil + 1
+    Wend
+    If ColMax = 0 Then ColMax = 1
+    If FilMax = 0 Then FilMax = 1
+    RangoTotal = "A1:" & Application.Cells(FilMax, ColMax).Address
+End Function
+
+' ***********************************************************
+' *                                                         *
+' *     M A C R O S      D E   P R U E B A                  *
+' *                                                         *
+' ***********************************************************
+
+
+
+Sub M_PruebaRangoTotal()
+    Dim r As String
+    r = RangoTotal
+    Application.Range(r).Select
+End Sub
+
+Sub M_PruebaConversi|fffd|nRC()
+    Dim i As Integer
+    Dim Cl As String
+    Dim r As Integer
+    Dim C As Integer
+    For i = 1 To 100
+        Cl = InputBox("CELDA?")
+        Cl = "~" + Cl
+        FormatoCeldaRC Cl, r, C
+        MsgBox "Celda: " + Cl + Chr(10) + "  R: " + CStr(r) + Chr(10) + "  C: " + CStr(C)
+    Next i
+End Sub
+
+'-----------------------------------------------------------
+' PushValorCelda
+' Esta rutina es un duplicado de PushValor pero modificada para
+' que no le quite los espacios de la izquierda a los valores que se
+' quieren poner en la celda.
+'-----------------------------------------------------------
+Public Sub PushValorCelda(Valor As String _
+                    , CeldaActiva As String _
+                    , SaltarColumna As Boolean _
+                    , SaltarFila As Boolean _
+                    , SaltarHoja As Boolean)
+    
+    On Error Resume Next
+    
+    ' NOS POSICIONAMOS SOBRE LA CELDA ESPECIFICADA
+    TraducirCeldaRC CeldaActiva
+    If Len(Trim(CeldaActiva)) > 0 Then Application.Range(Trim(CeldaActiva)).Select
+    
+    ' INSERTAMOS VALOR
+    If Len(Trim(Valor)) > 0 Then
+        If FormatoValorRC(Valor) Then
+            ' En el caso de Formula con Referencia fila/columna
+            Application.ActiveCell.FormulaR1C1 = RTrim(Valor)
+        Else
+            Application.ActiveCell = RTrim(Valor)
+        End If
+    End If
+       
+    ' ACTIVAMOS LA SIGUIENTE CELDA.
+    If SaltarColumna Then
+        Application.Cells(Application.ActiveCell.Row, Application.ActiveCell.Column + 1).Select
+    End If
+    If SaltarFila Then
+        ' Es como si realizaramos un retorno de carro. augmentamos la fila pero en la col 1
+        Application.Cells(Application.ActiveCell.Row + 1, 1).Select
+    End If
+    
+    ' INSERTAMOS UN SALTO DE PAGINA
+    If SaltarHoja Then
+        ActiveWindow.SelectedSheets.HPageBreaks.Add Before:=ActiveCell
+        ActiveWindow.SelectedSheets.VPageBreaks.Add Before:=ActiveCell
+    End If
+    
+    On Error GoTo 0
+    
+End Sub
+
+
+Attribute VB_Name = "MODULO"
+'************************************************************
+'*  Plantilla de A3 Excell para el enlace Office
+'*
+'*  Ultima Modificaci|fffd|n:  25/02/99 OCM  Eliminaci|fffd|n Borde
+'*                                      ajuste 1 pag ancho * alto
+'*
+'************************************************************
+
+
+Const E_GRAFICO As String = "[Grafico]"
+Const E_TIPO_GRAFICO As String = "Tipo grafico"
+Const E_TITULO As String = "Titulo"
+Const E_SUBTITULO1 As String = "Subtitulo 1"
+Const E_SUBTITULO2 As String = "Subtitulo 2"
+Const E_CONJUNTO As String = "Conjunto"
+Const E_ANGULOS As String = "Angulos"
+Const E_ETIQUETA As String = "Etiqueta"
+Const E_TABLA As String = "Tabla"
+Const E_NOM_EJE_X As String = "Nom Eje X"
+Const E_DEF_EJE_X As String = "Def Eje X"
+Const E_NOM_EJE_Y As String = "Nom Eje Y"
+Const E_DEF_EJE_Y As String = "Def Eje Y"
+Const E_EJE_Z As String = "Eje Z"
+Const E_PUNTOS_CONJUNTO As String = "Puntos conjunto"
+Const E_FIN_GRAFICO As String = "[Fin Grafico]"
+
+Type T_gr_eix
+    gr_eix_literal As String * 41
+    gr_eix_origen As Double 'Integer
+    gr_eix_inici As Double 'Integer
+    gr_eix_final As Double 'Integer
+    gr_eix_interval As Double 'Integer
+    gr_num_etiq As Integer
+End Type
+
+Type T_gr_conjunts
+    gr_nom_conj_abr As String * 26
+    gr_ind_col_conj As Integer
+    gr_grosor_lin As Integer
+    gr_tipus_porcio As Integer
+End Type
+
+Type T_gr_taula_punts
+    gr_punt_x As Integer
+    gr_punt_y As Integer
+    gr_valor_0 As String * 1
+    gr_desc_punt As String * 16
+End Type
+
+Type T_gr_taula_display2
+    gr_tau_valor As Integer
+    gr_tau_valor_alfa As String * 16
+End Type
+
+Type T_gr_item_graficos
+    gr_tot_conj As Integer
+    gr_tot_punt As Integer
+    gr_titols(3) As String '* 41
+    gr_tipus_grafic As String * 1
+    gr_tipus_barra As Integer
+    gr_angle_x As Integer
+    gr_angle_y As Integer
+    gr_veure_taula As Integer
+    gr_impre_taula As Integer
+    gr_eix(2) As T_gr_eix
+    gr_conjunts() As T_gr_conjunts
+    gr_recta_regresio As Integer
+End Type
+
+Dim graficos() As T_gr_item_graficos
+
+Dim gc As Integer ' Numero de Graficos
+Dim gc2 As Integer ' Numero de Graficos Auxiliar
+Dim nc As Integer ' Numero de Conjuntos en un gr|fffd|fico.
+Dim nex As Integer ' Numero de etiquetas eje X
+Dim ney As Integer ' Numero de etiquetas eje Y
+Dim npunts() As Integer  ' Numero de punts d'unt gr|fffd|fic
+Dim EtiqX As Boolean ' Determina si se han definido etiq para EjeX
+Dim EtiqXP As Boolean ' Determina si se han definido etiq para graficos Puntos
+Dim Grafico As Chart
+Dim i As Integer
+Dim aux  As String
+Dim aux2 As Integer
+Dim rg As Range
+Dim Line As String
+
+Dim ini As Double 'Integer 'inici de l'eix x
+Dim fi  As Double 'Integer  'fi de l'eix x
+Dim inc As Double 'Integer 'interval eix x
+Dim ori As Double 'Integer  'origen eix x
+
+Dim DEBUGAR As Boolean
+Const TABLA_X As Integer = 1 '3
+Const TABLA_Y As Integer = 1 '15
+
+Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
+Const SM_CXSCREEN = 0
+Const SM_CYSCREEN = 1
+
+Public Sub CambioPropiedad(Prop, ByVal val As String)
+'
+'   Funci|fffd|n para el cambio/creaci|fffd|n de Propiedades de Documento
+'
+   On Error Resume Next
+    ActiveWorkbook.CustomDocumentProperties.Add Name:=Prop, Value:=val, LinkToContent:=False, type:=msoPropertyTypeString
+    If Err.Number <> 0 Then ActiveWorkbook.CustomDocumentProperties(Prop).Value = val
+   On Error GoTo 0
+End Sub
+
+' Inicializar Variables.
+
+Sub Inicializar()
+    ReDim npunts(1)
+    gc = 0
+    gc2 = 0
+    nc = 0
+    nex = 0
+    ney = 0
+    inc = 0
+    npunts(0) = 0
+    EtiqX = False
+    EtiqXP = False
+    DEBUGAR = False
+
+End Sub
+
+'Funci|fffd|n principal que genera el/los grafico/s.
+
+Public Sub GenerarGrafico()
+  
+  Dim CanalDOC As Integer
+  Dim dir As String
+  Dim doc As String
+
+  Inicializar
+        
+  doc = ActiveWorkbook.CustomDocumentProperties("Documento").Value
+  dir = ActiveWorkbook.CustomDocumentProperties("Directorio").Value
+  If (ActiveWorkbook.CustomDocumentProperties("Debugar").Value = "True") Then DEBUGAR = True
+  
+  ChDir dir
+  
+  'Abrimos el Documento
+  On Error Resume Next
+  CanalDOC = FreeFile
+  Open dir + doc For Input As CanalDOC
+  If Err.Number <> 0 Then
+        MsgBox "Error No se puede abrir el Documento:" + Chr$(13) + dir + doc + Chr$(13), vbCritical, "Error de A3 Excel"
+        End
+  End If
+  i = 1
+  
+  On Error GoTo ControlError
+  If DEBUGAR = True Then
+    ' Activamos la pantalla completa
+    Application.DisplayFullScreen = True
+    Application.CommandBars("Full Screen").Visible = True
+    On Error GoTo 0
+  Else
+    Application.CommandBars("Full Screen").Visible = False
+    Application.DisplayFullScreen = True
+    Application.CommandBars("Full Screen").Visible = False
+    On Error GoTo ControlError
+  End If
+  
+  While Not EOF(CanalDOC)
+    Line Input #CanalDOC, Line
+    TratarLinea Line
+  Wend
+ ActiveWorkbook.Saved = True
+
+ControlError:
+    If Err.Number <> 0 Then
+       MsgBox "Error Numero= " + Str$(Err.Number) + Chr$(13) + Err.Description, vbCritical, "Error de Ms Office"
+       End
+    End If
+   Close #CanalDOC
+   
+End Sub
+Sub TratarLinea(Line As String)
+    Dim etiq As String * 30
+
+    On Error GoTo 0
+    
+    etiq = Left$(Line, 30)
+    aux = Trim(etiq)
+    ' procesamos la linea segun el tipo de etiqueta
+    Select Case aux
+        Case E_GRAFICO
+                            P_grafico
+        Case E_TIPO_GRAFICO
+                            P_tipo_grafico
+        Case E_TITULO
+                            P_titulo
+        Case E_SUBTITULO1
+                            P_Subtitulo1
+        Case E_SUBTITULO2
+                            P_subtitulo2
+        Case E_CONJUNTO
+                            P_conjunto
+        Case E_ANGULOS
+                            P_angulos
+        Case E_ETIQUETA
+                            P_etiqueta
+        Case E_TABLA
+                            P_tabla
+        Case E_NOM_EJE_X
+                            P_nom_eje_x
+        Case E_DEF_EJE_X
+                            P_def_eje_x
+        Case E_NOM_EJE_Y
+                            P_nom_eje_y
+        Case E_DEF_EJE_Y
+                            P_def_eje_y
+        Case E_EJE_Z
+                            P_eje_z
+        Case E_PUNTOS_CONJUNTO
+                            P_puntos_conjunto
+        Case E_FIN_GRAFICO
+                            P_fin_grafico
+        Case Else
+            ' Etiqueta no definida
+    End Select
+End Sub
+Sub P_grafico()
+    
+    ' Donat que un cop procesat el grafic, no necesito la variable grafico
+    ' reutilitzo la anterior, graficos, sempre te tamany 1
+            gc = 1
+            ReDim graficos(gc)
+            gc2 = gc2 + 1
+    
+    graficos(gc).gr_impre_taula = 1
+    graficos(gc).gr_veure_taula = 1
+    graficos(gc).gr_eix(2).gr_eix_interval = -1
+    
+    If gc2 > 1 Then ActiveWorkbook.Sheets.Add
+    ActiveWorkbook.Charts.Add
+    ActiveChart.Location Where:=xlLocationAsObject, Name:=Application.Worksheets(1).Name 'ActiveSheet.Name 'aux
+    Set Grafico = ActiveSheet.ChartObjects(1).Chart
+    Application.Worksheets(1).Select
+    Range("A1").Select
+End Sub
+Sub P_tipo_grafico()
+    aux = Mid$(Line, 31, 1)
+    graficos(gc).gr_angle_y = 30
+    graficos(gc).gr_angle_x = 30
+    Select Case aux
+    Case "B" ' Tipo Gr|fffd|fico Barras
+        aux2 = val(Mid$(Line, 33, 1)) 'Tipo de barras
+        graficos(gc).gr_tipus_grafic = "B"
+        Select Case aux2
+            Case 1 ' Al lado
+                Grafico.ChartType = xl3DColumnClustered
+                graficos(gc).gr_tipus_barra = 1
+            Case 2 ' Encima
+                Grafico.ChartType = xl3DColumnStacked
+                graficos(gc).gr_tipus_barra = 2
+            Case 3 ' Detr|fffd|s
+                Grafico.ChartType = xl3DColumn
+                graficos(gc).gr_tipus_barra = 3
+            Case Else
+                Grafico.ChartType = xl3DColumnClustered
+                graficos(gc).gr_tipus_barra = 1
+        End Select
+        
+    Case "P" ' Tipo Gr|fffd|fico Puntos
+        Grafico.ChartType = xlXYScatter
+        graficos(gc).gr_tipus_grafic = "P"
+        graficos(gc).gr_angle_y = 0
+        graficos(gc).gr_angle_x = 0
+        aux2 = val(Mid$(Line, 33, 1)) 'Linea de Regresi|fffd|n
+        If Trim(aux2) <> "" Then
+            graficos(gc).gr_recta_regresio = val(Trim(aux2))
+          Else
+            graficos(gc).gr_recta_regresio = 0
+        End If
+
+    Case "T" ' Tipo Gr|fffd|fico Tarta
+        Grafico.ChartType = xl3DPie
+        graficos(gc).gr_tipus_grafic = "T"
+    Case Else
+        TextoError " Tipo de Gr|fffd|fico no definido."
+        End
+    End Select
+End Sub
+
+Sub P_titulo()
+   aux = Mid$(Line, 31, 80)
+   aux = Trim(aux)
+   graficos(gc).gr_titols(1) = aux
+End Sub
+
+Sub P_Subtitulo1()
+    aux = Mid$(Line, 31, 80)
+    aux = Trim(aux)
+    graficos(gc).gr_titols(2) = aux
+End Sub
+
+Sub P_subtitulo2()
+    aux = Mid$(Line, 31, 80)
+    aux = Trim(aux)
+    graficos(gc).gr_titols(3) = aux
+End Sub
+
+Sub P_conjunto()
+    ' Llegim el Nom Del Conjunt
+    nc = nc + 1
+    ReDim Preserve graficos(gc).gr_conjunts(nc)
+    ReDim Preserve npunts(nc)
+    
+    aux = Mid$(Line, 31, 25)
+    aux = Trim(aux)
+    graficos(gc).gr_conjunts(nc).gr_nom_conj_abr = aux
+    
+    ' Llegim el Nom Del Conjunt Abreviat
+    aux = Mid$(Line, 57, 8)
+    aux = Trim(aux)
+    Set rg = Cells(TABLA_Y, TABLA_X + nc)
+    rg.Value = aux
+    
+    ' Llegim el Color del Conjunt
+    aux = Mid$(Line, 66, 2)
+    aux = Trim(aux)
+    graficos(gc).gr_conjunts(nc).gr_ind_col_conj = val(aux)
+    
+     ' Llegim el Grosor linea per Grafics de punts
+     ' Llegim la posici|fffd| del "Quesito" per als grafics PIE
+    aux = Mid$(Line, 69, 2)
+    aux = Trim(aux)
+    If graficos(gc).gr_tipus_grafic = "P" Then
+          graficos(gc).gr_conjunts(nc).gr_grosor_lin = val(aux)
+      Else
+          graficos(gc).gr_conjunts(nc).gr_tipus_porcio = val(aux)
+    End If
+
+End Sub
+
+Sub P_angulos()
+    ' Llegim els angles inicials de visualitzaci|fffd| EIX Y
+    aux = Mid$(Line, 31, 3)
+    aux = Trim(aux)
+    If aux = "" Then
+        If graficos(gc).gr_tipus_grafic = "P" Then
+            aux = "0"
+        Else
+            aux = "30"
+        End If
+    End If
+    
+    graficos(gc).gr_angle_y = val(aux)
+    
+    ' Llegim els angles inicials de visualitzaci|fffd| EIX X
+    aux = Mid$(Line, 35, 3)
+    aux = Trim(aux)
+    If aux = "" Then
+        If graficos(gc).gr_tipus_grafic = "P" Then
+            aux = "0"
+        Else
+            aux = "30"
+        End If
+    End If
+    graficos(gc).gr_angle_x = val(aux)
+End Sub
+
+Sub P_etiqueta()
+    Dim et As Integer
+    Dim netiq As Integer
+    
+    ' Leemos los valores de las etiquetas de cada eje.
+    aux = Mid$(Line, 31, 1)
+    aux = Trim(aux)
+    If (aux) = "1" Then ' Eix X
+        nex = nex + 1
+        et = 1
+        netiq = nex
+    Else   ' Eix Y
+        ney = ney + 1
+        et = 2
+        netiq = ney
+    End If
+    
+    aux = Mid$(Line, 33, 9)
+    aux = Trim(aux)
+    
+    If et = 1 Then ' Eix X
+         Set rg = Cells(TABLA_Y + nex, TABLA_X)
+         rg.NumberFormat = "@" ' Formato Texto.
+         rg.Value = aux
+         npunts(0) = nex
+         EtiqX = True
+       Else
+        ' Llegim les etiquetes de la Y pero no les podem fer servir
+        ' graficos(gc).gr_eix(2).gr_eix_etiq(ney) = aux
+    End If
+End Sub
+
+Sub P_tabla()
+    ' Llegim si hem de posar la taula en la visualitzaci|fffd|
+    aux = Mid$(Line, 31, 1)
+    aux = Trim(aux)
+    graficos(gc).gr_veure_taula = val(aux)
+        
+    ' Llegim si hem de posar la taula en la impresi|fffd|
+    aux = Mid$(Line, 31, 1)
+    aux = Trim(aux)
+    graficos(gc).gr_impre_taula = val(aux)
+    
+End Sub
+
+Sub P_nom_eje_x()
+    ' Llegim el nom del eix X
+    aux = Mid$(Line, 31, 40)
+    aux = Trim(aux)
+    graficos(gc).gr_eix(1).gr_eix_literal = aux
+End Sub
+
+Sub P_def_eje_x()
+    ' Llegim la def. del Eix X
+    aux = Mid$(Line, 31, 14) '11
+    aux = Trim(aux)
+    ori = CDbl(aux) 'val(aux)
+    aux = Mid$(Line, 46, 14) '43 11
+    aux = Trim(aux)
+    ini = CDbl(aux) 'val(aux)
+    
+    aux = Mid$(Line, 61, 14) '55 11
+    aux = Trim(aux)
+    fi = CDbl(aux) 'val(aux)
+    
+    aux = Mid$(Line, 76, 11) '67 11
+    aux = Trim(aux)
+    inc = CDbl(aux) 'val(aux)
+End Sub
+
+Sub P_nom_eje_y()
+    ' Llegim el nom del eix Y
+    aux = Mid$(Line, 31, 40)
+    aux = Trim(aux)
+    graficos(gc).gr_eix(2).gr_eix_literal = aux
+End Sub
+
+Sub P_def_eje_y()
+    ' Llegim la def. del Eix Y
+    aux = Mid$(Line, 31, 14)
+    aux = Trim(aux)
+    graficos(gc).gr_eix(2).gr_eix_origen = CDbl(aux) 'val(aux)
+    
+    aux = Mid$(Line, 46, 14)
+    aux = Trim(aux)
+    graficos(gc).gr_eix(2).gr_eix_inici = CDbl(aux) 'val(aux)
+    
+    aux = Mid$(Line, 61, 14)
+    aux = Trim(aux)
+    graficos(gc).gr_eix(2).gr_eix_final = CDbl(aux) 'val(aux)
+    
+    aux = Mid$(Line, 76, 14)
+    aux = Trim(aux)
+    graficos(gc).gr_eix(2).gr_eix_interval = CDbl(aux) 'val(aux)
+End Sub
+
+Sub P_eje_z()
+    aux = Mid$(Line, 31, 40)
+    aux = Trim(aux)
+    graficos(gc).gr_eix(3).gr_eix_literal = aux
+End Sub
+
+Sub P_puntos_conjunto()
+    Dim cjt As Integer
+    Dim valx As Double
+    Dim valy As Double
+    Dim aux3 As Double
+    Dim Valor As Double
+    
+    
+    ' Llegim els punts del gr|fffd|fic.
+    aux = Mid$(Line, 31, 2)
+    aux = Trim(aux)
+    cjt = val(aux)
+    aux = Mid$(Line, 34, 14)
+    aux = Trim(aux)
+    If aux <> "" Then
+        valx = CDbl(aux) 'val(aux)
+    Else
+        valx = 0
+    End If
+    aux = Mid$(Line, 49, 14)
+    aux = Trim(aux)
+    If aux <> "" Then
+        valy = CDbl(aux) 'val(aux)
+    Else
+        valx = 0
+    End If
+    
+    ' Pendent de comprobar el valor de l'eix X on ha d'anar el punt
+    
+    If inc <> 0 Then ' te definits valors per l'Eix x.
+         Valor = (valx - ini)
+         Valor = Valor / inc
+         Valor = Int(Valor) + 1
+         If npunts(0) < Int(Valor) Then npunts(0) = Int(Valor)
+    Else ' NO Te definit l'eix X  suposem automatic
+        npunts(cjt) = npunts(cjt) + 1
+        Valor = npunts(cjt)
+        'Si no tenim definides etiquetes el conjunt0 agafa el maxim
+        If nex = 0 Then npunts(0) = npunts(cjt)
+    End If
+    Set rg = Cells(TABLA_Y + Int(Valor), TABLA_X + cjt)
+    If Int(Valor) > 0 Then rg.Value = valy
+    ' si es un grafic de punts copiem el valor x a en las etiquetas del eje x
+    If graficos(gc).gr_tipus_grafic = "P" Then
+       If EtiqX = False Then
+         'NO s'han definit etiquetes a ma, pertant les poso jo
+         Set rg = Cells(TABLA_Y + Int(Valor), TABLA_X)
+         rg.Value = valx
+         EtiqXP = True
+       End If
+    End If
+End Sub
+
+' Funcion principal que se encarga de generar un grafico con toda la informaci|fffd|n
+' recopilada del fichero de intercambio. posteriormente, se formatea el aspecto grafico.
+
+Sub P_fin_grafico()
+    Dim tx As Integer
+    Dim Ty As Integer
+    Dim LongTitulo, LongSubTit, LongSSbTit As Long
+    Dim Pantalla As Long
+    
+    If DEBUGAR = True Then
+            On Error GoTo 0
+        Else
+            On Error Resume Next
+    End If
+  
+    ActiveWindow.DisplayGridlines = False
+    ActiveWindow.DisplayHeadings = False
+
+    ' Si no se han definido Etiquetas para el eje X  las hacemos a mano.
+    If ((EtiqX = False) And (EtiqXP = False)) Then
+        For i = 1 To npunts(0) 'nex
+          Set rg = Cells(TABLA_Y + i, TABLA_X)
+          If (inc <> 0) Then
+            ' si se ha definido el ejex utilizamos la definici|fffd|n
+            rg.Value = ini + ((i - 1) * inc)
+          Else ' si no llenamos con valores incrementales
+            rg.Value = i
+          End If
+        Next i
+    End If
+         
+    '  Asignamos al grafico el rango de la tabla
+    Set rg = Range(Cells(TABLA_Y, TABLA_X), Cells(TABLA_Y + npunts(0), TABLA_X + nc))
+    
+    If graficos(gc).gr_tipus_grafic = "T" Then
+        'Si Activem la opci|fffd| de Taula Inversa s'ha des/activar la linea
+        Grafico.SetSourceData Source:=rg, PlotBy:=xlRows
+       Else
+          Grafico.SetSourceData Source:=rg, PlotBy:=xlColumns
+    End If
+    
+    ' Repasamos los Conjuntos 1 a 1 y formateamos
+    aux = ""
+    For i = 1 To nc
+        If graficos(gc).gr_tipus_grafic <> "T" Then
+            ' Si NO es un grafico de Tarta
+            ' Ponemos los Nombres Abreviados al grafico
+            Grafico.SeriesCollection(i).Name = graficos(gc).gr_conjunts(i).gr_nom_conj_abr 'nc
+            If graficos(gc).gr_tipus_grafic = "P" Then
+                    ' Si es un grafico de Puntos ponemos grosor de las lineas
+                    Select Case graficos(gc).gr_conjunts(i).gr_grosor_lin
+                        Case 0
+                            Grafico.SeriesCollection(i).Border.LineStyle = xlNone
+                        Case 1
+                            Grafico.SeriesCollection(i).Border.LineStyle = xlContinuous
+                            Grafico.SeriesCollection(i).Border.Weight = xlHairline
+                        Case 2
+                            Grafico.SeriesCollection(i).Border.LineStyle = xlContinuous
+                            Grafico.SeriesCollection(i).Border.Weight = xlThin
+                        Case 3
+                            Grafico.SeriesCollection(i).Border.LineStyle = xlContinuous
+                            Grafico.SeriesCollection(i).Border.Weight = xlMedium
+                        Case 4
+                            Grafico.SeriesCollection(i).Border.LineStyle = xlContinuous
+                            Grafico.SeriesCollection(i).Border.Weight = xlThick
+                        Case Else
+                            Grafico.SeriesCollection(i).Border.LineStyle = xlNone
+                     End Select
+                     'Si Hemos de presentar la recta de Regresi|fffd|n
+                     If graficos(gc).gr_recta_regresio = 1 Then
+                        Grafico.SeriesCollection(i).Trendlines.Add type:=xlLinear, Forward:=0, _
+                        Backward:=0, DisplayEquation:=False, DisplayRSquared:=False
+                        
+                     End If
+            End If
+        Else
+            'Es tipo tarta, aplicamos desplazamiento del quesito si procede.
+            If Not IsNull(graficos(gc).gr_conjunts(i).gr_tipus_porcio) Then
+                ActiveSheet.ChartObjects(1).Activate
+                Grafico.SeriesCollection(1).Points(i).Explosion = (graficos(gc).gr_conjunts(i).gr_tipus_porcio)
+            End If
+            aux = aux + graficos(gc).gr_conjunts(i).gr_nom_conj_abr + " ; " 'nc
+        End If
+    Next i
+    Range("A1").Select
+    If graficos(gc).gr_tipus_grafic = "T" Then
+       'Si Activem la opci|fffd| de Taula Inversa s'ha des/activar la linea
+       ' Qui estigui llegint aix|fffd| provablement no entendra que vol dir
+       ' taula inversa, simplement es intercanviar les x per le y o
+       ' els conjunts per les etiquetes.
+       ' En un futur potser ho necesitem per generar mes facilment els
+       ' llistats desde Cobol.
+       'Grafico.SeriesCollection(1).XValues = aux
+    End If
+   
+   With Grafico
+        '  definimos el titulo   ALBERTO GONZALEZ
+         If Not IsNull(graficos(gc).gr_titols(1)) Then
+            .HasTitle = True
+            LongTitulo = Len(graficos(gc).gr_titols(1))
+            LongSubTit = Len(graficos(gc).gr_titols(2))
+            LongSSbTit = Len(graficos(gc).gr_titols(3))
+            aux = LTrim(graficos(gc).gr_titols(1)) + Chr(13) + LTrim(graficos(gc).gr_titols(2)) + Chr(13) + LTrim(graficos(gc).gr_titols(3))
+           
+            While InStr(aux, "@") <> 0
+                Mid$(aux, InStr(aux, "@"), 1) = Chr(13)
+            Wend
+            aux = LTrim(aux)
+            .ChartTitle.Characters.Text = aux
+            With Grafico.ChartTitle.Characters(Start:=1, Length:=LongTitulo).Font
+                .Name = "Arial"
+                .FontStyle = "Negrita"
+                .Size = 15
+                .Strikethrough = False
+                .Superscript = False
+                .Subscript = False
+                .OutlineFont = False
+                .Shadow = False
+                .Underline = xlUnderlineStyleNone
+                .ColorIndex = xlAutomatic
+            End With
+            With Grafico.ChartTitle.Characters(Start:=LongTitulo + 1, Length:=LongTitulo + LongSubTit + 1).Font
+                .Name = "Arial"
+                .FontStyle = "Negrita"
+                .Size = 12
+                .Strikethrough = False
+                .Superscript = False
+                .Subscript = False
+                .OutlineFont = False
+                .Shadow = False
+                .Underline = xlUnderlineStyleNone
+                .ColorIndex = xlAutomatic
+            End With
+            With Grafico.ChartTitle.Characters(Start:=LongTitulo + LongSubTit + 2, Length:=LongTitulo + LongSubTit + LongSSbTit).Font
+                .Name = "Arial"
+                .FontStyle = "Negrita"
+                .Size = 10
+                .Strikethrough = False
+                .Superscript = False
+                .Subscript = False
+                .OutlineFont = False
+                .Shadow = False
+                .Underline = xlUnderlineStyleNone
+                .ColorIndex = xlAutomatic
+            End With
+        End If
+        
+        ' Eliminem el marc del gr|fffd|fic
+        
+        If graficos(gc).gr_tipus_grafic <> "T" Then
+            '  Definimos los ejes para puntos o barras
+            If Not IsNull(graficos(gc).gr_eix(1).gr_eix_literal) Then
+                .HasAxis(xlCategory, xlPrimary) = True
+                .Axes(xlCategory, xlPrimary).HasTitle = True
+                .Axes(xlCategory, xlPrimary).AxisTitle.Caption = graficos(gc).gr_eix(1).gr_eix_literal
+            End If
+        
+            If Not IsNull(graficos(gc).gr_eix(2).gr_eix_literal) Then
+                .HasAxis(xlValue, xlPrimary) = True
+                .Axes(xlValue, xlPrimary).HasTitle = True
+                .Axes(xlValue, xlPrimary).AxisTitle.Caption = graficos(gc).gr_eix(2).gr_eix_literal
+            End If
+            
+            ' Refinamiento de los Ejes
+            If (graficos(gc).gr_eix(2).gr_eix_interval > 0) Then
+                .Axes(xlValue).MinimumScale = graficos(gc).gr_eix(2).gr_eix_inici
+                .Axes(xlValue).MaximumScale = graficos(gc).gr_eix(2).gr_eix_final
+                .Axes(xlValue).MinorUnit = graficos(gc).gr_eix(2).gr_eix_interval
+                .Axes(xlValue).MajorUnit = graficos(gc).gr_eix(2).gr_eix_interval
+                .Axes(xlValue).Crosses = xlCustom
+                .Axes(xlValue).CrossesAt = graficos(gc).gr_eix(2).gr_eix_origen
+            End If
+            .Axes(xlValue).ReversePlotOrder = False
+            .Axes(xlValue).ScaleType = xlLinear
+            .ChartArea.AutoScaleFont = False
+            
+            ' Si es un grafico de Puntos
+            ' Refinamos tambien el eje X
+            If graficos(gc).gr_tipus_grafic = "P" Then
+                If (inc > 0) Then
+                    .Axes(xlCategory).MinimumScale = ini 'graficos(gc).gr_eix(1).gr_eix_inici
+                    .Axes(xlCategory).MaximumScale = fi 'graficos(gc).gr_eix(1).gr_eix_final
+                    .Axes(xlCategory).MinorUnit = inc ' graficos(gc).gr_eix(1).gr_eix_interval
+                    .Axes(xlCategory).MajorUnit = inc ' graficos(gc).gr_eix(1).gr_eix_interval
+                    .Axes(xlCategory).Crosses = xlCustom
+                    .Axes(xlCategory).CrossesAt = ori 'graficos(gc).gr_eix(1).gr_eix_origen
+                End If
+                .Axes(xlValue).ReversePlotOrder = False
+                .Axes(xlValue).ScaleType = xlLinear
+            End If
+        Else ' Es un grafico de tarta
+            ' Ponemos las etiquetas en los pedazos de tarta.
+            .ChartTitle.AutoScaleFont = False
+            .ChartArea.AutoScaleFont = False
+            .SeriesCollection(1).ApplyDataLabels type:=xlDataLabelsShowValue, _
+                        AutoText:=True, LegendKey:=False, HasLeaderLines:=True
+        End If
+        
+        ' Modificamos los angulos de visi|fffd|n
+        If graficos(gc).gr_tipus_grafic <> "P" Then
+            .Elevation = graficos(gc).gr_angle_y
+            .Rotation = graficos(gc).gr_angle_x
+            .RightAngleAxes = True
+            .HeightPercent = 100
+            If graficos(gc).gr_tipus_grafic <> "T" Then
+                ' si grafico de tarta su rotaci|fffd|n ha de ser 0
+                .AutoScaling = True
+                .Rotation = 30
+            Else
+                .Rotation = 0
+            End If
+        End If
+        
+        'Si Operaci|fffd|n imprimir ponemos el fondo del grafico en blanco.
+        If ActiveWorkbook.CustomDocumentProperties("Accion").Value = "L" Then
+            .PlotArea.Interior.ColorIndex = xlNone
+        End If
+        
+        'Repasamos la configuraci|fffd|n de la Orientaci|fffd|n Papel
+        ActiveSheet.PageSetup.Orientation = xlPortrait ' xlLandscape (Apaisado)
+      End With
+                
+      ' Reposicionamos el grafico
+      ActiveSheet.Shapes(1).Left = 0
+      ActiveSheet.Shapes(1).Top = 0
+      ActiveSheet.Shapes(1).Height = ActiveWindow.Height * 0.9 '* 0.75
+      Pantalla = GetSystemMetrics(SM_CXSCREEN)
+      Select Case Pantalla
+                Case 1024
+                    ActiveSheet.Shapes(1).Width = 580 '560 '580
+                Case 800
+                    ActiveSheet.Shapes(1).Width = 580 '560 '580
+                Case Else
+                    ActiveSheet.Shapes(1).Width = 434 '419 '434
+      End Select
+                        
+      ' Redefinimos Tama|fffd|os de letras
+      Formatear_Letras
+        
+      ' Reposicionamos la tabla de Valores si se tiene que ver o imprimir
+      If (((graficos(gc).gr_veure_taula = 1) And ActiveWorkbook.CustomDocumentProperties("Accion").Value = "V") Or ((graficos(gc).gr_impre_taula = 1) And (ActiveWorkbook.CustomDocumentProperties("Accion").Value = "L"))) Then
+            Select Case Pantalla
+                Case 1024
+                    ActiveSheet.Range(Cells(45, 3), Cells(45, 3)).Select '34
+                Case 800
+                    ActiveSheet.Range(Cells(35, 3), Cells(35, 3)).Select '34
+                Case Else
+                    ActiveSheet.Range(Cells(28, 3), Cells(28, 3)).Select '27
+            End Select
+            ActiveCell.FormulaR1C1 = "Tabla de Valores"
+            ActiveCell.Font.Size = 14
+            ActiveCell.Font.Bold = True
+            
+            tx = 2
+            Select Case Pantalla
+                Case 1024
+                    Ty = 46
+                Case 800
+                    Ty = 36
+                Case Else
+                    Ty = 29
+            End Select
+            
+            Range(Cells(TABLA_Y, TABLA_X), Cells(TABLA_Y + npunts(0), TABLA_X + nc)).Cut Destination:=Range(Cells(Ty, tx), Cells(Ty, tx))
+            Range(Cells(Ty, tx), Cells(Ty + npunts(0), tx + nc)).Select
+            Selection.AutoFormat Format:=xlRangeAutoFormatClassic1
+      Else ' Si no cal mostrar la taula poso el texte en blanc
+            rg.Font.Color = RGB(255, 255, 255)
+      End If
+    Grafico.ChartArea.Border.LineStyle = 0
+    
+    ' Reinicializamos las variables para el siguiente grafico.
+    For i = 0 To nc
+        npunts(i) = 0
+    Next i
+    nc = 0
+    nex = 0
+    ney = 0
+    inc = 0
+    EtiqX = False
+    EtiqXP = False
+    Range("A1").Select
+    
+    ' Especificamos una area de impresi|fffd|n buena para los documentos.
+    EstablecerAreaDeImpresion
+
+End Sub
+
+' Formateamos todos los literales del grafico
+
+Sub Formatear_Letras()
+    
+    If Grafico.Axes(xlCategory, xlPrimary).HasTitle Then Grafico.Axes(xlCategory, xlPrimary).AxisTitle.Font.Size = 10
+    If Grafico.Axes(xlValue, xlPrimary).HasTitle Then
+       Grafico.Axes(xlValue, xlPrimary).AxisTitle.Orientation = xlVertical
+       Grafico.Axes(xlValue, xlPrimary).AxisTitle.Font.Size = 10
+    End If
+    If graficos(gc).gr_tipus_grafic <> "T" Then
+        If Grafico.HasAxis(xlCategory, xlPrimary) Then Grafico.Axes(xlCategory, xlPrimary).TickLabels.Font.Size = 8
+        If Grafico.HasAxis(xlValue, xlPrimary) Then Grafico.Axes(xlValue, xlPrimary).TickLabels.Font.Size = 8
+    End If
+    If Grafico.HasLegend Then Grafico.Legend.Font.Size = 8
+    Grafico.Refresh
+End Sub
+
+Sub TextoError(Texto As String)
+    UserForm1.Label1.Caption = Texto
+    UserForm1.Repaint
+End Sub
+    
+Sub EstablecerAreaDeImpresion()
+    ActiveSheet.PageSetup.PrintArea = ""
+    With ActiveSheet.PageSetup
+        .Orientation = xlPortrait
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = 1
+    End With
+End Sub
+Attribute VB_Name = "UserForm1"
+Attribute VB_Base = "0{ADAB8AD3-F5A5-4607-8F09-16F7F9FFB883}{0C15BD11-D407-42C5-8990-7235AC7CDF1C}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+INQUEST-PP=macro

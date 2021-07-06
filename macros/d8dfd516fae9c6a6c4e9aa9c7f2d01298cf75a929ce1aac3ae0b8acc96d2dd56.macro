@@ -1,0 +1,932 @@
+Attribute VB_Name = "Module1"
+' Visual Basic source
+
+Option Explicit
+
+' This code tries to solve 9x9 Color Sudoku problems.
+
+' Copyright additions (C) 2006 Erkki Hartikainen
+' Copyright original code (C) 2004  David Ireland
+'
+' This program is free software; you can redistribute it and/or
+' modify it under the terms of the GNU General Public License
+' as published by the Free Software Foundation; either version 2
+' of the License, or (at your option) any later version.
+'
+' This program is distributed in the hope that it will be useful,
+' but WITHOUT ANY WARRANTY; without even the implied warranty of
+' MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+' GNU General Public License for more details.
+'
+' You should have received a copy of the GNU General Public License
+' along with this program; if not, write to the Free Software
+' Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+' <http://www.gnu.org/licenses/>
+'
+' Contact additions: Mr. Erkki Hartikainen
+' K|fffd|sity|fffd|l|fffd|isentie 17 A 1
+' 00750 Helsinki
+' Finland
+'
+' Email: erkki.hartikainen@saunalahti.fi
+' <http://www.dlc.fi/~etkirja
+
+' Contact original programmer: David Ireland, DI Management Services Pty Ltd
+' <http://www.di-mgt.com.au>
+' <http://www.di-mgt.com.au/contactmsg.php>
+' <http://www.cryptosys.net>
+
+Const ncSIZE As Integer = 9
+Const ncINDEXLEN As Integer = ncSIZE * ncSIZE
+
+Type udtSQUARE
+    Value As Integer        ' 0=not set, else value 1..9
+    Possibles(ncSIZE) As Integer    ' 1=possible, 0=not possible
+    GuessLevel As Integer   ' 0=firm, else level of guess 1,2,3,...
+    Given As Boolean        ' True if given in problem
+    nRow As Integer         ' For fast lookup. Set by InitPuzzle
+    nCol As Integer         ' ditto
+    nBox As Integer         ' ditto
+End Type
+
+' Store matrix in a linear array, 1-based so just ignore (0).
+Public Squares(ncSIZE * ncSIZE) As udtSQUARE
+' Global level at which we're guessing (0=firm)
+Private mnGuessLevel As Integer
+' Indexes to guesses we've already tried (hopefully not too many)
+Const ncGUESSEDMAX As Integer = 12  ' arbitrary number
+Private Guessed(ncGUESSEDMAX) As Integer
+Public rng As Range
+Public rang As Range
+Public rangc As Range
+Public rangnum As Range
+' Difficulty level
+Public mnDifficulty As Integer
+
+Public Function DoPuzzle()
+    Dim BadIndex As Integer
+    
+    ' Set up matrix
+    Call InitPuzzle
+    
+    ' Read the data into matrix
+    BadIndex = ReadInput()
+    If BadIndex <> 0 Then
+        MsgBox "Invalid input data. Problem with (" & GetRow(BadIndex) & "," & GetCol(BadIndex) & ")", vbCritical
+        Exit Function
+    End If
+    
+    Debug.Print "At start, Missing values =" & MissingValues()
+    
+    ' Try solving without a guess
+    Call TrySolve
+    
+    If MissingValues() > 0 Then
+        ' Now we'll have to guess, possibly recursively
+        Call TryGuess
+    End If
+        
+    If MissingValues() = 0 Then
+        MsgBox "We have found a solution. Problem difficulty level=" & mnDifficulty
+        FillInResults
+    Else
+        If vbOK = MsgBox("Sorry, couldn't solve. Do you want the known values filled in?", vbOKCancel) Then
+            FillInResults
+        End If
+    End If
+    
+End Function
+
+Public Function TryGuess() As Boolean
+' Try a guess. Recursive function.
+    Dim GuessIndex As Integer
+    Dim i As Integer
+    Dim nValue As Integer
+    Dim nMaxGuesses As Integer
+    Dim GuessPossibles(ncSIZE) As Integer
+    Dim TrialIndex As Integer
+    
+    TryGuess = False
+    mnDifficulty = mnDifficulty + 1
+    ' Increment the current guess level so we can backtrack if nec
+    mnGuessLevel = mnGuessLevel + 1
+    Debug.Print "GUESS LEVEL = " & mnGuessLevel
+    ' All we do from now on will be provisional...
+    
+    ' Check limit so we don't go on forever
+    If mnGuessLevel > ncGUESSEDMAX Then
+        MsgBox "Tried too many guesses!", vbExclamation
+        Exit Function
+    End If
+    
+    ' Pick a square with the lowest # possibilites
+    ' excluding any prior guesses
+    GuessIndex = FindMinPossibles()
+    ' Remember so we don't try again
+    Guessed(mnGuessLevel) = GuessIndex
+    nMaxGuesses = CountPossibles(GuessIndex)
+    ' Remember the details of this pivotal square
+    For i = 1 To ncSIZE
+        GuessPossibles(i) = Squares(GuessIndex).Possibles(i)
+    Next
+    
+    Debug.Print "Guessing for square (" & GetRow(GuessIndex) & "," & GetCol(GuessIndex) & ")"
+    Debug.Print nMaxGuesses & " possible values"
+    
+    ' Fill in with the next guess; work through all possibles
+    For TrialIndex = 1 To nMaxGuesses
+        nValue = TheNthPossible(GuessIndex, TrialIndex)
+        Debug.Print "Guessing value=" & nValue
+        If nValue <= 0 Then
+            MsgBox "Run out of guesses!"
+            Exit Function
+        End If
+        
+        Call SetSquare(nValue, GuessIndex)
+        
+        If TrySolve() Then
+            ' We are done
+            Exit For
+        Else
+            Debug.Print "Guess FAILED."
+            Call UndoGuess(mnGuessLevel)
+            Debug.Print "After UndoGuess: Missing values=" & MissingValues()
+        End If
+    Next
+    Debug.Print "END TryGuess. Missing Values=" & MissingValues()
+    
+    ' If we're not there yet, we try another (recursive) guess at the next level
+    If MissingValues() > 0 Then
+        Call TryGuess
+    End If
+    
+End Function
+
+Public Function UndoGuess(ByVal ThisLevel As Integer)
+' Undo all guesses at this level
+' And redo all Possibles because they're wrong
+    Dim Index As Integer
+    Dim i As Integer
+    Dim nOldLevel As Integer
+    
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).GuessLevel = ThisLevel Then
+            Squares(Index).Value = 0
+        End If
+        For i = 1 To ncSIZE
+            Squares(Index).Possibles(i) = 1
+        Next
+    Next
+    
+    ' To reset all the Possibles, use SetSquare to reset the known squares
+    ' But temporarily change guess level to zero while we do that
+    nOldLevel = mnGuessLevel
+    mnGuessLevel = 0
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).Value > 0 Then
+            Call SetSquare(Squares(Index).Value, Index)
+        End If
+    Next
+    mnGuessLevel = nOldLevel
+    Debug.Print "Undone guess at level " & mnGuessLevel
+    
+End Function
+
+
+Public Function TrySolve() As Boolean
+' Try and solve with a definite answer
+' Returns True if solved
+    Dim iRound As Integer
+    Dim done As Boolean
+    Dim nPrevious As Integer
+    
+    mnDifficulty = mnDifficulty + 1
+    iRound = 0
+    nPrevious = 0
+    done = False
+    Do Until done Or nPrevious = MissingValues()
+    
+        ' Remember previous count so we can stop
+        nPrevious = MissingValues()
+        
+        ' This first go can solve the simpler problems outright
+        Do While SetKnownValues()
+            iRound = iRound + 1
+            Debug.Print "Completed round " & iRound & ". Missing values =" & MissingValues()
+        Loop
+        If MissingValues() = 0 Then
+            Debug.Print "Solved on First Go!"
+            done = True
+            Exit Do
+        End If
+        
+        ' Now try harder
+        mnDifficulty = mnDifficulty + 1
+
+        Do While TryEachBox()
+            Debug.Print "Tried each box. Missing values =" & MissingValues()
+            Do While SetKnownValues()
+                iRound = iRound + 1
+                Debug.Print "Completed round " & iRound & ". Missing values =" & MissingValues()
+            Loop
+        Loop
+        If MissingValues() = 0 Then
+            done = True
+            Exit Do
+        End If
+        
+        Do While TryEachRow()
+            Debug.Print "Tried each row. Missing values =" & MissingValues()
+            Do While SetKnownValues()
+                iRound = iRound + 1
+                Debug.Print "Completed round " & iRound & ". Missing values =" & MissingValues()
+            Loop
+        Loop
+        If MissingValues() = 0 Then
+            done = True
+            Exit Do
+        End If
+        
+        Do While TryEachCol()
+            Debug.Print "Tried each col. Missing values =" & MissingValues()
+            Do While SetKnownValues()
+                iRound = iRound + 1
+                Debug.Print "Completed round " & iRound & ". Missing values =" & MissingValues()
+            Loop
+        Loop
+        If MissingValues() = 0 Then
+            done = True
+            Exit Do
+        End If
+        
+    Loop    ' Until done
+    
+    TrySolve = (MissingValues() = 0)
+    
+End Function
+
+Public Function AlreadyGuessed(ThisIndex As Integer) As Boolean
+' Returns True if we've already guessed a value for this index
+' at a lower level (i.e. mnGuessLevel has already been incremented)
+    Dim i As Integer
+    
+    For i = 1 To mnGuessLevel - 1
+        If Guessed(i) = ThisIndex Then
+            AlreadyGuessed = True
+            Exit For
+        End If
+    Next
+End Function
+
+Public Function FindMinPossibles() As Integer
+' Returns index to an unsolved square with lowest # possibilities
+' excluding any prior guesses at lower levels
+    Dim Index As Integer
+    Dim nMin As Integer
+    Dim nMinIndex As Integer
+    
+    nMin = ncSIZE + 1
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).Value = 0 And CountPossibles(Index) < nMin Then
+            If Not AlreadyGuessed(Index) Then
+                nMin = CountPossibles(Index)
+                nMinIndex = Index
+            End If
+        End If
+    Next
+    
+    FindMinPossibles = nMinIndex
+End Function
+
+Public Function TryEachBox() As Boolean
+' Try all candidates for each box until we find something new
+' If find a new one, stop, set the value and return True
+' If no luck, return False
+    Dim iBox As Integer
+    Dim iValue As Integer
+    Dim n As Integer
+    Dim nFoundAt As Integer
+    
+    TryEachBox = False
+    For iBox = 1 To ncSIZE
+        For iValue = 1 To ncSIZE
+            n = PossiblesInBox(iValue, iBox, nFoundAt)
+            If n = 1 Then
+                ' Check this is not already set
+                If Squares(nFoundAt).Value = 0 Then
+                    ' Hooray! We have solved this square
+                    Call SetSquare(iValue, nFoundAt)
+                    ' Do not go any further now
+                    TryEachBox = True
+                    Exit Function
+                End If
+            End If
+        Next
+    Next
+        
+End Function
+
+Public Function TryEachRow() As Boolean
+' Try all candidates for each row until we find something new
+' If find a new one, stop, set the value and return True
+' If no luck, return False
+    Dim iRow As Integer
+    Dim iValue As Integer
+    Dim n As Integer
+    Dim nFoundAt As Integer
+    
+    TryEachRow = False
+    For iRow = 1 To ncSIZE
+        For iValue = 1 To ncSIZE
+            n = PossiblesInRow(iValue, iRow, nFoundAt)
+            If n = 1 Then
+                ' Check this is not already set
+                If Squares(nFoundAt).Value = 0 Then
+                    ' Hooray! We have solved this square
+                    Call SetSquare(iValue, nFoundAt)
+                    ' Do not go any further now
+                    TryEachRow = True
+                    Exit Function
+                End If
+            End If
+        Next
+    Next
+        
+End Function
+
+Public Function TryEachCol() As Boolean
+' Try all candidates for each col until we find something new
+' If find a new one, stop, set the value and return True
+' If no luck, return False
+    Dim iCol As Integer
+    Dim iValue As Integer
+    Dim n As Integer
+    Dim nFoundAt As Integer
+    
+    TryEachCol = False
+    For iCol = 1 To ncSIZE
+        For iValue = 1 To ncSIZE
+            n = PossiblesInCol(iValue, iCol, nFoundAt)
+            If n = 1 Then
+                ' Check this is not already set
+                If Squares(nFoundAt).Value = 0 Then
+                    ' Hooray! We have solved this square
+                    Call SetSquare(iValue, nFoundAt)
+                    ' Do not go any further now
+                    TryEachCol = True
+                    Exit Function
+                End If
+            End If
+        Next
+    Next
+        
+End Function
+
+Public Function PossiblesInBox(ThisValue As Integer, nBox As Integer, ByRef FoundAt As Integer)
+' Returns no of possibles for This Value in this box
+' And sets FoundAt to be the index where we last found a possible for this value
+    Dim Index As Integer
+    Dim n As Integer
+    
+    n = 0
+    FoundAt = 0
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).nBox = nBox Then
+            If Squares(Index).Possibles(ThisValue) > 0 Then
+                n = n + 1
+                FoundAt = Index
+            End If
+        End If
+    Next
+    PossiblesInBox = n
+End Function
+
+Public Function PossiblesInRow(ThisValue As Integer, nRow As Integer, ByRef FoundAt As Integer)
+' Returns no of possibles for This Value in this row
+' And sets FoundAt to be the index where we last found a possible for this value
+    Dim Index As Integer
+    Dim n As Integer
+    
+    n = 0
+    FoundAt = 0
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).nRow = nRow Then
+            If Squares(Index).Possibles(ThisValue) > 0 Then
+                n = n + 1
+                FoundAt = Index
+            End If
+        End If
+    Next
+    PossiblesInRow = n
+End Function
+
+Public Function PossiblesInCol(ThisValue As Integer, nCol As Integer, ByRef FoundAt As Integer)
+' Returns no of possibles for This Value in this col
+' And sets FoundAt to be the index where we last found a possible for this value
+    Dim Index As Integer
+    Dim n As Integer
+    
+    n = 0
+    FoundAt = 0
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).nCol = nCol Then
+            If Squares(Index).Possibles(ThisValue) > 0 Then
+                n = n + 1
+                FoundAt = Index
+            End If
+        End If
+    Next
+    PossiblesInCol = n
+End Function
+
+Public Function MissingValues() As Integer
+' Returns number of squares not set. If zero we have a full solution.
+    Dim Index As Integer
+    Dim n As Integer
+    
+    n = 0
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).Value = 0 Then
+            n = n + 1
+        End If
+    Next
+    
+    MissingValues = n
+End Function
+
+Public Function SetKnownValues() As Boolean
+' See if simple elimination of possibles yields us any solutions
+' Returns True if made a change or False if no change on this pass
+    Dim Index As Integer
+    Dim iValue As Integer
+    Dim bChanged As Boolean
+    
+    bChanged = False
+    For Index = 1 To ncINDEXLEN
+        If CountPossibles(Index) = 1 And Squares(Index).Value = 0 Then
+            ' Found another answer
+            iValue = ThePossible(Index)
+            Debug.Print "Found Value(" & GetRow(Index) & "," & GetCol(Index) & ")=" & iValue
+            ' Set the value (and remove more possibles)
+            Call SetSquare(iValue, Index)
+            bChanged = True
+        End If
+    Next
+    Debug.Print "SetKnownValues: " & IIf(bChanged, "FOUND MORE...", "NO CHANGES this round")
+    SetKnownValues = bChanged
+End Function
+
+Public Function CountPossibles(Index As Integer) As Integer
+' Count no of values that are possible for this square
+' If one, we have the solution
+' If zero, we have an error
+    Dim i As Integer
+    Dim n As Integer
+    n = 0
+    For i = 1 To ncSIZE
+        n = n + Squares(Index).Possibles(i)
+    Next
+    CountPossibles = n
+End Function
+
+Public Function ThePossible(Index As Integer) As Integer
+' Assumes only one possible value
+    Dim i As Integer
+    For i = 1 To ncSIZE
+        If Squares(Index).Possibles(i) = 1 Then
+            ThePossible = i
+            Exit For
+        End If
+    Next
+    
+End Function
+
+Public Function TheNthPossible(Index As Integer, n_th As Integer) As Integer
+' Finds the nth possible value for this square (1-based)
+    Dim i As Integer
+    Dim nValue As Integer
+    Dim n As Integer
+    
+    n = n_th
+    For i = 1 To ncSIZE
+        If Squares(Index).Possibles(i) = 1 Then
+            n = n - 1
+            If n = 0 Then
+                nValue = i
+                Exit For
+            End If
+        End If
+    Next
+    
+    TheNthPossible = nValue
+    
+End Function
+
+Public Function IsDataOK() As Integer
+' Returns zero if data is OK, else index of first error
+    Dim Index As Integer
+    
+    IsDataOK = 0   ' Innocent until proven guilty
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).Value > ncSIZE Or Squares(Index).Value < 0 Or CountPossibles(Index) <= 0 Then
+            IsDataOK = Index
+            Exit For
+        End If
+    Next
+    
+End Function
+
+Public Function SetSquare(iValue As Integer, ThisIndex As Integer) As Boolean
+' Set the square value and eliminate all possibles in same row, col and box
+    Dim i As Integer
+    
+    Squares(ThisIndex).Value = iValue
+    Squares(ThisIndex).GuessLevel = mnGuessLevel
+    For i = 1 To ncINDEXLEN
+        If Squares(i).nRow = Squares(ThisIndex).nRow Then
+            Squares(i).Possibles(iValue) = 0
+        End If
+        If Squares(i).nCol = Squares(ThisIndex).nCol Then
+            Squares(i).Possibles(iValue) = 0
+        End If
+        If Squares(i).nBox = Squares(ThisIndex).nBox Then
+            Squares(i).Possibles(iValue) = 0
+        End If
+    Next
+    
+    ' And make sure this square's Possibles are set properly
+    For i = 1 To ncSIZE
+        Squares(ThisIndex).Possibles(i) = 0
+    Next
+    Squares(ThisIndex).Possibles(iValue) = 1
+    
+    SetSquare = True
+End Function
+
+Public Function SetSquareRC(iValue As Integer, iRow As Integer, iCol As Integer, Optional IsGiven As Boolean) As Boolean
+' Set square value given (row,col). Optionally set the Given tag.
+    Dim Index As Integer
+    
+    Index = GetIndex(iRow, iCol)
+    Squares(Index).Given = IsGiven
+    SetSquareRC = SetSquare(iValue, Index)
+
+End Function
+
+Public Function FillInResults()
+    Dim rng As Range
+    Dim iRow As Integer, iCol As Integer
+    Dim iValue As Integer
+    Dim Index As Integer
+    
+    Set rng = Range("Puzzle")
+    
+    For iRow = 1 To ncSIZE
+        For iCol = 1 To ncSIZE
+            Index = GetIndex(iRow, iCol)
+            If Squares(Index).Given Then
+                ' Just reformat to show it was a given
+                rng(iRow, iCol).Interior.ColorIndex = 6
+                rng(iRow, iCol).Font.Bold = True
+            ElseIf Squares(Index).Value > 0 Then
+                ' Found a solution
+                rng(iRow, iCol).Value = Squares(Index).Value
+                rng(iRow, iCol).Interior.ColorIndex = xlNone
+                rng(iRow, iCol).Font.Bold = False
+            End If
+        Next
+    Next
+End Function
+
+Public Function ClearGrid()
+    Dim rng As Range
+    Dim iRow As Integer, iCol As Integer
+    Dim iValue As Integer
+    Dim Index As Integer
+    
+    Set rng = Range("Puzzle")
+    
+    For iRow = 1 To ncSIZE
+        For iCol = 1 To ncSIZE
+            Index = GetIndex(iRow, iCol)
+            rng(iRow, iCol).Value = ""
+            rng(iRow, iCol).Interior.ColorIndex = xlNone
+            rng(iRow, iCol).Font.Bold = False
+        Next
+    Next
+End Function
+
+Public Function ReadInput() As Integer
+' 0 if OK else index of square with problem
+    Dim rng As Range
+    Dim wkb As Workbook
+    Dim iRow As Integer, iCol As Integer
+    Dim iValue As Integer
+    
+    Set wkb = ActiveWorkbook
+    Set rng = Range("Puzzle")
+    
+    For iRow = 1 To ncSIZE
+        For iCol = 1 To ncSIZE
+            iValue = Val(rng.Item(iRow, iCol))
+            If iValue > 0 Then
+                ' Store given value in array
+                If Not SetSquareRC(iValue, iRow, iCol, True) Then
+                    MsgBox "Invalid input at (" & iRow & "," & iCol & ")!"
+                    Exit Function
+                End If
+            End If
+        Next
+    Next
+    ReadInput = IsDataOK()
+End Function
+
+Public Function InitPuzzle()
+' Initialise the Squares matrix
+    Dim iRow As Integer, iCol As Integer
+    Dim Index As Integer
+    Dim i As Integer
+    
+    ' Init all values
+    For Index = 1 To ncINDEXLEN
+        Squares(Index).Given = False
+        Squares(Index).GuessLevel = 0
+        Squares(Index).Value = 0
+    Next
+    
+    For i = 1 To ncGUESSEDMAX
+        Guessed(i) = 0
+    Next
+    
+    ' Set all possibles to 1
+    For Index = 1 To ncINDEXLEN
+        For i = 1 To ncSIZE
+            Squares(Index).Possibles(i) = 1
+        Next
+    Next
+    
+    ' Set global guess level
+    mnGuessLevel = 0
+    mnDifficulty = 0
+    
+    ' Initialise the row, col and box numbers
+    ' to speed up lookups
+    ' (These could be done with constants, but this is easier)
+    ' Stored row x column, base-1
+    For iCol = 1 To 9
+        For iRow = 1 To 9
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nRow = iRow
+            Squares(Index).nCol = iCol
+        Next
+    Next
+    ' Set box numbers 1..9
+    ' (there's surely a simpler algorithm but this works...)
+    For iRow = 1 To 3
+        For iCol = 1 To 3
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 1
+        Next
+        For iCol = 4 To 6
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 2
+        Next
+        For iCol = 7 To 9
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 3
+        Next
+    Next
+    For iRow = 4 To 6
+        For iCol = 1 To 3
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 4
+        Next
+        For iCol = 4 To 6
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 5
+        Next
+        For iCol = 7 To 9
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 6
+        Next
+    Next
+    For iRow = 7 To 9
+        For iCol = 1 To 3
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 7
+        Next
+        For iCol = 4 To 6
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 8
+        Next
+        For iCol = 7 To 9
+            Index = GetIndex(iRow, iCol)
+            Squares(Index).nBox = 9
+        Next
+    Next
+End Function
+
+Public Function GetIndex(iRow As Integer, iCol As Integer) As Integer
+' Given (iRow, iCol) return value of index (1..81)
+    GetIndex = (iRow - 1) * ncSIZE + iCol
+End Function
+
+Public Function GetRow(iIndex As Integer) As Integer
+    GetRow = ((iIndex - 1) \ ncSIZE) + 1
+End Function
+
+Public Function GetCol(iIndex As Integer) As Integer
+    GetCol = ((iIndex - 1) Mod ncSIZE) + 1
+End Function
+
+Public Function GetBox(iIndex As Integer) As Integer
+    Dim nRow As Integer, nCol As Integer
+    Dim nBand As Integer
+    Dim nStack As Integer
+    
+    nRow = GetRow(iIndex)
+    nCol = GetCol(iIndex)
+    nBand = (nRow - 1) \ 3 + 1
+    nStack = (nCol - 1) \ 3 + 1
+    GetBox = (nBand - 1) * 3 + nStack
+End Function
+
+Public Function InThisRow(TheValue As Integer, TheIndex As Integer) As Boolean
+    Dim Index As Integer
+    Dim nRow As Integer
+    
+    InThisRow = False
+    nRow = GetRow(TheIndex)
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).nRow = nRow Then
+            If Squares(Index).Value = TheValue Then
+                InThisRow = True
+                Exit For
+            End If
+        End If
+    Next
+    
+End Function
+
+Public Function InThisCol(TheValue As Integer, TheIndex As Integer) As Boolean
+    Dim Index As Integer
+    Dim nCol As Integer
+    
+    InThisCol = False
+    nCol = GetCol(TheIndex)
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).nCol = nCol Then
+            If Squares(Index).Value = TheValue Then
+                InThisCol = True
+                Exit For
+            End If
+        End If
+    Next
+End Function
+
+Public Function InThisBox(TheValue As Integer, TheIndex As Integer) As Boolean
+    Dim Index As Integer
+    Dim nBox As Integer
+    
+    InThisBox = False
+    nBox = GetBox(TheIndex)
+    For Index = 1 To ncINDEXLEN
+        If Squares(Index).nBox = nBox Then
+            If Squares(Index).Value = TheValue Then
+                InThisBox = True
+                Exit For
+            End If
+        End If
+    Next
+End Function
+Public Function NumbersToColors()
+    Dim rng As Range
+    Dim rang As Range
+    Dim rangc As Range
+    Dim iRow As Integer, iCol As Integer
+    Dim iValue As Integer
+    Dim Index As Integer
+    Dim cIndex As Integer
+    Dim Colour As Integer
+    Set rng = Range("Puzzle")
+    Set rangc = Range("Sudoku")
+    Set rang = Range("Color")
+    ReadInput
+    For iRow = 1 To ncSIZE
+        For iCol = 1 To ncSIZE
+            Index = GetIndex(iRow, iCol)
+            If Squares(Index).Given Then
+                ' Just reformat to show it was a given
+                cIndex = rng(iRow, iCol).Value
+                Colour = rang(cIndex).Interior.ColorIndex
+                rangc(iRow, iCol).Interior.ColorIndex = Colour
+                rangc(iRow, iCol).Font.Bold = True
+            ElseIf Squares(Index).Value > 0 Then
+                ' Found a solution
+                rng(iRow, iCol).Value = Squares(Index).Value
+                rng(iRow, iCol).Interior.ColorIndex = xlNone
+                rng(iRow, iCol).Font.Bold = False
+            End If
+        Next
+    Next
+End Function
+Public Function ClearColors()
+    Dim rng As Range
+    Dim iRow As Integer, iCol As Integer
+    Dim iValue As Integer
+    Dim Index As Integer
+    
+    Set rng = Range("Sudoku")
+    
+    For iRow = 1 To ncSIZE
+        For iCol = 1 To ncSIZE
+            Index = GetIndex(iRow, iCol)
+            rng(iRow, iCol).Value = ""
+            rng(iRow, iCol).Interior.ColorIndex = xlNone
+            rng(iRow, iCol).Font.Bold = False
+        Next
+    Next
+End Function
+Public Function ColorsToNumbers()
+    Dim cIndex As Integer
+    Dim rng As Range
+    Dim crng As Range
+    Dim iRow As Integer, iCol As Integer
+    Dim iValue As Integer
+    Dim Index As Integer
+    Set rng = Range("Sudoku")
+    Set crng = Range("Color")
+    For iRow = 1 To ncSIZE
+        For iCol = 1 To ncSIZE
+            Index = GetIndex(iRow, iCol)
+            For cIndex = 1 To ncSIZE
+               If rng(iRow, iCol).Interior.ColorIndex = crng(cIndex).Interior.ColorIndex Then
+                    rng(iRow, iCol).Value = cIndex
+               End If
+            Next
+        Next
+    Next
+End Function
+
+Attribute VB_Name = "Taul1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "CommandButton1, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "CommandButton2, 4, 1, MSForms, CommandButton"
+Attribute VB_Control = "CommandButton3, 3, 2, MSForms, CommandButton"
+Attribute VB_Control = "CommandButton5, 8, 4, MSForms, CommandButton"
+Attribute VB_Control = "CommandButton6, 12, 7, MSForms, CommandButton"
+
+
+
+Private Sub CommandButton1_Click()
+    DoPuzzle
+End Sub
+
+Private Sub CommandButton2_Click()
+    NumbersToColors
+End Sub
+
+Private Sub CommandButton3_Click()
+    ClearGrid
+End Sub
+
+Private Sub CommandButton5_Click()
+    ClearColors
+End Sub
+
+Private Sub CommandButton6_Click()
+    ColorsToNumbers
+End Sub
+Attribute VB_Name = "Taul2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Taul3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

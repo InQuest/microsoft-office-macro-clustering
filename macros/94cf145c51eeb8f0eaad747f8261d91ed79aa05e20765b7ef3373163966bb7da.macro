@@ -1,0 +1,1153 @@
+Attribute VB_Name = "Base"
+Option Explicit
+'columns
+Global Const gPTPNumberCol = 1
+'Global Const gPTPRevisionCol = 2
+Global Const gPartDescriptionCol = 2
+
+Global Const gSupplierPartNumCol = 3
+Global Const gUnitMassCol = 4
+Global Const gPartUOMCol = 5
+Global Const gRoHSCompliantCol = 6
+Global Const gSubCompCol = 7
+Global Const gMatNameCol = 8
+Global Const gStandardCol = 9
+Global Const gSubstanceNameCol = 10
+Global Const gSubstanceCASCol = 11
+Global Const gSubstanceMassCol = 12
+Global Const gSubstanceUOMCol = 13
+Global Const gExemptionCol = 14
+Global Const gPartLstCol = 1
+
+'rows
+Global Const gDStartRow = 14
+
+
+
+Public internalCall As Boolean
+
+
+
+'Global Const gSubstanceCol = 12
+
+
+Attribute VB_Name = "EventsHandler"
+Option Explicit
+
+Public Sub Handle_WSSelectChange(aName As String, aTarget As Range)
+    On Error GoTo exitsub
+
+    If (aName = "Material Disclosure" And aTarget.Count = 1) Then
+        
+        Call StandMaterialDialog.closeMaterialDialog
+        Load SubstanceSelectForm
+        Call SubstanceSelectForm.HandleSubstancePick(aTarget)
+        Load ExemptionDialog
+        Call ExemptionDialog.HandleExemptionPick(aTarget)
+        Load StandMaterialDialog
+        Call StandMaterialDialog.HandleMaterialSelect(aName, aTarget)
+        'Call formatMDRow(aTarget)
+    End If
+exitsub:
+End Sub
+
+Public Sub handleDelete(Optional hideThis As Variant)
+    Dim lRow As Long
+    Dim aStr As String
+    Dim lsheet As Worksheet
+    Dim delRng As Range
+    
+    lRow = ActiveCell.Row
+    
+    Set lsheet = Worksheets("Material Disclosure")
+    aStr = lsheet.Cells(lRow, gPTPNumberCol).Value
+    lsheet.Unprotect ("xray")
+    'Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Material Disclosure")
+    If (lRow >= gDStartRow) Then
+        lsheet.Cells(lRow, 1).EntireRow.Delete
+        If (Not (InStr(1, Names("Parts").RefersTo, "#REF") > 0)) Then
+            Dim lFoundCell As Range
+            Set lFoundCell = Worksheets("Material Disclosure").Range("Parts").Find(What:=aStr, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+            If (lFoundCell Is Nothing And Not aStr = "") Then
+                Call relistPart(aStr)
+            End If
+        ElseIf (Not (InStr(1, Names("RemovedParts").RefersTo, "#REF") > 0)) Then
+            Call relistPart(aStr)
+        End If
+    End If
+    Call protectIt
+
+End Sub
+Public Sub handleAddRow(Optional hideThis As Variant)
+    Dim lRow As Long
+    Dim lsheet As Worksheet
+
+    lRow = ActiveCell.Row
+    Set lsheet = Worksheets("Material Disclosure")
+   
+    If (lRow >= gDStartRow And Not IsEmpty(lsheet.Cells(lRow, gPTPNumberCol))) Then
+        lsheet.Unprotect ("xray")
+        Call addLineItem(ActiveCell)
+        lsheet.Protect Password:="xray", DrawingObjects:=True, Contents:=True, Scenarios:=True, UserInterfaceOnly:=True, AllowFormattingCells:=False, AllowFormattingColumns:=False, AllowFormattingRows:=False, AllowInsertingRows:=True
+    End If
+
+
+
+End Sub
+
+Public Sub Handle_StdMatSelect(aName As String, aTarget As Range)
+    Dim lsheet As Worksheet
+    If (aTarget.Column = 9 And aTarget.Row > 13) Then
+'        Set lsheet = Worksheets(aName)
+'        Dim lNewVal As String 'value of target cell
+'        If (Not IsNull(aTarget.Value)) Then
+'            Dim wsMaterials As Worksheet
+'            Set wsMaterials = Worksheets("Standard Materials")
+'            lNewVal = "stdmat" & Replace(aTarget.Value, " ", "") 'Match value of cell to Standard Material defined name
+'            Dim lSubCell As Range
+'            Dim lMatRng As Range
+'            Dim lRow As Long ' row on material disclosure
+'            lRow = aTarget.Row
+'            Set lMatRng = Range(lNewVal)
+'            For Each lSubCell In lMatRng
+'                lsheet.Range(lsheet.Cells(lRow, 10)).Offset(1).Insert
+'                lsheet.Range(lsheet.Cells(lRow, 10)).Value = lSubCell.Value
+'                lsheet.Range(lsheet.Cells(lRow, 11)).Value = wsMaterials.Range(wsMaterials.Cells(lSubCell.Row, lSubCell.Column + 1)).Value
+'                lsheet.Range(lsheet.Cells(lRow, 12)).Value = wsMaterials.Range(wsMaterials.Cells(lSubCell.Row, lSubCell.Column + 2)).Value
+'                lRow = lRow + 1
+'            Next lSubCell
+'        End If
+        Load StandMaterialDialog
+        StandMaterialDialog.Show
+    End If
+End Sub
+
+
+
+Public Sub handleAddPart(Optional hideThis As Variant)
+    If (Not (InStr(1, Names("PartList").RefersTo, "#REF") > 0)) Then
+        Load PartDialog
+        Dim lRow As Long
+        lRow = 14
+        Dim lCell As Range
+        Set lCell = Worksheets("Material Disclosure").Cells(lRow, 1)
+        Do While (isPartRow(lCell) = True)
+            lRow = lRow + 1
+            Set lCell = Worksheets("Material Disclosure").Cells(lRow, 1)
+        Loop
+        Call PartDialog.handlePartSelect(lRow)  'row part gets added into, ie last row on sheet.
+    Else
+        MsgBox ("All parts have been added")
+    End If
+    
+End Sub
+'aRow is row of part on pentair use
+Public Sub delistPart(aRow As Long)
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Pentair Use Only")
+    Dim lrng, prtRng, rmvRng As Range
+    Dim nameExisted As Boolean
+    Set lrng = lsheet.Range(lsheet.Cells(aRow, 1), lsheet.Cells(aRow, 5))
+    Set prtRng = lsheet.Range("PartList")
+    If (Not (InStr(1, Names("RemovedParts").RefersTo, "#REF") > 0)) Then
+        Set rmvRng = lsheet.Range("RemovedParts")
+        Dim skipcell As Range
+        Set skipcell = lsheet.Cells(rmvRng.Row, 1)
+        skipcell.EntireRow.Insert
+        Dim newRng As Range
+        Set newRng = lsheet.Range(lsheet.Cells(rmvRng.Row - 1, 1), lsheet.Cells(rmvRng.Row - 1, 5))
+        lrng.Copy Destination:=newRng
+        ThisWorkbook.Names.Add Name:="RemovedParts", RefersTo:=lsheet.Range(lsheet.Cells(newRng.Row, 1), lsheet.Cells(rmvRng.Row + rmvRng.Rows.Count - 1, 5))
+    Else
+        Dim incell As Range
+        Set incell = lsheet.Cells(prtRng.Row + prtRng.Rows.Count - 1, 1)
+        incell.Offset(1).EntireRow.Insert
+        Set rmvRng = lsheet.Range(lsheet.Cells(prtRng.Row + prtRng.Rows.Count, 1), lsheet.Cells(prtRng.Row + prtRng.Rows.Count, 5))
+        ThisWorkbook.Names.Add Name:="RemovedParts", RefersTo:=rmvRng
+        lrng.Copy Destination:=lsheet.Range("RemovedParts")
+        
+    End If
+
+   
+    lrng.EntireRow.Delete
+End Sub
+
+Public Sub relistPart(aPart As String)
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Pentair Use Only")
+    Dim rmvRng, prtRng, lFoundCell, copyRng As Range
+    Set rmvRng = lsheet.Range("RemovedParts")
+    Dim nameExisted As Boolean
+    If (Not (InStr(1, Names("PartList").RefersTo, "#REF") > 0)) Then 'name is defined properly
+        Set prtRng = lsheet.Range("PartList")
+        Set lFoundCell = Worksheets("Pentair Use Only").Range("RemovedParts").Find(What:=aPart, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+        Set copyRng = lsheet.Range(lsheet.Cells(lFoundCell.Row, 1), lsheet.Cells(lFoundCell.Row, 5))
+        Dim newRng, relisting, incell As Range
+        Set incell = lsheet.Cells(rmvRng.Row, 1)
+        incell.EntireRow.Insert
+        Set relisting = lsheet.Range(lsheet.Cells(rmvRng.Row - 1, 1), lsheet.Cells(rmvRng.Row - 1, 5))
+        copyRng.Copy Destination:=relisting
+        Set newRng = lsheet.Range(lsheet.Cells(prtRng.Row, 1), lsheet.Cells(relisting.Row, 5))
+        ThisWorkbook.Names.Add Name:="PartList", RefersTo:=lsheet.Range(lsheet.Cells(prtRng.Row, 1), lsheet.Cells(relisting.Row, 5))
+    Else 'define it
+        Dim icell As Range
+        Set icell = lsheet.Cells(rmvRng.Row, 1)
+        icell.EntireRow.Insert
+        Set prtRng = lsheet.Range(lsheet.Cells(rmvRng.Row - 1, 1), lsheet.Cells(rmvRng.Row - 1, 5))
+        ThisWorkbook.Names.Add Name:="PartList", RefersTo:=prtRng
+        Set lFoundCell = Worksheets("Pentair Use Only").Range("RemovedParts").Find(What:=aPart, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+        Set copyRng = lsheet.Range(lsheet.Cells(lFoundCell.Row, 1), lsheet.Cells(lFoundCell.Row, 5))
+        copyRng.Copy Destination:=prtRng
+    End If
+    
+    lFoundCell.EntireRow.Delete
+    lsheet.Range("PartList").Sort key1:=lsheet.Cells(prtRng.Row, prtRng.Column)
+End Sub
+
+
+
+Attribute VB_Name = "ExemptionDialog"
+Attribute VB_Base = "0{5329C030-1D5D-4953-BEF7-C803698EC137}{90A37C8B-1E33-4749-9405-3F2FB3701EC1}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Option Explicit
+
+'Form Globals
+
+Dim gRow As Long
+Dim gSelectedIndex As Long
+
+
+
+Private Sub btnCancelExemption_Click()
+    If (lstExemptions.Value <> "") Then
+        lstExemptions.Selected(lstExemptions.listIndex) = False 'Clear the exemption list
+    End If
+    ExemptionDialog.Hide
+End Sub
+
+
+Public Sub HandleExemptionPick(aCell As Range)
+    gRow = aCell.Row
+    If (aCell.Column = gExemptionCol And gRow > 13 And (isPartRow(aCell)) And hasSubstance(aCell)) Then
+        If (aCell.Value <> "") Then
+            Dim lFoundCell As Range
+            lstExemptions.Selected(gSelectedIndex) = False
+            Set lFoundCell = Worksheets("RoHS Exemptions").Range("ExemptionCode").Find(aCell.Value, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+            gSelectedIndex = lFoundCell.Row - 2
+            lstExemptions.Selected(gSelectedIndex) = True
+        End If
+        ExemptionDialog.Show
+    Else
+        Exit Sub
+    End If
+End Sub
+
+
+Private Sub btnSearch_Click()
+    Dim lFoundCell As Range
+    Dim lAfterCell As Range
+    Set lAfterCell = Worksheets("RoHS Exemptions").Cells(gSelectedIndex + 2, 1)
+    Set lFoundCell = Worksheets("RoHS Exemptions").Range("ExemptionCode").Find(txtSearch.Value, after:=lAfterCell, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    
+    If (lFoundCell Is Nothing) Then
+        MsgBox ("No Exemption code found matching the search text")
+        If (Not IsNull(lstExemptions.Value)) Then
+            lstExemptions.Selected(lstExemptions.listIndex) = False
+        End If
+    Else
+        gSelectedIndex = lFoundCell.Row - 2
+        btnSearch.Caption = "Next"
+    End If
+    If (gSelectedIndex >= 0) Then
+        lstExemptions.Selected(gSelectedIndex) = True
+    End If
+End Sub
+
+
+Private Sub btnSelectExemption_Click()
+    Dim lExVal As String
+    If (Not IsNull(lstExemptions.Value)) Then
+        lExVal = lstExemptions.Value
+        If (lExVal <> "") Then
+            Dim lsheet As Worksheet
+            Set lsheet = Worksheets("Material Disclosure")
+            Application.ScreenUpdating = False
+            
+            lsheet.Cells(gRow, gExemptionCol) = lExVal
+            If (isLastRow(lsheet.Cells(gRow, 1)) And Not isPartRow(lsheet.Cells(gRow, 1))) Then
+                Call makePartRow(lsheet.Cells(gRow, 1))
+                Call decorateRow(lsheet.Cells(gRow, 1))
+                Call regPartRow(lsheet.Cells(gRow, 1))
+            End If
+            Application.ScreenUpdating = True
+        End If
+        Call btnCancelExemption_Click
+    Else
+        MsgBox ("Please select an exemption")
+    End If
+End Sub
+
+
+Private Sub lstExemptions_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    Call btnSelectExemption_Click
+End Sub
+
+
+
+Private Sub txtSearch_Change()
+    btnSearch.Caption = "Search"
+End Sub
+
+Private Sub txtSearch_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If (KeyCode = 13) Then 'user presses ENTER key in text box
+        Call btnSearch_Click 'search exemptions list
+    End If
+End Sub
+
+
+
+Attribute VB_Name = "MaterialContentsDialog"
+Attribute VB_Base = "0{0980A244-7554-4ED8-87AA-5C42E1A83992}{6F2546F8-68BD-4FB7-B648-DAF7F8F83397}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Attribute VB_Name = "PartDialog"
+Attribute VB_Base = "0{33EB414C-9711-4D50-AF6D-4DE1C5E2F73B}{DD67A850-4832-495C-8C21-B69D83BA8CC7}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Dim fRow As Long
+Dim fSelectedIndex As Long
+
+
+Private Sub btnAddAll_Click()
+    Dim shtParts, shtMD As Worksheet
+    Set shtParts = Worksheets("Pentair Use Only")
+    Set shtMD = Worksheets("Material Disclosure")
+    shtMD.Unprotect ("xray")
+    Application.ScreenUpdating = False
+    Do While (Not (InStr(1, Names("PartList").RefersTo, "#REF") > 0))
+        Dim partRng, partCell As Range
+        Set partRng = shtParts.Range("PartList")
+        Set partCell = shtParts.Cells(partRng.Row, gPartLstCol)
+        Dim nxtRng As Range
+        Set nxtRng = Worksheets("Material Disclosure").Cells(fRow, gPTPNumberCol)
+        Call formatMDRow(Worksheets("Material Disclosure").Cells(fRow, gPTPNumberCol))
+        Call decorateRow(nxtRng)
+        Call regPartRow(nxtRng)
+        With shtMD
+            .Cells(fRow, gPTPNumberCol).Value = partCell.Value
+            .Cells(fRow, gPartDescriptionCol).Value = shtParts.Cells(partCell.Row, partCell.Column + 1).Value
+            .Cells(fRow, gSupplierPartNumCol).Value = shtParts.Cells(partCell.Row, partCell.Column + 2).Value
+        End With
+
+
+        Call delistPart(partCell.Row)
+        fRow = fRow + 1
+    Loop
+    Application.ScreenUpdating = True
+    Call protectIt
+    Call btnCancel_Click
+End Sub
+
+Private Sub btnCancel_Click()
+    PartDialog.Hide
+    
+End Sub
+
+Private Sub btnConfirm_Click()
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Pentair Use Only")
+    Dim partCell As Range
+    If (Not IsNull(lstParts.Value)) Then
+        Dim lFoundCell As Range
+        fSelectedIndex = lstParts.listIndex + 2
+        Set partCell = lsheet.Cells(fSelectedIndex, gPartLstCol)
+        If (fRow > 14) Then ' check if sheet already has part
+            Set lFoundCell = Worksheets("Material Disclosure").Range("Parts").Find(What:=partCell.Value, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+        End If
+        If (lFoundCell Is Nothing) Then
+            Application.ScreenUpdating = False
+            
+            Dim shtMD As Worksheet
+            Set shtMD = Worksheets("Material Disclosure")
+            shtMD.Unprotect ("xray")
+            Dim nxtRng As Range
+            Set nxtRng = Worksheets("Material Disclosure").Cells(fRow, gPTPNumberCol)
+            Call formatMDRow(Worksheets("Material Disclosure").Cells(fRow, gPTPNumberCol))
+            Call decorateRow(nxtRng)
+            Call regPartRow(nxtRng)
+            With shtMD
+                .Cells(fRow, gPTPNumberCol).Value = partCell.Value
+                '.Cells(fRow, gPTPRevisionCol).Value = lSheet.Cells(PartCell.Row, PartCell.Column + 1).Value
+                .Cells(fRow, gPartDescriptionCol).Value = lsheet.Cells(partCell.Row, partCell.Column + 1).Value
+                .Cells(fRow, gSupplierPartNumCol).Value = lsheet.Cells(partCell.Row, partCell.Column + 2).Value
+                '.Cells(fRow, gSupplierPartNumCol).Value = partCell.Value
+            End With
+            'formatMDRow (Worksheets("Material Disclosure").Cells(fRow, gPTPNumberCol))
+            
+
+            'Call addLineItem(nxtRng)
+            Call delistPart(partCell.Row)
+            Application.ScreenUpdating = True
+            shtMD.Protect Password:="xray", DrawingObjects:=True, Contents:=True, Scenarios:=True, UserInterfaceOnly:=True, AllowFormattingCells:=False, AllowFormattingColumns:=False, AllowFormattingRows:=False, AllowInsertingRows:=True
+            
+            'Set nxtRng = Worksheets("Material Disclosure").Cells(fRow + 1, gPTPNumberCol)
+        Else 'if part already on sheet
+            MsgBox ("Selected part number has already has already been added")
+            lFoundCell.Select
+        End If
+        Call btnCancel_Click
+    Else
+        MsgBox ("Please select a part")
+    End If
+    
+
+    
+End Sub
+
+Public Sub handlePartSelect(aRow As Long)
+    Dim strSource As String
+    fRow = aRow
+    With lstParts
+        strSource = .RowSource
+        .RowSource = vbNullString
+        .RowSource = strSource
+    End With
+    PartDialog.Show
+    
+End Sub
+
+
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "CommandButton3, 364, 0, MSForms, CommandButton"
+Attribute VB_Control = "CommandButton1, 11, 2, MSForms, CommandButton"
+Attribute VB_Control = "CommandButton2, 352, 4, MSForms, CommandButton"
+
+Private Sub CommandButton1_Click()
+    internalCall = True
+    Call handleAddPart
+    internalCall = False
+End Sub
+
+
+
+
+
+Private Sub CommandButton2_Click()
+    internalCall = True
+    Call handleDelete
+    internalCall = False
+End Sub
+
+Private Sub CommandButton3_Click()
+    internalCall = True
+    Call handleAddRow
+    internalCall = False
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    If internalCall = False Then
+        Dim lsheet As Worksheet
+        Set lsheet = Worksheets("Material Disclosure")
+        Application.ScreenUpdating = False
+        lsheet.Unprotect ("xray")
+        Dim rowCount As Long
+         Dim newRow As Range
+        rowCount = Target.Rows.Count
+        Dim rowIterator As Long
+        rowIterator = Target.Row
+        Dim rowLimit As Long
+        rowLimit = Target.Row + rowCount
+        'go through selected rows
+        Do While rowIterator < rowLimit
+            Set newRow = lsheet.Range(lsheet.Cells(rowIterator, 1), lsheet.Cells(rowIterator, gExemptionCol))
+        
+        
+            Dim iterator As Long
+            iterator = 1
+            'format columns
+            Do While iterator < (gExemptionCol + 1)
+                Dim nCell As Range
+                Set nCell = lsheet.Cells(rowIterator, iterator)
+                 If (iterator = gUnitMassCol) Then
+                    nCell.NumberFormat = "@"
+                End If
+                If (iterator = gSubstanceMassCol) Then
+                    nCell.NumberFormat = "@"
+                End If
+                iterator = iterator + 1
+            Loop
+            rowIterator = rowIterator + 1
+        Loop
+        Call protectIt
+        Application.ScreenUpdating = True
+    End If
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    Call Handle_WSSelectChange("Material Disclosure", Target)
+End Sub
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet8"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "StandMaterialDialog"
+Attribute VB_Base = "0{EDFA3807-354E-42EC-9D21-FF1F53EC7CE9}{C23F2D89-C79B-4C4A-AF25-D15FADC94603}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Dim fView As Boolean
+Dim fRow As Long 'selected row on sheet
+'checks if proper cell is selected for activation
+Public Sub HandleMaterialSelect(aName As String, aTarget As Range)
+        If (aTarget.Column = gStandardCol And aTarget.Row > 13 And ((isNextRow(aTarget) And aTarget.Row > 14) Or isPartRow(aTarget))) Then
+            fRow = aTarget.Row
+            fView = False
+            StandMaterialDialog.Show
+        End If
+End Sub
+
+
+'reset list selection close form
+Private Sub btnCancel_Click()
+    If (Not IsNull(MaterialList.Value)) Then
+        MaterialList.Selected(MaterialList.listIndex) = False
+    End If
+    Call closeMaterialDialog
+    
+End Sub
+
+
+
+Private Sub btnConfirm_Click()
+    Dim lMat As String
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Material Disclosure")
+    If (Not IsNull(MaterialList.Value)) Then
+        lsheet.Cells(fRow, gStandardCol).Value = MaterialList.Value
+        lsheet.Unprotect ("xray")
+        Application.ScreenUpdating = False
+       ' Call addLineItem(lSheet.Cells(fRow, gPTPNumberCol))
+        If (isLastRow(lsheet.Cells(fRow, 1)) And Not isPartRow(lsheet.Cells(fRow, 1))) Then
+            Call makePartRow(lsheet.Cells(fRow, 1))
+            Call decorateRow(lsheet.Cells(fRow, 1))
+            Call regPartRow(lsheet.Cells(fRow, 1))
+        End If
+        
+        Application.ScreenUpdating = True
+        
+        lsheet.Protect Password:="xray", DrawingObjects:=True, Contents:=True, Scenarios:=True, UserInterfaceOnly:=True, AllowFormattingCells:=False, AllowFormattingColumns:=False, AllowFormattingRows:=False, AllowInsertingRows:=True
+        Call closeMaterialDialog
+    End If
+End Sub
+
+Private Sub btnPreview_Click()
+    Load MaterialContentsDialog
+    fView = True
+    Dim lPreview As String
+    If (Not IsNull(MaterialList.Value)) Then
+        'lPreview = Replace(MaterialList.Value, " ", "_")
+        lPreview = saniName(MaterialList.Value)
+        MaterialContentsDialog.MatContentsList.RowSource = "'Standard Materials'!" & Range(lPreview).Address
+        MaterialContentsDialog.Caption = MaterialList.Value
+        MaterialContentsDialog.Show vbModeless
+    End If
+End Sub
+
+Private Sub MaterialList_Change()
+    If (MaterialContentsDialog.Visible) Then
+        Call btnPreview_Click
+    End If
+End Sub
+
+Private Sub MaterialList_Click()
+'    Load MaterialContentsDialog
+'    Dim lPreview As String
+'    If (Not IsNull(MaterialList.Value)) Then
+'        lPreview = Replace(MaterialList.Value, " ", "_")
+'        MaterialContentsDialog.MatContentsList.RowSource = "'Standard Materials'!" & Range(lPreview).Address
+'        MaterialContentsDialog.Show vbModeless
+'    End If
+End Sub
+
+Public Sub closeMaterialDialog()
+    If (MaterialContentsDialog.Visible) Then
+        MaterialContentsDialog.Hide
+    End If
+    If (StandMaterialDialog.Visible) Then
+        StandMaterialDialog.Hide
+    End If
+End Sub
+
+Private Sub UserForm_Terminate()
+    Call closeMaterialDialog
+End Sub
+
+Attribute VB_Name = "SubstanceSelectForm"
+Attribute VB_Base = "0{BDA5C91D-F172-4D3C-B63A-DC77558EBAAA}{8D5B1596-5963-4D2C-B949-3DC6294B14E0}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+
+'Form Globals
+
+Dim gRow As Long
+Dim gSelectedIndex As Long
+
+Public Sub HandleSubstancePick(aCell As Range)
+    gRow = aCell.Row
+    If ((aCell.Column = gSubstanceNameCol Or aCell.Column = gSubstanceCASCol) And gRow > 13 And ((isNextRow(aCell) And aCell.Row > 14) Or isPartRow(aCell)) And Not hasStdMat(aCell)) Then
+        If (aCell.Value <> "") Then 'select substance in list if cell already has one listed
+            Dim lFoundCell As Range
+            lstSubstances.Selected(gSelectedIndex) = False
+            Set lFoundCell = Worksheets("Substances List").Range("SubstanceIds").Find(aCell.Value, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+            gSelectedIndex = lFoundCell.Row - 2
+            lstSubstances.Selected(gSelectedIndex) = True
+        End If
+        SubstanceSelectForm.Show
+    Else
+        Exit Sub
+    End If
+    
+End Sub
+Private Sub btnCancel_Click()
+    txtSearch.Value = "" 'clear the text box
+    If (lstSubstances.Value <> "") Then
+        lstSubstances.Selected(lstSubstances.listIndex) = False 'deselect choice to reset list box
+    End If
+    SubstanceSelectForm.Hide 'hide the form
+End Sub
+
+Private Sub btnConfirm_Click()
+    Dim lName As String
+    Dim lCas As String
+    Dim lNewVal() As String
+    Dim lUID As String
+    If (Not IsNull(lstSubstances.Value)) Then
+        lUID = lstSubstances.Value
+    Else
+        MsgBox ("Please select a substance") ' in the event nothing is selected
+    End If
+    If (lUID <> "" And lUID <> "|") Then
+        lNewVal = Split(lstSubstances.Value, "|") 'split the unique id
+        lCas = lNewVal(0)
+        lName = lNewVal(1)
+        Dim lsheet As Worksheet
+        Set lsheet = Worksheets("Material Disclosure")
+        lsheet.Unprotect ("xray")
+        
+        Application.ScreenUpdating = False
+        Dim casRng As Range
+        Set casRng = lsheet.Cells(gRow, gSubstanceCASCol)
+        casRng.NumberFormat = "@"
+        lsheet.Cells(gRow, gSubstanceNameCol).Value = lName 'write substance name to the sheet
+        lsheet.Cells(gRow, gSubstanceCASCol).Value = lCas 'write substance CAS to the sheet
+        'Call addLineItem(lSheet.Cells(gRow, gPTPNumberCol))
+        If (isLastRow(lsheet.Cells(gRow, 1)) And Not isPartRow(lsheet.Cells(gRow, 1))) Then
+            Call makePartRow(lsheet.Cells(gRow, 1))
+            Call decorateRow(lsheet.Cells(gRow, 1))
+            Call regPartRow(lsheet.Cells(gRow, 1))
+       End If
+       
+       Application.ScreenUpdating = True
+       
+       lsheet.Protect Password:="xray", DrawingObjects:=True, Contents:=True, Scenarios:=True, UserInterfaceOnly:=True, AllowFormattingCells:=False, AllowFormattingColumns:=False, AllowFormattingRows:=False, AllowInsertingRows:=True
+       Call btnCancel_Click 'clear and close form
+    End If
+
+
+    
+End Sub
+
+Private Sub btnSearchSubs_Click()
+    Dim lFoundCell As Range
+    Dim lAfterCell As Range
+    Set lAfterCell = Worksheets("Substances List").Cells(gSelectedIndex + 2, 1)
+    Set lFoundCell = Worksheets("Substances List").Range("SubstanceIds").Find(txtSearch.Value, after:=lAfterCell, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    'Set lFoundCell = Worksheets("Substances List").Range("SubstanceIds").Find(txtSearch.Value, LookIn:=xlValues, LookAt:=xlPart, MatchCase:=False)
+    If (lFoundCell Is Nothing) Then
+        MsgBox ("No substance found matching the search text") ' in the event nothing is found
+        If (Not IsNull(lstSubstances.Value)) Then
+            lstSubstances.Selected(lstSubstances.listIndex) = False
+        End If
+    Else
+        gSelectedIndex = lFoundCell.Row - 2
+        btnSearchSubs.Caption = "Next"
+    End If
+    If (gSelectedIndex >= 0) Then
+        lstSubstances.Selected(gSelectedIndex) = True
+    End If
+End Sub
+
+
+Private Sub lstSubstances_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    Call btnConfirm_Click
+End Sub
+
+Private Sub txtSearch_Change()
+    btnSearchSubs.Caption = "Search"
+End Sub
+
+Private Sub txtSearch_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If (KeyCode = 13) Then 'user presses ENTER key in text box
+        Call btnSearchSubs_Click 'search substances list
+    End If
+End Sub
+
+Private Sub UserForm_Activate()
+    lstSubstances.SetFocus
+End Sub
+
+
+
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Utilities"
+Option Explicit
+
+Public Sub decorateRow(aTarget As Range)
+    Dim newRow As Range
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Material Disclosure")
+    Set newRow = lsheet.Range(lsheet.Cells(aTarget.Row, 1), lsheet.Cells(aTarget.Row, gExemptionCol))
+    'do bottoms
+    With newRow.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlMedium
+        .ColorIndex = xlAutomatic
+    End With
+    With newRow.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlMedium
+        .ColorIndex = xlAutomatic
+    End With
+    'do the cell sides
+    Dim iterator As Long
+    iterator = 1
+    Do While iterator < (gExemptionCol + 1)
+        Dim nCell As Range
+        Set nCell = lsheet.Cells(aTarget.Row, iterator)
+       ' nCell.Locked = False
+        With nCell.Borders(xlEdgeLeft)
+            .LineStyle = xlContinuous
+            .Weight = xlMedium
+            .ColorIndex = xlAutomatic
+        End With
+        With nCell.Borders(xlEdgeRight)
+            .LineStyle = xlContinuous
+            .Weight = xlMedium
+            .ColorIndex = xlAutomatic
+        End With
+        If (iterator = gPTPNumberCol) Then
+            nCell.NumberFormat = "@"
+            nCell.Locked = True
+        End If
+        If (iterator = gPartDescriptionCol) Then
+            nCell.Locked = True
+        End If
+        If (iterator = gUnitMassCol) Then
+            nCell.NumberFormat = "@"
+        End If
+        If (iterator = gSubstanceMassCol) Then
+            nCell.NumberFormat = "@"
+        End If
+        'If (iterator = gPTPRevisionCol) Then
+        '    nCell.NumberFormat = "@"
+        '    nCell.Locked = True
+        'End If
+        
+        If (iterator = gSupplierPartNumCol) Then
+            nCell.NumberFormat = "@"
+        End If
+        
+        iterator = iterator + 1
+    Loop
+End Sub
+Public Sub insertMatRow(aTarget As Range)
+    Dim newRow As Range
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Material Disclosure")
+    aTarget.Offset(1).EntireRow.Insert
+End Sub
+
+'format row to have drop down lists
+Public Sub formatMDRow(aTarget As Range)
+    Dim newRow As Range
+    Dim lRow As Long
+    Dim lsheet As Worksheet
+    Dim listSht As Worksheet
+    Set listSht = Worksheets("Lists")
+    Set lsheet = Worksheets("Material Disclosure")
+    lsheet.Activate
+    lRow = aTarget.Row
+    Dim rng As Range
+    Set rng = lsheet.Cells(lRow, gPartUOMCol)
+    rng.Activate
+    With rng.Validation
+        .Delete
+        .Add xlValidateList, AlertStyle:=xlValidAlertStop, Operator:=xlBetween, Formula1:="=UOM"
+        .IgnoreBlank = True
+        .InCellDropdown = True
+    End With
+    Set rng = lsheet.Cells(lRow, gRoHSCompliantCol)
+    rng.Activate
+    With rng.Validation
+        .Delete
+        .Add xlValidateList, AlertStyle:=xlValidAlertStop, Operator:=xlBetween, Formula1:="=OptionYN"
+        .IgnoreBlank = True
+        .InCellDropdown = True
+    End With
+    Set rng = lsheet.Cells(lRow, gSubstanceUOMCol)
+    rng.Activate
+    With rng.Validation
+        .Delete
+        .Add xlValidateList, AlertStyle:=xlValidAlertStop, Operator:=xlBetween, Formula1:="=UOM"
+        .IgnoreBlank = True
+        .InCellDropdown = True
+    End With
+    aTarget.Activate
+End Sub
+
+
+Public Function isNextRow(aTarget As Range)
+    isNextRow = False
+    If (aTarget.Row > 13) Then
+        If (Not IsEmpty(Cells(aTarget.Row - 1, gPTPNumberCol)) And aTarget.Row > 13) Then
+            isNextRow = True
+        End If
+    End If
+End Function
+
+Public Function isPartRow(aTarget As Range)
+    isPartRow = False
+    If (aTarget.Row > 13) Then
+        If (Not IsEmpty(Cells(aTarget.Row, gPTPNumberCol)) And aTarget.Row > 13) Then
+            isPartRow = True
+        End If
+    End If
+End Function
+
+Public Sub makePartRow(aTarget As Range)
+    Cells(aTarget.Row, gPTPNumberCol).Value = Cells(aTarget.Row - 1, gPTPNumberCol)
+    Dim rng As Range
+    Set rng = Cells(aTarget.Row, gSubstanceUOMCol)
+    rng.Activate
+    With rng.Validation
+        .Delete
+        .Add xlValidateList, AlertStyle:=xlValidAlertStop, Operator:=xlBetween, Formula1:="=UOM"
+        .IgnoreBlank = True
+        .InCellDropdown = True
+    End With
+    aTarget.Activate
+    Set rng = Cells(aTarget.Row, gSupplierPartNumCol)
+    'rng.Locked = True
+End Sub
+
+Public Function isLastRow(aTarget As Range)
+    isLastRow = False
+    If (aTarget.Row > 13) Then
+        If (IsEmpty(Cells(aTarget.Row + 1, gPTPNumberCol)) And aTarget.Row > 13) Then
+            isLastRow = True
+        End If
+    End If
+End Function
+
+Public Function isPartNameRow(aTarget As Range)
+    isPartNameRow = False
+    If (aTarget.Row > 13) Then
+        If (Not IsEmpty(Cells(aTarget.Row, gPartDescriptionCol))) Then
+            isPartNameRow = True
+        End If
+    End If
+End Function
+'registers row in parts range
+Public Sub regPartRow(aTarget As Range)
+    Dim sht As Worksheet
+    Set sht = Worksheets("Material Disclosure")
+    If (aTarget.Row > 14) Then
+        ThisWorkbook.Names.Add Name:="Parts", RefersTo:=sht.Range(sht.Cells(gDStartRow, gPTPNumberCol), sht.Cells(aTarget.Row, gPTPNumberCol))
+        sht.PageSetup.PrintArea = "$A$1:$N$" & aTarget.Row
+    End If
+    If (aTarget.Row = 14) Then
+        ThisWorkbook.Names.Add Name:="Parts", RefersTo:=sht.Cells(gDStartRow, gPTPNumberCol)
+        sht.PageSetup.PrintArea = "$A$1:$N$" & aTarget.Row
+    End If
+End Sub
+
+
+
+
+Public Function hasStdMat(aTarget As Range)
+    hasStdMat = False
+    If (Not IsEmpty(Cells(aTarget.Row, gStandardCol))) Then
+        hasStdMat = True
+    End If
+End Function
+'find if row has substance chosen
+Public Function hasSubstance(aTarget As Range)
+    hasSubstance = False
+    If (Not IsEmpty(Cells(aTarget.Row, gSubstanceNameCol)) And Not IsEmpty(Cells(aTarget.Row, gSubstanceCASCol))) Then
+        hasSubstance = True
+    End If
+End Function
+
+Public Function saniName(aName As String)
+    aName = Replace(aName, " ", "_")
+    aName = Replace(aName, "/", "fsh")
+    aName = Replace(aName, "-", "dsh")
+    aName = Replace(aName, ".", "dot")
+    saniName = aName
+    
+End Function
+
+Private Sub hideInfoSheets(Optional hideThis As Variant)
+    Dim sht As Worksheet
+    Set sht = Worksheets("Lists")
+    sht.Visible = xlSheetVeryHidden
+    Set sht = Worksheets("Pentair Use Only")
+    sht.Visible = xlSheetVeryHidden
+    Set sht = Worksheets("Standard Materials")
+    sht.Visible = xlSheetVeryHidden
+    Set sht = Worksheets("Substances List")
+    sht.Visible = xlSheetVeryHidden
+    Set sht = Worksheets("RoHS Exemptions")
+    sht.Visible = xlSheetVeryHidden
+End Sub
+
+Private Sub showInfoSheets(Optional hideThis As Variant)
+    Dim sht As Worksheet
+    Set sht = Worksheets("Lists")
+    sht.Visible = xlSheetVisible
+    Set sht = Worksheets("Pentair Use Only")
+    sht.Visible = xlSheetVisible
+    Set sht = Worksheets("Standard Materials")
+    sht.Visible = xlSheetVisible
+    Set sht = Worksheets("Substances List")
+    sht.Visible = xlSheetVisible
+    Set sht = Worksheets("RoHS Exemptions")
+    sht.Visible = xlSheetVisible
+End Sub
+
+Public Sub addLineItem(aTarget As Range)
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Material Disclosure")
+    Dim nxtRow As Range
+    Set nxtRow = lsheet.Cells(aTarget.Row + 1, gPTPNumberCol)
+    Application.ScreenUpdating = False
+    If (IsEmpty(nxtRow.Value)) Then
+        'nxtRow.EntireRow.Insert
+        Call decorateRow(nxtRow)
+        Call makePartRow(nxtRow)
+        Call regPartRow(nxtRow)
+        
+    ElseIf (nxtRow.Value = aTarget.Value) Then
+        'nxtRow.EntireRow.Insert
+        Call decorateRow(nxtRow)
+        Call makePartRow(nxtRow)
+        Call regPartRow(nxtRow)
+       
+    ElseIf (nxtRow.Value <> aTarget.Value) Then
+        nxtRow.EntireRow.Insert
+        Call decorateRow(nxtRow)
+        Set nxtRow = lsheet.Cells(aTarget.Row + 1, gPTPNumberCol)
+        Call makePartRow(nxtRow)
+        'Call regPartRow(nxtRow)
+        
+    End If
+     Application.ScreenUpdating = True
+End Sub
+
+
+Public Sub deleteEmpties(Optional hideThis As Variant)
+    Dim rng As Range
+    Dim str As String
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Material Disclosure")
+    Dim partRng As Range
+    On Error Resume Next
+    Set partRng = lsheet.Range("Parts")
+    For Each rng In partRng
+       If (Not IsEmpty(rng.Cells(rng.Row, gPTPNumberCol))) Then
+            rng.EntireRow.Delete
+       End If
+    Next rng
+End Sub
+
+Public Sub protectIt(Optional hideThis As Variant)
+    Dim lsheet As Worksheet
+    Set lsheet = Worksheets("Material Disclosure")
+    lsheet.Protect Password:="xray", DrawingObjects:=True, Contents:=True, Scenarios:=True, UserInterfaceOnly:=True, AllowFormattingCells:=False, AllowFormattingColumns:=False, AllowFormattingRows:=False, AllowInsertingRows:=True
+End Sub
+
+
+Attribute VB_Name = "preprocess"
+
+
+
+Option Explicit
+
+
+
+
+Public Sub craftID(Optional hideThis As Variant)
+    Dim lNames As Range
+    Dim lCas As Range
+    Dim lUID As Range
+    Set lNames = Worksheets("Substances List").Range("SubstanceNames")
+    Set lCas = Worksheets("Substances List").Range("SubstanceCAS")
+    Set lUID = Worksheets("Substances List").Range("SubstanceIds")
+    Dim lCycle As Range
+    Dim lRow As Long
+    lRow = 1
+    For Each lCycle In lUID
+        lCycle.Value = lCas.Cells(lRow).Value & "|" & lNames.Cells(lRow).Value
+        lRow = lRow + 1
+    Next lCycle
+End Sub
+
+Public Sub craftStandardMaterials(Optional hideThis As Variant)
+    Dim StdMatSht As Worksheet 'standard materials worksheet
+    Dim LstSht As Worksheet 'lists worksheet
+    Dim lListRow As Long 'lists iterator
+    Dim lStdMatRow As Long 'standard materials iterator
+    Dim lStart As Long 'holds start value for name
+    Dim lMatCell As Range 'observed cell on standard materials sheet
+    Dim lName As String 'name value
+    Set LstSht = Worksheets("Lists")
+    Set StdMatSht = Worksheets("Standard Materials")
+    lListRow = 2
+    lStdMatRow = 2
+    lName = ""
+    Set lMatCell = StdMatSht.Cells(lStdMatRow, 1)
+    If (Not IsEmpty(lMatCell)) Then
+        Do
+            If (lName <> lMatCell.Value) Then
+                If (lName <> "") Then ' add a defined name for standard material
+                    'ThisWorkbook.Names.Add Name:="stdmat" & Replace(lName, " ", ""), RefersTo:=StdMatSht.Range(StdMatSht.Cells(lStart, 2), StdMatSht.Cells(lStdMatRow - 1, 2))
+                    
+                    'ThisWorkbook.Names.Add Name:=Replace(lName, " ", "_"), RefersTo:=StdMatSht.Range(StdMatSht.Cells(lStart, 1), StdMatSht.Cells(lStdMatRow - 1, 5))
+                    ThisWorkbook.Names.Add Name:=saniName(lName), RefersTo:=StdMatSht.Range(StdMatSht.Cells(lStart, 1), StdMatSht.Cells(lStdMatRow - 1, 5))
+                End If
+                lName = lMatCell.Value 'set new name value
+                lStart = lStdMatRow 'set new start position
+                LstSht.Cells(lListRow, 3).Value = lName 'add name to list
+                lListRow = lListRow + 1 'increment list row
+            End If
+            lStdMatRow = lStdMatRow + 1 'iterate standard materials
+            Set lMatCell = StdMatSht.Cells(lStdMatRow, 1)
+        Loop Until IsEmpty(lMatCell)
+        ' add defined name for final standard material
+        'ThisWorkbook.Names.Add Name:="stdmat" & Replace(lName, " ", ""), RefersTo:=StdMatSht.Range(StdMatSht.Cells(lStart, 2), StdMatSht.Cells(lStdMatRow - 1, 2))
+        'ThisWorkbook.Names.Add Name:=Replace(lName, " ", "_"), RefersTo:=StdMatSht.Range(StdMatSht.Cells(lStart, 1), StdMatSht.Cells(lStdMatRow - 1, 5))
+         ThisWorkbook.Names.Add Name:=saniName(lName), RefersTo:=StdMatSht.Range(StdMatSht.Cells(lStart, 1), StdMatSht.Cells(lStdMatRow - 1, 5))
+        ' define list for standards
+        ThisWorkbook.Names.Add Name:="StandardsList", RefersTo:=LstSht.Range(LstSht.Cells(2, 3), LstSht.Cells(lListRow - 1, 3))
+    End If
+End Sub
+
+
+
+INQUEST-PP=macro

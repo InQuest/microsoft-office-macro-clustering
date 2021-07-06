@@ -1,0 +1,2376 @@
+Attribute VB_Name = "Del2recyc"
+Option Explicit
+Option Private Module
+
+'Courtesy: David Wiseman
+'From the MSDN articles:
+'
+'Manipulating Files with the SHFileOperation Function in
+'Visual Basic 4.0
+'Deborah L. Cooper September 1996
+'
+'and
+
+'Tip 176: Sending Files to the Recycle Bin in Visual Basic 4.0
+'December 5, 1995
+
+
+Public Const FO_DELETE = &H3
+Public Const FOF_ALLOWUNDO = &H40
+Public Const FOF_NOCONFIRMATION = &H10
+
+#If VBA7 Then
+    Type SHFILEOPSTRUCT
+        hWnd As LongPtr
+        wFunc As Long
+        pFrom As String
+        pTo As String
+        fFlags As Integer
+        fAborted As Boolean
+        hNameMaps As LongPtr
+        sProgress As String
+    End Type
+    Declare PtrSafe Function SHFileOperation Lib "shell32.dll" Alias "SHFileOperationA" _
+                                     (lpFileOp As SHFILEOPSTRUCT) As LongPtr
+#Else
+    Type SHFILEOPSTRUCT
+        hWnd As Long
+        wFunc As Long
+        pFrom As String
+        pTo As String
+        fFlags As Integer
+        fAborted As Boolean
+        hNameMaps As Long
+        sProgress As String
+    End Type
+    Declare Function SHFileOperation Lib "shell32.dll" Alias "SHFileOperationA" _
+                                     (lpFileOp As SHFILEOPSTRUCT) As Long
+#End If
+
+'Changed from long to variant:
+Public Function DeleteToRecycleBin(sFileName As String) As Variant
+    On Error GoTo LocErr
+
+    Dim szFileName As String
+    Dim SHFileOp As SHFILEOPSTRUCT
+
+    szFileName = sFileName & vbNullChar
+
+    With SHFileOp
+        .wFunc = FO_DELETE
+        .pFrom = szFileName
+        .fFlags = FOF_ALLOWUNDO Or FOF_NOCONFIRMATION
+    End With
+
+    DeleteToRecycleBin = SHFileOperation(SHFileOp)
+
+TidyUp:
+    Exit Function
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Del2recyc", "DeleteToRecycleBin") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Function
+Attribute VB_Name = "DetectPrintPreview"
+Option Explicit
+Option Private Module
+
+#If VBA7 Then
+    Private Declare PtrSafe Function FindWindowEx Lib "USER32" Alias "FindWindowExA" (ByVal hWnd1 As LongPtr, ByVal hWnd2 As LongPtr, ByVal lpsz1 As String, ByVal lpsz2 As String) As LongPtr
+#Else
+    Private Declare Function FindWindowEx Lib "USER32" Alias "FindWindowExA" (ByVal hWnd1 As Long, ByVal hWnd2 As Long, ByVal lpsz1 As String, ByVal lpsz2 As String) As Long
+#End If
+
+Function IsInPrintPreview() As Boolean
+    #If VBA7 Then
+        Dim hWndXLPreview As LongPtr
+    #Else
+        Dim hWndXLPreview As Long
+    #End If
+    hWndXLPreview = FindWindowEx(hwndXL, 0, "EXCELC", vbNullString)
+    IsInPrintPreview = hWndXLPreview <> 0
+End Function
+Attribute VB_Name = "Error_Handler"
+Option Explicit
+Option Private Module
+'Courtesy: Bill Manville
+
+Function ReportError(Description As String, Number As Long, ModuleName As String, _
+                     ProcName As String)
+' central error handler
+' reports that something has gone wrong
+    Dim stMsg As String
+    Dim L As Long
+    Application.Cursor = xlDefault
+    ' set this to true if you want to debug when an error occurs
+    Const bDebug As Boolean = False
+    On Error Resume Next    ' in case of errors in here, continue
+    stMsg = sMessagelist(8) & Number & ": " & Description & sMessagelist(9) & ModuleName & "." & ProcName
+
+    ' put details in Immediate window
+    Debug.Print stMsg
+
+    'output to a text file
+    L = FreeFile()  ' get free file number
+    Open ThisWorkbook.Path & "\AutoSafeError.Log" For Append As #L
+    Print #L, Now, ThisWorkbook.Name, stMsg
+    Close #L
+
+    If LCase(Description) Like "*visual basic*" Then
+        MsgBox "In order for Autosafe to work correctly, you need to change a security setting." & _
+               vbNewLine & vbNewLine & "From Excel's menu, select Tools,Macro, Security." & vbNewLine & _
+               "Then click the Trusted Publishers tab and check the box called:" & vbNewLine & _
+               "Trust access to Visual Basic Project.", vbExclamation + vbOKOnly, "Autosafe: Change Excel Security Setting."
+        ReportError = vbIgnore
+    Else
+        ' message for the user
+        If ThisWorkbook.IsAddin Then
+            ReportError = MsgBox(sMessagelist(10) & vbNewLine & _
+                                 sMessagelist(11) & vbNewLine & _
+                                 stMsg, vbExclamation + vbAbortRetryIgnore, sMessagelist(12))
+        Else
+            ReportError = MsgBox(sMessagelist(10) & vbNewLine & _
+                                 sMessagelist(11) & vbNewLine & _
+                                 stMsg, vbExclamation + vbAbortRetryIgnore, sMessagelist(12))
+        End If
+    End If
+    If ReportError = vbRetry Then
+        'Stopped because you hit retry. Press the F8 key repeatedly until you reach "Resume"
+        'Then press F8 once to find the offending statement
+        Stop
+    End If
+End Function
+
+Attribute VB_Name = "EventClass"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+'**************************************************
+'*                                                *
+'* All subs and functions in this module:         *
+'* Copyright |fffd| J.K. Pieterse, june-December 2000  *
+'*                                                *
+'**************************************************
+
+Private WithEvents moApp As Application
+Attribute moApp.VB_VarHelpID = -1
+
+Private Sub Class_Terminate()
+    Set moApp = Nothing
+End Sub
+
+'Version 1.2, changed to enable macro closure of
+'changed wkbks with "update=false" argument without showing dialogs
+'Version 2.0: changed call to CheckIfGone to encompass long filenames
+'Version 2.0: Added check for embedded wkbk
+Private Sub moApp_WorkbookBeforeClose(ByVal oWorkbook As Excel.Workbook, Cancel As Boolean)
+    bEvents = Application.EnableEvents
+    Application.EnableEvents = False
+    On Error GoTo LocErr
+    CheckVars
+    '   sometimes there is no active workbook!
+    If IsNotThere(oWorkbook) Then GoTo TidyUp
+    If oWorkbook.IsInplace Then GoTo TidyUp
+
+    If (Not oWorkbook.IsAddin) And (oWorkbook.Windows.Count <> 0) Then
+        sOldBackupFileName = BackupName(oWorkbook)
+        sOldFileName = oWorkbook.FullName
+        If sVersion = "8" Then
+            AddEmptyBook
+            Application.OnTime Now, "CheckIfGone"
+            RemoveEmptyBooks
+        Else
+            DeleteOrMove sOldBackupFileName
+        End If
+    End If
+TidyUp:
+    Application.EnableEvents = bEvents
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "EventClass", "App_WorkbookBeforeClose") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 2.0: Added check for embedded wkbk
+Private Sub moApp_WorkbookBeforeSave(ByVal oWorkbook As Excel.Workbook, ByVal SaveAsUI As Boolean, Cancel As Boolean)
+'   sometimes there is no active workbook!
+    If oWorkbook Is Nothing Then GoTo TidyUp
+    If oWorkbook.IsAddin Then GoTo TidyUp
+    If oWorkbook.Windows.Count = 0 Then GoTo TidyUp
+    If oWorkbook.IsInplace Then GoTo TidyUp
+
+    On Error GoTo LocErr
+    CheckVars
+    If oWorkbook.FullName <> ThisWorkbook.FullName And (Not oWorkbook.IsAddin) Then
+        If SaveAsUI Then
+            sOldBackupFileName = BackupName(oWorkbook)
+            Set oGlobalWorkbook = oWorkbook
+            AddEmptyBook
+            Application.OnTime Now(), "CheckForNameChange"
+            RemoveEmptyBooks
+        End If
+    End If
+TidyUp:
+    oWorkbook.Activate
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "EventClass", "App_WorkbookBeforeSave") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+Public Property Get App() As Application
+    Set App = moApp
+End Property
+
+Public Property Set App(ByVal oNewValue As Application)
+    Set moApp = oNewValue
+End Property
+
+Attribute VB_Name = "ExcelActive"
+Option Explicit
+Option Private Module
+Option Base 1
+'**************************************************
+'*                                                *
+'* All subs and functions in this module:         *
+'* Copyright |fffd| J.K. Pieterse, june-January  2002  *
+'*                                                *
+'**************************************************
+
+'*** Declare some Windows API calls
+
+
+#If VBA7 Then
+    Dim mhwndForm As LongPtr                                 'The userform's window handle
+    Declare PtrSafe Function FindWindow32 Lib "USER32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As LongPtr
+    Declare PtrSafe Function GetForegroundWindow Lib "user32.dll" () As LongPtr
+    Declare PtrSafe Function SetActiveWindow Lib "user32.dll" (ByVal hWnd As LongPtr) As LongPtr
+#Else
+    Dim mhwndForm As Long                                 'The userform's window handle
+    Declare Function FindWindow32 Lib "USER32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+    Declare Function GetForegroundWindow Lib "user32.dll" () As Long
+    Declare Function SetActiveWindow Lib "user32.dll" (ByVal hWnd As Long) As Long
+#End If
+
+Function IsExcelActive() As Boolean
+    #If VBA7 Then
+        Dim hWndP2 As LongPtr
+    #Else
+        Dim hWndP2 As Long
+    #End If
+    'Find the active window
+    hWndP2 = GetForegroundWindow
+    IsExcelActive = (hwndXL = hWndP2) Or (hWndP2 = hWndVBE)
+End Function
+Function IsVBEActive() As Boolean
+    #If VBA7 Then
+        Dim hWndP1 As LongPtr
+    #Else
+        Dim hWndP1 As Long
+    #End If
+    hWndP1 = GetForegroundWindow
+    IsVBEActive = (hWndP1 = hWndVBE)
+End Function
+Attribute VB_Name = "ExcelInstances"
+Option Explicit
+Option Private Module
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Copyright |fffd|1996-2000 VBnet, Randy Birch, All Rights Reserved.
+' Some pages may also contain other copyrights by the author.
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' You are free to use this code within your own applications,
+' but you are expressly forbidden from selling or otherwise
+' distributing this source code without prior written consent.
+' This includes both posting free demo projects made from this
+' code as well as reproducing the code in text or html format.
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+#If VBA7 Then
+    Public Declare PtrSafe Function GetDesktopWindow Lib "USER32" () As LongPtr
+    
+    Public Declare PtrSafe Function GetWindow Lib "USER32" _
+                                      (ByVal hWnd As LongPtr, ByVal wCmd As LongPtr) As LongPtr
+    
+    Public Declare PtrSafe Function GetWindowText Lib "USER32" Alias "GetWindowTextA" _
+                                          (ByVal hWnd As LongPtr, ByVal lpString As String, _
+                                           ByVal cch As LongPtr) As Long
+    
+    Public Declare PtrSafe Function GetClassName Lib "USER32" Alias "GetClassNameA" _
+                                         (ByVal hWnd As LongPtr, ByVal lpClassName As String, _
+                                          ByVal nMaxCount As LongPtr) As Long
+#Else
+    Public Declare Function GetDesktopWindow Lib "USER32" () As Long
+    
+    Public Declare Function GetWindow Lib "USER32" _
+                                      (ByVal hWnd As Long, ByVal wCmd As Long) As Long
+    
+    Public Declare Function GetWindowText Lib "USER32" Alias "GetWindowTextA" _
+                                          (ByVal hWnd As Long, ByVal lpString As String, _
+                                           ByVal cch As Long) As Long
+    
+    Public Declare Function GetClassName Lib "USER32" Alias "GetClassNameA" _
+                                         (ByVal hWnd As Long, ByVal lpClassName As String, _
+                                          ByVal nMaxCount As Long) As Long
+#End If
+Public Const GW_HWNDFIRST = 0
+Public Const GW_HWNDLAST = 1
+Public Const GW_HWNDNEXT = 2
+Public Const GW_HWNDPREV = 3
+Public Const GW_OWNER = 4
+Public Const GW_CHILD = 5
+Dim iCount As Integer
+
+Public Function OtherExcelInstance() As Boolean
+    On Error GoTo LocErr
+
+    iCount = 0
+    'Used to return window handles.
+    Dim TitleToFind As String, ClassToFind As String
+
+    TitleToFind = "*Microsoft Excel*"
+    ClassToFind = "*"
+    Call FindWindowLike(0, TitleToFind, ClassToFind)
+    If iCount > 1 Then
+        OtherExcelInstance = True
+    Else
+        OtherExcelInstance = False
+    End If
+
+TidyUp:
+    Exit Function
+LocErr:
+    If ReportError(Err.Description, Err.Number, "ExcelInstances", "OtherExcelInstance") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Function
+
+#If VBA7 Then
+Private Function FindWindowLike(ByVal hWndStart As LongPtr, WindowText As String, Classname As String) As LongPtr
+    Dim hWnd As LongPtr
+#Else
+Private Function FindWindowLike(ByVal hWndStart As Long, WindowText As String, Classname As String) As Long
+    Dim hWnd As Long
+#End If
+
+    Dim sWindowText As String
+    Dim sClassname As String
+    Dim r As Long
+    
+    On Error GoTo LocErr
+    'Hold the level of recursion and
+    'hold the number of matching windows
+    Static level As Integer
+
+    'Initialize if necessary. This is only executed when level = 0
+    'and hWndStart = 0, normally only on the first call to the routine.
+    If level = 0 Then
+    If hWndStart = 0 Then hWndStart = GetDesktopWindow()
+    End If
+
+    'Increase recursion counter
+    level = level + 1
+
+    'Get first child window
+    hWnd = GetWindow(hWndStart, GW_CHILD)
+
+    Do Until hWnd = 0
+
+        'Search children by recursion
+    Call FindWindowLike(hWnd, WindowText, Classname)
+
+        'Get the window text and class name
+        sWindowText = Space$(255)
+        r = GetWindowText(hWnd, sWindowText, 255)
+        sWindowText = Left(sWindowText, r)
+
+        sClassname = Space$(255)
+        r = GetClassName(hWnd, sClassname, 255)
+        sClassname = Left(sClassname, r)
+
+        'Check if window found matches the search parameters
+        If (sWindowText Like WindowText) And (sClassname Like Classname) Then
+            iCount = iCount + 1
+            '            FindWindowLike = hWnd
+
+            'uncommenting the next line causes the routine to
+            'only return the first matching window.
+            ' Exit Do
+
+        End If
+
+        'Get next child window
+        hWnd = GetWindow(hWnd, GW_HWNDNEXT)
+
+    Loop
+
+    'Reduce the recursion counter
+    level = level - 1
+
+TidyUp:
+    Exit Function
+LocErr:
+    If ReportError(Err.Description, Err.Number, "ExcelInstances", "FindWindowLike") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Function
+
+Public Function IsFirstInstance() As Boolean
+    Dim bRegEntry As Boolean
+    bRegEntry = Not CBool(GetSetting("Autosafe", "AppSettings", "Running", CInt(False)))
+    IsFirstInstance = bRegEntry Or (OtherExcelInstance = False)
+    SaveSetting "Autosafe", "AppSettings", "Running", CStr(CInt(True))
+End Function
+
+Attribute VB_Name = "Main"
+Option Explicit
+Option Private Module
+'**************************************************
+'*                                                *
+'* All subs and functions in this module:         *
+'* Copyright |fffd| J.K. Pieterse, june-May 2002       *
+'*                                                *
+'**************************************************
+
+'show nag screen, not working on network: False, False
+'show nagscreen, but working on network: False, True
+'Network version, no nag screen: True, (true or false)
+Public Const sAddition As String = "(Backup Copy)"
+Public bActive As Boolean
+Public bManualSaved As Boolean
+Public bCalculateBeforeSave As Boolean
+Public bCalculateMode As Boolean
+Public bDisableUpdates As Boolean
+Public bExcelActive As Boolean
+Public bEvents As Boolean
+Public bFirstInstance As Boolean
+Public bNetworkEnabled As Boolean
+Public bNetworkTesting As Boolean
+Public bNetworkWarning As Boolean
+Public bRecyclebin As Boolean
+Public bShowProgress As Boolean
+Public bTemp As Boolean
+Public bUnInstalling As Boolean
+Public bVarsOK As Boolean
+Public bVBEActive As Boolean
+Public sClientName As String
+Public sIniPath As String
+Public sMessagelist() As String
+Public sNewFileName As String
+Public sOldBackupFileName As String
+Public sOldFileName As String
+Public sOldMenuName As String
+Public sOnCalculate As String
+Public sPath As String
+Public gsSessionID As String
+Public sVersion As String
+
+Public dNexttime(1 To 10) As Double
+
+#If VBA7 Then
+    Public hwndXL As LongPtr
+    Public hWndVBE As LongPtr
+#Else
+    Public hwndXL As Long
+    Public hWndVBE As Long
+#End If
+
+Public lCalculation As Long
+
+Public iLanguage As Integer
+Public lTime As Long
+
+Public cControl As Object
+Public oGlobalWorkbook As Object
+Public gbStop As Boolean
+
+'Version 2.0: Added calculation shutdown
+'Version 2.0: Disabled Oncalculate macro's
+'Version 2.0: Added check for embedded workbooks
+'Version 2.0: Added message window to show activity of Autosafe
+'Version 2.4: added check for dataentrymode
+'Version 3.1: Added boolean for enable events
+
+Dim AppClass As EventClass
+
+Public Sub ContinueOpen()
+    Dim sNetworkmessage As String
+    Dim L As Variant
+    '   Unload if in embedded mode
+    If InStr(Application.CommandBars.FindControl(ID:=106).Caption, "&&") > 0 Then ThisWorkbook.Close
+    On Error GoTo LocErr
+    CheckVars
+    bFirstInstance = IsFirstInstance
+    If IsNetworked And bNetworkEnabled = False And bNetworkWarning = False Then
+        If bNetworkTesting Then
+            bNetworkWarning = True
+            sNetworkmessage = sMessagelist(41) _
+                              & vbNewLine & vbNewLine & sMessagelist(42) & vbNewLine & vbNewLine & sMessagelist(43) _
+                              & vbNewLine & vbNewLine & sMessagelist(44)
+            MsgBox sNetworkmessage, vbExclamation, "Autosafe, " & sClientName
+        Else
+            sNetworkmessage = sMessagelist(1) _
+                              & vbNewLine & vbNewLine & sMessagelist(2) & vbNewLine & vbNewLine & sMessagelist(3) _
+                              & vbNewLine & vbNewLine & sMessagelist(4)
+            MsgBox sNetworkmessage, vbExclamation, "Autosafe, " & sClientName
+            ThisWorkbook.Close
+            Exit Sub
+        End If
+    End If
+    TurnOnAppClass
+    MakeMenu
+    'Only the *first* needs to recover files
+    'do not do that if not active
+    If bFirstInstance And IsExcelActive Then
+        RecoverFoundFiles
+    End If
+'    L = FreeFile()  ' get free file number
+'    Open "c:\Autosafeactive.tmp" For Append As #L
+'    Close #L
+    bEvents = True
+    Application.EnableEvents = bEvents
+    If IsConnected Then
+        CheckAndUpdate False
+    End If
+    SetTimers
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "ThisWorkbook", "Workbook_Open") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+
+End Sub
+
+Public Sub SafeAllOpenFiles()
+    Dim bSaved As Boolean
+    Dim iDataEntryMode As Integer
+    Dim iFile As Integer
+    Dim iFiles As Integer
+    Dim oSelection As Range
+    Dim oDataEntryRange As Range
+    Dim oLocalWorkbook As Workbook
+    Dim sAddress As String
+    #If VBA7 Then
+        Dim hWndP2 As LongPtr
+    #Else
+        Dim hWndP2 As Long
+    #End If
+    Static lTries As Long
+    Static lNormalTime As Long
+    gbStop = False
+    If IdleTime < 30 And lTries < 4 Then
+        lTries = lTries + 1
+        If lTime <> 1 Then
+            lNormalTime = lTime
+        End If
+        lTime = 1
+        GoTo SkipIt
+    Else
+        'Restore time interval by reading registry
+        GetSettings
+        lTries = 0
+    End If
+    bEvents = Application.EnableEvents
+    Application.EnableEvents = False
+    On Error Resume Next
+    CheckVars
+    bVBEActive = False
+    bExcelActive = IsExcelActive
+    If bActive = False Then
+        TimerOff
+        GoTo TidyUp
+    End If
+    hWndP2 = GetForegroundWindow
+    If hWndVBE = hWndP2 Then
+        SetActiveWindow FindWindow32("xlmain", Application.Caption)
+    End If
+    '   sometimes there is no active workbook!
+    If ActiveWorkbook Is Nothing Then GoTo SkipIt
+    '   In embedded mode
+    If InStr(Application.CommandBars.FindControl(ID:=106).Caption, "&&") _
+       > 0 Then GoTo SkipIt
+    '   No window to active workbook
+    If ActiveWorkbook.Windows.Count = 0 Then GoTo SkipIt
+    '   Editing in place
+    If ActiveWorkbook.IsInplace Then GoTo SkipIt
+    '   Check for DataEntryMode
+    iDataEntryMode = Application.DataEntryMode
+    If iDataEntryMode = xlOn Or iDataEntryMode = xlStrict Then
+        If IsExcelActive = False Then GoTo SkipIt
+        Set oSelection = Selection
+        SendKeys "{end}"
+        DoEvents
+        sAddress = Selection.Address
+        SendKeys "{home}"
+        DoEvents
+        sAddress = sAddress & ":" & Selection.Address
+        Set oDataEntryRange = ActiveWorkbook.ActiveSheet.Range(sAddress)
+        Application.DataEntryMode = False
+    End If
+    '   if excel is active, keep saving
+    'JKP Build 136: disabled to make sure the Autosafe process keeps running regardless whether Excel has the focus.
+    'If bExcelActive Then
+    bManualSaved = False
+    'End If
+    If Not bManualSaved Then
+        If CountNonAddIns = 0 Then GoTo SkipIt
+        On Error GoTo LocErr
+        Application.EnableCancelKey = xlDisabled
+        sOnCalculate = Application.OnCalculate
+        Application.OnCalculate = ""
+        'If bExcelActive Then ShowMsgWindow
+        Application.ScreenUpdating = False
+
+        '   change calc settings
+
+        If Not bCalculateMode Then
+
+            bSaved = ActiveWorkbook.Saved
+            With Application
+                bCalculateBeforeSave = .CalculateBeforeSave
+                lCalculation = .Calculation
+                .Calculation = xlManual
+                .CalculateBeforeSave = False
+            End With
+            ActiveWorkbook.Saved = bSaved
+        End If
+        On Error GoTo LocErr
+        '3.5: use registry
+        'If sIniPath = "" Then ReadIni
+        If sPath = "" Then GetSettings
+        iFile = 1
+        iFiles = Application.Workbooks.Count
+        For Each oLocalWorkbook In Application.Workbooks
+            MsgWindowMessage iFiles, iFile
+            If gbStop Then GoTo SkipIt
+            SafeFile oLocalWorkbook
+            iFile = iFile + 1
+        Next oLocalWorkbook
+        bManualSaved = Not bExcelActive
+    End If
+
+SkipIt:
+    '   restore calc settings
+    On Error Resume Next
+    If Not bCalculateMode Then
+        With Application
+            If lCalculation = xlCalculationAutomatic Or lCalculation = xlCalculationManual Or lCalculation = xlCalculationSemiautomatic Then
+                .Calculation = lCalculation
+            End If
+            .CalculateBeforeSave = bCalculateBeforeSave
+        End With
+        ActiveWorkbook.Saved = bSaved
+    End If
+
+    ' Restore dataentrymode
+    If iDataEntryMode <> False And IsExcelActive Then
+        On Error Resume Next
+        oDataEntryRange.Select
+        Application.DataEntryMode = iDataEntryMode
+        oSelection.Select
+    End If
+
+    On Error Resume Next
+    If hWndVBE = hWndP2 Then
+        Application.VBE.MainWindow.SetFocus
+    End If
+
+    If sOnCalculate <> "" Then Application.OnCalculate = sOnCalculate
+    On Error GoTo LocErr
+    SetTimers
+TidyUp:
+    KillMsgWindow
+    Application.ScreenUpdating = True
+    Application.EnableEvents = bEvents
+    Exit Sub
+LocErr:
+    If Err.Number = 18 Then
+        If MsgBox(sMessagelist(56), vbYesNo + vbQuestion, "Autosafe for Excel") = vbYes Then
+            gbStop = True
+            Resume Next
+        End If
+    Else
+        If ReportError(Err.Description, Err.Number, "Main", "SafeAllOpenFiles") = vbRetry Then
+            Resume
+        Else
+            Resume TidyUp
+        End If
+    End If
+End Sub
+
+Public Sub SafeFile(oLocalWorkbook As Object)
+    On Error GoTo LocErr
+    Dim sName As String
+    Dim bSaved As Boolean
+    Application.EnableCancelKey = xlDisabled
+    '   In embedded mode
+    If InStr(Application.CommandBars.FindControl(ID:=106).Caption, "&&") _
+       > 0 Then GoTo TidyUp
+    '   No window to active workbook
+    If oLocalWorkbook.Windows.Count = 0 Then GoTo TidyUp
+    '   Editing in place
+    If oLocalWorkbook.IsInplace Then GoTo TidyUp
+    '   Don't safe add-ins
+    If oLocalWorkbook.IsAddin Then GoTo TidyUp
+    '   Only when changed
+    If oLocalWorkbook.Saved Then GoTo TidyUp
+    '   Skip backup copies
+    If InStr(oLocalWorkbook.Name, sAddition) <> 0 Then GoTo TidyUp
+    '   V 3.3 : Bug in XL2000, don't savecopyas wkbks
+    '   with loaded UF's
+    If sVersion = "9" Then
+        If FindUFs(oLocalWorkbook) > 0 Then GoTo TidyUp
+    End If
+    '   it's sensible to save a backup of this one
+    sName = BackupName(oLocalWorkbook)
+    DeleteOrMove sName
+    bSaved = oLocalWorkbook.Saved
+    oLocalWorkbook.SaveCopyAs sName
+    If IsIn(oLocalWorkbook.CustomDocumentProperties, "AutosafePathAndName") Then
+        oLocalWorkbook.CustomDocumentProperties("AutosafePathAndName").Delete
+    End If
+    oLocalWorkbook.Saved = bSaved
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "SafeFile") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+' Version 1.1, changed Inipath to default to the windows directory
+' 08-08-2000
+'Version 2.0: Added language support
+Sub ReadIni()
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    sIniPath = GetWinDir & "\"
+    sVersion = Left(Application.Version, 1)
+    hwndXL = FindWindow32("XLMAIN", Application.Caption)
+    On Error Resume Next
+    hWndVBE = Application.VBE.MainWindow.hWnd
+    Open sIniPath & "AutoSafe.ini" For Input As #1
+    If Err = 53 Then
+        CreateIni
+        Exit Sub
+    End If
+    Input #1, sPath, bRecyclebin, lTime, bActive, bCalculateMode, iLanguage
+    Close #1
+    iLanguage = IIf(iLanguage < 1, 1, iLanguage)
+    On Error GoTo 0
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "ReadIni") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 2.0: Added language support
+Sub CreateIni()
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    sPath = TempPath
+    bRecyclebin = True
+    lTime = 10
+    bActive = True
+    bCalculateMode = True
+    iLanguage = 1
+    WriteIni
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "CreateIni") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'3.5: Use registry
+Sub GetOldSettings()
+    sIniPath = GetWinDir & "\"
+    If Dir(sIniPath & "Autosafe.ini") = "" Then Exit Sub
+    ReadIni
+    On Error Resume Next
+    Err.Clear
+    Kill sIniPath & "Autosafe.ini"
+    If Err.Number <> 0 Then
+        MsgBox sMessagelist(50), vbExclamation + vbOKOnly, "Autosafe"
+    End If
+End Sub
+
+Sub GetSettings()
+    On Error GoTo LocErr
+    GetOldSettings
+    sVersion = Left(Application.Version, 1)
+    hwndXL = FindWindow32("XLMAIN", Application.Caption)
+    On Error Resume Next
+    hWndVBE = Application.VBE.MainWindow.hWnd
+    On Error GoTo LocErr
+    If sPath = "" Then
+        sPath = TempPath
+        bRecyclebin = True
+        lTime = 10
+        bActive = True
+        bCalculateMode = True
+        iLanguage = 1
+        bDisableUpdates = False
+        bShowProgress = True
+    End If
+    sPath = GetSetting("Autosafe", "AppSettings", "Path", sPath)
+    bRecyclebin = CBool(GetSetting("Autosafe", "AppSettings", "UseRecycleBin", CInt(bRecyclebin)))
+    lTime = CLng(GetSetting("Autosafe", "AppSettings", "Time", lTime))
+    bActive = CBool(GetSetting("Autosafe", "AppSettings", "Active", CInt(bActive)))
+    bCalculateMode = CBool(GetSetting("Autosafe", "AppSettings", "CalcMode", CInt(bCalculateMode)))
+    iLanguage = CInt(GetSetting("Autosafe", "AppSettings", "Language", iLanguage))
+    bDisableUpdates = CBool(GetSetting("Autosafe", "AppSettings", "DisableUpdate", CInt(bDisableUpdates)))
+    bShowProgress = CBool(GetSetting("Autosafe", "AppSettings", "ShowProgress", CInt(bShowProgress)))
+TidyUp:
+    On Error GoTo 0
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "GetSettings", "Module Main")
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    Case vbAbort
+        Resume TidyUp
+    Case Else
+        Resume TidyUp
+    End Select
+End Sub
+
+Sub SaveSettings()
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    SaveSetting "Autosafe", "AppSettings", "Path", sPath
+    SaveSetting "Autosafe", "AppSettings", "UseRecycleBin", CStr(CInt(bRecyclebin))
+    SaveSetting "Autosafe", "AppSettings", "Time", CStr(lTime)
+    SaveSetting "Autosafe", "AppSettings", "Active", CStr(CInt(bActive))
+    SaveSetting "Autosafe", "AppSettings", "CalcMode", CStr(CInt(bCalculateMode))
+    SaveSetting "Autosafe", "AppSettings", "Language", CStr(iLanguage)
+    SaveSetting "Autosafe", "AppSettings", "DisableUpdate", CStr(CInt(bDisableUpdates))
+    SaveSetting "Autosafe", "AppSettings", "ShowProgress", CStr(CInt(bShowProgress))
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "CreateIni") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+
+End Sub
+'Version 2.0: Added language support
+Sub WriteIni()
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    Open sIniPath & "AutoSafe.ini" For Output As #1
+    iLanguage = IIf(iLanguage < 1, 1, iLanguage)
+    Write #1, sPath, bRecyclebin, lTime, bActive, bCalculateMode, iLanguage
+    Close #1
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "WriteIni") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+Sub DeleteOrMove(sFullFilename As String)
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    CheckVars
+    If sFullFilename = "" Or Dir(sFullFilename) = "" Then
+        Exit Sub
+    End If
+    If bRecyclebin Then
+        DeleteToRecycleBin sFullFilename
+    Else
+        Kill sFullFilename
+    End If
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "DeleteOrMove") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 2.0: Added language support
+Sub ChangeSettings()
+    Dim bOldActive As Boolean
+    Dim lOldTime As Long
+    Dim frmSettings As ufSettings
+    Application.EnableCancelKey = xlDisabled
+    CheckVars
+    bOldActive = bActive
+    Set frmSettings = New ufSettings
+    ChangeTexts frmSettings
+    With frmSettings
+        .tbPath.Value = sPath
+        .cbLanguage.List = ThisWorkbook.Worksheets(2).Range("Languages").Value
+        .cbLanguage.ListIndex = iLanguage - 1
+        If bRecyclebin Then
+            .cbMoveToBin.Value = True
+        Else
+            .cbMoveToBin.Value = False
+        End If
+        
+        .tbInterval.Value = lTime
+        If bActive Then
+            .cbEnable.Value = True
+        Else
+            .cbEnable.Value = False
+        End If
+        If bCalculateMode Then
+            
+            .cbCalc.Value = True
+        Else
+            .cbCalc.Value = False
+        End If
+        If bDisableUpdates Then
+            .cbxUpdate.Value = True
+        Else
+            .cbxUpdate.Value = False
+        End If
+        If bShowProgress Then
+            .cbxProgress = True
+        Else
+            .cbxProgress = False
+        End If
+        .Show
+        If .OK Then
+            sPath = .tbPath.Value
+            bRecyclebin = (.cbMoveToBin.Value = True)
+            lOldTime = lTime
+            lTime = Int(Val(.tbInterval.Value))
+            lTime = IIf(lTime > 1, lTime, 1)
+            bActive = (.cbEnable.Value)
+            bCalculateMode = (.cbCalc.Value)
+            If iLanguage <> .cbLanguage.ListIndex + 1 Then
+                ReadMessages
+            End If
+            iLanguage = .cbLanguage.ListIndex + 1
+            bDisableUpdates = (.cbxUpdate.Value = True)
+            If Right(sPath, 1) <> "\" Then
+                sPath = sPath & "\"
+            End If
+            If Dir(sPath, vbDirectory) = "" Then
+                MsgBox sMessagelist(5) _
+                       & vbNewLine & sMessagelist(6), , sMessagelist(7) & sClientName
+                ChangeSettings
+                Exit Sub
+            End If
+            bShowProgress = .cbxProgress.Value
+            'WriteIni
+            SaveSettings
+            If lOldTime <> lTime And bActive Then
+                ChangeSchedule
+            End If
+            If bOldActive = False And bActive = True Then
+                ChangeSchedule
+            End If
+        End If
+    End With
+    Exit Sub
+End Sub
+
+'Version 2.0: Added language support
+'Version 2.0:   removed error trap to prevent error messages when
+'               XL is embedded in other application
+Sub MakeMenu()
+    On Error Resume Next
+    CheckVars
+    Application.EnableCancelKey = xlDisabled
+    RemoveMenu    'Prevent duplicate menu's
+    Set cControl = Application.CommandBars(1).Controls(1).Controls.Add(, , , 4, True)
+    cControl.Caption = sMessagelist(39)
+    cControl.OnAction = "changesettings"
+    On Error GoTo 0
+End Sub
+'Version 2.0: Changed delete syntax (using object rather than control name)
+'to encompass language support
+Sub RemoveMenu()
+    On Error Resume Next
+    cControl.Delete
+    On Error GoTo 0
+End Sub
+
+Function BackupName(oLocalWorkbook As Object) As String
+    Dim sLocalName As String
+    Dim sLocalPath As String
+    Dim bSaved As Boolean
+    On Error GoTo LocErr
+    If IsNotThere(oLocalWorkbook) Then GoTo TidyUp
+    bSaved = oLocalWorkbook.Saved
+    Application.EnableCancelKey = xlDisabled
+    Err.Clear
+    On Error Resume Next
+    sLocalName = oLocalWorkbook.Name
+    If IsIn(oLocalWorkbook.CustomDocumentProperties, "AutosafePathAndName") Then
+        oLocalWorkbook.CustomDocumentProperties("AutosafePathAndName").Value = ProperFileName(oLocalWorkbook.FullName)
+    Else
+        oLocalWorkbook.CustomDocumentProperties.Add "AutosafePathAndName", False, msoPropertyTypeString, ProperFileName(oLocalWorkbook.FullName)
+    End If
+    oLocalWorkbook.Saved = bSaved
+'    If Err <> 0 Then GoTo TidyUp
+    BackupName = sPath & ProperFileName(oLocalWorkbook.Name) & gsSessionID & sAddition
+    Exit Function
+TidyUp:
+    BackupName = ""
+    Exit Function
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "BackupName") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Function
+
+'Version 2.0: Added language support
+Sub RecoverFoundFiles()
+    Dim sLocalFilename() As String
+    Dim iReply As Integer
+    Dim sMessage As String
+    Dim sLocalOldFileName() As String
+    Dim lCountFiles As Long
+    Dim lCounter As Long
+    Dim bRecovered As Boolean
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    ReDim sLocalFilename(2) As String
+    sLocalFilename(1) = Dir(sPath & "*" & sAddition)
+    lCountFiles = 1
+    If sLocalFilename(1) <> "" Then
+        While sLocalFilename(lCountFiles) <> ""
+            lCountFiles = lCountFiles + 1
+            sLocalFilename(lCountFiles) = Dir()
+            ReDim Preserve sLocalFilename(lCountFiles + 1)
+        Wend
+        ReDim sLocalOldFileName(lCountFiles)
+        For lCounter = 1 To lCountFiles - 1
+            sMessage = sMessagelist(13) & _
+                       vbNewLine & sMessagelist(14) & vbNewLine & sLocalFilename(lCounter) & vbNewLine & _
+                       vbNewLine & sMessagelist(15)
+            iReply = MsgBox(sMessage, vbYesNo, sMessagelist(16) & sClientName)
+            If iReply = vbYes Then
+                bRecovered = True
+                RecoverIt sLocalFilename(lCounter)
+            Else
+                DeleteOrMove sPath & sLocalFilename(lCounter)
+            End If
+        Next
+        If bRecovered Then AskDonation
+    End If
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "RecoverFoundFiles") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+'Version 2.0: Added language support
+Sub RecoverIt(sLocalFilename As String)
+    Dim iReply As Integer
+    Dim bResult As Boolean
+    Dim bOlder As Boolean
+    Dim sMessage As String
+    Dim dLocalOldFileDate As Double
+    Dim dLocalFileDate As Double
+    Dim sLocalOldFileName As String
+    Dim sCurDir As String
+    On Error GoTo LocErr
+    sCurDir = CurDir
+    Application.EnableCancelKey = xlDisabled
+    Workbooks.Open FileName:=sPath & sLocalFilename
+    sLocalOldFileName = GetOriginalName(ActiveWorkbook)
+    If Dir(sLocalOldFileName) <> "" And Dir(sPath & sLocalFilename) <> "" Then
+        dLocalOldFileDate = FileDateTime(sLocalOldFileName)
+        dLocalFileDate = FileDateTime(sPath & sLocalFilename)
+        bOlder = dLocalOldFileDate <= dLocalFileDate
+    Else
+        bOlder = True    'The original file is older than the backup copy
+    End If
+
+    If bOlder And sLocalOldFileName <> "" Then
+        sMessage = sMessagelist(17) & vbNewLine _
+                   & sLocalOldFileName & " ?" & vbNewLine _
+                   & sMessagelist(18)
+    ElseIf sLocalOldFileName <> "" Then
+        sMessage = sMessagelist(19) & sLocalOldFileName & sMessagelist(20) & vbNewLine _
+                   & Format(dLocalFileDate, "dd-mmm-yyyy hh:mm:ss") & vbNewLine _
+                   & sMessagelist(21) & vbNewLine _
+                   & Format(dLocalOldFileDate, "dd-mmm-yyyy hh:mm:ss") & "." & vbNewLine _
+                   & sMessagelist(22) & vbNewLine _
+                   & sLocalOldFileName & " ?" & vbNewLine _
+                   & sMessagelist(18)
+    Else
+        sMessage = sMessagelist(45) & " " & sLocalFilename & sMessagelist(23) & vbNewLine _
+                   & sMessagelist(24) & vbNewLine _
+                   & sMessagelist(25) & vbNewLine _
+                   & sMessagelist(26)
+    End If
+    If sLocalOldFileName <> "" Then
+        iReply = MsgBox(sMessage, vbYesNo, sMessagelist(16) & sClientName)
+    Else
+        MsgBox sMessage, vbOKOnly + vbExclamation, sMessagelist(16) & sClientName
+        iReply = vbNo
+    End If
+    If iReply = vbYes And InStr(sLocalOldFileName, Application.PathSeparator) > 0 Then
+        Application.DisplayAlerts = False
+        Workbooks(sLocalFilename).SaveAs FileName:=sLocalOldFileName
+        Application.DisplayAlerts = True
+        DeleteOrMove sPath & sLocalFilename
+    Else
+        bResult = Application.Dialogs(xlDialogSaveAs).Show(sCurDir & Application.PathSeparator & sLocalOldFileName)
+        If bResult Then
+            DeleteOrMove sPath & sLocalFilename
+        Else
+            MsgBox sMessagelist(23) & vbNewLine _
+                   & sMessagelist(24) & vbNewLine _
+                   & sMessagelist(25) & vbNewLine _
+                   & sMessagelist(26), , sMessagelist(16) & sClientName
+        End If
+    End If
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "RecoverIt") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 2.0: Added check for embedded workbooks
+Sub CheckForNameChange()
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    If Not InStr(Application.CommandBars.FindControl(ID:=106).Caption, "&&") > 0 Then
+        If BackupName(oGlobalWorkbook) <> sOldBackupFileName Then
+            DeleteOrMove sOldBackupFileName
+        End If
+        Set oGlobalWorkbook = Nothing
+    End If
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "CheckForNameChange") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 1.2: added this sub
+'Version 2.0: Added check for embedded workbooks
+Sub CheckIfGone()
+    Dim Wb As Workbook
+    On Error GoTo LocErr
+    If Not InStr(Application.CommandBars.FindControl(ID:=106).Caption, "&&") > 0 Then
+        Application.EnableCancelKey = xlDisabled
+        For Each Wb In Workbooks
+            If Wb.FullName = sOldFileName Then GoTo TidyUp
+        Next
+        DeleteOrMove sOldBackupFileName
+    End If
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "CheckIfGone") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 1.2: added this sub
+'This sub only called on AddinUninstall.
+Sub DeleteAllBackups()
+    Dim sFilelist() As String
+    Dim iCounter As Integer
+    Dim iCounter1 As Integer
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+
+    ' First all files that had an extension
+    ReDim sFilelist(2)
+    sFilelist(1) = Dir(sPath & "*.*" & sAddition)
+    iCounter = 1
+    While sFilelist(iCounter) <> ""
+        iCounter = iCounter + 1
+        ReDim Preserve sFilelist(iCounter + 1)
+        sFilelist(iCounter) = Dir()
+    Wend
+
+    ' Then all files that had no extension (new, not yet saved workbooks)
+    sFilelist(iCounter) = Dir(sPath & "*" & sAddition & ".*")
+    While sFilelist(iCounter) <> ""
+        iCounter = iCounter + 1
+        ReDim Preserve sFilelist(iCounter + 1)
+        sFilelist(iCounter) = Dir()
+    Wend
+
+    For iCounter1 = 1 To iCounter - 1
+        DeleteOrMove sPath & sFilelist(iCounter1)
+    Next
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "DeleteAllBackups") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 2.0: Added this sub for language support
+Public Sub ReadMessages()
+    Dim iNetwork As Integer
+    On Error GoTo LocErr
+    ReDim sMessagelist(100)
+    Application.EnableCancelKey = xlDisabled
+    CheckVars
+    If iLanguage < 1 Then iLanguage = 1
+    Dim iCounter As Integer
+    For iCounter = 1 To Application.WorksheetFunction.Max(ThisWorkbook.Worksheets("translations").[c:c])
+        ReDim Preserve sMessagelist(iCounter)
+        sMessagelist(iCounter) = ThisWorkbook.Worksheets("translations").[D1].Offset(iCounter, iLanguage - 1).Value
+    Next iCounter
+    'ChangeTexts
+    iNetwork = ThisWorkbook.Worksheets("translations").[networking].Value
+    bNetworkEnabled = (iNetwork = 3)
+    bNetworkTesting = (iNetwork = 2)
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "ReadMessages") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+
+'Version 2.0: Added this sub for language support
+Sub ChangeTexts(uf As ufSettings)
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    With uf
+        .lbPath.Caption = sMessagelist(27)
+        .lbInterval.Caption = sMessagelist(28)
+        .lbLanguage.Caption = sMessagelist(29)
+        .cbMoveToBin.Caption = sMessagelist(30)
+        .cbEnable.Caption = sMessagelist(31)
+        .cbCalc.Caption = sMessagelist(32)
+        
+        .lbAbout.Caption = sMessagelist(33) & Chr(10) _
+                                       & sMessagelist(34) & Chr(10) & sMessagelist(35) & Chr(10) _
+                                       & sMessagelist(36) & Chr(10) & sMessagelist(37)
+        .Caption = sMessagelist(39)
+        sClientName = sMessagelist(38)
+        On Error Resume Next
+        cControl.Caption = sMessagelist(39)
+        On Error GoTo 0
+    End With
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "ChangeTexts") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+'Version 2.0: Added this sub for language support
+Sub ChangeLanguagefromsettings()
+    On Error GoTo LocErr
+    Application.EnableCancelKey = xlDisabled
+    iLanguage = ThisWorkbook.DialogSheets("AutoSafeSettings").DropDowns("ddlanguage").ListIndex
+    ReadMessages
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "Main", "ChangeLanguageFromSettings") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+
+End Sub
+'Version 2.0: Added this sub to ensure Autosafe tidies up
+'with enableevents set to false
+Sub auto_close()
+    Dim Wb As Workbook
+    On Error GoTo LocErr
+    If sVersion = "8" Then
+        RemoveMenu
+    End If
+    For Each Wb In Workbooks
+        DeleteOrMove BackupName(Wb)
+    Next
+    TimerOff
+    'Close may be cancelled, reinstate autosafe if not uninstalling
+    AddEmptyBook
+    If bUnInstalling = False Then
+        Application.OnTime Now, "'Reinstate """ & bUnInstalling & """'"
+    End If
+    RemoveEmptyBooks
+    If OtherExcelInstance = False Then
+        On Error Resume Next
+        SaveSetting "Autosafe", "AppSettings", "Running", CStr(CInt(False))
+        On Error GoTo LocErr
+    End If
+TidyUp:
+    'Avoid save changes message for Excel 2007
+    ThisWorkbook.Saved = True
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "main", "Auto_close") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+' Version 2.0: aded this sub to reinstate Autosafe after a cancelled
+' application closure
+Sub Reinstate(bUnInstalling As Boolean)
+    Dim L As Variant
+    If bUnInstalling Then    'avoid reinstate after Add-in uninstall
+    'Avoid save changes message for Excel 2007
+        ThisWorkbook.Saved = True
+        ThisWorkbook.Close False
+        Exit Sub
+    End If
+'Version 3.5: use registry
+    GetSettings
+    'ReadIni
+    ReadMessages
+    bFirstInstance = IsFirstInstance
+    MakeMenu
+    TimerOff
+    SetTimers
+End Sub
+Function CountNonAddIns() As Long
+    Dim oLocalWorkbook As Object
+    CountNonAddIns = 0
+    For Each oLocalWorkbook In Workbooks
+        If Not oLocalWorkbook.IsAddin Then
+            CountNonAddIns = CountNonAddIns + 1
+        End If
+    Next
+End Function
+
+Public Sub CheckVars()
+    If bVarsOK = False Then
+        bVarsOK = True
+'3.5: use registry
+        'ReadIni
+        GetSettings
+        ReadMessages
+        Randomize
+        gsSessionID = Format(10000 * Rnd(), "00000")
+    End If
+End Sub
+Public Sub ChangeSchedule()
+    TimerOff
+    SetTimers
+End Sub
+
+Function IsIn(vCollection As Variant, ByVal sName As String) As Boolean
+'-------------------------------------------------------------------------
+' Procedure : funIsIn Created by Jan Karel Pieterse
+' Company   : JKP Application Development Services (c) 2005
+' Author    : Jan Karel Pieterse
+' Created   : 28-12-2005
+' Purpose   : Determines if object is in collection
+'-------------------------------------------------------------------------
+    Dim oObj As Object
+    On Error Resume Next
+    Set oObj = vCollection(sName)
+    If oObj Is Nothing Then
+        IsIn = False
+    Else
+        IsIn = True
+    End If
+    If IsIn = False Then
+        sName = Application.Substitute(sName, "'", "")
+        Set oObj = vCollection(sName)
+        If oObj Is Nothing Then
+            IsIn = False
+        Else
+            IsIn = True
+        End If
+    End If
+End Function
+
+Function GetOriginalName(oBook As Workbook) As String
+    If IsIn(oBook.CustomDocumentProperties, "AutosafePathAndName") Then
+        GetOriginalName = oBook.CustomDocumentProperties("AutosafePathAndName").Value
+    End If
+End Function
+
+Sub GetPath()
+    Dim sTemp As String
+    sTemp = GetTempFolder(sMessagelist(46))
+    If sTemp <> "" Then
+        ThisWorkbook.DialogSheets("AutoSafeSettings").EditBoxes("ebpath").Text = sTemp
+    End If
+End Sub
+
+Function IsNotThere(oWb As Workbook)
+    Dim sTemp As String
+    On Error Resume Next
+    sTemp = oWb.Name
+    IsNotThere = (Err.Number <> 0)
+End Function
+
+Function ProperFileName(sFileName As String) As String
+    Dim sPath As String
+    Dim sFile As String
+    Const CIMPROPERCHAR As String = "<,>,?,[,],:,|,*"
+    Dim lCt As Long
+    Dim vImproper As Variant
+    vImproper = Split(CIMPROPERCHAR, ",")
+    If InStr(sFileName, "\") > 0 Then
+        sFile = Mid(sFileName, InStrRev(sFileName, "\") + 1, Len(sFileName))
+    Else
+        sFile = sFileName
+    End If
+    sPath = Replace(sFileName, sFile, "")
+    For lCt = LBound(vImproper) To UBound(vImproper)
+        sFile = Replace(sFile, vImproper(lCt), "_")
+    Next
+    ProperFileName = sPath & sFile
+End Function
+
+Public Sub TurnOffAppClass()
+    Set AppClass = Nothing
+End Sub
+
+Public Sub TurnOnAppClass()
+    Set AppClass = New EventClass
+    Set AppClass.App = Application
+End Sub
+
+Function IsWorkbookUsingCoAuthoring(oWb As Workbook) As Boolean
+    Select Case Val(Application.Version)
+    Case Is >= 16
+        Select Case Val(Application.Build)
+        Case Is >= 10000
+            IsWorkbookUsingCoAuthoring = oWb.AutoSaveOn
+        End Select
+    End Select
+End Function
+Attribute VB_Name = "OnNetWork"
+Option Explicit
+Option Private Module
+'**************************************************
+'*                                                *
+'* All subs and functions in this module:         *
+'* Copyright |fffd| J.K. Pieterse, june-January  2002  *
+'*                                                *
+'**************************************************
+
+#If VBA7 Then
+    Private Declare PtrSafe Function GetDriveType Lib "kernel32" Alias _
+                                          "GetDriveTypeA" (ByVal sDrive As String) As LongPtr
+#Else
+    Private Declare Function GetDriveType Lib "kernel32" Alias _
+                                          "GetDriveTypeA" (ByVal sDrive As String) As Long
+#End If
+'        Const DRIVE_TYPE_UNDTERMINED = 0
+'        Const DRIVE_ROOT_NOT_EXIST = 1
+'        Const DRIVE_REMOVABLE = 2
+'        Const DRIVE_FIXED = 3
+'        Const DRIVE_REMOTE = 4
+'        Const DRIVE_CDROM = 5
+'        Const DRIVE_RAMDISK = 6
+
+Function IsNetworked() As Boolean
+    Dim iCounter As Integer
+    IsNetworked = False
+    For iCounter = 65 To 90
+        If GetDriveType(Chr(iCounter) & ":\") = "4" Then
+            IsNetworked = True
+            Exit Function
+        End If
+    Next
+End Function
+
+Public Function HasInternet() As Boolean
+    HasInternet = True
+End Function
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+Attribute VB_Name = "ShowWindow"
+Option Base 1
+Option Explicit
+Option Private Module
+
+Dim mfrmProgress As ufProgress
+
+Public Sub MsgWindowMessage(iFiles As Integer, iFile As Integer)
+    On Error GoTo LocErr
+    If bShowProgress Then
+        If bExcelActive Then
+            If mfrmProgress Is Nothing Then
+                Set mfrmProgress = New ufProgress
+                mfrmProgress.Show vbModeless
+            End If
+            mfrmProgress.UpdateProgress "Autosafe saving file " & iFile & " of " & iFiles
+            Exit Sub
+        End If
+    Else
+        Application.StatusBar = "Autosafe saving file " & iFile & " of " & iFiles
+    End If
+LocErr:
+    If Err.Number = 18 Then
+        If MsgBox(sMessagelist(56), vbYesNo + vbQuestion, "Autosafe for Excel") = vbYes Then
+            gbStop = True
+            Resume Next
+        End If
+    End If
+End Sub
+
+Public Sub KillMsgWindow()
+Attribute KillMsgWindow.VB_ProcData.VB_Invoke_Func = " \n14"
+    If bShowProgress Then
+    On Error Resume Next
+    mfrmProgress.Hide
+    Unload mfrmProgress
+    Set mfrmProgress = Nothing
+    Else
+    Application.StatusBar = False
+    End If
+    If bVBEActive Then
+        Application.VBE.MainWindow.SetFocus
+    End If
+End Sub
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+'**************************************************
+'*                                                *
+'* All subs and functions in this module:         *
+'* Copyright ? J.K. Pieterse, june-December 2000  *
+'*                                                *
+'**************************************************
+'Version 2.0: added reading messages (language)
+
+Private Sub Workbook_AddinInstall()
+    Dim sNetworkmessage As String
+    On Error GoTo LocErr
+    CheckVars
+    If IsNetworked And bNetworkEnabled = False Then
+        If bNetworkTesting Then
+            bNetworkWarning = True
+            sNetworkmessage = sMessagelist(41) _
+                              & vbNewLine & vbNewLine & sMessagelist(42) & vbNewLine & vbNewLine & sMessagelist(43) _
+                              & vbNewLine & vbNewLine & sMessagelist(44)
+            MsgBox sNetworkmessage, vbExclamation, "Autosafe, " & sClientName
+        Else
+            sNetworkmessage = sMessagelist(1) _
+                              & vbNewLine & vbNewLine & sMessagelist(2) & vbNewLine & vbNewLine & sMessagelist(3) _
+                              & vbNewLine & vbNewLine & sMessagelist(4)
+            MsgBox sNetworkmessage, vbExclamation, "Autosafe, " & sClientName
+            ThisWorkbook.Close
+            Exit Sub
+        End If
+    End If
+    bActive = True
+    ChangeSettings
+TidyUp:
+    Exit Sub
+LocErr:
+    If ReportError(Err.Description, Err.Number, "ThisWorkbook", "Workbook_AddinInstall") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Sub
+' Version 2.0 : added this sub
+Private Sub Workbook_AddinUninstall()
+    TurnOffAppClass
+    TimerOff
+    RemoveMenu
+    DeleteAllBackups
+    bUnInstalling = True
+    Me.Saved = True
+End Sub
+
+' version 1.1: Moved SafeAllOpenFiles down a bit to prevent recovery finding
+' files that change upon opening (=Today() and =Now() functions)
+' version 2.0: Changed instance checking: added filecreation
+Private Sub Workbook_Open()
+    Application.OnTime Now, "'" & ThisWorkbook.FullName & "'!ContinueOpen"
+End Sub
+
+Attribute VB_Name = "TimerMod"
+Option Private Module
+Option Explicit
+#If VBA7 Then
+    Private Type LASTINPUTINFO
+        cbSize As LongPtr
+        dwTime As LongPtr
+    End Type
+    Private Declare PtrSafe Function GetTickCount Lib "kernel32" () As LongPtr
+    Private Declare PtrSafe Sub GetLastInputInfo Lib "USER32" (ByRef plii As LASTINPUTINFO)
+#Else
+    Private Type LASTINPUTINFO
+        cbSize As Long
+        dwTime As Long
+    End Type
+    Private Declare Function GetTickCount Lib "kernel32" () As Long
+    Private Declare Sub GetLastInputInfo Lib "USER32" (ByRef plii As LASTINPUTINFO)
+#End If
+
+Sub TimerOn()
+    Dim iCount As Integer
+    'in case we have just one wb open in protected view, we need to add
+    'a fresh workbook in normal view, otherwise the ontime method fails.
+    AddEmptyBook
+    For iCount = 1 To 10
+        Application.OnTime dNexttime(iCount), "SafeAllOpenFiles"
+    Next
+    RemoveEmptyBooks
+End Sub
+
+Sub TimerOff()
+    Dim iCount As Integer
+    On Error Resume Next
+    AddEmptyBook
+    For iCount = 1 To 10
+        Application.OnTime EarliestTime:=dNexttime(iCount), Procedure:="SafeAllOpenFiles", Schedule:=False
+    Next
+    RemoveEmptyBooks
+    On Error GoTo 0
+End Sub
+
+Sub SetTimers()
+    Dim iCount As Integer
+    TimerOff
+    For iCount = 1 To 10
+        dNexttime(iCount) = Now() + iCount * TimeSerial(0, IIf(lTime > 1, lTime, 1), 0)
+    Next
+    TimerOn
+End Sub
+
+Function IdleTime() As Single
+  Dim a As LASTINPUTINFO
+  a.cbSize = LenB(a)
+  GetLastInputInfo a
+  IdleTime = (GetTickCount - a.dwTime) / 1000
+End Function
+Attribute VB_Name = "WindowsTempDirect"
+Option Explicit
+Option Private Module
+'**************************************************
+'*                                                *
+'* All subs and functions in this module:         *
+'* Copyright |fffd| J.K. Pieterse, june-January  2002  *
+'*                                                *
+'**************************************************
+' Version 1.1: Added the GetWinDir function
+' 08-08-2000
+
+#If VBA7 Then
+    Declare PtrSafe Function GetTempPath Lib "kernel32" _
+                                 Alias "GetTempPathA" (ByVal nBufferLength As LongPtr, _
+                                                       ByVal lpbuffer As String) As Long
+    Declare PtrSafe Function GetWindowsDirectory& Lib "kernel32" Alias _
+                                          "GetWindowsDirectoryA" (ByVal lpbuffer As String, ByVal nSize As LongPtr)
+#Else
+    Declare Function GetTempPath Lib "kernel32" _
+                                 Alias "GetTempPathA" (ByVal nBufferLength As Long, _
+                                                       ByVal lpbuffer As String) As Long
+    Declare Function GetWindowsDirectory& Lib "kernel32" Alias _
+                                          "GetWindowsDirectoryA" (ByVal lpbuffer As String, ByVal nSize As Long)
+#End If
+
+' This function returns the path to the Windows directory
+' as a string.
+
+Function GetWinDir() As String
+    Dim lpbuffer As String * 255
+    Dim Length As Long
+    Length = GetWindowsDirectory(lpbuffer, Len(lpbuffer))
+    GetWinDir = Left(lpbuffer, Length)
+End Function
+
+Function TempPath() As String
+    On Error GoTo LocErr
+    Dim stBuff As String * 255
+    Dim L As Long
+    L = GetTempPath(255, stBuff)
+    If L = 0 Then
+        TempPath = "C:\PleaseEnterYourPathHere"
+    Else
+        TempPath = Left(stBuff, L)
+    End If
+TidyUp:
+    Exit Function
+LocErr:
+    If ReportError(Err.Description, Err.Number, "WindowsTempDirect", "TempPath") = vbRetry Then
+        Resume
+    Else
+        Resume TidyUp
+    End If
+End Function
+Attribute VB_Name = "clsUpdate"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+'-------------------------------------------------------------------------
+' Module    : clsUpdate
+' Company   : JKP Application Development Services (c)
+' Author    : Jan Karel Pieterse
+' Created   : 19-2-2007
+' Purpose   : Class to check for program updates
+'-------------------------------------------------------------------------
+Option Explicit
+
+Public WithEvents Sht As Worksheet
+Attribute Sht.VB_VarHelpID = -1
+
+#If VBA7 Then
+    Private Declare PtrSafe Function URLDownloadToFile Lib "urlmon" _
+        Alias "URLDownloadToFileA" (ByVal pCaller As Long, _
+        ByVal szURL As String, ByVal szFileName As String, _
+        ByVal dwReserved As Long, ByVal lpfnCB As Long) As Long
+#Else
+    Private Declare Function URLDownloadToFile Lib "urlmon" _
+        Alias "URLDownloadToFileA" (ByVal pCaller As Long, _
+        ByVal szURL As String, ByVal szFileName As String, _
+        ByVal dwReserved As Long, ByVal lpfnCB As Long) As Long
+#End If
+
+Private mdtLastUpdate As Date
+
+Private msAppName As String
+Private msBuild As String
+Private msCheckURL As String
+Private msCurrentAddinName As String
+Private msDownloadName As String
+Private msTempAddInName As String
+Private mbManual As Boolean
+
+Private Sub Class_Terminate()
+    Set Sht = Nothing
+End Sub
+
+Private Sub DownloadFile(strWebFilename As String, strSaveFileName As String)
+    ' Download the file.
+    URLDownloadToFile 0, strWebFilename, strSaveFileName, 0, 0
+End Sub
+
+Public Function IsThereAnUpdate(Optional bShowMsg As Boolean = False) As Boolean
+    Dim sNewBuild As String
+    On Error Resume Next
+    SaveSetting AppName, "Updates", "LastUpdate", CStr(Int(Now))
+    If Err.Number <> 0 And bShowMsg Then
+        MsgBox "Error retrieving update information, please try again later.", vbInformation + vbOKOnly, "Autosafe"
+    End If
+End Function
+
+Public Sub DoUpdate()
+    Dim sNewBuild As String
+    On Error GoTo LocErr
+    sNewBuild = ThisWorkbook.Names("Available_build").RefersToRange.Value
+    If Len(sNewBuild) = 0 Or Len(sNewBuild) > 4 Then
+        MsgBox sMessagelist(55), vbOKOnly + vbInformation, "Autosafe"
+        Exit Sub
+    End If
+    If CLng(sNewBuild) > CLng(msBuild) Then
+        If MsgBox(sMessagelist(51), vbQuestion + vbYesNo, "Autosafe") = vbYes Then
+            DownloadName = "https://www.jkp-ads.com/downloadscript.asp?filename=" & ThisWorkbook.Name
+            If GetUpdate Then
+                Application.Cursor = xlDefault
+                MsgBox sMessagelist(52), vbOKOnly + vbInformation, "Autosafe"
+            Else
+                Application.Cursor = xlDefault
+                MsgBox sMessagelist(53), vbInformation + vbOKOnly, "Autosafe"
+            End If
+        End If
+    ElseIf Manual Then
+        Application.Cursor = xlDefault
+        MsgBox sMessagelist(54), vbInformation + vbOKOnly, "Autosafe"
+    End If
+TidyUp:
+    On Error GoTo 0
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "DoUpdate", "Class Module clsUpdate")
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    Case vbAbort
+        Resume TidyUp
+    End Select
+End Sub
+
+Private Sub Sht_Change(ByVal Target As Range)
+    On Error GoTo LocErr
+    Application.Cursor = xlDefault
+    If Len(Target.Value) <= 4 Then
+        DoUpdate
+    ElseIf Manual Then
+        'Query failed to refresh and was called manually
+        Application.Cursor = xlDefault
+        MsgBox sMessagelist(55), vbInformation + vbOKOnly, "Autosafe"
+    End If
+    Set Sht = Nothing
+TidyUp:
+    On Error GoTo 0
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "Sht_Change", "Class Module clsUpdate")
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    Case vbAbort
+        Resume TidyUp
+    End Select
+End Sub
+
+Public Property Get Build() As String
+    Build = msBuild
+End Property
+
+Public Property Let Build(ByVal sBuild As String)
+    msBuild = sBuild
+End Property
+
+Public Sub RemoveOldCopy()
+    On Error GoTo LocErr
+    CurrentAddinName = ThisWorkbook.FullName
+    TempAddInName = CurrentAddinName & "(OldVersion)"
+    On Error Resume Next
+    Kill TempAddInName
+TidyUp:
+    On Error GoTo 0
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "RemoveOldCopy", "Class Module clsUpdate")
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    Case vbAbort
+        Resume TidyUp
+    End Select
+End Sub
+
+Public Function GetUpdate() As Boolean
+    On Error Resume Next
+    'If workbook has been saved readonly, we can safely delete the file!
+    If ThisWorkbook.ReadOnly Then
+        Err.Clear
+        Kill CurrentAddinName
+    End If
+    LastUpdate = Now
+    ThisWorkbook.SaveAs TempAddInName
+    DoEvents
+    Kill CurrentAddinName
+    On Error GoTo 0
+    DownloadFile DownloadName, CurrentAddinName
+    If Err = 0 Then GetUpdate = True
+End Function
+
+Private Property Get CurrentAddinName() As String
+    CurrentAddinName = msCurrentAddinName
+End Property
+
+Private Property Let CurrentAddinName(ByVal sCurrentAddinName As String)
+    msCurrentAddinName = sCurrentAddinName
+End Property
+
+Private Property Get TempAddInName() As String
+    TempAddInName = msTempAddInName
+End Property
+
+Private Property Let TempAddInName(ByVal sTempAddInName As String)
+    msTempAddInName = sTempAddInName
+End Property
+
+Public Property Get DownloadName() As String
+    DownloadName = msDownloadName
+End Property
+
+Public Property Let DownloadName(ByVal sDownloadName As String)
+    msDownloadName = sDownloadName
+End Property
+
+Public Property Get CheckURL() As String
+    CheckURL = msCheckURL
+End Property
+
+Public Property Let CheckURL(ByVal sCheckURL As String)
+    msCheckURL = sCheckURL
+End Property
+
+Public Property Get LastUpdate() As Date
+    Dim dtNow As Date
+    On Error GoTo LocErr
+    dtNow = Int(Now)
+    mdtLastUpdate = CDate(GetSetting(AppName, "Updates", "LastUpdate", "0"))
+    If mdtLastUpdate = 0 Then
+        'Never checked for an update, save today!
+        LastUpdate = dtNow
+    End If
+    LastUpdate = mdtLastUpdate
+TidyUp:
+    On Error GoTo 0
+    Exit Property
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "LastUpdate", "Class Module clsUpdate")
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    Case vbAbort
+        Resume TidyUp
+    End Select
+End Property
+
+Public Property Let LastUpdate(ByVal dtLastUpdate As Date)
+    mdtLastUpdate = dtLastUpdate
+    SaveSetting AppName, "Updates", "LastUpdate", CStr(CLng(mdtLastUpdate))
+End Property
+
+Public Property Get AppName() As String
+    AppName = msAppName
+End Property
+
+Public Property Let AppName(ByVal sAppName As String)
+    msAppName = sAppName
+End Property
+
+Public Property Get Manual() As Boolean
+    Manual = mbManual
+End Property
+
+Public Property Let Manual(ByVal bManual As Boolean)
+    mbManual = bManual
+End Property
+
+Attribute VB_Name = "modAddTempWb"
+Option Explicit
+Option Private Module
+
+Dim moWb As Workbook
+
+Sub AddEmptyBook()
+'Adds an empty workbook if needed.
+    If ActiveWorkbook Is Nothing Then
+        Workbooks.Add
+        Set moWb = ActiveWorkbook
+        moWb.CustomDocumentProperties.Add "AutosafeEmptyWB", False, msoPropertyTypeString, "This is a temporary workbook added by Autosafe"
+        moWb.Saved = True
+    End If
+End Sub
+
+Sub RemoveEmptyBooks()
+    Dim oWb As Workbook
+    For Each oWb In Workbooks
+        If IsIn(oWb.CustomDocumentProperties, "AutosafeEmptyWB") Then
+            oWb.Close False
+        End If
+    Next
+End Sub
+
+
+Attribute VB_Name = "modBrowseForFolder"
+Option Explicit
+Option Private Module
+
+
+#If VBA7 Then
+    Private Type BROWSEINFO
+        hOwner As LongPtr
+        pidlRoot As LongPtr
+        pszDisplayName As String
+        lpszTitle As String
+        ulFlags As Long
+        lpfn As LongPtr
+        lParam As LongPtr
+        iImage As Long
+    End Type
+    Private Declare PtrSafe Function SHGetPathFromIDList Lib "shell32.dll" Alias "SHGetPathFromIDListA" _
+        (ByVal pidl As LongPtr, ByVal pszPath As String) As Boolean
+                        
+    Private Declare PtrSafe Function SHBrowseForFolder Lib "shell32.dll" Alias "SHBrowseForFolderA" _
+        (lpBrowseInfo As BROWSEINFO) As LongPtr
+#Else
+    Private Type BROWSEINFO
+        hOwner As Long
+        pidlRoot As Long
+        pszDisplayName As String
+        lpszTitle As String
+        ulFlags As Long
+        lpfn As Long
+        lParam As Long
+        iImage As Long
+    End Type
+    Private Declare Function SHGetPathFromIDList Lib "shell32.dll" Alias "SHGetPathFromIDListA" _
+        (ByVal pidl As Long, ByVal pszPath As String) As Boolean
+                        
+    Private Declare Function SHBrowseForFolder Lib "shell32.dll" Alias "SHBrowseForFolderA" _
+        (lpBrowseInfo As BROWSEINFO) As Long
+#End If
+Private Const BIF_RETURNONLYFSDIRS = &H1
+
+Public Function BrowseFolder(szDialogTitle As String) As String
+    Dim bi As BROWSEINFO
+    Dim szPath As String, wPos As Integer
+    #If VBA7 Then
+        Dim hwndXL As LongPtr
+        Dim dwIList As LongPtr
+    #Else
+        Dim hwndXL As Long
+        Dim dwIList As Long
+    #End If
+    hwndXL = FindWindow32("XLMAIN", Application.Caption)
+
+    With bi
+        .hOwner = hwndXL
+        .lpszTitle = szDialogTitle
+        .ulFlags = BIF_RETURNONLYFSDIRS
+    End With
+
+    dwIList = SHBrowseForFolder(bi)
+    szPath = Space$(512)
+
+    If SHGetPathFromIDList(ByVal dwIList, ByVal szPath) Then
+        wPos = InStr(szPath, Chr(0))
+        BrowseFolder = Left$(szPath, wPos - 1)
+    End If
+End Function
+
+Function GetTempFolder(Optional Title As String = "Select a Folder", Optional RootFolder As Variant = "c:\") As String
+    On Error Resume Next
+    GetTempFolder = CreateObject("Shell.Application").BrowseForFolder(0, Title, 0, RootFolder).Items.Item.Path
+End Function
+
+Attribute VB_Name = "modDonate"
+Option Explicit
+
+Option Private Module
+
+Sub AskDonation()
+    Dim iRecovercount As Integer
+    Dim bAsked As Boolean
+    On Error Resume Next
+    iRecovercount = CInt(GetSetting("Autosafe", "Settings", "Recovercount", "0"))
+    iRecovercount = iRecovercount + 1
+    SaveSetting "Autosafe", "Settings", "Recovercount", CStr(iRecovercount)
+    bAsked = CBool(GetSetting("Autosafe", "Settings", "AskedForDonation", CInt(False)))
+    If bAsked = False And iRecovercount Mod 3 = 0 And Err.Number = 0 Then
+        If MsgBox(sMessagelist(47) & vbNewLine & sMessagelist(48), vbYesNo + vbQuestion, sMessagelist(49)) = vbYes Then
+            ActiveWorkbook.FollowHyperlink "https://www.jkp-ads.com/AutosafeDonations.htm"
+            SaveSetting "Autosafe", "Settings", "AskedForDonation", CStr(CInt(True))
+        End If
+    End If
+End Sub
+
+
+
+Attribute VB_Name = "modFindLoadedUFs"
+Option Explicit
+Option Private Module
+'**************************************************
+'*                                                *
+'* All subs and functions in this module:         *
+'* Copyright |fffd| J.K. Pieterse, january 2003        *
+'*                                                *
+'**************************************************
+
+' counts the number of loaded userforms in oWorkbook
+Function FindUFs(oWorkbook As Workbook)
+    Dim vbc As VBComponent
+    Dim lUFCount As Long
+    Dim oTemp As Object
+    On Error GoTo Handler
+    If oWorkbook.VBProject.Protection = vbext_pp_none Then
+        For Each vbc In oWorkbook.VBProject.VBComponents
+            If vbc.Type = vbext_ct_MSForm Then    '3
+                Set oTemp = vbc.Designer
+                If oTemp Is Nothing Then
+                    lUFCount = lUFCount + 1
+                End If
+            End If
+        Next vbc
+    Else
+        lUFCount = Application.Run("'" & oWorkbook.FullName & "'!CountUFs")
+    End If
+    On Error GoTo 0
+    FindUFs = lUFCount
+    Exit Function
+Handler:
+    FindUFs = 1
+End Function
+Attribute VB_Name = "modUpdate"
+Option Explicit
+
+Dim mcUpdate As clsUpdate
+
+#If VBA7 Then
+    Public Declare PtrSafe Function InternetGetConnectedState _
+        Lib "wininet.dll" (lpdwFlags As LongPtr, _
+        ByVal dwReserved As Long) As Boolean
+#Else
+    Public Declare Function InternetGetConnectedState _
+        Lib "wininet.dll" (lpdwFlags As Long, _
+        ByVal dwReserved As Long) As Boolean
+#End If
+
+Function IsConnected() As Boolean
+    #If VBA7 Then
+        Dim Stat As LongPtr
+    #Else
+        Dim Stat As Long
+    #End If
+    IsConnected = (InternetGetConnectedState(Stat, 0&) <> 0)
+End Function
+
+Sub AutosafeManualUpdate()
+    On Error Resume Next
+    AddEmptyBook
+    Application.OnTime Now, "CheckAndUpdate"
+    RemoveEmptyBooks
+End Sub
+
+Public Sub CheckAndUpdate(Optional bManual As Boolean = True)
+10        On Error GoTo LocErr
+20        Set mcUpdate = New clsUpdate
+30        If bManual = False And bDisableUpdates Then Exit Sub
+40        If bManual Then
+50            Application.Cursor = xlWait
+60        End If
+70        With mcUpdate
+              'Set intial values of class
+              'Current build
+80            .Build = ThisWorkbook.Worksheets("Translations").Range("Build").Value
+              'Name of this app, probably a global variable, such as GSAPPNAME
+90            .AppName = "Autosafe"
+              'Get rid of possible old backup copy
+100           .RemoveOldCopy
+              'URL which contains build # of new version
+110           .CheckURL = "https://www.jkp-ads.com/downloads/AutosafeBuild.htm"
+              'Started check automatically or manually?
+120           .Manual = bManual
+              'Check once a week
+130           If (Now - .LastUpdate >= 7) Or bManual Then
+140               .LastUpdate = Int(Now)
+150               PlaceBuildQT bManual
+160           End If
+170       End With
+TidyUp:
+180       On Error GoTo 0
+190       Application.Cursor = xlDefault
+200       Exit Sub
+LocErr:
+210       MsgBox Erl
+220       Select Case ReportError(Err.Description, Err.Number, "CheckAndUpdate", "Module modUpdate")
+          Case vbRetry
+230           Resume
+240       Case vbIgnore
+250           Resume Next
+260       Case vbAbort
+270           Resume TidyUp
+280       End Select
+End Sub
+
+Sub PlaceBuildQT(ByVal bManual As Boolean)
+    Dim oNm As Name
+    On Error GoTo LocErr
+    Application.ScreenUpdating = False
+    For Each oNm In shtBuild.Names
+        oNm.Delete
+    Next
+    If Val(Left(Application.Version, 3)) > 11 Then
+        ThisWorkbook.IsAddin = False
+    End If
+    With shtBuild.QueryTables.Add(Connection:= _
+        "URL;https://www.jkp-ads.com/downloads/autosafebuild.htm", Destination:=shtBuild.Range( _
+        "A1"))
+        .Name = "autosafebuild"
+        .FieldNames = True
+        .RowNumbers = False
+        .FillAdjacentFormulas = False
+        .PreserveFormatting = True
+        .RefreshOnFileOpen = False
+        .BackgroundQuery = Not bManual
+        .RefreshStyle = xlOverwriteCells
+        .SavePassword = False
+        .SaveData = True
+        .AdjustColumnWidth = False
+        .RefreshPeriod = 0
+'        .WebSelectionType = xlEntirePage
+''         .WebFormatting = xlWebFormattingNone
+        .WebPreFormattedTextToColumns = True
+        .WebConsecutiveDelimitersAsOne = True
+        .WebSingleBlockTextImport = False
+        .WebDisableDateRecognition = False
+        On Error Resume Next
+        If Not bManual Then
+            Set mcUpdate.Sht = shtBuild
+        End If
+        Application.DisplayAlerts = False
+        .Refresh Not (bManual)
+        Application.DisplayAlerts = True
+        On Error GoTo 0
+        If bManual Then
+            mcUpdate.DoUpdate
+        End If
+    End With
+TidyUp:
+    If Val(Left(Application.Version, 2)) > 11 Then
+        ThisWorkbook.IsAddin = True
+        ThisWorkbook.Saved = True
+    End If
+    Application.ScreenUpdating = True
+    On Error GoTo 0
+    Exit Sub
+LocErr:
+    If Val(Left(Application.Version, 2)) > 11 Then
+        ThisWorkbook.IsAddin = True
+        ThisWorkbook.Saved = True
+    End If
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    If Err.Description Like "*QueryTables*" Then
+        MsgBox sMessagelist(55), vbInformation + vbOKOnly, "Autosafe"
+        Resume TidyUp
+    End If
+    Select Case ReportError(Err.Description, Err.Number, "PlaceBuildQT", "Module modUpdate")
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    Case vbAbort
+        Resume TidyUp
+    End Select
+End Sub
+
+Attribute VB_Name = "shtBuild"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "ufProgress"
+Attribute VB_Base = "0{25B22AC0-85F8-47A2-908C-0E50D3E56590}{F8AD297D-E0EA-4FF0-BA41-5447DAA102B4}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Sub UpdateProgress(sMsg As String)
+    DoEvents
+    lblProgress.Caption = sMsg
+    Me.Repaint
+End Sub
+
+Private Sub cmbStop_Click()
+    If MsgBox("Are you sure you wish to interrupt this save?", vbQuestion + vbYesNo, "Autosafe") = vbYes Then gbStop = True
+End Sub
+Attribute VB_Name = "ufSettings"
+Attribute VB_Base = "0{90E8F846-872B-4D02-87DA-E34DFDBD7585}{6CC9101C-7400-4BCC-A7BD-C65BF6F5C39E}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public OK As Boolean
+
+Private Sub cbLanguage_Change()
+    iLanguage = cbLanguage.ListIndex + 1
+    ReadMessages
+    ChangeTexts Me
+End Sub
+
+Private Sub cbPath_Click()
+    tbPath.Value = BrowseFolder("Please select the path where Autosafe should store its temporary files")
+End Sub
+
+Private Sub cmbCancel_Click()
+    OK = False
+    Me.Hide
+End Sub
+
+Private Sub cmbOK_Click()
+    OK = True
+    Me.Hide
+End Sub
+
+Private Sub cmbUpdate_Click()
+    Me.Hide
+    Application.OnTime Now, "AutosafeManualUpdate"
+End Sub
+
+
+
+INQUEST-PP=macro

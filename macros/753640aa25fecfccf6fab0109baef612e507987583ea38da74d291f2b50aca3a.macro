@@ -1,0 +1,3204 @@
+Attribute VB_Name = "ApiAuthenticator"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+''
+' ApiAuthenticator
+'
+' Authentication against Interstat API server
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Implements IAuthenticator ' v3.*
+Option Explicit
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Private mApiKey As String
+
+Private Property Get ApiKey() As String
+ApiKey = mApiKey
+End Property
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Helper for setting required parameters at once
+'
+' @param {String} Username
+' @param {String} Password
+' --------------------------------------------- '
+
+Public Sub Setup(ApiKey As String)
+    mApiKey = ApiKey
+End Sub
+
+' ============================================= '
+' Private Methods
+' ============================================= '
+
+''
+' Hook for taking action before a request is executed
+'
+' @param {RestClient} Client The client that is about to execute the request
+' @param {RestRequest} Request The request about to be executed
+' --------------------------------------------- '
+
+Private Sub IAuthenticator_BeforeExecute(ByVal Client As RestClient, ByRef Request As RestRequest)
+    Request.AddHeader "apikey", ApiKey
+End Sub
+
+''
+' Hook for taking action after request has been executed
+'
+' @param {RestClient} Client The client that executed request
+' @param {RestRequest} Request The request that was just executed
+' @param {RestResponse} Response to request
+' --------------------------------------------- '
+
+Private Sub IAuthenticator_AfterExecute(ByVal Client As RestClient, ByVal Request As RestRequest, ByRef Response As RestResponse)
+
+End Sub
+
+''
+' Hook for overriding standard http open (used for HTTP Basic)
+'
+' @param {MSXML2.IXMLHTTPRequest} http
+' @parma {RestClient} Client The client that is about to open request
+' @param {RestRequest} Request The request about to be opened
+' @param {String} BaseUrl
+' @param {Boolean} [useAsync=False]
+' --------------------------------------------- '
+
+Private Sub IAuthenticator_HttpOpen(ByRef Http As Object, ByVal Client As RestClient, ByRef Request As RestRequest, BaseUrl As String, Optional UseAsync As Boolean = False)
+    Http.Open Request.MethodName(), Request.FullUrl(BaseUrl), UseAsync
+End Sub
+
+Private Sub Class_Initialize()
+    mApiKey = "anonymous"
+End Sub
+Attribute VB_Name = "ApiConnect"
+''
+' ApiConnect
+' (c)Interstat 2014
+'
+' Basic interactions with Interstat API server
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+Public Const API_URL = "https://secure.interstat.fr/"
+
+' --------------------------------------------- '
+' Types
+' --------------------------------------------- '
+
+Public Enum AvailableMethods
+    httpGET
+    httpPOST
+    httpPUT
+    httpDELETE
+    httpPATCH
+End Enum
+
+' --------------------------------------------- '
+' Private Members
+' --------------------------------------------- '
+
+Private mAuthenticator As ApiAuthenticator
+
+Private Property Get Authenticator() As ApiAuthenticator
+If mAuthenticator Is Nothing Then
+    Set Authenticator = New ApiAuthenticator
+Else
+    Set Authenticator = mAuthenticator
+End If
+End Property
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Public Property Get isLoggedIn() As Boolean
+isLoggedIn = Not mAuthenticator Is Nothing
+End Property
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Pass API key for authentication
+'
+'
+' @param {string} ApiKey The user API key
+' --------------------------------------------- '
+Public Sub Login(Optional ApiKey As String)
+On Error Resume Next
+If ApiKey = "" Then ApiKey = GetSetting("Icarius", "API", "api_key")
+On Error GoTo 0
+If ApiKey = "" Then Exit Sub
+Set mAuthenticator = New ApiAuthenticator
+mAuthenticator.Setup ApiKey
+End Sub
+
+''
+' Remove authentication
+'
+' --------------------------------------------- '
+Public Sub Logout()
+Set mAuthenticator = Nothing
+End Sub
+
+''
+' Execute a specified request will try to authenticate using AuthForm if necessary
+'
+' @TODO: Send data
+'
+' @param {String} Resource The resource to attain on server
+' @param {AvailableMethod} Method The HTTP method to use
+' @return {Variant} The parsed response from the server
+' --------------------------------------------- '
+Public Function Execute(ByVal Resource As String, Optional ByVal Method As AvailableMethods = httpGET) As Variant
+Dim errMsg As String
+On Error GoTo handleError
+
+Dim APIClient As New RestClient
+Dim APIrequest As New RestRequest
+Dim APIresponse As RestResponse
+
+APIClient.BaseUrl = API_URL & "api/"
+APIClient.TimeoutMS = 300000
+Set APIClient.Authenticator = Authenticator
+
+APIrequest.Resource = Resource
+APIrequest.Method = Method
+Set APIresponse = APIClient.Execute(APIrequest)
+
+If APIresponse.StatusCode = Forbidden And Not isLoggedIn Then
+    Login
+    If Not isLoggedIn Then AuthForm.Show
+    Set APIClient.Authenticator = Authenticator
+    Set APIresponse = APIClient.Execute(APIrequest)
+End If
+
+If APIresponse.StatusCode = Forbidden Then
+    errMsg = "Insufficient authentication."
+    GoTo handleError
+ElseIf APIresponse.StatusCode >= 400 Then
+    errMsg = "HTTP error " & APIresponse.StatusCode
+    GoTo handleError
+End If
+
+errMsg = "Error parsing response"
+Set Execute = APIresponse.Data
+
+Exit Function
+
+handleError:
+If Err <> 0 Then
+    errMsg = "Error " & Err.Number & ". " & Err.Description
+    Resume handleError
+End If
+On Error GoTo 0
+Err.Raise vbObjectError + 404, "ApiConnect", errMsg
+End Function
+Attribute VB_Name = "AuthForm"
+Attribute VB_Base = "0{C59D64C7-1436-4899-AE87-CCDC1CEC8C59}{30B1CE1C-9693-43BF-99CC-A2645FBE316C}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+''
+' AuthForm
+' (c)Interstat 2014
+'
+' Retrieve API key for Interstat authentication
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' ============================================= '
+' Events
+' ============================================= '
+
+Private Sub UserForm_Initialize()
+On Error Resume Next
+ApiConnect.Logout
+DeleteSetting "Icarius", "API", "api_key"
+End Sub
+
+Private Sub LoginButton_Click()
+Dim ApiKey As String, Auth As New HttpBasicAuthenticator
+Auth.Setup UsernameText, PasswordText
+ApiKey = RetrieveKey(Auth)
+If ApiKey <> "" Then
+    If RememberCheck Then _
+        SaveSetting "Icarius", "API", "api_key", ApiKey
+    ApiConnect.Login ApiKey
+    Unload Me
+End If
+End Sub
+
+' ============================================= '
+' Private methods
+' ============================================= '
+
+Private Function RetrieveKey(Auth As HttpBasicAuthenticator) As String
+Dim Client As New RestClient
+Dim Request As New RestRequest
+Dim Response As RestResponse
+
+Client.BaseUrl = ApiConnect.API_URL
+Set Client.Authenticator = Auth
+
+Request.Resource = "api_login"
+Request.Method = httpGET
+
+On Error Resume Next
+Set Response = Client.Execute(Request)
+If Err <> 0 Then
+    MsgBox "Error " & Err.Number & ". " & Err.Description, vbCritical, Err.Source
+    End
+End If
+
+If Response.StatusCode = 401 Then
+    MsgBox "Authentication failed !", vbExclamation
+    Exit Function
+ElseIf Response.StatusCode > 400 Then
+    MsgBox "Error " & Response.StatusCode, vbExclamation
+    Exit Function
+End If
+
+RetrieveKey = ParseJSON(Response.Content)("api_key")
+End Function
+Attribute VB_Name = "HttpBasicAuthenticator"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+''
+' HttpBasicAuthenticator v2.0.6
+' (c) Tim Hall - https://github.com/timhall/Excel-REST
+'
+' Utilize http basic authentication
+'
+' @implements: IAuthenticator v3.*
+' @author tim.hall.engr@gmail.com
+' @license: MIT (http://www.opensource.org/licenses/mit-license.php)
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Implements IAuthenticator
+Option Explicit
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Private mUsername As String
+Private mPassword As String
+
+Private Property Get Username() As String
+Username = mUsername
+End Property
+
+Private Property Get Password() As String
+Password = mPassword
+End Property
+
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Helper for setting required parameters at once
+'
+' @param {String} Username
+' @param {String} Password
+' --------------------------------------------- '
+
+Public Sub Setup(Username As String, Password As String)
+    mUsername = Username
+    mPassword = Password
+End Sub
+
+' ============================================= '
+' Private Methods
+' ============================================= '
+
+''
+' Hook for taking action before a request is executed
+'
+' @param {RestClient} Client The client that is about to execute the request
+' @param {RestRequest} Request The request about to be executed
+' --------------------------------------------- '
+
+Private Sub IAuthenticator_BeforeExecute(ByVal Client As RestClient, ByRef Request As RestRequest)
+    Request.AddHeader "Authorization", CreateHeader()
+End Sub
+
+''
+' Hook for taking action after request has been executed
+'
+' @param {RestClient} Client The client that executed request
+' @param {RestRequest} Request The request that was just executed
+' @param {RestResponse} Response to request
+' --------------------------------------------- '
+
+Private Sub IAuthenticator_AfterExecute(ByVal Client As RestClient, ByVal Request As RestRequest, ByRef Response As RestResponse)
+
+End Sub
+
+''
+' Hook for overriding standard http open (used for HTTP Basic)
+'
+' @param {MSXML2.IXMLHTTPRequest} http
+' @parma {RestClient} Client The client that is about to open request
+' @param {RestRequest} Request The request about to be opened
+' @param {String} BaseUrl
+' @param {Boolean} [useAsync=False]
+' --------------------------------------------- '
+
+Private Sub IAuthenticator_HttpOpen(ByRef Http As Object, ByVal Client As RestClient, ByRef Request As RestRequest, BaseUrl As String, Optional UseAsync As Boolean = False)
+    ' Use http open with username and password values set
+    ' (This is used in addition to setting request header, as some services required this)
+    Http.Open Request.MethodName(), Request.FullUrl(BaseUrl), UseAsync, Username, Password
+End Sub
+
+Private Function CreateHeader() As String
+    ' Create Basic Auth request header
+    Dim Header As String
+    Header = "Basic " & RestHelpers.Base64Encode(Username & ":" & Password)
+    CreateHeader = Header
+End Function
+Attribute VB_Name = "IAuthenticator"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+''
+' IAuthenticator v3.1.4
+' (c) Tim Hall - https://github.com/timhall/Excel-REST
+'
+' Interface for creating authenticators for rest client
+'
+' @author: tim.hall.engr@gmail.com
+' @license: MIT (http://www.opensource.org/licenses/mit-license.php)
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Hook for taking action before a request is executed
+'
+' @param {RestClient} Client The client that is about to execute the request
+' @param {RestRequest} Request The request about to be executed
+' --------------------------------------------- '
+
+Public Sub BeforeExecute(ByVal Client As RestClient, ByRef Request As RestRequest)
+    ' Add headers, cookies, etc
+End Sub
+
+''
+' Hook for taking action after request has been executed
+'
+' @param {RestClient} Client The client that executed request
+' @param {RestRequest} Request The request that was just executed
+' @param {RestResponse} Response to request
+' --------------------------------------------- '
+
+Public Sub AfterExecute(ByVal Client As RestClient, ByVal Request As RestRequest, ByRef Response As RestResponse)
+    ' Handle 401 Unauthorized or other issues
+End Sub
+
+''
+' Hook for overriding standard http open (used for HTTP Basic)
+'
+' @param {MSXML2.IXMLHTTPRequest} http
+' @parma {RestClient} Client The client that is about to open request
+' @param {RestRequest} Request The request about to be opened
+' @param {String} BaseUrl
+' @param {Boolean} [useAsync=False]
+' --------------------------------------------- '
+
+Public Sub HttpOpen(ByRef Http As Object, ByVal Client As RestClient, ByRef Request As RestRequest, BaseUrl As String, Optional UseAsync As Boolean = False)
+    ' Modify http open behavior
+End Sub
+Attribute VB_Name = "RestClient"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+''
+' RestClient v3.1.4
+' (c) Tim Hall - https://github.com/timhall/Excel-REST
+'
+' Interact with REST web services from Excel
+'
+' @author: tim.hall.engr@gmail.com
+' @license: MIT (http://www.opensource.org/licenses/mit-license.php)
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+Private Const DefaultTimeoutMS As Long = 3000000
+
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Public BaseUrl As String
+Public Authenticator As IAuthenticator
+Public TimeoutMS As Long
+Public ProxyServer As String
+Public ProxyUsername As String
+Public ProxyPassword As String
+Public ProxyBypassList As Variant
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Execute the specified request
+'
+' @param {RestRequest} request The request to execute
+' @return {RestResponse} Wrapper of server response for request
+' --------------------------------------------- '
+
+Public Function Execute(Request As RestRequest) As RestResponse
+    On Error GoTo ErrorHandling
+    Dim Http As Object
+    
+    Set Http = HttpSetup(Request, False)
+    Set Execute = RestHelpers.ExecuteRequest(Http, Request)
+    
+    If Not Me.Authenticator Is Nothing Then
+        Me.Authenticator.AfterExecute Me, Request, Execute
+    End If
+    
+ErrorHandling:
+
+    If Not Http Is Nothing Then Set Http = Nothing
+    If Err.Number <> 0 Then
+        ' Rethrow error
+        Err.Raise Err.Number, Description:=Err.Description
+    End If
+End Function
+
+''
+' Execute the specified request asynchronously
+'
+' @param {RestRequest} request The request to execute
+' @param {String} callback Name of function to call when request completes (specify "" if none)
+' @param {Variant} [callbackArgs] Variable array of arguments that get passed directly to callback function
+' @return {Boolean} Status of initiating request
+' --------------------------------------------- '
+
+Public Function ExecuteAsync(Request As RestRequest, Callback As String, Optional ByVal CallbackArgs As Variant) As Boolean
+    On Error GoTo ErrorHandling
+    Dim Http As Object
+    
+    ' Setup the request
+    Set Http = HttpSetup(Request, True)
+    RestHelpers.ExecuteRequestAsync Http, Request, Me.TimeoutMS, Callback, CallbackArgs
+    ExecuteAsync = True
+    Exit Function
+    
+ErrorHandling:
+
+    ' Close Http and rethrow error
+    If Not Http Is Nothing Then Set Http = Nothing
+    Err.Raise Err.Number, Description:=Err.Description
+End Function
+
+''
+' GET JSON from Url using options
+'
+' @param {String} Url (relative to BaseUrl, if set)
+' @param {Dictionary} [Options]
+' - Headers
+' - Cookies
+' - QuerystringParams
+' - UrlSegments
+' @return {RestResponse} Response
+' --------------------------------------------- '
+
+Public Function GetJSON(Url As String, Optional Options As Dictionary) As RestResponse
+    Dim Request As RestRequest
+    Set Request = RestHelpers.CreateRequestFromOptions(Options)
+    Request.Resource = Url
+    Request.Format = AvailableFormats.json
+    Request.Method = AvailableMethods.httpGET
+    
+    Set GetJSON = Me.Execute(Request)
+End Function
+
+''
+' POST JSON to Url using body and options
+'
+' @param {String} Url (relative to BaseUrl, if set)
+' @param {Dictionary} Body
+' @param {Dictionary} [Options]
+' - Headers
+' - Cookies
+' - QuerystringParams
+' - UrlSegments
+' @return {RestResponse} Response
+' --------------------------------------------- '
+
+Public Function PostJSON(Url As String, Body As Variant, Optional Options As Dictionary) As RestResponse
+    Dim Request As RestRequest
+    Set Request = RestHelpers.CreateRequestFromOptions(Options)
+    Request.Resource = Url
+    Request.Format = AvailableFormats.json
+    Request.Method = AvailableMethods.httpPOST
+    Request.AddBody Body
+    
+    Set PostJSON = Me.Execute(Request)
+End Function
+
+''
+' Set proxy for all requests
+'
+' @param {String} ProxyServer
+' @param {String} [Username=""]
+' @param {String} [Password=""]
+' @param {Variant} [BypassList]
+' --------------------------------------------- '
+
+Public Sub SetProxy(ProxyServer As String, _
+    Optional Username As String = "", Optional Password As String = "", Optional BypassList As Variant)
+    
+    Me.ProxyServer = ProxyServer
+    Me.ProxyUsername = Username
+    Me.ProxyPassword = Password
+    Me.ProxyBypassList = BypassList
+End Sub
+
+' ============================================= '
+' Private Methods
+' ============================================= '
+
+Private Function HttpSetup(ByRef Request As RestRequest, Optional UseAsync As Boolean = False) As Object
+    Set HttpSetup = RestHelpers.PrepareHttpRequest(Request, Me.TimeoutMS, UseAsync)
+    
+    If Me.ProxyServer <> "" Then
+        RestHelpers.PrepareProxyForHttpRequest HttpSetup, Me.ProxyServer, Me.ProxyUsername, Me.ProxyPassword, Me.ProxyBypassList
+    End If
+    
+    ' Before execute and http open hooks for authenticator
+    If Not Me.Authenticator Is Nothing Then
+        Me.Authenticator.BeforeExecute Me, Request
+        Me.Authenticator.HttpOpen HttpSetup, Me, Request, Me.BaseUrl, UseAsync
+        Set Request.Authenticator = Me.Authenticator
+        Set Request.Client = Me
+    Else
+        ' Nothing hooked in so open http object
+        HttpSetup.Open Request.MethodName(), Request.FullUrl(Me.BaseUrl), UseAsync
+    End If
+    
+    RestHelpers.SetHeaders HttpSetup, Request
+End Function
+
+Private Sub Class_Initialize()
+    Me.TimeoutMS = DefaultTimeoutMS
+End Sub
+Attribute VB_Name = "RestHelpers"
+''
+' RestHelpers v3.1.4
+' (c) Tim Hall - https://github.com/timhall/Excel-REST
+'
+' Common helpers RestClient
+'
+' @dependencies: Microsoft Scripting Runtime
+' @author: tim.hall.engr@gmail.com
+' @license: MIT (http://www.opensource.org/licenses/mit-license.php)
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+
+''
+' Contents:
+' 1. Logging
+' 2. Converters and encoding
+' 3. Url handling
+' 4. Object/Dictionary/Collection helpers
+' 5. Request preparation / handling
+' 6. Timing
+' 7. Cryptography
+' vba-json
+' --------------------------------------------- '
+
+' Declare SetTimer and KillTimer
+' See [SetTimer and VBA](http://www.mcpher.com/Home/excelquirks/classeslink/vbapromises/timercallbacks)
+' and [MSDN Article](http://msdn.microsoft.com/en-us/library/windows/desktop/ms644906(v=vs.85).aspx)
+' --------------------------------------------- '
+Option Private Module
+
+#If VBA7 And Win64 Then
+    ' 64-bit
+    Public Declare PtrSafe Function SetTimer Lib "user32" ( _
+        ByVal HWnd As LongLong, ByVal nIDEvent As LongLong, _
+        ByVal uElapse As LongLong, _
+        ByVal lpTimerFunc As LongLong) As LongLong
+    Public Declare PtrSafe Function KillTimer Lib "user32" ( _
+        ByVal HWnd As LongLong, _
+        ByVal nIDEvent As LongLong) As LongLong
+   
+#Else
+    '32-bit
+    Public Declare Function SetTimer Lib "user32" ( _
+        ByVal HWnd As Long, _
+        ByVal nIDEvent As Long, _
+        ByVal uElapse As Long, _
+        ByVal lpTimerFunc As Long) As Long
+    Public Declare Function KillTimer Lib "user32" ( _
+        ByVal HWnd As Long, _
+        ByVal nIDEvent As Long) As Long
+  
+#End If
+
+Private Const UserAgent As String = "GetStats/1.0 (timhall/Excel-REST v3.1.4)"
+Private DocumentHelper As Object
+Private ElHelper As Object
+
+' Moved to top from JSONLib
+Private Const INVALID_JSON      As Long = 1
+Private Const INVALID_OBJECT    As Long = 2
+Private Const INVALID_ARRAY     As Long = 3
+Private Const INVALID_BOOLEAN   As Long = 4
+Private Const INVALID_NULL      As Long = 5
+Private Const INVALID_KEY       As Long = 6
+
+Public Enum StatusCodes
+    Ok = 200
+    Created = 201
+    NoContent = 204
+    NotModified = 304
+    BadRequest = 400
+    Unauthorized = 401
+    Forbidden = 403
+    NotFound = 404
+    RequestTimeout = 408
+    UnsupportedMediaType = 415
+    InternalServerError = 500
+    BadGateway = 502
+    ServiceUnavailable = 503
+    GatewayTimeout = 504
+End Enum
+
+Public EnableLogging As Boolean
+
+' ============================================= '
+' 1. Logging
+' ============================================= '
+
+''
+' Log debug message with optional from description
+'
+' @param {String} Message
+' @param {String} [From]
+' --------------------------------------------- '
+Public Sub LogDebug(Message As String, Optional From As String = "")
+    If EnableLogging Then
+        If From = "" Then
+            From = "Excel-REST"
+        End If
+        
+        Debug.Print From & ": " & Message
+    End If
+End Sub
+
+''
+' Log error message with optional from description and error number
+'
+' @param {String} Message
+' @param {String} [From]
+' @param {Long} [ErrNumber]
+' --------------------------------------------- '
+Public Sub LogError(Message As String, Optional From As String = "", Optional ErrNumber As Long = -1)
+    If From = "" Then
+        From = "Excel-REST"
+    End If
+    If ErrNumber >= 0 Then
+        From = From & ": " & ErrNumber
+    End If
+    
+    Debug.Print "ERROR - " & From & ": " & Message
+End Sub
+
+''
+' Log request
+'
+' @param {RestRequest} Request
+' --------------------------------------------- '
+Public Sub LogRequest(Request As RestRequest)
+    If EnableLogging Then
+        Debug.Print "--> Request - " & Format(Now, "Long Time")
+        Debug.Print Request.MethodName & " " & Request.FullUrl
+        
+        Dim HeaderKey As Variant
+        For Each HeaderKey In Request.Headers.Keys()
+            Debug.Print HeaderKey & ": " & Request.Headers(HeaderKey)
+        Next HeaderKey
+        
+        Dim CookieKey As Variant
+        For Each CookieKey In Request.Cookies.Keys()
+            Debug.Print "Cookie: " & CookieKey & "=" & Request.Cookies(CookieKey)
+        Next CookieKey
+        
+        If Request.Body <> "" Then
+            Debug.Print vbNewLine & Request.Body
+        End If
+        
+        Debug.Print
+    End If
+End Sub
+
+''
+' Log response
+'
+' @param {RestResponse} Response
+' --------------------------------------------- '
+Public Sub LogResponse(Response As RestResponse, Request As RestRequest)
+    If EnableLogging Then
+        Debug.Print "<-- Response - " & Format(Now, "Long Time")
+        Debug.Print Response.StatusCode & " " & Response.StatusDescription
+        
+        Dim Header As Dictionary
+        For Each Header In Response.Headers
+            Debug.Print Header("key") & ": " & Header("value")
+        Next Header
+        
+        Dim CookieKey As Variant
+        For Each CookieKey In Response.Cookies.Keys()
+            Debug.Print "Cookie: " & CookieKey & "=" & Response.Cookies(CookieKey)
+        Next CookieKey
+        
+        Debug.Print vbNewLine & Response.Content & vbNewLine
+    End If
+End Sub
+
+''
+' Obfuscate message (for logging) by replacing with given character
+'
+' Example: ("Password", "#") -> ########
+'
+' @param {String} Secure
+' @param {String} [Character = *]
+' @return {String}
+' --------------------------------------------- '
+Public Function Obfuscate(Secure As String, Optional Character As String = "*") As String
+    Obfuscate = String(Len(Secure), Character)
+End Function
+
+' ============================================= '
+' 2. Converters and encoding
+' ============================================= '
+
+''
+' Parse given JSON string into object (Dictionary or Collection)
+'
+' @param {String} JSON
+' @return {Object}
+' --------------------------------------------- '
+Public Function ParseJSON(json As String) As Object
+    Set ParseJSON = json_parse(json)
+End Function
+
+''
+' Convert object to JSON string
+'
+' @param {Variant} Obj
+' @return {String}
+' --------------------------------------------- '
+Public Function ConvertToJSON(Obj As Variant) As String
+    ConvertToJSON = json_toString(Obj)
+End Function
+
+''
+' Parse url-encoded string to Dictionary
+' TODO: Handle arrays and collections
+'
+' @param {String} UrlEncoded
+' @return {Dictionary} Parsed
+' --------------------------------------------- '
+Public Function ParseUrlEncoded(Encoded As String) As Dictionary
+    Dim Items As Variant
+    Dim i As Integer
+    Dim Parts As Variant
+    Dim Parsed As New Dictionary
+    Dim Key As String
+    Dim Value As Variant
+    
+    Items = Split(Encoded, "&")
+    For i = LBound(Items) To UBound(Items)
+        Parts = Split(Items(i), "=")
+        
+        If UBound(Parts) - LBound(Parts) >= 1 Then
+            ' TODO: Handle numbers, arrays, and object better here
+            Key = UrlDecode(CStr(Parts(LBound(Parts))))
+            Value = UrlDecode(CStr(Parts(LBound(Parts) + 1)))
+            
+            If Parsed.Exists(Key) Then
+                Parsed(Key) = Value
+            Else
+                Parsed.Add Key, Value
+            End If
+        End If
+    Next i
+    
+    Set ParseUrlEncoded = Parsed
+End Function
+
+''
+' Convert dictionary to url encoded string
+' TODO: Handle arrays and collections
+'
+' @param {Variant} Obj
+' @return {String} UrlEncoded string (e.g. a=123&b=456&...)
+' --------------------------------------------- '
+Public Function ConvertToUrlEncoded(Obj As Variant) As String
+    If IsArray(Obj) Then
+        ' TODO Handle arrays and collections
+        Err.Raise vbObjectError + 1, "RestHelpers.ConvertToUrlEncoded", "Arrays are not currently supported by ConvertToUrlEncoded"
+    End If
+    
+    Dim Encoded As String
+    Dim ParameterKey As Variant
+    Dim Value As Variant
+    
+    For Each ParameterKey In Obj.Keys()
+        If Len(Encoded) > 0 Then: Encoded = Encoded & "&"
+        Value = Obj(ParameterKey)
+        
+        ' Convert boolean to lowercase
+        If VarType(Value) = vbBoolean Then
+            If Value Then
+                Value = "true"
+            Else
+                Value = "false"
+            End If
+        End If
+        
+        Encoded = Encoded & UrlEncode(ParameterKey, True) & "=" & UrlEncode(Value, True)
+    Next ParameterKey
+    
+    ConvertToUrlEncoded = Encoded
+End Function
+
+''
+' Parse XML string to XML
+'
+' @param {String} Encoded
+' @return {Object} XML
+' --------------------------------------------- '
+Public Function ParseXML(Encoded As String) As Object
+    Set ParseXML = CreateObject("MSXML2.DOMDocument")
+    ParseXML.async = False
+    ParseXML.LoadXML Encoded
+End Function
+
+''
+' Convert MSXML2.DomDocument to string
+'
+' @param {Object: MSXML2.DomDocument} XML
+' @return {String} XML string
+' --------------------------------------------- '
+
+Public Function ConvertToXML(Obj As Variant) As String
+    On Error Resume Next
+    ConvertToXML = Trim(Replace(Obj.xml, vbCrLf, ""))
+End Function
+
+''
+' Parse given string into object (Dictionary or Collection) for given format
+'
+' @param {String} Value
+' @param {AvailableFormats} Format
+' @return {Object}
+' --------------------------------------------- '
+Public Function ParseByFormat(Value As String, Format As AvailableFormats) As Object
+    Select Case Format
+    Case AvailableFormats.json
+        Set ParseByFormat = ParseJSON(Value)
+    Case AvailableFormats.formurlencoded
+        Set ParseByFormat = ParseUrlEncoded(Value)
+    Case AvailableFormats.xml
+        Set ParseByFormat = ParseXML(Value)
+    End Select
+End Function
+
+''
+' Convert object to given format
+'
+' @param {Variant} Obj
+' @param {AvailableFormats} Format
+' @return {String}
+' --------------------------------------------- '
+Public Function ConvertToFormat(Obj As Variant, Format As AvailableFormats) As String
+    Select Case Format
+    Case AvailableFormats.json
+        ConvertToFormat = ConvertToJSON(Obj)
+    Case AvailableFormats.formurlencoded
+        ConvertToFormat = ConvertToUrlEncoded(Obj)
+    Case AvailableFormats.xml
+        ConvertToFormat = ConvertToXML(Obj)
+    End Select
+End Function
+
+''
+' Url encode the given string
+'
+' @param {Variant} Text The raw string to encode
+' @param {Boolean} [SpaceAsPlus = False] Use plus sign for encoded spaces (otherwise %20)
+' @return {String} Encoded string
+' --------------------------------------------- '
+Public Function UrlEncode(Text As Variant, Optional SpaceAsPlus As Boolean = False) As String
+    Dim UrlVal As String
+    Dim StringLen As Long
+    
+    UrlVal = CStr(Text)
+    StringLen = Len(UrlVal)
+    
+    If StringLen > 0 Then
+        ReDim Result(StringLen) As String
+        Dim i As Long, charCode As Integer
+        Dim char As String, space As String
+        
+        ' Set space value
+        If SpaceAsPlus Then
+            space = "+"
+        Else
+            space = "%20"
+        End If
+        
+        ' Loop through string characters
+        For i = 1 To StringLen
+            ' Get character and ascii code
+            char = Mid$(UrlVal, i, 1)
+            charCode = asc(char)
+            Select Case charCode
+                Case 97 To 122, 65 To 90, 48 To 57, 45, 46, 95, 126
+                    ' Use original for AZaz09-._~
+                    Result(i) = char
+                Case 32
+                    ' Add space
+                    Result(i) = space
+                Case 0 To 15
+                    ' Convert to hex w/ leading 0
+                    Result(i) = "%0" & Hex(charCode)
+                Case Else
+                    ' Convert to hex
+                    Result(i) = "%" & Hex(charCode)
+            End Select
+        Next i
+        UrlEncode = Join(Result, "")
+    End If
+End Function
+
+''
+' Url decode the given encoded string
+'
+' @param {String} Encoded
+' @return {String} Decoded string
+' --------------------------------------------- '
+Public Function UrlDecode(Encoded As String) As String
+    Dim StringLen As Long
+    StringLen = Len(Encoded)
+    
+    If StringLen > 0 Then
+        Dim i As Long
+        Dim Result As String
+        Dim Temp As String
+        
+        For i = 1 To StringLen
+            Temp = Mid$(Encoded, i, 1)
+            
+            If Temp = "+" Then
+                Temp = " "
+            ElseIf Temp = "%" And StringLen >= i + 2 Then
+                Temp = Mid$(Encoded, i + 1, 2)
+                Temp = Chr(CDec("&H" & Temp))
+                
+                i = i + 2
+            End If
+                
+            Result = Result & Temp
+        Next i
+        
+        UrlDecode = Result
+    End If
+End Function
+
+''
+' Url encode the given string
+'
+' @param {Variant} Text The raw string to encode
+' @return {String} Encoded string
+' --------------------------------------------- '
+Public Function Base64Encode(Text As String) As String
+    Base64Encode = Replace(BytesToBase64(StringToBytes(Text)), vbLf, "")
+End Function
+
+' ============================================= '
+' 3. Url handling
+' ============================================= '
+
+''
+' Join Url with /
+'
+' @param {String} LeftSide
+' @param {String} RightSide
+' @return {String} Joined url
+' --------------------------------------------- '
+Public Function JoinUrl(LeftSide As String, RightSide As String) As String
+    If Left(RightSide, 1) = "/" Then
+        RightSide = Right(RightSide, Len(RightSide) - 1)
+    End If
+    If Right(LeftSide, 1) = "/" Then
+        LeftSide = Left(LeftSide, Len(LeftSide) - 1)
+    End If
+    
+    If LeftSide <> "" And RightSide <> "" Then
+        JoinUrl = LeftSide & "/" & RightSide
+    Else
+        JoinUrl = LeftSide & RightSide
+    End If
+End Function
+
+''
+' Check if protocol is included with url
+'
+' @param {String} Url
+' @return {String} Found protocol
+' --------------------------------------------- '
+Public Function IncludesProtocol(Url As String) As String
+    Dim Parts As New Dictionary
+    Set Parts = UrlParts(Url)
+    
+    If Parts("Protocol") <> "" Then
+        IncludesProtocol = Parts("Protocol") & "//"
+    End If
+End Function
+
+''
+' Remove protocol from url (if present)
+'
+' @param {String} Url
+' @return {String} Url without protocol
+' --------------------------------------------- '
+Public Function RemoveProtocol(Url As String) As String
+    Dim Protocol As String
+    
+    RemoveProtocol = Url
+    Protocol = IncludesProtocol(RemoveProtocol)
+    If Protocol <> "" Then
+        RemoveProtocol = Replace(RemoveProtocol, Protocol, "")
+    End If
+End Function
+
+''
+' Get Url parts
+'
+' Example:
+' "https://www.google.com/a/b/c.html?a=1&b=2#hash" ->
+' - Protocol = https:
+' - Host = www.google.com:443
+' - Hostname = www.google.com
+' - Port = 443
+' - Uri = /a/b/c.html
+' - Querystring = ?a=1&b=2
+' - Hash = #hash
+'
+' @param {String} Url
+' @return {Dictionary} Parts of url
+' Protocol, Host, Hostname, Port, Uri, Querystring, Hash
+' --------------------------------------------- '
+Public Function UrlParts(Url As String) As Dictionary
+    Dim Parts As New Dictionary
+
+    ' Create document/element is expensive, cache after creation
+    If DocumentHelper Is Nothing Or ElHelper Is Nothing Then
+        Set DocumentHelper = CreateObject("htmlfile")
+        Set ElHelper = DocumentHelper.createElement("a")
+    End If
+    
+    ElHelper.href = Url
+    Parts.Add "Protocol", ElHelper.Protocol
+    Parts.Add "Host", ElHelper.host
+    Parts.Add "Hostname", ElHelper.hostname
+    Parts.Add "Port", ElHelper.port
+    Parts.Add "Uri", "/" & ElHelper.pathname
+    Parts.Add "Querystring", ElHelper.Search
+    Parts.Add "Hash", ElHelper.Hash
+    
+    If Parts("Protocol") = ":" Or Parts("Protocol") = "localhost:" Then
+        Parts("Protocol") = ""
+    End If
+    
+    Set UrlParts = Parts
+End Function
+
+' ============================================= '
+' 4. Object/Dictionary/Collection/Array helpers
+' ============================================= '
+
+''
+' Combine two objects
+'
+' @param {Dictionary} OriginalObj Original object to add values to
+' @param {Dictionary} NewObj New object containing values to add to original object
+' @param {Boolean} [OverwriteOriginal=True] Overwrite any values that already exist in the original object
+' @return {Dictionary} Combined object
+' --------------------------------------------- '
+Public Function CombineObjects(ByVal OriginalObj As Dictionary, ByVal NewObj As Dictionary, _
+    Optional OverwriteOriginal As Boolean = True) As Dictionary
+    
+    Dim Combined As New Dictionary
+    
+    Dim OriginalKey As Variant
+    Dim Key As Variant
+    
+    If Not OriginalObj Is Nothing Then
+        For Each Key In OriginalObj.Keys()
+            Combined.Add Key, OriginalObj(Key)
+        Next Key
+    End If
+    If Not NewObj Is Nothing Then
+        For Each Key In NewObj.Keys()
+            If Combined.Exists(Key) And OverwriteOriginal Then
+                Combined(Key) = NewObj(Key)
+            ElseIf Not Combined.Exists(Key) Then
+                Combined.Add Key, NewObj(Key)
+            End If
+        Next Key
+    End If
+    
+    Set CombineObjects = Combined
+End Function
+
+''
+' Apply whitelist to given object to filter out unwanted key/values
+'
+' @param {Dictionary} Original model to filter
+' @param {Variant} WhiteList Array of values to retain in the model
+' @return {Dictionary} Filtered object
+' --------------------------------------------- '
+Public Function FilterObject(ByVal Original As Dictionary, Whitelist As Variant) As Dictionary
+    Dim Filtered As New Dictionary
+    Dim i As Integer
+    
+    If IsArray(Whitelist) Then
+        For i = LBound(Whitelist) To UBound(Whitelist)
+            If Original.Exists(Whitelist(i)) Then
+                Filtered.Add Whitelist(i), Original(Whitelist(i))
+            End If
+        Next i
+    ElseIf VarType(Whitelist) = vbString Then
+        If Original.Exists(Whitelist) Then
+            Filtered.Add Whitelist, Original(Whitelist)
+        End If
+    End If
+    
+    Set FilterObject = Filtered
+End Function
+
+''
+' Sort dictionary
+' TODO
+'
+' Source: http://www.cpearson.com/excel/CollectionsAndDictionaries.htm
+'         http://www.cpearson.com/excel/SortingArrays.aspx
+' --------------------------------------------- '
+Public Function SortDictionary(ByVal Dict As Dictionary, SortByKey As Boolean, _
+    Optional Descending As Boolean = False, Optional CompareMode As VbCompareMethod = vbTextCompare) As Dictionary
+    
+    Set SortDictionary = Dict
+End Function
+
+''
+' Check if given is an array
+'
+' @param {Object} Obj
+' @return {Boolean}
+' --------------------------------------------- '
+Public Function IsArray(Obj As Variant) As Boolean
+    If Not IsEmpty(Obj) Then
+        If IsObject(Obj) Then
+            If TypeOf Obj Is Collection Then
+                IsArray = True
+            End If
+        ElseIf VarType(Obj) = vbArray Or VarType(Obj) = 8204 Then
+            ' VarType = 8204 seems to arise from Array(...) constructor
+            IsArray = True
+        End If
+    End If
+End Function
+
+''
+' Add or update key/value in dictionary
+'
+' @param {Dictionary} Dict
+' @param {String} Key
+' @param {Variant} Value
+' --------------------------------------------- '
+Public Sub AddToDictionary(ByRef Dict As Dictionary, Key As String, Value As Variant)
+    If Not Dict.Exists(Key) Then
+        Dict.Add Key, Value
+    Else
+        Dict(Key) = Value
+    End If
+End Sub
+
+' ============================================= '
+' 5. Request preparation / handling
+' ============================================= '
+
+''
+' Prepare http request for execution
+'
+' @param {RestRequest} Request
+' @param {Integer} TimeoutMS
+' @param {Boolean} [UseAsync=False]
+' @return {Object} Setup http object
+' --------------------------------------------- '
+Public Function PrepareHttpRequest(Request As RestRequest, TimeoutMS As Long, _
+    Optional UseAsync As Boolean = False) As Object
+    Dim Http As Object
+    Set Http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+    
+    ' Set timeouts
+    Http.setTimeouts TimeoutMS, TimeoutMS, TimeoutMS, TimeoutMS
+    
+    ' Pass http to request and setup onreadystatechange
+    If UseAsync Then
+        Set Request.HttpRequest = Http
+        Http.onreadystatechange = Request
+    End If
+    
+    Set PrepareHttpRequest = Http
+End Function
+
+''
+' Prepare proxy for http object
+'
+' @param {String} ProxyServer
+' @param {String} [Username=""]
+' @param {String} [Password=""]
+' @param {Variant} [BypassList]
+' --------------------------------------------- '
+Public Sub PrepareProxyForHttpRequest(ByRef Http As Object, ProxyServer As String, _
+    Optional Username As String = "", Optional Password As String = "", Optional BypassList As Variant)
+    
+    If ProxyServer <> "" Then
+        Http.SetProxy 2, ProxyServer, BypassList
+        LogDebug "SetProxy: " & ProxyServer, "RestHelpers.PrepareProxyForHttpRequest"
+        
+        If Username <> "" Then
+            Http.SetProxyCredentials Username, Password
+            LogDebug "SetProxyCredentials: " & Username & ", " & Obfuscate(Password), "RestHelpers.PrepareProxyForHttpRequest"
+        End If
+    End If
+End Sub
+
+''
+' Set headers to http object for given request
+'
+' @param {Object} Http request
+' @param {RestRequest} Request
+' --------------------------------------------- '
+Public Sub SetHeaders(ByRef Http As Object, Request As RestRequest)
+    ' Add general headers to request
+    Request.AddHeader "User-Agent", UserAgent
+    Request.AddHeader "Content-Type", Request.ContentType
+    Request.AddHeader "Accept", Request.Accept
+    
+    If Request.IncludeContentLength Then
+        Request.AddHeader "Content-Length", Request.ContentLength
+    Else
+        If Request.Headers.Exists("Content-Length") Then
+            Request.Headers.Remove "Content-Length"
+        End If
+    End If
+
+    Dim HeaderKey As Variant
+    For Each HeaderKey In Request.Headers.Keys()
+        Http.setRequestHeader HeaderKey, Request.Headers(HeaderKey)
+    Next HeaderKey
+    
+    Dim CookieKey As Variant
+    For Each CookieKey In Request.Cookies.Keys()
+        Http.setRequestHeader "Cookie", CookieKey & "=" & Request.Cookies(CookieKey)
+    Next CookieKey
+End Sub
+
+''
+' Execute request synchronously
+'
+' @param {Object} Http
+' @param {RestRequest} Request The request to execute
+' @return {RestResponse} Wrapper of server response for request
+' --------------------------------------------- '
+Public Function ExecuteRequest(ByRef Http As Object, ByRef Request As RestRequest) As RestResponse
+    On Error GoTo ErrorHandling
+    Dim Response As RestResponse
+
+    ' Send the request and handle response
+    LogRequest Request
+    Http.Send Request.Body
+    Set Response = RestHelpers.CreateResponseFromHttp(Http, Request.ResponseFormat)
+    LogResponse Response, Request
+    
+ErrorHandling:
+
+    If Not Http Is Nothing Then Set Http = Nothing
+    If Err.Number <> 0 Then
+        If InStr(Err.Description, "The operation timed out") > 0 Then
+            ' Return 408
+            Set Response = RestHelpers.CreateResponse(StatusCodes.RequestTimeout, "Request Timeout")
+            LogDebug "Timeout: " & Request.FullUrl, "RestHelpers.ExecuteRequest"
+            Err.Clear
+        Else
+            ' Rethrow error
+            LogError Err.Description, "RestHelpers.ExecuteRequest", Err.Number
+            Err.Raise Err.Number, Description:=Err.Description
+        End If
+    End If
+    
+    Set ExecuteRequest = Response
+End Function
+
+''
+' Execute request asynchronously
+'
+' @param {Object} Http
+' @param {RestRequest} Request The request to execute
+' @param {String} Callback Name of function to call when request completes (specify "" if none)
+' @param {Variant} [CallbackArgs] Variable array of arguments that get passed directly to callback function
+' --------------------------------------------- '
+Public Sub ExecuteRequestAsync(ByRef Http As Object, ByRef Request As RestRequest, TimeoutMS As Long, Callback As String, Optional ByVal CallbackArgs As Variant)
+    On Error GoTo ErrorHandling
+
+    Request.Callback = Callback
+    Request.CallbackArgs = CallbackArgs
+    
+    ' Send the request
+    Request.StartTimeoutTimer TimeoutMS
+    LogRequest Request
+    Http.Send Request.Body
+    
+    Exit Sub
+    
+ErrorHandling:
+
+    ' Close http and rethrow error
+    If Not Http Is Nothing Then Set Http = Nothing
+    LogError Err.Description, "RestHelpers.ExecuteRequestAsync", Err.Number
+    Err.Raise Err.Number, Description:=Err.Description
+End Sub
+
+''
+' Create simple response
+'
+' @param {StatusCodes} StatusCode
+' @param {String} StatusDescription
+' @return {RestResponse}
+' --------------------------------------------- '
+Public Function CreateResponse(StatusCode As StatusCodes, StatusDescription As String) As RestResponse
+    Set CreateResponse = New RestResponse
+    CreateResponse.StatusCode = StatusCode
+    CreateResponse.StatusDescription = StatusDescription
+End Function
+
+''
+' Create response for http
+'
+' @param {Object} Http
+' @param {AvailableFormats} [Format=json]
+' @return {RestResponse}
+' --------------------------------------------- '
+Public Function CreateResponseFromHttp(ByRef Http As Object, Optional Format As AvailableFormats = AvailableFormats.json) As RestResponse
+    Set CreateResponseFromHttp = New RestResponse
+    
+    CreateResponseFromHttp.StatusCode = Http.Status
+    CreateResponseFromHttp.StatusDescription = Http.StatusText
+    CreateResponseFromHttp.Body = Http.ResponseBody
+    CreateResponseFromHttp.Content = Http.ResponseText
+    
+    ' Convert content to data by format
+    If Format <> AvailableFormats.plaintext Then
+        Set CreateResponseFromHttp.Data = RestHelpers.ParseByFormat(Http.ResponseText, Format)
+    End If
+    
+    ' Extract headers
+    Set CreateResponseFromHttp.Headers = ExtractHeadersFromResponseHeaders(Http.getAllResponseHeaders)
+    
+    ' Extract cookies
+    Set CreateResponseFromHttp.Cookies = ExtractCookiesFromHeaders(CreateResponseFromHttp.Headers)
+End Function
+
+''
+' Extract cookies from response headers
+'
+' @param {String} ResponseHeaders
+' @return {Dictionary} Cookies
+' --------------------------------------------- '
+Public Function ExtractCookiesFromHeaders(Headers As Collection) As Dictionary
+    Dim Cookies As New Dictionary
+    Dim Cookie As String
+    Dim Key As String
+    Dim Value As String
+    Dim Header As Dictionary
+    
+    For Each Header In Headers
+        If Header("key") = "Set-Cookie" Then
+            Cookie = Header("value")
+            Key = Mid$(Cookie, 1, InStr(1, Cookie, "=") - 1)
+            Value = Mid$(Cookie, InStr(1, Cookie, "=") + 1, Len(Cookie))
+            
+            If InStr(1, Value, ";") Then
+                Value = Mid$(Value, 1, InStr(1, Value, ";") - 1)
+            End If
+            
+            If Cookies.Exists(Key) Then
+                Cookies(Key) = UrlDecode(Value)
+            Else
+                Cookies.Add Key, UrlDecode(Value)
+            End If
+        End If
+    Next Header
+    
+    Set ExtractCookiesFromHeaders = Cookies
+End Function
+
+''
+' Extract headers from response headers
+'
+' @param {String} ResponseHeaders
+' @return {Collection} Headers
+' --------------------------------------------- '
+Public Function ExtractHeadersFromResponseHeaders(ResponseHeaders As String) As Collection
+    Dim Headers As New Collection
+    Dim Header As Dictionary
+    Dim Multiline As Boolean
+    Dim Key As String
+    Dim Value As String
+    
+    Dim Lines As Variant
+    Lines = Split(ResponseHeaders, vbCrLf)
+    
+    Dim i As Integer
+    For i = LBound(Lines) To (UBound(Lines) + 1)
+        If i > UBound(Lines) Then
+            Headers.Add Header
+        ElseIf Lines(i) <> "" Then
+            If InStr(1, Lines(i), ":") = 0 And Not Header Is Nothing Then
+                ' Assume part of multi-line header
+                Multiline = True
+            ElseIf Multiline Then
+                ' Close out multi-line string
+                Multiline = False
+                Headers.Add Header
+            ElseIf Not Header Is Nothing Then
+                Headers.Add Header
+            End If
+            
+            If Not Multiline Then
+                Set Header = New Dictionary
+                Header.Add "key", Trim(Mid$(Lines(i), 1, InStr(1, Lines(i), ":") - 1))
+                Header.Add "value", Trim(Mid$(Lines(i), InStr(1, Lines(i), ":") + 1, Len(Lines(i))))
+            Else
+                Header("value") = Header("value") & vbCrLf & Lines(i)
+            End If
+        End If
+    Next i
+    
+    Set ExtractHeadersFromResponseHeaders = Headers
+End Function
+
+''
+' Create request from options
+'
+' @param {Dictionary} Options
+' - Headers
+' - Cookies
+' - QuerystringParams
+' - UrlSegments
+' --------------------------------------------- '
+Public Function CreateRequestFromOptions(Options As Dictionary) As RestRequest
+    Dim Request As New RestRequest
+    
+    If Not IsEmpty(Options) And Not Options Is Nothing Then
+        If Options.Exists("Headers") Then
+            Set Request.Headers = Options("Headers")
+        End If
+        If Options.Exists("Cookies") Then
+            Set Request.Cookies = Options("Cookies")
+        End If
+        If Options.Exists("QuerystringParams") Then
+            Set Request.QuerystringParams = Options("QuerystringParams")
+        End If
+        If Options.Exists("UrlSegments") Then
+            Set Request.UrlSegments = Options("UrlSegments")
+        End If
+    End If
+    
+    Set CreateRequestFromOptions = Request
+End Function
+
+''
+' Update response with another response
+'
+' @param {RestResponse) Original (Updated by reference)
+' @param {RestResponse) Updated
+' @return {RestResponse}
+' --------------------------------------------- '
+Public Function UpdateResponse(ByRef Original As RestResponse, Updated As RestResponse) As RestResponse
+    Original.StatusCode = Updated.StatusCode
+    Original.StatusDescription = Updated.StatusDescription
+    Original.Content = Updated.Content
+    Original.Body = Updated.Body
+    Set Original.Headers = Updated.Headers
+    Set Original.Cookies = Updated.Cookies
+    
+    If Not IsEmpty(Updated.Data) Then
+        If IsObject(Updated.Data) Then
+            Set Original.Data = Updated.Data
+        Else
+            Original.Data = Updated.Data
+        End If
+    End If
+    
+    Set UpdateResponse = Original
+End Function
+
+''
+' Get name for format
+'
+' @param {AvailableFormats} Format
+' @return {String}
+' --------------------------------------------- '
+Public Function FormatToName(Format As AvailableFormats) As String
+    Select Case Format
+    Case AvailableFormats.formurlencoded
+        FormatToName = "form-urlencoded"
+    Case AvailableFormats.json
+        FormatToName = "json"
+    Case AvailableFormats.xml
+        FormatToName = "xml"
+    Case AvailableFormats.plaintext
+        FormatToName = "txt"
+    End Select
+End Function
+
+''
+' Get content-type for format
+'
+' @param {AvailableFormats} Format
+' @return {String}
+' --------------------------------------------- '
+Public Function FormatToContentType(Format As AvailableFormats) As String
+    Select Case Format
+    Case AvailableFormats.formurlencoded
+        FormatToContentType = "application/x-www-form-urlencoded;charset=UTF-8"
+    Case AvailableFormats.json
+        FormatToContentType = "application/json"
+    Case AvailableFormats.xml
+        FormatToContentType = "application/xml"
+    Case AvailableFormats.plaintext
+        FormatToContentType = "text/plain"
+    End Select
+End Function
+
+' ============================================= '
+' 6. Timing
+' ============================================= '
+
+''
+' Start timeout timer for request
+'
+' @param {RestRequest} Request
+' @param {Long} TimeoutMS
+' --------------------------------------------- '
+Public Sub StartTimeoutTimer(Request As RestRequest, TimeoutMS As Long)
+    SetTimer Application.HWnd, ObjPtr(Request), TimeoutMS, AddressOf RestHelpers.TimeoutTimerExpired
+End Sub
+
+''
+' Stop timeout timer for request
+'
+' @param {RestRequest} Request
+' --------------------------------------------- '
+Public Sub StopTimeoutTimer(Request As RestRequest)
+    KillTimer Application.HWnd, ObjPtr(Request)
+End Sub
+
+''
+' Handle timeout timers expiring
+'
+' See [MSDN Article](http://msdn.microsoft.com/en-us/library/windows/desktop/ms644907(v=vs.85).aspx)
+' --------------------------------------------- '
+#If VBA7 And Win64 Then
+Public Sub TimeoutTimerExpired(ByVal HWnd As Long, ByVal Msg As Long, _
+        ByVal Request As RestRequest, ByVal dwTimer As Long)
+#Else
+Sub TimeoutTimerExpired(ByVal HWnd As Long, ByVal uMsg As Long, _
+        ByVal Request As RestRequest, ByVal dwTimer As Long)
+#End If
+    
+    StopTimeoutTimer Request
+    LogDebug "Async Timeout: " & Request.FullUrl, "RestHelpers.TimeoutTimerExpired"
+    Request.TimedOut
+End Sub
+
+' ============================================= '
+' 7. Cryptography
+' ============================================= '
+
+''
+' Perform HMAC-SHA1 on string and return as Hex or Base64
+' [Does VBA have a Hash_HMAC](http://stackoverflow.com/questions/8246340/does-vba-have-a-hash-hmac)
+'
+' @param {String} Text
+' @param {String} Secret
+' @param {String} [Format = Hex] Hex or Base64
+' @return {String} HMAC-SHA1
+' --------------------------------------------- '
+Public Function HMACSHA1(Text As String, Secret As String, Optional Format As String = "Hex") As String
+    HMACSHA1 = BytesToFormat(HMACSHA1AsBytes(Text, Secret), Format)
+End Function
+
+''
+' Perform HMAC-SHA256 on string and return as Hex or Base64
+'
+' @param {String} Text
+' @param {String} Secret
+' @param {String} [Format = Hex] Hex or Base64
+' @return {String} HMAC-SHA256
+' --------------------------------------------- '
+Public Function HMACSHA256(Text As String, Secret As String, Optional Format As String = "Hex") As String
+    HMACSHA256 = BytesToFormat(HMACSHA256AsBytes(Text, Secret), Format)
+End Function
+
+''
+' Perform MD5 Hash on string and return as Hex or Base64
+' Source: http://www.di-mgt.com.au/src/basMD5.bas.html
+'
+' @param {String} Text
+' @param {String} [Format = Hex] Hex or Base64
+' @return {String} MD5 Hash
+' --------------------------------------------- '
+Public Function MD5(Text As String, Optional Format As String = "Hex") As String
+    MD5 = BytesToFormat(MD5AsBytes(Text), Format)
+End Function
+
+Public Function HMACSHA1AsBytes(Text As String, Secret As String) As Byte()
+    Dim Crypto As Object
+    Set Crypto = CreateObject("System.Security.Cryptography.HMACSHA1")
+    
+    Crypto.Key = StringToBytes(Secret)
+    HMACSHA1AsBytes = Crypto.ComputeHash_2(StringToBytes(Text))
+End Function
+
+Public Function HMACSHA256AsBytes(Text As String, Secret As String) As Byte()
+    Dim Crypto As Object
+    Set Crypto = CreateObject("System.Security.Cryptography.HMACSHA256")
+    
+    Crypto.Key = StringToBytes(Secret)
+    HMACSHA256AsBytes = Crypto.ComputeHash_2(StringToBytes(Text))
+End Function
+
+Public Function MD5AsBytes(Text As String) As Byte()
+    Dim Crypto As Object
+    Set Crypto = CreateObject("System.Security.Cryptography.MD5CryptoServiceProvider")
+    
+    MD5AsBytes = Crypto.ComputeHash_2(StringToBytes(Text))
+End Function
+
+''
+' Convert string to bytes
+'
+' @param {String} Text
+' @return {Byte()}
+' --------------------------------------------- '
+Public Function StringToBytes(Text As String) As Byte()
+    Dim Encoding As Object
+    Set Encoding = CreateObject("System.Text.UTF8Encoding")
+    
+    StringToBytes = Encoding.Getbytes_4(Text)
+End Function
+
+Public Function BytesToHex(Bytes() As Byte) As String
+    Dim i As Integer
+    For i = LBound(Bytes) To UBound(Bytes)
+        BytesToHex = BytesToHex & LCase(Right("0" & Hex$(Bytes(i)), 2))
+    Next i
+End Function
+
+Public Function BytesToBase64(Bytes() As Byte) As String
+    Dim xml As Object
+    Dim Node As Object
+    Set xml = CreateObject("MSXML2.DOMDocument")
+
+    ' byte array to base64
+    Set Node = xml.createElement("b64")
+    Node.DataType = "bin.base64"
+    Node.nodeTypedValue = Bytes
+    BytesToBase64 = Node.Text
+
+    Set Node = Nothing
+    Set xml = Nothing
+End Function
+
+''
+' Convert bytes to given format (Hex or Base64)
+'
+' @param {Byte()} Bytes
+' @param {String} Format (Hex or Base64)
+' @return {String}
+' --------------------------------------------- '
+Public Function BytesToFormat(Bytes() As Byte, Format As String) As String
+    Select Case UCase(Format)
+    Case "HEX"
+        BytesToFormat = BytesToHex(Bytes)
+    Case "BASE64"
+        BytesToFormat = BytesToBase64(Bytes)
+    End Select
+End Function
+
+''
+' Create random alphanumeric nonce
+'
+' @param {Integer} [NonceLength=32]
+' @return {String} Randomly generated nonce
+' --------------------------------------------- '
+Public Function CreateNonce(Optional NonceLength As Integer = 32) As String
+    Dim str As String
+    Dim Count As Integer
+    Dim Result As String
+    Dim random As Integer
+    
+    str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUIVWXYZ"
+    Result = ""
+    
+    For Count = 1 To NonceLength
+        random = Int(((Len(str) - 1) * Rnd) + 1)
+        Result = Result + Mid$(str, random, 1)
+    Next
+    CreateNonce = Result
+End Function
+
+' ======================================================================================== '
+'
+' JSONLib, http://code.google.com/p/vba-json/
+'
+' Copyright (c) 2013, Ryo Yokoyama
+' All rights reserved.
+'
+' Redistribution and use in source and binary forms, with or without
+' modification, are permitted provided that the following conditions are met:
+'     * Redistributions of source code must retain the above copyright
+'       notice, this list of conditions and the following disclaimer.
+'     * Redistributions in binary form must reproduce the above copyright
+'       notice, this list of conditions and the following disclaimer in the
+'       documentation and/or other materials provided with the distribution.
+'     * Neither the name of the <organization> nor the
+'       names of its contributors may be used to endorse or promote products
+'       derived from this software without specific prior written permission.
+'
+' THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+' ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+' WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+' DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+' DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+' (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+' LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+' ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+' (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+' SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+'
+' Changes for Excel-REST:
+' - Updated json_parseNumber to reduce chance of overflow
+' - Swapped Mid for Mid$
+' - Handle colon in object key
+' - Handle duplicate keys in object parsing
+' - Change methods to Private and prefix with json_
+'
+' ======================================================================================== '
+
+' (Moved to top of file)
+'Private Const INVALID_JSON      As Long = 1
+'Private Const INVALID_OBJECT    As Long = 2
+'Private Const INVALID_ARRAY     As Long = 3
+'Private Const INVALID_BOOLEAN   As Long = 4
+'Private Const INVALID_NULL      As Long = 5
+'Private Const INVALID_KEY       As Long = 6
+
+'
+'   parse string and create JSON object (Dictionary or Collection in VB)
+'
+Private Function json_parse(ByRef str As String) As Object
+
+    Dim Index As Long
+    Index = 1
+    
+    On Error Resume Next
+
+    Call json_skipChar(str, Index)
+    Select Case Mid$(str, Index, 1)
+    Case "{"
+        Set json_parse = json_parseObject(str, Index)
+    Case "["
+        Set json_parse = json_parseArray(str, Index)
+    End Select
+
+End Function
+
+'
+'   parse collection of key/value (Dictionary in VB)
+'
+Private Function json_parseObject(ByRef str As String, ByRef Index As Long) As Dictionary
+
+    Set json_parseObject = New Dictionary
+    
+    ' "{"
+    Call json_skipChar(str, Index)
+    If Mid$(str, Index, 1) <> "{" Then Err.Raise vbObjectError + INVALID_OBJECT, Description:="char " & Index & " : " & Mid$(str, Index)
+    Index = Index + 1
+    
+    Dim Key As String
+    
+    Do
+        Call json_skipChar(str, Index)
+        If "}" = Mid$(str, Index, 1) Then
+            Index = Index + 1
+            Exit Do
+        ElseIf "," = Mid$(str, Index, 1) Then
+            Index = Index + 1
+            Call json_skipChar(str, Index)
+        End If
+        
+        Key = json_parseKey(str, Index)
+        If Not json_parseObject.Exists(Key) Then
+            json_parseObject.Add Key, json_parseValue(str, Index)
+        Else
+            json_parseObject.Item(Key) = json_parseValue(str, Index)
+        End If
+    Loop
+
+End Function
+
+'
+'   parse list (Collection in VB)
+'
+Private Function json_parseArray(ByRef str As String, ByRef Index As Long) As Collection
+
+    Set json_parseArray = New Collection
+    
+    ' "["
+    Call json_skipChar(str, Index)
+    If Mid$(str, Index, 1) <> "[" Then Err.Raise vbObjectError + INVALID_ARRAY, Description:="char " & Index & " : " + Mid$(str, Index)
+    Index = Index + 1
+    
+    Do
+        
+        Call json_skipChar(str, Index)
+        If "]" = Mid$(str, Index, 1) Then
+            Index = Index + 1
+            Exit Do
+        ElseIf "," = Mid$(str, Index, 1) Then
+            Index = Index + 1
+            Call json_skipChar(str, Index)
+        End If
+        
+        ' add value
+        json_parseArray.Add json_parseValue(str, Index)
+        
+    Loop
+
+End Function
+
+'
+'   parse string / number / object / array / true / false / null
+'
+Private Function json_parseValue(ByRef str As String, ByRef Index As Long)
+
+    Call json_skipChar(str, Index)
+    
+    Select Case Mid$(str, Index, 1)
+    Case "{"
+        Set json_parseValue = json_parseObject(str, Index)
+    Case "["
+        Set json_parseValue = json_parseArray(str, Index)
+    Case """", "'"
+        json_parseValue = json_parseString(str, Index)
+    Case "t", "f"
+        json_parseValue = json_parseBoolean(str, Index)
+    Case "n"
+        json_parseValue = json_parseNull(str, Index)
+    Case Else
+        json_parseValue = json_parseNumber(str, Index)
+    End Select
+
+End Function
+
+'
+'   parse string
+'
+Private Function json_parseString(ByRef str As String, ByRef Index As Long) As String
+
+    Dim quote   As String
+    Dim char    As String
+    Dim Code    As String
+    
+    Call json_skipChar(str, Index)
+    quote = Mid$(str, Index, 1)
+    Index = Index + 1
+    Do While Index > 0 And Index <= Len(str)
+        char = Mid$(str, Index, 1)
+        Select Case (char)
+        Case "\"
+            Index = Index + 1
+            char = Mid$(str, Index, 1)
+            Select Case (char)
+            Case """", "\", "/" ' Before: Case """", "\\", "/"
+                json_parseString = json_parseString & char
+                Index = Index + 1
+            Case "b"
+                json_parseString = json_parseString & vbBack
+                Index = Index + 1
+            Case "f"
+                json_parseString = json_parseString & vbFormFeed
+                Index = Index + 1
+            Case "n"
+                json_parseString = json_parseString & vbNewLine
+                Index = Index + 1
+            Case "r"
+                json_parseString = json_parseString & vbCr
+                Index = Index + 1
+            Case "t"
+                json_parseString = json_parseString & vbTab
+                Index = Index + 1
+            Case "u"
+                Index = Index + 1
+                Code = Mid$(str, Index, 4)
+                json_parseString = json_parseString & ChrW(Val("&h" + Code))
+                Index = Index + 4
+            End Select
+        Case quote
+            
+            Index = Index + 1
+            Exit Function
+        Case Else
+            json_parseString = json_parseString & char
+            Index = Index + 1
+        End Select
+    Loop
+
+End Function
+
+'
+'   parse number
+'
+Private Function json_parseNumber(ByRef str As String, ByRef Index As Long)
+
+    Dim Value   As String
+    Dim char    As String
+    
+    Call json_skipChar(str, Index)
+    Do While Index > 0 And Index <= Len(str)
+        char = Mid$(str, Index, 1)
+        If InStr("+-0123456789.eE", char) Then
+            Value = Value & char
+            Index = Index + 1
+        Else
+            json_parseNumber = Val(Value)
+            Exit Function
+        End If
+    Loop
+
+
+End Function
+
+'
+'   parse true / false
+'
+Private Function json_parseBoolean(ByRef str As String, ByRef Index As Long) As Boolean
+
+    Call json_skipChar(str, Index)
+    If Mid$(str, Index, 4) = "true" Then
+        json_parseBoolean = True
+        Index = Index + 4
+    ElseIf Mid$(str, Index, 5) = "false" Then
+        json_parseBoolean = False
+        Index = Index + 5
+    Else
+        Err.Raise vbObjectError + INVALID_BOOLEAN, Description:="char " & Index & " : " & Mid$(str, Index)
+    End If
+
+End Function
+
+'
+'   parse null
+'
+Private Function json_parseNull(ByRef str As String, ByRef Index As Long)
+
+    Call json_skipChar(str, Index)
+    If Mid$(str, Index, 4) = "null" Then
+        json_parseNull = Null
+        Index = Index + 4
+    Else
+        Err.Raise vbObjectError + INVALID_NULL, Description:="char " & Index & " : " & Mid$(str, Index)
+    End If
+
+End Function
+
+Private Function json_parseKey(ByRef str As String, ByRef Index As Long) As String
+
+    Dim dquote  As Boolean
+    Dim squote  As Boolean
+    Dim char    As String
+    
+    Call json_skipChar(str, Index)
+    Do While Index > 0 And Index <= Len(str)
+        char = Mid$(str, Index, 1)
+        Select Case (char)
+        Case """"
+            dquote = Not dquote
+            Index = Index + 1
+            If Not dquote Then
+                Call json_skipChar(str, Index)
+                If Mid$(str, Index, 1) <> ":" Then
+                    Err.Raise vbObjectError + INVALID_KEY, Description:="char " & Index & " : " & json_parseKey
+                End If
+            End If
+        Case "'"
+            squote = Not squote
+            Index = Index + 1
+            If Not squote Then
+                Call json_skipChar(str, Index)
+                If Mid$(str, Index, 1) <> ":" Then
+                    Err.Raise vbObjectError + INVALID_KEY, Description:="char " & Index & " : " & json_parseKey
+                End If
+            End If
+        Case ":"
+            If Not dquote And Not squote Then
+                Index = Index + 1
+                Exit Do
+            Else
+                ' Colon in key name
+                json_parseKey = json_parseKey & char
+                Index = Index + 1
+            End If
+        Case Else
+            If InStr(vbCrLf & vbCr & vbLf & vbTab & " ", char) Then
+            Else
+                json_parseKey = json_parseKey & char
+            End If
+            Index = Index + 1
+        End Select
+    Loop
+
+End Function
+
+'
+'   skip special character
+'
+Private Sub json_skipChar(ByRef str As String, ByRef Index As Long)
+
+    While Index > 0 And Index <= Len(str) And InStr(vbCrLf & vbCr & vbLf & vbTab & " ", Mid$(str, Index, 1))
+        Index = Index + 1
+    Wend
+
+End Sub
+
+Private Function json_toString(ByRef Obj As Variant) As String
+
+    Select Case VarType(Obj)
+        Case vbNull
+            json_toString = "null"
+        Case vbEmpty
+            json_toString = "null"
+        Case vbDate
+            json_toString = """" & CStr(Obj) & """"
+        Case vbString
+            json_toString = """" & json_encode(Obj) & """"
+        Case vbObject
+            Dim bFI, i
+            bFI = True
+            If TypeName(Obj) = "Dictionary" Then
+                json_toString = json_toString & "{"
+                Dim Keys
+                Keys = Obj.Keys
+                For i = 0 To Obj.Count - 1
+                    If bFI Then bFI = False Else json_toString = json_toString & ","
+                    Dim Key
+                    Key = Keys(i)
+                    json_toString = json_toString & """" & Key & """:" & json_toString(Obj(Key))
+                Next i
+                json_toString = json_toString & "}"
+            ElseIf TypeName(Obj) = "Collection" Then
+                json_toString = json_toString & "["
+                Dim Value
+                For Each Value In Obj
+                    If bFI Then bFI = False Else json_toString = json_toString & ","
+                    json_toString = json_toString & json_toString(Value)
+                Next Value
+                json_toString = json_toString & "]"
+            End If
+        Case vbBoolean
+            If Obj Then json_toString = "true" Else json_toString = "false"
+        Case vbVariant, vbArray, vbArray + vbVariant
+            Dim sEB
+            json_toString = json_multiArray(Obj, 1, "", sEB)
+        Case Else
+            json_toString = Replace(Obj, ",", ".")
+    End Select
+
+End Function
+
+Private Function json_encode(str) As String
+    
+    Dim i, j, aL1, aL2, c, p
+
+    aL1 = Array(&H22, &H5C, &H2F, &H8, &HC, &HA, &HD, &H9)
+    aL2 = Array(&H22, &H5C, &H2F, &H62, &H66, &H6E, &H72, &H74)
+    For i = 1 To Len(str)
+        p = True
+        c = Mid$(str, i, 1)
+        For j = 0 To 7
+            If c = Chr(aL1(j)) Then
+                json_encode = json_encode & "\" & Chr(aL2(j))
+                p = False
+                Exit For
+            End If
+        Next
+
+        If p Then
+            Dim A
+            A = AscW(c)
+            If A > 31 And A < 127 Then
+                json_encode = json_encode & c
+            ElseIf A > -1 Or A < 65535 Then
+                json_encode = json_encode & "\u" & String(4 - Len(Hex(A)), "0") & Hex(A)
+            End If
+        End If
+    Next
+End Function
+
+Private Function json_multiArray(aBD, iBC, sPS, ByRef sPT)   ' Array BoDy, Integer BaseCount, String PoSition
+    Dim iDU, iDL, i ' Integer DimensionUBound, Integer DimensionLBound
+    On Error Resume Next
+    iDL = LBound(aBD, iBC)
+    iDU = UBound(aBD, iBC)
+    
+    Dim sPB1, sPB2  ' String PointBuffer1, String PointBuffer2
+    If Err.Number = 9 Then
+        sPB1 = sPT & sPS
+        For i = 1 To Len(sPB1)
+            If i <> 1 Then sPB2 = sPB2 & ","
+            sPB2 = sPB2 & Mid$(sPB1, i, 1)
+        Next
+'        json_multiArray = json_multiArray & json_toString(Eval("aBD(" & sPB2 & ")"))
+        json_multiArray = json_multiArray & json_toString(aBD(sPB2))
+    Else
+        sPT = sPT & sPS
+        json_multiArray = json_multiArray & "["
+        For i = iDL To iDU
+            json_multiArray = json_multiArray & json_multiArray(aBD, iBC + 1, i, sPT)
+            If i < iDU Then json_multiArray = json_multiArray & ","
+        Next
+        json_multiArray = json_multiArray & "]"
+        sPT = Left(sPT, iBC - 2)
+    End If
+    Err.Clear
+End Function
+
+Attribute VB_Name = "RestRequest"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+''
+' RestRequest v3.1.4
+' (c) Tim Hall - https://github.com/timhall/Excel-REST
+'
+' Create a request for use with a rest client
+'
+' @dependencies: Microsoft Scripting Runtime
+' @author: tim.hall.engr@gmail.com
+' @license: MIT (http://www.opensource.org/licenses/mit-license.php
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' --------------------------------------------- '
+' Constants and Private Variables
+' --------------------------------------------- '
+
+Private pHeaders As Dictionary
+Private pParameters As Dictionary
+Private pQuerystringParams As Dictionary
+Private pUrlSegments As Dictionary
+Private pCookies As Dictionary
+Private pBody As Variant
+Private pBodyString As String
+Private pContentType As String
+Private pAccept
+Private pContentLength As Long
+Private pHttpRequest As Object
+
+' --------------------------------------------- '
+' Types
+' --------------------------------------------- '
+
+'Public Enum AvailableMethods
+'    httpGET
+'    httpPOST
+'    httpPUT
+'    httpDELETE
+'    httpPATCH
+'End Enum
+Public Enum AvailableFormats
+    plaintext
+    json
+    formurlencoded
+    xml
+End Enum
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Public Resource As String
+Public Method As AvailableMethods
+Public RequestFormat As AvailableFormats
+Public ResponseFormat As AvailableFormats
+Public RootElement As String
+Public Callback As String
+Public BaseUrl As String
+Public RequireHTTPS As Boolean
+Public CallbackArgs As Variant
+Public IncludeContentLength As Boolean
+Public Authenticator As IAuthenticator
+Public Client As RestClient
+
+Public Property Get Format() As AvailableFormats
+    Format = RequestFormat
+End Property
+Public Property Let Format(Value As AvailableFormats)
+    Me.RequestFormat = Value
+    Me.ResponseFormat = Value
+End Property
+
+Public Property Get Headers() As Dictionary
+    If pHeaders Is Nothing Then: Set pHeaders = New Dictionary
+    Set Headers = pHeaders
+End Property
+Public Property Set Headers(Value As Dictionary)
+    Set pHeaders = Value
+End Property
+
+Public Property Get Parameters() As Dictionary
+    If pParameters Is Nothing Then: Set pParameters = New Dictionary
+    Set Parameters = pParameters
+End Property
+Public Property Set Parameters(Value As Dictionary)
+    Set pParameters = Value
+End Property
+
+Public Property Get QuerystringParams() As Dictionary
+    If pQuerystringParams Is Nothing Then: Set pQuerystringParams = New Dictionary
+    Set QuerystringParams = pQuerystringParams
+End Property
+Public Property Set QuerystringParams(Value As Dictionary)
+    Set pQuerystringParams = Value
+End Property
+
+Public Property Get UrlSegments() As Dictionary
+    If pUrlSegments Is Nothing Then: Set pUrlSegments = New Dictionary
+    Set UrlSegments = pUrlSegments
+End Property
+Public Property Set UrlSegments(Value As Dictionary)
+    Set pUrlSegments = Value
+End Property
+
+Public Property Get Cookies() As Dictionary
+    If pCookies Is Nothing Then: Set pCookies = New Dictionary
+    Set Cookies = pCookies
+End Property
+Public Property Set Cookies(Value As Dictionary)
+    Set pCookies = Value
+End Property
+
+Public Property Get FormattedResource() As String
+    Dim segment As Variant
+    
+    FormattedResource = Me.Resource
+    
+    ' Replace url segments
+    For Each segment In Me.UrlSegments.Keys
+        FormattedResource = Replace(FormattedResource, "{" & segment & "}", Me.UrlSegments(segment))
+    Next segment
+    FormattedResource = Replace(FormattedResource, "{format}", RestHelpers.FormatToName(Me.ResponseFormat))
+    
+    ' Add querystring
+    If (Me.Method = httpGET And Not Me.Parameters Is Nothing) Or Not Me.QuerystringParams Is Nothing Then
+        If (Me.Parameters.Count > 0 And Me.Method = httpGET) Or Me.QuerystringParams.Count > 0 Then
+            If InStr(FormattedResource, "?") <= 0 Then
+                FormattedResource = FormattedResource & "?"
+            Else
+                FormattedResource = FormattedResource & "&"
+            End If
+            
+            ' Only load parameters to querystring if GET request (otherwise they are added to the body)
+            If Me.Method = httpGET Then
+                FormattedResource = FormattedResource & RestHelpers.ConvertToUrlEncoded(RestHelpers.CombineObjects(Me.Parameters, Me.QuerystringParams))
+            Else
+                FormattedResource = FormattedResource & RestHelpers.ConvertToUrlEncoded(Me.QuerystringParams)
+            End If
+        End If
+    End If
+End Property
+
+Public Property Get Body() As String
+    ' Add body if it's defined or parameters have been set and it is not a GET request
+    If Not IsEmpty(pBody) Or pBodyString <> "" Or (Me.Parameters.Count > 0 And Me.Method <> httpGET) Then
+        If pBodyString <> "" Then
+            If Me.Parameters.Count > 0 And Me.Method <> httpGET Then
+                Err.Raise vbObjectError + 1, "RestRequest.Body", "Unable to combine body string and parameters"
+            Else
+                Body = pBodyString
+            End If
+        Else
+            Dim BodyValue As Variant
+            If RestHelpers.IsArray(pBody) And Me.Parameters.Count > 0 And Me.Method <> httpGET Then
+                Err.Raise vbObjectError + 1, "RestRequest.Body", "Unable to combine body array and parameters"
+            ElseIf Not RestHelpers.IsArray(pBody) And Me.Parameters.Count > 0 And Me.Method <> httpGET Then
+                If Me.Parameters.Count > 0 And Not IsEmpty(pBody) Then
+                    Set BodyValue = CombineObjects(Me.Parameters, pBody)
+                ElseIf Me.Parameters.Count > 0 Then
+                    Set BodyValue = Me.Parameters
+                Else
+                    Set BodyValue = pBody
+                End If
+            ElseIf VarType(pBody) = vbObject Then
+                Set BodyValue = pBody
+            Else
+                BodyValue = pBody
+            End If
+            
+            If Me.RequestFormat <> AvailableFormats.plaintext Then
+                Body = RestHelpers.ConvertToFormat(BodyValue, Me.RequestFormat)
+            Else
+                Body = BodyValue
+            End If
+        End If
+    End If
+End Property
+
+Public Property Get FullUrl(Optional ClientBaseUrl As String = "") As String
+    Dim Formatted As String
+    Formatted = Me.FormattedResource
+    If Me.BaseUrl = "" Then Me.BaseUrl = ClientBaseUrl
+    
+    ' If protocol is missing, add it based on RequireHTTPS property
+    If RestHelpers.IncludesProtocol(Me.BaseUrl) = "" And RestHelpers.IncludesProtocol(Formatted) = "" Then
+        If Me.RequireHTTPS Then
+            Me.BaseUrl = "https://" & Me.BaseUrl
+        Else
+            Me.BaseUrl = "http://" & Me.BaseUrl
+        End If
+    End If
+    
+    ' If protocol is included on base and resource, use base
+    ' If protocol is included on resource and base is not blank, move to base
+    If RestHelpers.IncludesProtocol(Me.BaseUrl) <> "" And RestHelpers.IncludesProtocol(Formatted) <> "" Then
+        Formatted = RestHelpers.RemoveProtocol(Formatted)
+    ElseIf RestHelpers.IncludesProtocol(Formatted) <> "" And Me.BaseUrl <> "" Then
+        Me.BaseUrl = RestHelpers.IncludesProtocol(Formatted) & Me.BaseUrl
+        Formatted = RestHelpers.RemoveProtocol(Formatted)
+    End If
+    
+    FullUrl = JoinUrl(Me.BaseUrl, Formatted)
+End Property
+
+Public Property Get MethodName() As String
+    Select Case Me.Method
+    Case httpDELETE
+        MethodName = "DELETE"
+    Case httpPUT
+        MethodName = "PUT"
+    Case httpPATCH
+        MethodName = "PATCH"
+    Case httpPOST
+        MethodName = "POST"
+    Case Else
+        MethodName = "GET"
+    End Select
+End Property
+
+Public Property Get FormatName() As String
+    FormatName = RestHelpers.FormatToName(Me.RequestFormat)
+End Property
+
+Public Property Get ContentType() As String
+    If pContentType <> "" Then
+        ContentType = pContentType
+    Else
+        ContentType = RestHelpers.FormatToContentType(Me.RequestFormat)
+    End If
+End Property
+Public Property Let ContentType(Value As String)
+    pContentType = Value
+End Property
+
+Public Property Get Accept() As String
+    If pAccept <> "" Then
+        Accept = pAccept
+    Else
+        Accept = RestHelpers.FormatToContentType(Me.ResponseFormat)
+    End If
+End Property
+Public Property Let Accept(Value As String)
+    pAccept = Value
+End Property
+
+Public Property Get ContentLength() As Long
+    If pContentLength > 0 Then
+        ContentLength = pContentLength
+    Else
+        ContentLength = Len(Me.Body)
+    End If
+End Property
+Public Property Let ContentLength(Value As Long)
+    pContentLength = Value
+End Property
+
+Public Property Get HttpRequest() As Object
+    Set HttpRequest = pHttpRequest
+End Property
+Public Property Set HttpRequest(ByVal Value As Object)
+    Set pHttpRequest = Value
+End Property
+
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Add the specified key/value to the request header
+'
+' @param {String} key
+' @param {String} value
+' --------------------------------------------- '
+
+Public Sub AddHeader(Key As String, Value As String)
+    RestHelpers.AddToDictionary Me.Headers, Key, Value
+End Sub
+
+''
+' Replace the defined segment in the url with the provided value
+'
+' @param {String} key
+' @param {String} value
+' --------------------------------------------- '
+
+Public Sub AddUrlSegment(segment As String, Value As String)
+    RestHelpers.AddToDictionary Me.UrlSegments, segment, Value
+End Sub
+
+''
+' Add parameter to request (querystring for GET, body for POST)
+'
+' @param {String} key
+' @param {Variant} value
+' --------------------------------------------- '
+
+Public Sub AddParameter(Key As String, Value As Variant)
+    RestHelpers.AddToDictionary Me.Parameters, Key, Value
+End Sub
+
+''
+' Add querystring parameter to request
+'
+' @param {String} key
+' @param {Variant} value
+' --------------------------------------------- '
+
+Public Sub AddQuerystringParam(Key As String, Value As Variant)
+    RestHelpers.AddToDictionary Me.QuerystringParams, Key, Value
+End Sub
+
+''
+' Add cookie to request
+'
+' @param {String} key
+' @param {Variant} value
+' --------------------------------------------- '
+
+Public Sub AddCookie(Key As String, Value As Variant)
+    RestHelpers.AddToDictionary Me.Cookies, Key, Value
+End Sub
+
+''
+' Add body to request
+'
+' @param {Variant} bodyVal Object/Collection/Array to add to body (will be converted to string)
+' --------------------------------------------- '
+
+Public Function AddBody(BodyVal As Variant)
+    If IsObject(BodyVal) Then
+        Set pBody = BodyVal
+    ElseIf RestHelpers.IsArray(BodyVal) Then
+        pBody = BodyVal
+    Else
+        pBodyString = BodyVal
+    End If
+End Function
+
+''
+' Add body as string
+'
+' @param {String} bodyVal
+' --------------------------------------------- '
+
+Public Function AddBodyString(BodyVal As String)
+    pBodyString = BodyVal
+End Function
+
+''
+' Process asynchronous requests
+'
+' --------------------------------------------- '
+
+Public Sub ReadyStateChangeHandler()
+    ' During development, uncomment to watch changes in ready state
+    ' Debug.Print "ReadyStageChangeHandler: " & Me.HttpRequest.readyState
+
+    ' ReadyStates [The XMLHttpRequest Object](http://www.w3.org/TR/2006/WD-XMLHttpRequest-20060405/):
+    ' 0. Uninintialized
+    ' 1. Open
+    ' 2. Sent
+    ' 3. Receiving
+    ' 4. Loaded
+    
+    ' Once loaded, process result
+    If Me.HttpRequest.readyState = 4 Then
+        Me.StopTimeoutTimer
+        
+        ' Callback
+        Dim Response As RestResponse
+        Set Response = RestHelpers.CreateResponseFromHttp(Me.HttpRequest, Me.ResponseFormat)
+        RestHelpers.LogResponse Response, Me
+        RunCallback Response
+    End If
+End Sub
+
+''
+' Start timeout timer
+'
+' --------------------------------------------- '
+
+Public Sub StartTimeoutTimer(TimeoutMS As Long)
+    RestHelpers.StartTimeoutTimer Me, TimeoutMS
+End Sub
+
+''
+' Stop timeout timer
+'
+' --------------------------------------------- '
+
+Public Sub StopTimeoutTimer()
+    RestHelpers.StopTimeoutTimer Me
+End Sub
+
+''
+' Handle timeouts
+'
+' --------------------------------------------- '
+
+Public Sub TimedOut()
+    ' Callback
+    RestHelpers.LogDebug "Timed out", "RestRequest.TimedOut"
+    RunCallback RestHelpers.CreateResponse(StatusCodes.RequestTimeout, "Request Timeout")
+End Sub
+
+' ============================================= '
+' Private Functions
+' ============================================= '
+
+Private Sub RunCallback(Response As RestResponse)
+    ' Run callback function (needs to be a public function),
+    ' passing in response and any defined callback arguments
+    '
+    ' callback({RestResponse})
+    ' OR callback({RestResponse}, {Variant})
+    '
+    ' Example:
+    ' Public Function Callback(response As RestResponse, args As Variant)
+    '     Debug.Print "Callback: " & response.StatusCode
+    '     For i = LBound(args) To UBound(args)
+    '         Debug.Print args(i) & " was passed into async execute"
+    '     Next i
+    ' End Function
+    
+    If Not Me.Authenticator Is Nothing Then
+        ' Don't pass Authenticator and Client with Request to AfterExecute
+        Dim Auth As IAuthenticator
+        Dim Client As RestClient
+        Set Auth = Me.Authenticator
+        Set Client = Me.Client
+        Set Me.Authenticator = Nothing
+        Set Me.Client = Nothing
+        
+        Auth.AfterExecute Client, Me, Response
+    End If
+    If Me.Callback <> "" Then
+        RestHelpers.LogDebug Me.Callback, "RestRequest.RunCallback"
+        If Not IsMissing(Me.CallbackArgs) Then
+            Application.Run Me.Callback, Response, Me.CallbackArgs
+        Else
+            Application.Run Me.Callback, Response
+        End If
+    End If
+
+    ' Request is finished, clean up
+    Set Me.HttpRequest = Nothing
+End Sub
+
+Private Sub Class_Initialize()
+    ' Set default values
+    Me.IncludeContentLength = True
+    Me.RequestFormat = json
+    Me.ResponseFormat = json
+End Sub
+
+Private Sub Class_Terminate()
+    ' Clean up
+    If Not Me.HttpRequest Is Nothing Then: Set Me.HttpRequest = Nothing
+    If Not Me.Authenticator Is Nothing Then: Set Me.Authenticator = Nothing
+    If Not Me.Client Is Nothing Then: Set Me.Client = Nothing
+End Sub
+Attribute VB_Name = "RestResponse"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+''
+' RestResponse v3.1.4
+' (c) Tim Hall - https://github.com/timhall/Excel-REST
+'
+' Wrapper for http responses
+'
+' @author: tim.hall.engr@gmail.com
+' @license: MIT (http://www.opensource.org/licenses/mit-license.php)
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Public StatusCode As StatusCodes
+Public StatusDescription As String
+Public Content As String
+Public Data As Variant
+Public Body As Variant
+Public Headers As Collection
+Public Cookies As Dictionary
+
+Private Sub Class_Initialize()
+    Body = Array()
+    Set Headers = New Collection
+    Set Cookies = New Dictionary
+End Sub
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+''
+' GetStats
+' (c)Interstat 2014
+'
+' Allow easy Excel access to Interstat API server
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' ============================================= '
+' Events
+' ============================================= '
+
+Private Sub Workbook_Open()
+Application.OnTime Now, "sIndex.PrintList"
+sIndex.ScrollArea = sIndex.Range("A:A").Resize(ColumnSize:=sIndex.[ListArea].Column + sIndex.[ListArea].Columns.Count).Address
+End Sub
+
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+On Error Resume Next
+sReport.Clear
+DoEvents
+sIndex.Clear
+DoEvents
+End Sub
+
+Private Sub Workbook_AfterSave(ByVal Success As Boolean)
+sIndex.printList
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+sIndex.Activate
+End Sub
+Attribute VB_Name = "WaitForm"
+Attribute VB_Base = "0{8186D5B1-D834-4C06-AB78-5F86B4F3A249}{71496771-068F-42CE-A183-52FE8757B56A}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Progress As Long
+Public ProgressMax As Long
+
+Public Sub Wait(Msg As String, Optional ByVal ProgressStatus As Long)
+If ProgressStatus >= 0 And ProgressStatus <= ProgressMax Then
+    ProgressLabel.Visible = True
+    Progress = ProgressStatus
+End If
+
+DetailLabel = Msg
+ProgressLabel = CInt(Progress / ProgressMax * 100) & "%"
+If Not Me.Visible Then
+    Me.Show
+End If
+Me.Repaint
+DoEvents
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+Cancel = 1
+End Sub
+Attribute VB_Name = "sIndex"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+''
+' sIndex Sheet
+' (c)Interstat 2014
+'
+' List reports and provide access to individual reports
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+Sub Clear()
+Dim wbSaved As Boolean
+wbSaved = ThisWorkbook.Saved
+[ListArea].Offset(1).EntireRow.Resize(UsedRange.Rows.Count).Delete
+ThisWorkbook.Saved = wbSaved
+End Sub
+
+Sub showLogin()
+AuthForm.Show
+End Sub
+
+Sub printList()
+Application.ScreenUpdating = False
+Dim wbSaved As Boolean
+wbSaved = ThisWorkbook.Saved
+Activate
+
+Clear
+
+Dim ReportList As Collection, Report As Dictionary
+Dim Buffer()
+
+On Error GoTo handleError
+Set ReportList = ApiConnect.Execute("reports")
+On Error GoTo 0
+
+Dim numLine As Long
+
+If ReportList.Count > 0 Then
+    ReDim Buffer(1 To ReportList.Count, 1 To 6)
+    
+    numLine = 1
+    
+    Dim tempDate As String
+    For Each Report In ReportList
+        tempDate = Split(Replace(Report("date"), "T", " "), "+")(0)
+        Buffer(numLine, 1) = Report("id")
+        Buffer(numLine, 2) = Left(Report("serial"), 4) & "-" & Mid(Report("serial"), 5)
+        Buffer(numLine, 3) = DateValue(tempDate) + TimeValue(tempDate)
+        Buffer(numLine, 4) = Report("winuser")
+        Buffer(numLine, 5) = Report("wincomputer")
+        Buffer(numLine, 6) = Report("runs")
+        numLine = numLine + 1
+    Next Report
+    [ListArea].Offset(1).Resize(ReportList.Count).Value = Buffer
+
+    [ListArea].AutoFilter
+    [ListArea].Resize(numLine).AutoFilter
+    [ListArea].Resize(numLine).Columns.AutoFit
+End If
+
+ActiveWindow.ScrollRow = [ListArea].Row + 1
+[D2].Select
+
+ThisWorkbook.Saved = wbSaved
+
+Exit Sub
+handleError:
+MsgBox Err.Description, vbCritical
+End Sub
+
+' ============================================= '
+' Events
+' ============================================= '
+
+Private Sub Worksheet_BeforeDoubleClick(ByVal Target As Range, Cancel As Boolean)
+If UsedRange.Rows.Count - [ListArea].Row = 0 Then Exit Sub
+If Intersect(Target, [ListArea].Offset(1).Resize(UsedRange.Rows.Count - [ListArea].Row)) Is Nothing Then Exit Sub
+Cancel = True
+
+Dim ReportId As Long
+ReportId = CLng(Target.Offset(0, [ListArea].Column - Target.Column))
+
+Dim Report As Dictionary
+
+On Error GoTo handleError
+Set Report = ApiConnect.Execute("reports/" & ReportId)
+On Error GoTo 0
+
+sReport.printReport Report
+
+Exit Sub
+handleError:
+MsgBox Err.Description, vbCritical
+End Sub
+
+Private Sub Worksheet_Activate()
+ScrollArea = Range("A:A").Resize(ColumnSize:=[ListArea].Column + [ListArea].Columns.Count).Address
+End Sub
+Attribute VB_Name = "sReport"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+''
+' sReport Sheet
+' (c)Interstat 2014
+'
+' Display details from a given report
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+Sub Clear()
+Worksheet_Deactivate
+sIndex.Activate
+End Sub
+
+Sub printReport(Report As Dictionary)
+Application.ScreenUpdating = False
+Dim wbSaved As Boolean
+wbSaved = ThisWorkbook.Saved
+
+Cells(1, 2) = "'" & Report("id")
+Cells(2, 2) = DateValue(Report("date")) + TimeValue(Report("date"))
+
+Cells(1, 4) = Report("wincomputer")
+Cells(2, 4) = Report("winuser")
+Cells(3, 4) = Left(Report("serial"), 4) & "-" & Mid(Report("serial"), 5)
+
+Dim Run
+Dim Buffer()
+Dim numLine As Long
+
+If Report("runs").Count > 0 Then
+    ReDim Buffer(1 To Report("runs").Count, 1 To 3)
+    numLine = 1
+    
+    Application.ScreenUpdating = False
+    For Each Run In Report("runs")
+            On Error Resume Next
+            Buffer(numLine, 1) = DateValue(Run("date")) + TimeValue(Run("date"))
+            Buffer(numLine, 2) = Run("class_name")
+            Buffer(numLine, 3) = Run("clock")
+            On Error GoTo 0
+            numLine = numLine + 1
+    Next Run
+    [RunsArea].Offset(1).Resize(Report("runs").Count).Value = Buffer
+    [RunsArea].AutoFilter
+    [RunsArea].Resize(numLine).AutoFilter
+End If
+
+UsedRange.Columns.AutoFit
+
+AutoFilter.Sort.SortFields.Clear
+AutoFilter.Sort.SortFields.Add Key:=Columns(2), SortOn:=xlSortOnValues, Order:=xlAscending
+With AutoFilter.Sort
+    .Header = xlYes
+    .Orientation = xlTopToBottom
+    .SortMethod = xlPinYin
+    .Apply
+End With
+
+Name = "Report " & Report("id")
+
+Visible = xlSheetVisible
+ThisWorkbook.Saved = wbSaved
+Activate
+ActiveWindow.ScrollRow = [RunsArea].Row + 1
+[A1].Select
+End Sub
+
+' ============================================= '
+' Events
+' ============================================= '
+
+Private Sub Worksheet_Deactivate()
+Dim wbSaved As Boolean
+wbSaved = ThisWorkbook.Saved
+[RunsArea].Offset(1).EntireRow.Resize(UsedRange.Count).Delete
+Cells(1, 2).Resize(2).ClearContents
+Cells(1, 4).Resize(3).ClearContents
+Visible = xlSheetHidden
+Name = "Report"
+ThisWorkbook.Saved = wbSaved
+End Sub
+
+Private Sub Worksheet_Activate()
+ScrollArea = Range("A:A").Resize(ColumnSize:=[RunsArea].Column + [RunsArea].Columns.Count).Address
+End Sub
+Attribute VB_Name = "sRunCache"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+''
+' sRunCache HIDDEN Sheet
+' (c)Interstat 2014
+'
+' Stores the ID of the reports already loaded in sRuns
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Property Get Loaded(id As Long) As Boolean
+Loaded = Cells(id, 1) = 1
+End Property
+
+Property Let Loaded(id As Long, Value As Boolean)
+If Value Then
+    Cells(id, 1) = 1
+Else
+    Cells(id, 1) = 0
+End If
+End Property
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+Sub Clear()
+Columns(1).Delete
+End Sub
+
+' ============================================= '
+' Events
+' ============================================= '
+
+Private Sub Worksheet_Activate()
+ScrollArea = "$A:$A"
+End Sub
+Attribute VB_Name = "sRuns"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+''
+' sRuns Sheet
+' (c)Interstat 2014
+'
+' List all available User Runs from the server.
+' Do NOT reload already loaded reports
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+Sub Clear()
+Dim wbSaved As Boolean
+wbSaved = ThisWorkbook.Saved
+[RunsArea].Offset(1).Resize(UsedRange.Rows.Count - [RunsArea].Row + 1).EntireRow.Delete
+Cells(1, 2) = "NEVER"
+sRunCache.Clear
+ActiveWindow.ScrollRow = 4
+[A1].Select
+ThisWorkbook.Saved = wbSaved
+End Sub
+
+Sub Load()
+Dim ReportList As Collection
+
+On Error GoTo handleError
+Set ReportList = ApiConnect.Execute("reports")
+On Error GoTo 0
+
+Dim Report As Dictionary, ReportId As Long
+Dim tempDate As String
+WaitForm.ProgressMax = ReportList.Count
+WaitForm.Progress = 0
+
+Application.ScreenUpdating = False
+For Each Report In ReportList
+    ReportId = CLng(Report("id"))
+    If Not sRunCache.Loaded(ReportId) And Report("runs") > 0 Then
+        On Error GoTo handleError
+        AddReport ReportId
+        On Error GoTo 0
+        sRunCache.Loaded(ReportId) = True
+    End If
+    tempDate = Split(Replace(Report("date"), "T", " "), "+")(0)
+    WaitForm.Wait MonthName(Month(DateValue(tempDate))) & " " & Year(DateValue(tempDate)), WaitForm.Progress + 1
+Next Report
+
+WaitForm.Hide
+Cells(1, 2) = Now
+
+Dim numLine As Long
+numLine = UsedRange.Rows.Count - [RunsArea].Row + 1
+[RunsArea].AutoFilter
+[RunsArea].Resize(numLine).AutoFilter
+UsedRange.Columns.AutoFit
+
+Application.ScreenUpdating = False
+AutoFilter.Sort.SortFields.Clear
+AutoFilter.Sort.SortFields.Add Key:=Columns(5), SortOn:=xlSortOnValues, Order:=xlDescending
+With AutoFilter.Sort
+    .Header = xlYes
+    .Orientation = xlTopToBottom
+    .SortMethod = xlPinYin
+    .Apply
+End With
+
+Activate
+ActiveWindow.ScrollRow = 4
+[A1].Select
+
+Exit Sub
+handleError:
+MsgBox Err.Description, vbCritical
+End Sub
+
+' ============================================= '
+' Private Methods
+' ============================================= '
+
+Private Sub AddReport(ReportId As Long)
+Dim Report As Dictionary
+
+Set Report = ApiConnect.Execute("reports/" & ReportId)
+
+Dim Run As Dictionary
+Dim Buffer()
+Dim numLine As Long
+
+ReDim Buffer(1 To Report("runs").Count, 1 To 7)
+numLine = 1
+
+For Each Run In Report("runs")
+    Buffer(numLine, 1) = Report("id")
+    Buffer(numLine, 2) = Left(Report("serial"), 4) & "-" & Mid(Report("serial"), 5)
+    Buffer(numLine, 3) = Report("winuser")
+    Buffer(numLine, 4) = Report("wincomputer")
+    Buffer(numLine, 5) = DateValue(Run("date")) + TimeValue(Run("date"))
+    Buffer(numLine, 6) = Run("class_name")
+    Buffer(numLine, 7) = Run("clock")
+    numLine = numLine + 1
+Next Run
+[RunsArea].Offset(UsedRange.Rows.Count - [RunsArea].Row + 1).Resize(Report("runs").Count).Value = Buffer
+
+Application.ScreenUpdating = True
+DoEvents
+Application.ScreenUpdating = False
+End Sub
+
+' ============================================= '
+' Events
+' ============================================= '
+
+Private Sub Worksheet_Activate()
+ScrollArea = Range("A:A").Resize(ColumnSize:=[RunsArea].Column + [RunsArea].Columns.Count).Address
+End Sub
+
+
+INQUEST-PP=macro

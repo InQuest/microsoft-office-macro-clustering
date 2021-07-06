@@ -1,0 +1,2837 @@
+Attribute VB_Name = "Allocation"
+
+Public Enum TanksToAllocate
+  BufferPrep = 1
+  BufferHold = 2
+  BufferPrepAndHold = 3
+  PoolTanks = 4
+End Enum
+Public Enum CellsToAllocate
+  AllocateOnlyEmptyCells = 1
+  FixProblems = 2
+  ReallocateAll = 3
+End Enum
+Public Enum AllocationRule
+  FirstTanktoLastTank = 1
+  SmallestTankFirst = 2
+End Enum
+
+Public Sub buffer_tank_allocate(chooseTanksToAllocate As TanksToAllocate, chooseCellsToAllocate As CellsToAllocate, chooseAllocationRule As AllocationRule)
+    UnprotectAll
+    ThisWorkbook.isblock = True
+    
+    'Get the libraries in order
+    Dim libraries(10) As Integer
+    Dim numunos As Integer
+    numunos = 0
+    Dim irow As Integer
+    For irow = 1 To 10
+        If shtLists.Range("U2L").Cells(irow, 1) <> "" Then
+            numunos = numunos + 1
+            libraries(numunos) = shtLists.Range("U2L").Cells(irow, 1).Value
+        End If
+    Next
+    
+    If chooseCellsToAllocate = ReallocateAll Then
+        'Remove current allocation
+        For irow = 1 To numunos
+            If chooseTanksToAllocate = BufferPrep Or chooseTanksToAllocate = BufferPrepAndHold Then Range("L" & libraries(irow) & "BP").ClearContents
+            If chooseTanksToAllocate = BufferHold Or chooseTanksToAllocate = BufferPrepAndHold Then Range("L" & libraries(irow) & "BH").ClearContents
+        Next
+    End If
+    
+    Dim numtanks As Integer
+    numtanks = 50
+    
+    Dim BufferTankName() As String
+    Dim MinCap() As Double
+    Dim MaxCap() As Double
+    Dim isAvailBP() As Integer
+    ReDim BufferTankName(numtanks)
+    ReDim MinCap(numtanks)
+    ReDim MaxCap(numtanks)
+    ReDim isAvailBP(numtanks)
+    Dim itank As Integer
+    Dim jtank As Integer
+    For itank = 1 To numtanks
+        BufferTankName(itank) = shtBufferTanks.Range("BUFFERTANKNAMES").Cells(itank, 1).Value
+        MinCap(itank) = shtBufferTanks.Range("BUFFERTANKDB").Cells(itank, 9).Value
+        MaxCap(itank) = shtBufferTanks.Range("BUFFERTANKDB").Cells(itank, 10).Value
+    Next
+    
+    Dim MinCap2() As Double
+    Dim MaxCap2() As Double
+    ReDim MinCap2(numtanks, numtanks) As Double
+    ReDim MaxCap2(numtanks, numtanks) As Double
+    For itank = 1 To numtanks
+    For jtank = 1 To numtanks
+        MinCap2(itank, jtank) = MinCap(itank) + MinCap(jtank)
+        MaxCap2(itank, jtank) = MaxCap(itank) + MaxCap(jtank)
+    Next
+    Next
+    
+        
+    Dim iUnO As Integer
+    Dim numunits As Integer
+    Dim qtyreq As Double
+    Dim indexIncumbent As Integer
+    Dim indexIncumbent2 As Integer
+    
+    If Not chooseTanksToAllocate = BufferHold Then
+        
+        For iUnO = 1 To numunos
+            'Refresh the buffer prep tank list
+            LibraryFunctions.get_available_bufferpreptanks libraries(iUnO), isAvailBP
+            
+            'For each row, perform the allocation using the smallest available tank
+            'Assume:
+            'Upstream more important than downstream, i.e. we allocate tanks starting in upstream and ending in downstream
+            'One Tank > Two Tanks
+            'Two of the Same Type of Tank > Two of a different tyep
+            'If two tanks fit, pick the one with smallest maximum volume
+            'If two tanks fit and have the same maximum volume, pick the one with the largest minimum volume
+            
+            For irow = 1 To Range("L" & libraries(iUnO) & "BP").Rows.Count
+                'Check: if fix problems and there is a problem, re-allocate.
+                If chooseCellsToAllocate = FixProblems And Range("L" & libraries(iUnO) & "BP").Cells(irow, 1) <> "" And Range("L" & libraries(iUnO) & "BP").Cells(irow, 1).Offset(0, 7).Value <> "" Then
+                    Range("L" & libraries(iUnO) & "BP").Cells(irow, 1) = ""
+                    Range("L" & libraries(iUnO) & "BP").Cells(irow, 2) = ""
+                    Range("L" & libraries(iUnO) & "BP").Cells(irow, 3) = ""
+                    Range("L" & libraries(iUnO) & "BP").Cells(irow, 4) = ""
+                End If
+                
+                If Range("L" & libraries(iUnO) & "BP").Cells(irow, 1) = "" And IsNumeric(Range("L" & libraries(iUnO) & "BP").Cells(irow, 1).Offset(0, -1).Value) Then
+                    'There have been no allocations: need to allocate
+                           
+                    numunits = 1
+                    indexIncumbent = -1
+                    indexIncumbent2 = -1
+                    
+                    qtyreq = Range("L" & libraries(iUnO) & "BP").Cells(irow, 1).Offset(0, -1).Value
+                    If qtyreq > 0.00001 Then
+                        'Positive quantity
+                        For itank = 1 To numtanks
+                            'Is available, is between min and max
+                            If isAvailBP(itank) > 0 And MinCap(itank) <= qtyreq And MaxCap(itank) >= qtyreq Then
+                                If indexIncumbent = -1 Then
+                                    'No incumbent
+                                    indexIncumbent = itank
+                                ElseIf MaxCap(itank) < MaxCap(indexIncumbent) Then
+                                    indexIncumbent = itank
+                                ElseIf MaxCap(itank) = MaxCap(indexIncumbent) And MinCap(itank) > MaxCap(indexIncumbent) Then
+                                    indexIncumbent = itank
+                                End If
+                            End If
+                        Next
+                        If indexIncumbent = -1 Then
+                            'No incumbent has been found: try allocating two tanks
+                            For itank = 1 To numtanks
+                            If isAvailBP(itank) > 0 Then
+                            For jtank = 1 To numtanks
+                                'Is available, is between min and max
+                                If isAvailBP(jtank) > 0 And MinCap2(itank, jtank) <= qtyreq And MaxCap2(itank, jtank) >= qtyreq Then
+                                    If indexIncumbent = -1 Then
+                                        'No incumbent
+                                        indexIncumbent = itank
+                                        indexIncumbent2 = jtank
+                                    ElseIf MaxCap2(itank, jtank) < MaxCap2(indexIncumbent, indexIncumbent2) Then
+                                        indexIncumbent = itank
+                                        indexIncumbent2 = jtank
+                                    ElseIf MaxCap2(itank, jtank) = MaxCap2(indexIncumbent, indexIncumbent2) And MinCap2(itank, jtank) > MaxCap2(indexIncumbent, indexIncumbent2) Then
+                                        indexIncumbent = itank
+                                        indexIncumbent2 = jtank
+                                    End If
+                                End If
+                            Next
+                            End If
+                            Next
+                        End If
+                        If indexIncumbent = -1 Then
+                            'No incumbent has been found: try allocating multiple tanks
+                            For itank = 1 To numtanks
+                                If MaxCap(itank) > 0 Then
+                                'Is available, is between min and max
+                                numunits = Application.RoundUp(qtyreq / MaxCap(itank), 0)
+                                
+                                If isAvailBP(itank) >= numunits And MinCap(itank) * numunits <= qtyreq And MaxCap(itank) * numunits >= qtyreq Then
+                                    If indexIncumbent = -1 Then
+                                        'No incumbent
+                                        indexIncumbent = itank
+                                    ElseIf MaxCap(itank) < MaxCap(indexIncumbent) Then
+                                        indexIncumbent = itank
+                                    ElseIf MaxCap(itank) = MaxCap(indexIncumbent) And MinCap(itank) > MaxCap(indexIncumbent) Then
+                                        indexIncumbent = itank
+                                    End If
+                                End If
+                                End If
+                            Next
+                        End If
+                        If indexIncumbent <> -1 Then
+                            'We've found a match: allocate
+                            Range("L" & libraries(iUnO) & "BP").Cells(irow, 1).Value = BufferTankName(indexIncumbent)
+                            If numunits > 1 Then
+                                Range("L" & libraries(iUnO) & "BP").Cells(irow, 2).Value = numunits
+                                isAvailBP(indexIncumbent) = isAvailBP(indexIncumbent) - numunits
+                            ElseIf indexIncumbent2 <> -1 Then
+                                Range("L" & libraries(iUnO) & "BP").Cells(irow, 3).Value = BufferTankName(indexIncumbent2)
+                                isAvailBP(indexIncumbent) = isAvailBP(indexIncumbent) - 1
+                                isAvailBP(indexIncumbent2) = isAvailBP(indexIncumbent2) - 1
+                            Else
+                                isAvailBP(indexIncumbent) = isAvailBP(indexIncumbent) - 1
+                            End If
+                        End If
+                    End If
+                End If
+            
+            Next
+        Next
+    End If
+    
+    'Now Prep tanks are allocated. Move onto Hold tanks.
+    If Not chooseTanksToAllocate = BufferPrep Then
+        
+        For iUnO = 1 To numunos
+            For irow = 1 To Range("L" & libraries(iUnO) & "BP").Rows.Count
+                If Range("L" & libraries(iUnO) & "BP").Cells(irow, 1) <> "" And IsNumeric(Range("L" & libraries(iUnO) & "BP").Cells(irow, 1).Offset(0, -1).Value) Then
+                    'Check: if fix problems and there is a problem, re-allocate.
+                    If chooseCellsToAllocate = FixProblems And Range("L" & libraries(iUnO) & "BH").Cells(irow, 1) <> "" And Range("L" & libraries(iUnO) & "BH").Cells(irow, 1).Offset(0, 8).Value <> "" Then
+                        Range("L" & libraries(iUnO) & "BH").Cells(irow, 1) = ""
+                        Range("L" & libraries(iUnO) & "BH").Cells(irow, 2) = ""
+                        Range("L" & libraries(iUnO) & "BH").Cells(irow, 3) = ""
+                        Range("L" & libraries(iUnO) & "BH").Cells(irow, 4) = ""
+                        Range("L" & libraries(iUnO) & "BH").Cells(irow, 5) = ""
+                    End If
+                    
+                    'There have been no allocations: need to allocate
+                    
+                    For itank = 1 To numtanks
+                        If BufferTankName(itank) = Range("L" & libraries(iUnO) & "BP").Cells(irow, 1) Then
+                        'Refresh the buffer hold tank list
+                            LibraryFunctions.get_available_bufferholdtanks libraries(iUnO), itank, isAvailBP
+                            Exit For
+                        End If
+                    Next
+                           
+                    numunits = 1
+                    indexIncumbent = -1
+                    indexIncumbent2 = -1
+                    
+                    qtyreq = Range("L" & libraries(iUnO) & "BP").Cells(irow, 1).Offset(0, -1).Value
+                    If qtyreq > 0.00001 Then
+                        'Positive quantity
+                        For itank = 1 To numtanks
+                            'Is available, is between min and max
+                            If isAvailBP(itank) > 0 And MinCap(itank) <= qtyreq And MaxCap(itank) >= qtyreq Then
+                                If indexIncumbent = -1 Then
+                                    'No incumbent
+                                    indexIncumbent = itank
+                                ElseIf MaxCap(itank) < MaxCap(indexIncumbent) Then
+                                    indexIncumbent = itank
+                                ElseIf MaxCap(itank) = MaxCap(indexIncumbent) And MinCap(itank) > MaxCap(indexIncumbent) Then
+                                    indexIncumbent = itank
+                                End If
+                            End If
+                        Next
+                        If indexIncumbent = -1 Then
+                            'No incumbent has been found: try allocating two tanks
+                            For itank = 1 To numtanks
+                            If isAvailBP(itank) > 0 Then
+                            For jtank = 1 To numtanks
+                                'Is available, is between min and max
+                                If isAvailBP(jtank) > 0 And MinCap2(itank, jtank) <= qtyreq And MaxCap2(itank, jtank) >= qtyreq Then
+                                    If indexIncumbent = -1 Then
+                                        'No incumbent
+                                        indexIncumbent = itank
+                                        indexIncumbent2 = jtank
+                                    ElseIf MaxCap2(itank, jtank) < MaxCap2(indexIncumbent, indexIncumbent2) Then
+                                        indexIncumbent = itank
+                                        indexIncumbent2 = jtank
+                                    ElseIf MaxCap2(itank, jtank) = MaxCap2(indexIncumbent, indexIncumbent2) And MinCap2(itank, jtank) > MaxCap2(indexIncumbent, indexIncumbent2) Then
+                                        indexIncumbent = itank
+                                        indexIncumbent2 = jtank
+                                    End If
+                                End If
+                            Next
+                            End If
+                            Next
+                        End If
+                        If indexIncumbent = -1 Then
+                            'No incumbent has been found: try allocating multiple tanks
+                            For itank = 1 To numtanks
+                                If MaxCap(itank) > 0 Then
+                                'Is available, is between min and max
+                                numunits = Application.RoundUp(qtyreq / MaxCap(itank), 0)
+                                
+                                If isAvailBP(itank) >= numunits And MinCap(itank) * numunits <= qtyreq And MaxCap(itank) * numunits >= qtyreq Then
+                                    If indexIncumbent = -1 Then
+                                        'No incumbent
+                                        indexIncumbent = itank
+                                    ElseIf MaxCap(itank) < MaxCap(indexIncumbent) Then
+                                        indexIncumbent = itank
+                                    ElseIf MaxCap(itank) = MaxCap(indexIncumbent) And MinCap(itank) > MaxCap(indexIncumbent) Then
+                                        indexIncumbent = itank
+                                    End If
+                                End If
+                                End If
+                            Next
+                        End If
+                        If indexIncumbent <> -1 Then
+                            'We've found a match: allocate
+                            Range("L" & libraries(iUnO) & "BH").Cells(irow, 1).Value = BufferTankName(indexIncumbent)
+                            If numunits > 1 Then
+                                Range("L" & libraries(iUnO) & "BH").Cells(irow, 2).Value = numunits
+                                isAvailBP(indexIncumbent) = isAvailBP(indexIncumbent) - numunits
+                            ElseIf indexIncumbent2 <> -1 Then
+                                Range("L" & libraries(iUnO) & "BH").Cells(irow, 3).Value = BufferTankName(indexIncumbent2)
+                                isAvailBP(indexIncumbent) = isAvailBP(indexIncumbent) - 1
+                                isAvailBP(indexIncumbent2) = isAvailBP(indexIncumbent2) - 1
+                            Else
+                                isAvailBP(indexIncumbent) = isAvailBP(indexIncumbent) - 1
+                            End If
+                        End If
+                    End If
+                End If
+            
+            Next
+        Next
+    End If
+    
+ExitSub:
+    ThisWorkbook.isblock = False
+    
+End Sub
+
+Attribute VB_Name = "ImportExport"
+Dim srcBook                       As Workbook   'Source workbook
+Dim dstBook                       As Workbook   'destination workbook
+Public importing As Boolean
+Dim modelType                     As Integer
+Dim errorCount                    As Integer    'Error counter
+Dim totalItemsToImport            As Long       'Total number of items to import
+Const MaxItemsLibrary = 100
+
+Public Sub ImportLibraryFromFile()
+
+    'MsgBox "Importing from a file is not supported in this Beta testing version.", vbOKOnly, "Cannot Import"
+    'Exit Sub
+    If Application.OperatingSystem Like "*Mac*" Then
+        MsgBox "This feature is currently for Windows operating systems only"
+        Exit Sub
+    End If
+    
+    
+    importing = True
+    Application.ScreenUpdating = False
+    Application.Calculation = xlManual
+    Set dstBook = ActiveWorkbook
+      Dim errorEncounteredMsg As String
+      errorEncounteredMsg = "Error encountered.  Unable to Import from Bio-Fit Model."
+      
+      Dim i As Integer
+      Dim j As Integer
+      
+      'Find the file to import
+      ChDir Path:=ThisWorkbook.Path
+    
+      Filename = Application.GetOpenFilename(Title:="Please Select a Bio-Fit Model")
+    
+      'If the user canceled out without selecting a file, then exit without doing anything
+      If Filename = False Then
+        GoTo ExitSub
+      End If
+    
+    'Application.Cursor = xlWait
+    'On Error GoTo CannotOpen
+    Set srcBook = Workbooks.Open(Filename)
+    Dim srcsheet As Worksheet
+    
+    Set srcsheet = srcBook.Sheets("Lists")
+    
+    Dim dstfreepositions As Integer
+    Dim srcusedlibitems As Integer
+    dstfreepositions = 0
+    srcusedlibitems = 0
+    Dim testing As String
+    
+    modelType = srcsheet.Range("MODELVER").Value
+    Dim srcLibUsed(MaxItemsLibrary) As String
+    For i = 1 To MaxItemsLibrary
+        srcLibUsed(i) = ""
+        If i <= srcsheet.Range("LIBUSED").Rows.Count Then
+          testing = srcsheet.Range("LIBUSED").Cells(i, 1)
+          If srcsheet.Range("LIBUSED").Cells(i, 2) = True Then
+              
+              srcLibUsed(i) = srcsheet.Range("LIBUSED").Cells(i, 1)
+              srcusedlibitems = srcusedlibitems + 1
+          End If
+        End If
+    Next
+    
+    Dim dstLibUsed(MaxItemsLibrary) As String
+    For i = 1 To MaxItemsLibrary
+        dstLibUsed(i) = ""
+        If i <= shtLists.Range("LIBUSED").Rows.Count Then
+          If shtLists.Range("LIBUSED").Cells(i, 2) = False Then
+              dstLibUsed(i) = "Free"
+              dstfreepositions = dstfreepositions + 1
+          End If
+        End If
+    Next
+    
+    If srcusedlibitems > dstfreepositions Then
+      MsgBox "There are insufficient available positions left in the library. You need " & srcusedlibitems - dstfreepositions & " additional items.", vbCritical
+      If Not srcBook Is Nothing Then srcBook.Close savechanges:=False
+      GoTo ExitSub
+    End If
+    
+    'Import all the items, into the library
+    For i = 1 To MaxItemsLibrary
+      If srcLibUsed(i) <> "" Then
+          For j = 1 To MaxItemsLibrary
+              If dstLibUsed(j) = "Free" Then
+                  dstLibUsed(j) = srcLibUsed(i)
+                  If Not ImportLibraryItem(srcLibUsed(i), i, dstLibUsed(j), j) Then GoTo CannotOpen
+                  Exit For
+              End If
+          Next
+      End If
+    Next
+
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    Application.Calculation = xlAutomatic
+    
+    srcBook.Close savechanges:=False
+    importing = False
+
+ExitSub:
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    Application.Calculation = xlAutomatic
+    Exit Sub
+    
+
+CannotOpen:
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+    Application.Calculation = xlAutomatic
+    MsgBox "Cannot open file or this is not a Bio-Fit Model.", vbCritical
+    'If it's open, close the source workbook
+    If Not srcBook Is Nothing Then srcBook.Close savechanges:=False
+    importing = False
+   
+
+End Sub
+Public Function ImportLibraryFromSelf(ByVal fromItem As String, ByVal fromIndex As Integer, ByVal toItem As String, ByVal toIndex As Integer) As Boolean
+    Set srcBook = ActiveWorkbook
+    Set dstBook = ActiveWorkbook
+    ImportLibraryItem fromItem, fromIndex, toItem, toIndex
+End Function
+Public Function FindUniqueName(ByVal OriginalproposedName As String) As String
+    'This function returns a unique name amongst the unit operation library
+    Dim i As Integer
+    Dim isMatched As Boolean
+    isMatched = True
+    Dim appendI As Integer
+    appendI = 1
+    
+    Dim proposedName As String
+    
+    
+    
+    'Rip out illegal characters, that can't be used in the name
+    proposedName = CheckLegalCharactersForSheets(OriginalproposedName)
+    
+    If OriginalproposedName = "" Then proposedName = "Unit Library"
+    
+    
+    Dim acceptedName As String
+    acceptedName = proposedName
+    
+    Do While isMatched
+        isMatched = False
+        For i = 1 To shtLists.Range("LIBUSED").Rows.Count - 1
+            If shtLists.Range("LIBUSED").Cells(i, 1).Value = acceptedName Then
+                isMatched = True
+                Exit For
+            End If
+        Next
+        If isMatched Then
+            acceptedName = proposedName & " - " & appendI & ""
+            appendI = appendI + 1
+        End If
+    Loop
+
+    FindUniqueName = acceptedName
+End Function
+Function CheckLegalCharactersForSheets(ByVal nm As String) As String
+CheckLegalCharactersForSheets = nm
+'Dim a$, b$, c$, i As Integer
+'
+'a$ = nm
+'For i = 1 To Len(a$)
+'b$ = Mid(a$, i, 1)
+'If Not (b$ = "[" Or b$ = "]" Or b$ = "*" Or b$ = "/" Or b$ = "\" Or b$ = "?" Or b$ = ":") Then
+'c$ = c$ & b$
+'End If
+'Next i
+'CheckLegalCharactersForSheets = c$
+
+End Function
+Private Function ImportLibraryItem(ByVal fromItem As String, ByVal fromIndex As Integer, ByVal toItem As String, ByVal toIndex As Integer) As Boolean
+'This function imports a Library Item located in the position fromItem, to the Library Item located in the position toItem.
+'This function also imports and translates any named ranges.
+    ImportLibraryItem = False
+    'On Error GoTo CannotOpen
+    ThisWorkbook.isblock = True
+    
+    LibraryFunctions.UnprotectAll
+    
+    'Change name, if required
+    toItem = FindUniqueName(toItem)
+
+    Dim srcsheet As Worksheet
+    Dim dstsheet As Worksheet
+    Set srcsheet = srcBook.Sheets(fromItem)
+    
+    'Create the destination sheet.
+    dstBook.Activate
+    Set dstsheet = dstBook.Sheets.Add
+    dstsheet.Name = toItem
+    dstsheet.Visible = xlSheetHidden
+    
+    If dstsheet Is Nothing Or srcsheet Is Nothing Then
+        GoTo ExitSub
+    End If
+    Dim test As String
+    Dim nm As Name
+    
+    
+    'create local name ranges
+    For Each nm In srcsheet.Names
+        test = nm.Name
+        dstsheet.Names.Add Name:=Replace(Replace(nm.Name, fromItem, "'" + toItem + "'"), "''", "'"), RefersToR1C1:=Replace(Replace(nm.RefersToR1C1, fromItem, "'" & toItem & "'"), "''", "'")
+    Next nm
+    'create global name range
+    Dim teststr As String
+    teststr = "L" + CStr(fromIndex) + "[!0-9]*"
+    
+    For Each nm In srcBook.Names
+        test = nm.Name
+        If nm.Name Like teststr Then
+            dstBook.Names.Add Name:="L" + CStr(toIndex) + Right(nm.Name, Len(nm.Name) - Len("L" + CStr(fromIndex))), RefersToR1C1:=Replace(Replace(nm.RefersToR1C1, fromItem, "'" & toItem & "'"), "''", "'")
+        End If
+    Next nm
+    
+    'Copy the cells and formats
+    Dim irow As Long
+    Dim iColumn As Long
+    Application.DisplayAlerts = False
+    srcsheet.Range("A1:AZ300").Copy
+    dstsheet.Range("A1").PasteSpecial (xlPasteFormats)
+    dstsheet.Range("A1").PasteSpecial (xlPasteFormulas)
+    dstsheet.Range("A1").PasteSpecial (xlPasteValidation)
+    dstsheet.Range("A1").PasteSpecial (xlPasteComments)
+    
+    'clear formulars in addition subsequent ops
+    dstsheet.Range("ABP_cal").Value = ""
+        
+    ImportLibraryHeader dstsheet:=dstsheet
+        
+    Application.CutCopyMode = False 'Clear Clipboard
+    Application.DisplayAlerts = True
+    
+    Dim nmmatch As Boolean
+    Dim nmdest As Name
+    
+    'Copy the connectivity matrices
+    For Each nm In srcBook.Names
+        If Right(nm.Name, 12) = "DBCONNECTION" Then
+            'This is a connectivity matrix. Copy
+            nmmatch = False
+            For Each nmdest In dstBook.Names
+                If nm.Name = nmdest.Name Then
+                    nmmatch = True
+                    Exit For
+                End If
+            Next
+            If nmmatch Then
+                nmdest.RefersToRange.Cells(1, toIndex).Offset(-1, 0).Formula = "=""Connected to "" & L" & toIndex & "NAME"
+                For irow = 1 To nm.RefersToRange.Rows.Count
+                    'Copy the value
+                    nmdest.RefersToRange.Cells(irow, toIndex) = nm.RefersToRange.Cells(irow, fromIndex)
+                Next
+            End If
+        ElseIf nm.Name = "DEFAULTDB" Then
+            'This is the default database. Copy the settings.
+            nmmatch = False
+            For Each nmdest In dstBook.Names
+                If nm.Name = nmdest.Name Then
+                    nmmatch = True
+                    Exit For
+                End If
+            Next
+            If nmmatch Then
+                nmdest.RefersToRange.Cells(1, 2 * (toIndex - 1) + 1).Offset(-1, 0).Formula = "=""Min: "" & L" & toIndex & "NAME"
+                nmdest.RefersToRange.Cells(1, 2 * (toIndex - 1) + 2).Offset(-1, 0).Formula = "=""Max: "" & L" & toIndex & "NAME"
+                For irow = 1 To nm.RefersToRange.Rows.Count
+                    'Copy the value
+                    nmdest.RefersToRange.Cells(irow, 2 * (toIndex - 1) + 1).Value = nm.RefersToRange.Cells(irow, 2 * (fromIndex - 1) + 1).Value
+                    nmdest.RefersToRange.Cells(irow, 2 * (toIndex - 1) + 2).Value = nm.RefersToRange.Cells(irow, 2 * (fromIndex - 1) + 2).Value
+                Next
+            End If
+        End If
+    Next
+      
+    'Set specifics
+    dstsheet.Range("LIB").Value = toIndex
+    dstsheet.Range("L" & toIndex & "Name").Value = toItem
+        
+    shtLists.Range("LIBUSED").Cells(toIndex, 1) = toItem
+    shtLists.Range("LIBUSED").Cells(toIndex, 2) = True
+    shtLists.Range("NUMOPSLIBRARY").Cells(1, 1) = shtLists.Range("NUMOPSLIBRARY").Cells(1, 1).Value + 1
+    dstBook.Activate
+    For i = 1 To Range("ORDEREDLIBUSEDINDEX").Rows.Count
+        If Range("ORDEREDLIBUSEDINDEX").Cells(i, 1).Value = toIndex Then
+            Range("ORDEREDLIBUSED").Cells(i, 1).Value = toItem
+            Exit For
+        End If
+    Next
+        
+    ImportLibraryItem = True
+    GoTo ExitSub
+
+ExitSub:
+    
+    LibraryFunctions.ProtectAll
+    ThisWorkbook.isblock = False
+    Exit Function
+
+CannotOpen:
+    MsgBox "Cannot find the range. Check that the Bio-Fit model is valid.", vbCritical
+
+End Function
+Public Sub DeleteLibrary(theID As Integer, theItem As Integer, theSheetName As String)
+    'This sub deletes a library.
+    LibraryFunctions.UnprotectAll
+    
+    Application.DisplayAlerts = False
+    Sheets(theSheetName).Delete
+    'delete global name ranges
+    Dim nm As Name
+    For Each nm In ActiveWorkbook.Names
+        If Left(nm.Name, 2) = "L" + CStr(theID) Then
+           ActiveWorkbook.Names(nm.Name).Delete
+        End If
+    Next nm
+    
+    Dim irow As Integer
+    'Copy the connectivity matrices
+    For Each nm In ThisWorkbook.Names
+        If Right(nm.Name, 12) = "DBCONNECTION" Then
+            'This is a connectivity matrix. Delete the library entry
+            nm.RefersToRange.Cells(1, theID).Offset(-1, 0) = ""
+            For irow = 1 To nm.RefersToRange.Rows.Count
+                'Copy the value
+                nm.RefersToRange.Cells(irow, theID) = ""
+            Next
+        ElseIf nm.Name = "DEFAULTDB" Then
+            'This is the default database. Delete the entry
+            nm.RefersToRange.Cells(1, 2 * (theID - 1) + 1).Offset(-1, 0) = ""
+            nm.RefersToRange.Cells(1, 2 * (theID - 1) + 2).Offset(-1, 0) = ""
+            For irow = 1 To nm.RefersToRange.Rows.Count
+                'Copy the value
+                nm.RefersToRange.Cells(irow, 2 * (theID - 1) + 1) = ""
+                nm.RefersToRange.Cells(irow, 2 * (theID - 1) + 2) = ""
+            Next
+        End If
+    Next
+    
+    Application.DisplayAlerts = True
+        
+    shtLists.Range("LIBUSED").Cells(theID, 1) = ""
+    shtLists.Range("LIBUSED").Cells(theID, 2) = False
+    
+    shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem, 1) = ""
+        
+    Dim numItems As Integer
+    numItems = shtLists.Range("NUMOPSLIBRARY").Cells(1, 1).Value
+    shtLists.Range("NUMOPSLIBRARY").Cells(1, 1) = numItems - 1
+    
+    'Move All the other items up one
+    Dim i As Integer
+    Dim ID As Integer
+    Dim theItemName As String
+        
+    For i = theItem To numItems - 1
+        shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(i, 1) = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(i + 1, 1).Value
+        shtLibraryManager.Range("ORDEREDLIBDESC").Cells(i, 1) = shtLibraryManager.Range("ORDEREDLIBDESC").Cells(i + 1, 1).Value
+        shtLibraryManager.Range("ORDEREDLIBUSED").Cells(i, 1) = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(i + 1, 1).Value
+        
+    Next
+    shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(numItems, 1) = theID
+    shtLibraryManager.Range("ORDEREDLIBDESC").Cells(numItems, 1) = ""
+    shtLibraryManager.Range("ORDEREDLIBUSED").Cells(numItems, 1) = ""
+        
+End Sub
+Public Sub ReCopyMenu()
+    'Recopys the menu items for all library items
+    LibraryFunctions.UnprotectAll
+    ThisWorkbook.isblock = True
+    
+    Dim theSheetName As String
+    For i = 1 To 50
+        theSheetName = shtLists.Range("UNITNAMESALL").Cells(i, 1)
+        If theSheetName <> "" Then ImportLibraryHeader dstsheet:=Worksheets(theSheetName)
+    Next
+    ImportLibraryHeader dstsheet:=shtMainMenu
+    ImportLibraryHeader dstsheet:=shtBufferTanks
+    ImportLibraryHeader dstsheet:=shtColumns
+    ImportLibraryHeader dstsheet:=shtConstraints
+    ImportLibraryHeader dstsheet:=shtLibraryManager
+    ImportLibraryHeader dstsheet:=shtPhaseList
+    ImportLibraryHeader dstsheet:=shtPoolTanks
+    ImportLibraryHeader dstsheet:=shtPumps
+    ImportLibraryHeader dstsheet:=shtFilters
+    ImportLibraryHeader dstsheet:=shtLPFilters
+    ImportLibraryHeader dstsheet:=shtSkids
+    ImportLibraryHeader dstsheet:=shtSA
+    ImportLibraryHeader dstsheet:=shtSolutionList
+    ImportLibraryHeader dstsheet:=shtSummary
+    ImportLibraryHeader dstsheet:=shtTankAllocation
+    
+    LibraryFunctions.ProtectAll
+    ThisWorkbook.isblock = False
+    
+End Sub
+Public Sub ImportLibraryHeader(dstsheet As Worksheet)
+
+'This function imports a Library Item located in the position fromItem, to the Library Item located in the position toItem.
+'This function also imports and translates any named ranges.
+    'On Error GoTo CannotOpen
+    Dim srcsheet As Worksheet
+    Set srcsheet = shtRefMenu
+    
+    If dstsheet Is Nothing Or srcsheet Is Nothing Then
+        GoTo ExitSub
+    End If
+    
+    Dim ssrc As Shape
+    Dim sdst As Shape
+    Dim oldname As String
+    
+    For Each sdst In dstsheet.Shapes
+        If sdst.Type = msoAutoShape Or sdst.Type = msoPicture Then
+            sdst.Delete
+        End If
+    Next
+    
+    For Each ssrc In srcsheet.Shapes
+        oldname = ssrc.Name
+        ssrc.Name = "XXX"
+        ssrc.Copy
+        dstsheet.Paste Destination:=dstsheet.Range("A1")
+        For Each sdst In dstsheet.Shapes
+            If sdst.Name = "XXX" Then
+                sdst.Left = CInt(ssrc.Left)
+                sdst.Top = CInt(ssrc.Top)
+                sdst.Name = oldname
+                Exit For
+            End If
+        Next
+        ssrc.Name = oldname
+    Next
+
+ExitSub:
+    
+    Exit Sub
+
+End Sub
+Attribute VB_Name = "LibraryFunctions"
+
+Public Sub LoadPhasesList()
+    
+    ThisWorkbook.isblock = True
+    
+    Dim irow As Integer
+    Dim jcol As Integer
+    shtPhaseList.Unprotect
+    
+    ' Clear existing contents/custom formatting
+    With shtPhaseList.Range("PHASESTOTAL")
+        .Font.Bold = False
+        .Font.Italic = False
+        .Interior.Parent = xlNone
+        .HorizontalAlignment = xlLeft
+        .WrapText = False
+        .ClearContents
+    End With
+    
+    'Get the libraries in order
+    Dim libraries(10) As Integer
+    Dim unoname(10) As String
+    Dim numunos As Integer
+    numunos = 0
+    For irow = 1 To 10
+        If shtLists.Range("U2L").Cells(irow, 1) <> "" Then
+            numunos = numunos + 1
+            libraries(numunos) = shtLists.Range("U2L").Cells(irow, 1).Value
+            unoname(numunos) = shtSummary.Range("UNITORDER").Cells(irow, 1).Value
+        End If
+    Next
+    
+    'Get a list of headers
+    Dim headers() As String
+    ReDim headers(shtPhaseList.Range("PHASESTOTAL").Columns.Count)
+    
+    Dim iUnO As Integer
+    Dim currentrow As Integer
+    currentrow = 1
+    Dim hasdata As Boolean
+    
+    For iUnO = 1 To numunos
+                
+        'Write the unit op name first
+        With shtPhaseList.Range("PHASESTOTAL").Cells(currentrow, 1)
+            .Value = unoname(iUnO)
+            .Font.Bold = True
+        End With
+        currentrow = currentrow + 1
+        
+        'Always write the phase headers up to & inc "Total Vol (L)" field
+        For jcol = 1 To shtPhaseList.Range("PHASESTOTAL").Columns.Count
+            headers(jcol) = Range("L" & libraries(iUnO) & "PHASE").Offset(-1, 0).Cells(1, jcol)
+            With shtPhaseList.Range("PHASESTOTAL").Cells(currentrow, jcol)
+                .Value = headers(jcol)
+                .Font.Italic = True
+                .WrapText = True
+                .HorizontalAlignment = xlCenter
+            End With
+            If headers(jcol) = "Total Vol (L)" Then Exit For
+        Next
+        currentrow = currentrow + 1
+        
+        'Write the phase data
+        For irow = 1 To Range("L" & libraries(iUnO) & "PHASE").Rows.Count
+            hasdata = False
+            If Range("L" & libraries(iUnO) & "PHASE").Cells(irow, 1) <> "" Then hasdata = True
+            If hasdata Then
+                For jcol = 1 To shtPhaseList.Range("PHASESTOTAL").Columns.Count
+                    With shtPhaseList.Range("PHASESTOTAL").Cells(currentrow, jcol)
+                        .Value = Range("L" & libraries(iUnO) & "PHASE").Cells(irow, jcol)
+                        .NumberFormat = Range("L" & libraries(iUnO) & "PHASE").Cells(irow, jcol).NumberFormat
+                        .HorizontalAlignment = Range("L" & libraries(iUnO) & "PHASE").Cells(irow, jcol).HorizontalAlignment
+                    End With
+                    
+                    ' Exit loop early?
+                    If headers(jcol) = "Total Vol (L)" Then Exit For
+                Next
+                currentrow = currentrow + 1
+            End If
+        Next
+        
+        currentrow = currentrow + 1
+    Next
+    
+    
+ExitSub:
+    ThisWorkbook.isblock = False
+End Sub
+Public Sub LoadSolutionsList()
+    
+    ThisWorkbook.isblock = True
+    ManualCalculateFit inSh:=shtLibraryManager
+    Dim irow As Integer
+    Dim jcol As Integer
+    shtSolutionList.Unprotect
+    shtSolutionList.Range("SOLUTIONSTOTAL").ClearContents
+    shtSolutionList.Range("SOLUTIONSTOTAL").Font.Bold = False
+    
+    'Get the libraries in order
+    Dim libraries(10) As Integer
+    Dim unoname(10) As String
+    Dim numunos As Integer
+    numunos = 0
+    For irow = 1 To 10
+        If shtLists.Range("U2L").Cells(irow, 1) <> "" Then
+            numunos = numunos + 1
+            libraries(numunos) = shtLists.Range("U2L").Cells(irow, 1).Value
+            unoname(numunos) = shtSummary.Range("UNITORDER").Cells(irow, 1).Value
+        End If
+    Next
+    
+    Dim iUnO As Integer
+    Dim currentrow As Integer
+    currentrow = 1
+    Dim hasdata As Boolean
+    For iUnO = 1 To numunos
+        'Write the name
+        shtSolutionList.Range("SOLUTIONSTOTAL").Cells(currentrow, 1).Value = unoname(iUnO)
+        shtSolutionList.Range("SOLUTIONSTOTAL").Cells(currentrow, 1).Font.Bold = True
+        
+        currentrow = currentrow + 1
+        For irow = 1 To Range("L" & libraries(iUnO) & "SOLUTION").Rows.Count
+            hasdata = False
+            If Range("L" & libraries(iUnO) & "SOLUTION").Cells(irow, 1) <> "" Then hasdata = True
+            If hasdata Then
+                For jcol = 1 To shtSolutionList.Range("SOLUTIONSTOTAL").Columns.Count
+                    shtSolutionList.Range("SOLUTIONSTOTAL").Cells(currentrow, jcol) = Range("L" & libraries(iUnO) & "SOLUTION").Cells(irow, jcol)
+                    shtSolutionList.Range("SOLUTIONSTOTAL").Cells(currentrow, jcol).NumberFormat = Range("L" & libraries(iUnO) & "SOLUTION").Cells(irow, jcol).NumberFormat
+                Next
+                currentrow = currentrow + 1
+            End If
+        Next
+    Next
+    
+    
+ExitSub:
+    ThisWorkbook.isblock = False
+End Sub
+Public Sub LoadProcessFromLibrary(newprocessname As String, RangeName As String, Sh As Worksheet)
+    'This function loads a process from the saved library. It places the output of the library in the location range.
+    'This code is (c) 2010 Bioproduction Group as part of Bio-Fit. All rights reserved. Do not modify this code without written permission.
+    
+    Dim rowi As Integer
+    Dim colj As Integer
+    
+    'This function is the column-wise version (i.e. the names are stored in columns).
+    'This function type copies values and formulae, not just the values.
+    'This is not general but is good for saving a 'pick list' of values and possibly different calculation paths.
+    
+    'Get the appropriate item
+    For icol = 1 To shtSaved.Range("PROCESSLIB").Columns.Count
+        If shtSaved.Range("PROCESSLIB").Cells(1, icol).Value = newprocessname Then
+            'We have a match. Populate all the values (using formula copy)
+            For jrow = 2 To shtSaved.Range("PROCESSLIB").Rows.Count
+                Sh.Range(RangeName).Cells(jrow, 1).FormulaR1C1 = shtSaved.Range("PROCESSLIB").Cells(jrow, icol).FormulaR1C1
+            Next
+        End If
+    Next
+    
+End Sub
+Public Sub update_previous_solutions(ByRef Sh As Worksheet)
+    
+    Dim availcount As Integer
+    availcount = 1
+
+    'Get the list of previously prepared solutions
+    Dim UnOID As Integer
+    UnOID = Sh.Range("UNO").Value
+    Dim libID As Integer
+    libID = Sh.Range("LIB").Value
+        
+    UnProtectLibraries
+    Sh.Range("L" & libID & "SOLUTIONOTHER").Value = ""
+    
+    'Get the list of past solutions
+    Dim iUnO As Integer
+    Dim ilib As Integer
+    Dim icol As Integer
+    Dim iprevsolution As Integer
+    Dim numdiff As Integer
+    For iUnO = 1 To UnOID - 1
+        ilib = shtLists.Range("U2L").Cells(iUnO, 1).Value
+        numdiff = UnOID - iUnO
+        For iprevsolution = 1 To Range("L" & ilib & "SOLUTION").Rows.Count
+            If Range("L" & ilib & "SOLUTION").Cells(iprevsolution, 22) >= 1 And numdiff <= Range("L" & ilib & "SOLUTION").Cells(iprevsolution, 22) Then
+                'This is a multi-use solution
+                For icol = 1 To 4
+                    Sh.Range("L" & libID & "SOLUTIONOTHER").Cells(availcount, icol).Value = Range("L" & ilib & "SOLUTION").Cells(iprevsolution, icol).Value
+                Next
+                'Reference the cell
+                Range("L" & ilib & "SOLUTIONMULTI").Cells(iprevsolution, (UnOID - iUnO)).Formula = "=IF(" & numdiff & "<= OFFSET(L" & ilib & "SOLUTION," & iprevsolution - 1 & ", 21,1,1),OFFSET(L" & libID & "SOLUTIONOTHER," & availcount - 1 & ",4,1,1)," + Chr(34) + Chr(34) + ")"
+                availcount = availcount + 1
+                'Check available rows, exit from the loop if we've reached the maximum.
+                If availcount > Sh.Range("L" & libID & "SOLUTIONOTHER").Rows.Count Then Exit For
+            End If
+        Next
+    Next
+Exit Sub
+End Sub
+
+Public Sub update_available_columns()
+    
+    Dim availcount As Integer
+    availcount = 1
+    
+    shtColumns.Unprotect
+    shtColumns.Range("COLSAVAIL").Value = ""
+    
+    Dim LibraryID As Integer
+    LibraryID = shtLists.Range("CURRENTLIB").Value
+    Dim skidID As Integer
+    For skidID = 1 To shtSkids.Range("SKIDNAMES").Rows.Count
+        If shtSkids.Range("SKIDNAMES").Cells(skidID, 1) = Range("L" & CStr(LibraryID) & "SKID").Value Then
+            Exit For
+        End If
+    Next
+    
+    Dim icol As Integer
+    For icol = 1 To shtColumns.Range("COLUMNDBCONNECTION").Rows.Count
+        If shtColumns.Range("COLUMNDBCONNECTION").Cells(icol, LibraryID).Value = "Yes" Then
+            'Consider this for connectivity
+            If shtColumns.Range("COLMAXATOVERLIST").Cells(icol, 1).Value = "" And shtSkids.Range("SKIDCOLUMNDB").Cells(skidID, icol) = "Yes" Then
+                shtColumns.Range("COLSAVAIL").Cells(availcount, 1) = shtColumns.Range("COLUMNNAMES").Cells(icol, 1).Value
+                availcount = availcount + 1
+            End If
+        End If
+    Next
+    
+End Sub
+Public Sub update_available_skids()
+    
+    Dim availcount As Integer
+    availcount = 1
+    
+    shtSkids.Unprotect
+    shtSkids.Range("SKIDSAVAIL").Value = ""
+    
+    
+    Dim LibraryID As Integer
+    LibraryID = shtLists.Range("CURRENTLIB").Value
+    Dim skidID As Integer
+    For skidID = 1 To shtSkids.Range("SKIDNAMES").Rows.Count
+        If shtSkids.Range("SKIDNAMES").Cells(skidID, 1).Value = Range("L" & CStr(LibraryID) & "SKID").Value Then
+            Exit For
+        End If
+    Next
+    
+    Dim icol As Integer
+    For icol = 1 To shtSkids.Range("SKIDDBCONNECTION").Rows.Count
+        If shtSkids.Range("SKIDDBCONNECTION").Cells(icol, LibraryID).Value = "Yes" Then
+            'Consider this for connectivity
+            If shtSkids.Range("SKIDMAXATOVERLIST").Cells(icol, 1).Value = "" Then
+                shtSkids.Range("SKIDSAVAIL").Cells(availcount, 1) = shtSkids.Range("SKIDNAMES").Cells(icol, 1).Value
+                availcount = availcount + 1
+            End If
+        End If
+    Next
+End Sub
+
+Public Sub update_available_pooltanks()
+    
+    Dim availcount As Integer
+    availcount = 1
+    
+    shtPoolTanks.Unprotect
+    shtPoolTanks.Range("POOLTANKSAVAIL").Value = ""
+    
+    Dim LibraryID As Integer
+    LibraryID = shtLists.Range("CURRENTLIB").Value
+        
+    Dim icol As Integer
+    For icol = 1 To shtPoolTanks.Range("POOLTANKDBCONNECTION").Rows.Count
+        If shtPoolTanks.Range("POOLTANKDBCONNECTION").Cells(icol, LibraryID).Value = "Yes" Then
+            'Consider this for connectivity
+            If shtPoolTanks.Range("POOLMAXATOVERLIST").Cells(icol, 1).Value = "" Then
+                shtPoolTanks.Range("POOLTANKSAVAIL").Cells(availcount, 1) = shtPoolTanks.Range("POOLTANKNAMES").Cells(icol, 1).Value
+                availcount = availcount + 1
+            End If
+        End If
+    Next
+    
+End Sub
+Public Sub update_available_bufferpreptanks()
+    
+    Dim availcount As Integer
+    availcount = 1
+    
+    shtBufferTanks.Unprotect
+    shtBufferTanks.Range("BPTANKSAVAIL").Value = ""
+    
+    Dim LibraryID As Integer
+    LibraryID = shtLists.Range("CURRENTLIB").Value
+        
+    Dim icol As Integer
+    For icol = 1 To shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Rows.Count
+        If shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Cells(icol, LibraryID).Value = "Yes" And shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 7).Value = "Yes" Then
+            'Consider this for connectivity
+            If shtBufferTanks.Range("BTMAXATOVERLIST").Cells(icol, 1).Value = "" Then
+                shtBufferTanks.Range("BPTANKSAVAIL").Cells(availcount, 1) = shtBufferTanks.Range("BUFFERTANKNAMES").Cells(icol, 1).Value
+                availcount = availcount + 1
+            End If
+        End If
+    Next
+    
+End Sub
+Public Function get_available_bufferpreptanks(LibraryID As Integer, ByRef numAvailable() As Integer) As Boolean
+    
+    ReDim numAvailable(50)
+    
+    Dim icol As Integer
+    For icol = 1 To shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Rows.Count
+        numAvailable(icol) = 0
+        If shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Cells(icol, LibraryID).Value = "Yes" And shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 7).Value = "Yes" Then
+            'Consider this for connectivity
+            If shtBufferTanks.Range("BTMAXATOVERLIST").Cells(icol, 1).Value = "" Then
+                If shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 5).Value = "" Then
+                    numAvailable(icol) = 10000
+                Else
+                    numAvailable(icol) = shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 5).Value - shtBufferTanks.Range("BTUSES").Cells(icol, 1).Value
+                End If
+            End If
+        End If
+    Next
+
+End Function
+
+Public Function get_available_bufferholdtanks(LibraryID As Integer, BPtankID As Integer, ByRef numAvailable() As Integer) As Boolean
+    'Gets the available buffer hold tanks, given the unit operation and buffer prep tank ID.
+    
+    ReDim numAvailable(50)
+    
+    Dim icol As Integer
+    For icol = 1 To shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Rows.Count
+        numAvailable(icol) = 0
+        If shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Cells(icol, LibraryID).Value = "Yes" And shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 8).Value = "Yes" Then
+            'Consider this for connectivity
+            If shtBufferTanks.Range("BTMAXATOVERLIST").Cells(icol, 1).Value = "" And shtBufferTanks.Range("BPBHCONNECTION").Cells(BPtankID, icol) = "Yes" Then
+                If shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 5).Value = "" Then
+                    numAvailable(icol) = 10000
+                Else
+                    numAvailable(icol) = shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 5).Value - shtBufferTanks.Range("BTUSES").Cells(icol, 1).Value
+                End If
+            End If
+        End If
+    Next
+    
+End Function
+Public Sub update_available_bufferholdtanks()
+    
+    Dim availcount As Integer
+    availcount = 1
+    
+    shtBufferTanks.Unprotect
+    shtBufferTanks.Range("BHTANKSAVAIL").Value = ""
+    
+    Dim LibraryID As Integer
+    LibraryID = shtLists.Range("CURRENTLIB").Value
+   
+    Dim BPtankID As Integer
+    For BPtankID = 1 To shtBufferTanks.Range("BUFFERTANKNAMES").Rows.Count
+        If shtBufferTanks.Range("BUFFERTANKNAMES").Cells(BPtankID, 1) = shtBufferTanks.Range("CURRENTBP").Value Then
+            Exit For
+        End If
+    Next
+    
+    Dim icol As Integer
+    For icol = 1 To shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Rows.Count
+        If shtBufferTanks.Range("BUFFERTANKDBCONNECTION").Cells(icol, LibraryID).Value = "Yes" And shtBufferTanks.Range("BUFFERTANKDB").Cells(icol, 8).Value = "Yes" Then
+            'Consider this for connectivity
+            If shtBufferTanks.Range("BTMAXATOVERLIST").Cells(icol, 1).Value = "" And shtBufferTanks.Range("BPBHCONNECTION").Cells(BPtankID, icol) = "Yes" Then
+                shtBufferTanks.Range("BHTANKSAVAIL").Cells(availcount, 1) = shtBufferTanks.Range("BUFFERTANKNAMES").Cells(icol, 1).Value
+                availcount = availcount + 1
+            End If
+        End If
+    Next
+    
+End Sub
+
+Sub UnprotectAll()
+    For Each ws In Worksheets
+        ws.Unprotect
+    Next
+End Sub
+Sub ProtectAll()
+    For Each ws In Worksheets
+        ws.Protect
+    Next
+End Sub
+Attribute VB_Name = "Navigation"
+Sub LoadViewDefaults()
+  
+  'Visible:
+  If Not shtSummary.Visible = xlSheetVisible Then shtSummary.Visible = xlSheetVisible
+  
+  'Hidden:
+  If Not shtBufferTanks.Visible = xlSheetHidden Then shtBufferTanks.Visible = xlSheetHidden
+  If Not shtColumns.Visible = xlSheetHidden Then shtColumns.Visible = xlSheetHidden
+  If Not shtConstraints.Visible = xlSheetHidden Then shtConstraints.Visible = xlSheetHidden
+  If Not shtSaved.Visible = xlSheetHidden Then shtSaved.Visible = xlSheetHidden
+  If Not shtLists.Visible = xlSheetHidden Then shtLists.Visible = xlSheetHidden
+  If Not shtPoolTanks.Visible = xlSheetHidden Then shtPoolTanks.Visible = xlSheetHidden
+  If Not shtPumps.Visible = xlSheetHidden Then shtPumps.Visible = xlSheetHidden
+  If Not shtFilters.Visible = xlSheetHidden Then shtFilters.Visible = xlSheetHidden
+  If Not shtLPFilters.Visible = xlSheetHidden Then shtLPFilters.Visible = xlSheetHidden
+  If Not shtSA.Visible = xlSheetHidden Then shtSA.Visible = xlSheetHidden
+  If Not shtSkids.Visible = xlSheetHidden Then shtSkids.Visible = xlSheetHidden
+  If Not shtLibraryManager.Visible = xlSheetHidden Then shtLibraryManager.Visible = xlSheetHidden
+  If Not shtSolutionList.Visible = xlSheetHidden Then shtSolutionList.Visible = xlSheetHidden
+  If Not shtPhaseList.Visible = xlSheetHidden Then shtPhaseList.Visible = xlSheetHidden
+  If Not shtRefMenu.Visible = xlSheetHidden Then shtRefMenu.Visible = xlSheetHidden
+  If Not shtTankAllocation.Visible = xlSheetHidden Then shtTankAllocation.Visible = xlSheetHidden
+  
+  'Go to the MainMenu page
+  shtMainMenu.Visible = xlSheetVisible
+  ProtectAll
+End Sub
+Sub SelectMainMenu()
+    shtMainMenu.Visible = xlSheetVisible
+    shtMainMenu.Select
+End Sub
+Sub SelectSummary()
+    shtSummary.Visible = xlSheetVisible
+    shtSummary.Select
+End Sub
+Sub SelectSensitivities()
+    shtSA.Visible = xlSheetVisible
+    shtSA.Select
+End Sub
+Sub SelectUnitOp1()
+    selectop 1
+End Sub
+Sub SelectUnitOp2()
+    selectop 2
+End Sub
+Sub SelectUnitOp3()
+    selectop 3
+End Sub
+Sub SelectUnitOp4()
+    selectop 4
+End Sub
+Sub SelectUnitOp5()
+    selectop 5
+End Sub
+Sub SelectUnitOp6()
+    selectop 6
+End Sub
+Sub SelectUnitOp7()
+    selectop 7
+End Sub
+Sub SelectUnitOp8()
+    selectop 8
+End Sub
+Sub SelectUnitOp9()
+    selectop 9
+End Sub
+Sub SelectUnitOp10()
+    selectop 10
+End Sub
+Sub ShowAndOrderUnitOperations()
+'This sub shows the appropriate unit operations worksheets, and hides the others.
+ManualCalculateFit inSh:=shtSummary
+Dim aws As Worksheet
+Set aws = ActiveSheet
+
+'MainMenu, then Summary
+If shtMainMenu.Index <> 1 Then shtMainMenu.Move Before:=Sheets(1)
+If shtSummary.Index <> 2 Then shtSummary.Move Before:=Sheets(2)
+
+Dim i As Integer
+Dim j As Integer
+j = 0
+Dim selectedindex() As Boolean
+ReDim selectedindex(CInt(Range("MAXOPSLIBRARY").Value + 1))
+For i = 1 To Range("MAXOPSLIBRARY").Value
+    selectedindex(i) = False
+Next
+
+Dim previoussheet As Worksheet
+Set previoussheet = shtSummary
+
+Dim theSheetName As String
+
+Dim libselected As Integer
+For i = 1 To Range("U2L").Rows.Count
+    If Range("U2L").Cells(i, 1) <> "" Then
+        ShowUnitOp i
+        libselected = Range("U2L").Cells(i, 1).Value
+        selectedindex(libselected) = True
+        theSheetName = shtLists.Range("LIBUSED").Cells(libselected, 1)
+        If Not Sheets(theSheetName).Visible = xlSheetVisible Then Sheets(theSheetName).Visible = xlSheetVisible
+        If Sheets(theSheetName).Index < previoussheet.Index Then Sheets(theSheetName).Move After:=previoussheet
+        Set previoussheet = Sheets(theSheetName)
+    Else
+        HideUnitOp i
+    End If
+Next
+
+ActiveWorkbook.Sheets(aws.Name).Activate
+
+Dim ub As Integer
+ub = j
+Dim isfound As Boolean
+
+'Unselect all the other sheets
+For i = 1 To Range("NUMOPSLIBRARY").Value
+    If selectedindex(i) = False Then
+        theSheetName = shtLists.Range("LIBUSED").Cells(i, 1)
+        If theSheetName <> "" Then
+            If Not Sheets(theSheetName).Visible = xlSheetHidden Then Sheets(theSheetName).Visible = xlSheetHidden
+        End If
+    End If
+Next
+
+'Application.EnableEvents = True
+
+End Sub
+Private Sub HideUnitOp(OpIndex As Integer)
+    'Hides buttons associated with a particular Unit Operation
+    Dim sShapes As Shape
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        For Each sShapes In ws.Shapes
+            If sShapes.AlternativeText = "Unit Op " & OpIndex Then
+                If Not sShapes.Visible = msoFalse Then sShapes.Visible = msoFalse
+            End If
+            'If Not sShapes.Visible = msoTrue Then sShapes.Visible = msoTrue
+        Next
+        On Error Resume Next 'Will continue if an error results
+    Next ws
+
+End Sub
+Private Sub ShowUnitOp(OpIndex As Integer)
+
+Dim sShapes As Shape
+Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        For Each sShapes In ws.Shapes
+            If sShapes.AlternativeText = "Unit Op " & OpIndex Then
+                If Not sShapes.Visible = msoTrue Then sShapes.Visible = msoTrue
+            End If
+            'If Not sShapes.Visible = msoTrue Then sShapes.Visible = msoTrue
+        Next
+        On Error Resume Next 'Will continue if an error results
+    Next ws
+
+End Sub
+
+Private Sub selectop(OpIndex As Integer)
+'Get the Appropriate Library
+    Dim libselected As Integer
+    If Range("U2L").Cells(OpIndex, 1).Value = "" Then Exit Sub
+    libselected = Range("U2L").Cells(OpIndex, 1).Value
+    Dim theSheetName As String
+    theSheetName = shtLists.Range("LIBUSED").Cells(libselected, 1)
+    Sheets(theSheetName).Visible = xlSheetVisible
+    Sheets(theSheetName).Select
+End Sub
+Sub showall()
+Dim ws As Worksheet
+    For Each ws In ActiveWorkbook.Worksheets
+        ws.Visible = xlSheetVisible
+    Next
+Dim sShapes As Shape
+    For Each ws In ActiveWorkbook.Worksheets
+        For Each sShapes In ws.Shapes
+                If Not sShapes.Visible = msoTrue Then sShapes.Visible = msoTrue
+        Next
+        On Error Resume Next 'Will continue if an error results
+    Next ws
+End Sub
+
+Public Sub UnHideAll()
+    'Unhides all buttons for debugging purposes
+    Dim i As Integer
+    For i = 1 To 20
+        ShowUnitOp (i)
+    Next
+End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Public isblock As Boolean
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    WBFunctions.Workbook_BeforeClose (Cancel)
+End Sub
+
+Sub Workbook_Open()
+    WBFunctions.Workbook_Open
+End Sub
+Private Sub Workbook_SheetActivate(ByVal Sh As Object)
+    WBFunctions.Workbook_SheetActivate Sh:=Sh
+End Sub
+
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal theTarget As Range)
+    WBFunctions.Workbook_SheetChange Sh:=Sh, theTarget:=theTarget
+End Sub
+
+Private Sub Workbook_SheetDeactivate(ByVal Sh As Object)
+    WBFunctions.Workbook_SheetDeactivate Sh:=Sh
+End Sub
+
+Private Sub Workbook_SheetSelectionChange(ByVal Sh As Object, ByVal theTarget As Range)
+    WBFunctions.Workbook_SheetSelectionChange Sh:=Sh, theTarget:=theTarget
+End Sub
+Attribute VB_Name = "WBFunctions"
+Option Explicit
+Public Sub Workbook_Open()
+    'This subroutine puts the model in an appropriate state on open landing the user on the MainMenu.
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+  
+    'Default states for this application: note manual calculation by default
+    shtLists.Range("CALCSTATE").Value = Application.Calculation
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    
+    'Disable events
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, _
+                    disable:=True
+    
+    Dim currentlib As Integer
+    currentlib = shtLists.Range("CURRENTLIB").Value
+    
+    LoadViewDefaults
+    
+    shtMainMenu.Visible = xlSheetVisible
+    shtMainMenu.Select
+    shtMainMenu.Cells(1, 1).Select
+    
+    'Re-enable events, protect main
+    SetMachineState eventState, updateState, calcState, shtMainMenu
+
+    'Show a dialog indicating this is an evaluation copy.
+    If Date < CDate("01/01/2014") Then
+        
+        Dim res As Integer
+        res = MsgBox("This is an evaluation copy of Bio-Fit. This copy will time out on December 31, 2013. Do not distribute this copy of Bio-Fit outside your organization." & vbCrLf & vbCrLf & "Click Yes to open this model in regular mode (default). Click No to open this model in administrator mode (protection turned off).", vbYesNo)
+        If res = vbYes Then
+            shtLists.Range("ISDEBUG") = "FALSE"
+        Else
+            shtLists.Range("ISDEBUG") = "TRUE"
+        End If
+        
+    Else
+        MsgBox "This evaluation copy of Bio-Fit has timed out.", vbOKOnly
+        ThisWorkbook.Close False
+    End If
+    
+End Sub
+Public Sub Workbook_BeforeClose(ByRef Cancel As Boolean)
+
+    'Reset the calc state back to its default
+    Application.Calculation = shtLists.Range("CALCSTATE").Value
+  
+End Sub
+Public Sub Workbook_SheetActivate(ByVal Sh As Object)
+'This sub handles the action of changing the currently selected sheet, to a new sheet 'sh'
+
+    If ThisWorkbook.isblock Then Exit Sub
+    ThisWorkbook.isblock = True
+    
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, shtProtect:=Sh
+
+    On Error GoTo ExitSub
+    
+    If IsRangeName(Sh, "LIB") Then
+        UnProtectLibraries
+        
+        'SetMachineState False, False, calcState
+        If Not Sh.EnableCalculation Then Sh.EnableCalculation = True
+        
+        shtLists.Range("CURRENTLIB").Value = Sh.Range("LIB").Value
+        shtLists.Range("CURRENTUNO").Value = Sh.Range("UNO").Value
+        'On Error Resume Next
+        LibraryFunctions.update_available_skids
+        LibraryFunctions.update_available_columns
+        LibraryFunctions.update_available_pooltanks
+        LibraryFunctions.update_available_bufferpreptanks
+        LibraryFunctions.update_previous_solutions Sh
+        
+    End If
+    
+ExitSub:
+    SetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, shtProtect:=Sh
+    ThisWorkbook.isblock = False
+End Sub
+Public Function IsRangeName(ByRef Sh As Object, RangeName As String) As Boolean
+  On Error Resume Next
+  IsRangeName = Len(Sh.Names(RangeName).Name) <> 0
+End Function
+Public Sub Workbook_SheetDeactivate(ByVal Sh As Object)
+    If ThisWorkbook.isblock Then Exit Sub
+    ThisWorkbook.isblock = True
+    
+    On Error GoTo ExitSub
+    If IsRangeName(Sh, "LIB") Then
+        'We manually trigger calculations for that sheet
+        Sh.EnableCalculation = False
+    End If
+    
+ExitSub:
+    ThisWorkbook.isblock = False
+
+End Sub
+Public Sub Workbook_SheetChange(ByVal Sh As Object, ByVal theTarget As Range)
+    'Called every time an update is made to any sheet.
+    
+  If ThisWorkbook.isblock Then Exit Sub
+  ThisWorkbook.isblock = True
+
+  Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+  GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=Sh
+
+  On Error GoTo ExitSub
+  
+  If IsRangeName(Sh, "LIB") Then
+    UnProtectLibraries
+    Dim currentlib As Integer
+        currentlib = shtLists.Range("CURRENTLIB").Value
+      
+    Set theTarget = theTarget.Cells(1, 1)
+    If Not Intersect(theTarget, Sh.Range("L" & currentlib & "BP")) Is Nothing Then
+      'Change to buffer prep tanks
+      LibraryFunctions.update_available_bufferpreptanks
+    ElseIf Not Intersect(theTarget, Sh.Range("L" & currentlib & "BH")) Is Nothing Then
+      'Change to buffer hold tanks
+      LibraryFunctions.update_available_bufferholdtanks
+    ElseIf Not Intersect(theTarget, Sh.Range("L" & currentlib & "SKID")) Is Nothing Then
+      'Change to skid allocation
+      LibraryFunctions.update_available_skids
+      LibraryFunctions.update_available_columns
+    ElseIf Not Intersect(theTarget, Sh.Range("L" & currentlib & "COLUMN")) Is Nothing Then
+      'Change to column allocation
+      LibraryFunctions.update_available_columns
+    ElseIf Not Intersect(theTarget, Sh.Range("L" & currentlib & "POOL")) Is Nothing Then
+      'Change to column allocation
+      LibraryFunctions.update_available_pooltanks
+    ElseIf Not Intersect(theTarget, Sh.Range("L" & currentlib & "PROCESSNAME")) Is Nothing Then
+      'Load Process defaults from saved library
+      LibraryFunctions.LoadProcessFromLibrary theTarget.Value, "L" & currentlib & "PROCESSNAME", Sh
+    End If
+   End If
+    
+ExitSub:
+  SetMachineState eventState, updateState, calcState, shtProtect:=Sh
+  ThisWorkbook.isblock = False
+  
+End Sub
+Public Sub ManualCalculateFit(ByVal inSh As Object)
+    'This subroutine does a manual fit update of all calculation paths, for all unit operations
+    
+    Dim Sh As Worksheet
+    
+    On Error GoTo errmsg
+        
+    UnProtectLibraries
+        
+    Dim isht As Integer
+    Dim shtName As String
+    For isht = 1 To shtSummary.Range("UNITORDER").Rows.Count
+        shtName = shtSummary.Range("UNITORDER").Cells(isht, 1)
+        If shtName <> "" Then
+            Set Sh = Worksheets(shtName)
+            
+            Sh.EnableCalculation = True
+            If Application.Calculation = xlCalculationManual Then Application.Calculate
+            
+            shtLists.Range("CURRENTLIB").Value = Sh.Range("LIB").Value
+            shtLists.Range("CURRENTUNO").Value = Sh.Range("UNO").Value
+            'On Error Resume Next
+            LibraryFunctions.update_available_skids
+            LibraryFunctions.update_available_columns
+            LibraryFunctions.update_available_pooltanks
+            LibraryFunctions.update_available_bufferpreptanks
+            LibraryFunctions.update_previous_solutions Sh:=Sh
+            If Application.Calculation = xlCalculationManual Then Application.Calculate
+            Sh.EnableCalculation = False
+        End If
+    Next
+    
+    'Do a backwards calc for buffers used in subsequent operations
+    For isht = shtSummary.Range("UNITORDER").Rows.Count To 1 Step -1
+        shtName = shtSummary.Range("UNITORDER").Cells(isht, 1)
+        If shtName <> "" Then
+            Set Sh = Worksheets(shtName)
+            
+            Sh.EnableCalculation = True
+            If Application.Calculation = xlCalculationManual Then Application.Calculate
+            
+            shtLists.Range("CURRENTLIB").Value = Sh.Range("LIB").Value
+            shtLists.Range("CURRENTUNO").Value = Sh.Range("UNO").Value
+            'On Error Resume Next
+            LibraryFunctions.update_available_skids
+            LibraryFunctions.update_available_columns
+            LibraryFunctions.update_available_pooltanks
+            LibraryFunctions.update_available_bufferpreptanks
+            LibraryFunctions.update_previous_solutions Sh:=Sh
+            If Application.Calculation = xlCalculationManual Then Application.Calculate
+            Sh.EnableCalculation = False
+        End If
+    Next
+        
+    Exit Sub
+errmsg: MsgBox "There has been an error updating the libraries:" & Err.Description, vbCritical
+End Sub
+Public Sub Workbook_SheetSelectionChange(ByVal Sh As Object, ByVal theTarget As Range)
+    'Called every time the current selection changes.
+    
+  If ThisWorkbook.isblock Then Exit Sub
+  ThisWorkbook.isblock = True
+  On Error GoTo ExitSub
+  
+  Dim currentlib As Integer
+  currentlib = shtLists.Range("CURRENTLIB").Value
+  Dim irow As Integer
+  Dim icol As Integer
+  
+  Set theTarget = theTarget.Cells(1, 1)
+  If Not Intersect(theTarget, Sh.Range("L" & currentlib & "BP")) Is Nothing Then
+    'Selected buffer prep row
+    irow = theTarget.Row - Sh.Range("L" & currentlib & "BH").Cells(1, 1).Row + 1
+    icol = theTarget.Column - Sh.Range("L" & currentlib & "BH").Cells(1, 1).Column + 1
+    If icol = 2 Then icol = 1
+    If icol >= 4 Then icol = 3
+    shtBufferTanks.Range("CURRENTBP").Value = Sh.Range("L" & currentlib & "BP").Cells(irow, icol).Value
+  ElseIf Not Intersect(theTarget, Sh.Range("L" & currentlib & "BH")) Is Nothing Then
+    'Selected buffer hold row
+    irow = theTarget.Row - Sh.Range("L" & currentlib & "BH").Cells(1, 1).Row + 1
+    icol = theTarget.Column - Sh.Range("L" & currentlib & "BH").Cells(1, 1).Column + 1
+    If icol = 2 Then icol = 1
+    If icol >= 4 Then icol = 3
+    'If 2nd prep tank is empty, refer current BP tank to first one
+    If Sh.Range("L" & currentlib & "BP").Cells(irow, icol).Value = "" Then icol = 1
+    
+    shtBufferTanks.Range("CURRENTBP").Value = Sh.Range("L" & currentlib & "BP").Cells(irow, icol).Value
+    update_available_bufferholdtanks
+  End If
+
+ExitSub:
+  ThisWorkbook.isblock = False
+End Sub
+
+
+Public Sub GetMachineState(ByRef eventState As Boolean, ByRef updateState As Boolean, ByRef calcState As XlCalculation, _
+                           Optional disable As Boolean = False, Optional shtProtect As Worksheet = Nothing)
+                      
+  On Error Resume Next
+  
+  eventState = Application.EnableEvents
+  updateState = Application.ScreenUpdating
+  calcState = Application.Calculation
+  
+  If disable = True Then
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    shtLists.Range("EVENTSON").Value = False
+  End If
+               
+  If Not shtProtect Is Nothing Then shtProtect.Unprotect
+                      
+End Sub
+Sub UnProtectLibraries()
+  On Error Resume Next
+  Dim isht As Integer
+  Dim shtName As String
+  For isht = 1 To shtSummary.Range("UNITORDER").Rows.Count
+    shtName = shtSummary.Range("UNITORDER").Cells(isht, 1)
+    If shtName <> "" Then
+        Worksheets(shtName).Unprotect
+    End If
+  Next
+
+End Sub
+
+Public Sub SetMachineState(eventState As Boolean, updateState As Boolean, calcState As XlCalculation, _
+                           Optional shtProtect As Worksheet = Nothing)
+                      
+  On Error GoTo Restore
+  
+  If Not shtProtect Is Nothing Then
+    If Not shtLists.Range("ISDEBUG").Value = True Then shtProtect.Protect AllowFormattingCells:=True
+  End If
+  
+Restore:
+  On Error Resume Next
+  
+  If Not Application.Calculation = calcState Then Application.Calculation = calcState
+  If Not Application.EnableEvents = eventState Then Application.EnableEvents = eventState
+  shtLists.Range("EVENTSON").Value = eventState
+  If Not Application.ScreenUpdating = updateState Then Application.ScreenUpdating = updateState
+    
+End Sub
+Sub RestoreExcel()
+  
+  Application.Calculation = xlCalculationAutomatic
+  Application.EnableEvents = True
+  shtLists.Range("EVENTSON").Value = True
+  Application.StatusBar = False
+  Application.Cursor = xlDefault
+  Application.ScreenUpdating = True
+  
+End Sub
+Sub PauseExcel()
+  
+  Application.Calculation = xlManual
+  Application.EnableEvents = False
+  shtLists.Range("EVENTSON").Value = False
+  Application.StatusBar = False
+  Application.Cursor = xlDefault
+  
+End Sub
+
+
+Attribute VB_Name = "shtBufferTanks"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtColumns"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private isblock As Boolean
+Attribute VB_Name = "shtConstraints"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtFilters"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtLPFilters"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtLibraryManager"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private isblock As Boolean
+
+Private Sub Worksheet_BeforeDoubleClick(ByVal theTarget As Range, Cancel As Boolean)
+  If isblock Then Exit Sub
+  Dim theItem As Integer
+  Dim theItemName As String
+  Dim ID As Integer
+  isblock = True
+  Dim theSheet As String
+  
+  Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+  GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=shtLibraryManager
+  
+  Set theTarget = theTarget.Cells(1, 1)
+  If Not Intersect(theTarget, shtLibraryManager.Range("SORTDOWN")) Is Nothing Then
+    'Sort Down
+    theItem = theTarget.Row - shtLibraryManager.Range("SORTDOWN").Row + 1
+    
+    theItemName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem + 1, 1).Value
+    If theItemName = "" Then GoTo ExitSub
+    
+    theItemName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1).Value
+    If theItemName = "" Then GoTo ExitSub
+    
+    'Swap the IDs
+    ID = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1) = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem + 1, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem + 1, 1) = ID
+    
+    'Swap the names
+    theItemName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1) = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem + 1, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem + 1, 1) = theItemName
+        
+    'Swap the descriptions
+    theItemName = shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem, 1) = shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem + 1, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem + 1, 1) = theItemName
+    
+  ElseIf Not Intersect(theTarget, shtLibraryManager.Range("SORTUP")) Is Nothing Then
+    'Sort Up
+    theItem = theTarget.Row - shtLibraryManager.Range("SORTUP").Row + 1
+    If theItem = 1 Then GoTo ExitSub
+    If shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1).Value = "" Then GoTo ExitSub
+    
+    'Swap the IDs
+    ID = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1) = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem - 1, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem - 1, 1) = ID
+    
+    'Swap the names
+    theItemName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1) = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem - 1, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem - 1, 1) = theItemName
+   
+    
+    'Swap the descriptions
+    theItemName = shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem, 1) = shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem - 1, 1).Value
+    shtLibraryManager.Range("ORDEREDLIBDESC").Cells(theItem - 1, 1) = theItemName
+  
+  ElseIf Not Intersect(theTarget, shtLibraryManager.Range("ActuatorImportFromFile")) Is Nothing Then
+    'Import from file
+    ImportExport.ImportLibraryFromFile
+    
+  ElseIf Not Intersect(theTarget, shtLibraryManager.Range("ActuatorCopy")) Is Nothing Then
+    'Copy
+    theItem = theTarget.Row - shtLibraryManager.Range("ActuatorCopy").Row + 1
+    ID = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1).Value
+    'Check that the item is valid
+    If shtLists.Range("LIBUSED").Cells(ID, 2).Value = True Then
+        'This is used, find an unused item.
+        theItemName = shtLists.Range("LIBUSED").Cells(ID, 1).Value
+        
+        Dim i As Integer
+        Dim toIndex As Integer
+        toIndex = -1
+        For i = 1 To shtLists.Range("LIBUSED").Rows.Count
+            If shtLists.Range("LIBUSED").Cells(i, 2).Value = False Then
+                'This item is not used.
+                toIndex = i
+                Exit For
+            End If
+        Next
+        If toIndex = -1 Then
+            MsgBox "Could not find a free item. Delete an item and try again.", vbCritical
+            GoTo ExitSub
+        End If
+        
+        ImportExport.ImportLibraryFromSelf theItemName, ID, theItemName, toIndex
+        
+        'Go find the placement
+        isblock = True
+        For i = 1 To shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Rows.Count
+            If shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(i, 1) = toIndex Then
+                Range("ORDEREDLIBUSED").Cells(i, 1) = shtLists.Range("LIBUSED").Cells(toIndex, 1).Value
+                Exit For
+            End If
+        Next
+        theTarget.Cells(2, 1).Select
+        isblock = False
+    End If
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("ActuatorClear")) Is Nothing Then
+    'Clear the library
+        theItem = theTarget.Row - shtLibraryManager.Range("ActuatorClear").Row + 1
+
+    
+    
+    
+    ID = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1).Value
+    'Check that the item is valid
+    If shtLists.Range("LIBUSED").Cells(ID, 2).Value = True Then
+        'This is used, delete the item
+        'Delete the library
+        theSheet = shtLists.Range("LIBUSED").Cells(ID, 1).Value
+              
+        Dim strMessage As String
+        strMessage = "Clearing the library - " & theSheet & " - " & _
+          " will clear all the data and settings associated with this library." & vbCr & vbCr & _
+          "There is no Undo for this operation." & vbCr & vbCr & _
+          "Do you wish to continue?"
+        If Not MsgBox(strMessage, vbExclamation + vbYesNo + vbDefaultButton2, "Clear Library") = vbYes Then
+          GoTo ExitSub
+        End If
+        'Find item in Summary, clear it if found
+        Dim dItemName As String
+        dItemName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1).Value
+        Dim UnOID As Integer
+        For UnOID = 1 To shtSummary.Range("UNITORDER").Rows.Count
+            If shtSummary.Range("UNITORDER").Cells(UnOID, 1).Value = dItemName Then
+                For i = UnOID + 1 To shtSummary.Range("UNITORDER").Rows.Count
+                    If shtSummary.Range("UNITORDER").Cells(i, 1) <> "" Then
+                        shtSummary.Range("UNITORDER").Cells(i - 1, 1) = shtSummary.Range("UNITORDER").Cells(i, 1)
+                    Else
+                        shtSummary.Range("UNITORDER").Cells(i - 1, 1) = ""
+                        Exit For
+                    End If
+                Next
+                Exit For
+            End If
+        Next
+        ShowAndOrderUnitOperations
+        ImportExport.DeleteLibrary ID, theItem, theSheet
+        ManualCalculateFit inSh:=shtLibraryManager
+        
+        theTarget.Cells(0, 1).Select
+
+    End If
+  ElseIf Not Intersect(theTarget, shtLibraryManager.Range("ActuatorGoTo")) Is Nothing Then
+    'Go to
+    theItem = theTarget.Row - shtLibraryManager.Range("ActuatorCopy").Row + 1
+    ID = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1).Value
+    'Check that the item is valid
+    If shtLists.Range("LIBUSED").Cells(ID, 2).Value = True Then
+        theSheet = shtLists.Range("LIBUSED").Cells(ID, 1).Value
+        Sheets(theSheet).Visible = xlSheetVisible
+        Sheets(theSheet).Select
+    End If
+  End If
+  
+ExitSub:
+  SetMachineState eventState, updateState, calcState, shtProtect:=shtLibraryManager
+  isblock = False
+  Cancel = True
+
+End Sub
+
+
+Private Sub Worksheet_Change(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+  
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=shtLibraryManager
+
+    If Not Intersect(theTarget, shtLibraryManager.Range("ORDEREDLIBUSED")) Is Nothing Then
+        'Change the order of items in the library
+        
+        shtLibraryManager.Unprotect
+        ThisWorkbook.isblock = True
+        
+        Dim theItem As Integer
+        theItem = theTarget.Row - shtLibraryManager.Range("ORDEREDLIBUSED").Row + 1
+        
+        'Check that this is a valid library item
+        Dim ID As Integer
+        ID = shtLibraryManager.Range("ORDEREDLIBUSEDINDEX").Cells(theItem, 1).Value
+        If Not shtLists.Range("LIBUSED").Cells(ID, 2).Value = True Then
+            theTarget.Value = ""
+            GoTo ExitSub
+        End If
+        
+        Dim originalName As String
+        originalName = shtLists.Range("LIBUSED").Cells(ID, 1).Value
+        
+        'Check that this is a valid name
+        'Proposed Name:
+        Dim proposedName As String
+        proposedName = theTarget.Cells(1, 1).Value
+        
+        If proposedName = "" Then
+            'Can't issue a blank name
+            theTarget = originalName
+            GoTo ExitSub
+        End If
+        
+        'Finalized Name:
+        Dim finalizedName As String
+        If Not importing Then
+            finalizedName = ImportExport.FindUniqueName(proposedName)
+        Else
+            finalizedName = proposedName
+        End If
+        
+        'Rename the appropriate cell
+        theTarget = finalizedName
+        
+        'Rename the library
+        shtLists.Range("LIBUSED").Cells(ID, 1) = finalizedName
+        
+        UnprotectAll
+        
+        'Rename the value on the library
+        Sheets(originalName).Range("L" & ID & "NAME").Value = finalizedName
+        
+        'Rename the worksheet
+        Sheets(originalName).Name = finalizedName
+        
+        'Rename the item, if used.
+        Dim i As Integer
+        For i = 1 To shtSummary.Range("UNITORDER").Rows.Count
+            If shtSummary.Range("UNITORDER").Cells(i, 1) = originalName Then
+                shtSummary.Range("UNITORDER").Cells(i, 1) = finalizedName
+                Exit For
+            End If
+        Next
+        
+    End If
+
+ExitSub:
+    SetMachineState eventState, updateState, calcState, shtProtect:=shtLibraryManager
+    isblock = False
+    ThisWorkbook.isblock = False
+    
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+   
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=shtLibraryManager
+
+    Set theTarget = theTarget.Cells(1, 1)
+    If Not Intersect(theTarget, shtLibraryManager.Range("ORDEREDLIBUSED")) Is Nothing Then
+        Dim theItem As Integer
+        theItem = theTarget.Row - shtLibraryManager.Range("ORDEREDLIBUSED").Row + 1
+        If shtLibraryManager.Range("ORDEREDLIBUSED").Cells(theItem, 1) = "" Then
+            'Select the first available item
+            Dim i As Integer
+            For i = 1 To shtLibraryManager.Range("ORDEREDLIBUSED").Rows.Count - 1
+                If shtLibraryManager.Range("ORDEREDLIBUSED").Cells(i + 1, 1) = "" Then
+                    shtLibraryManager.Range("ORDEREDLIBUSED").Cells(i, 1).Select
+                    Exit For
+                End If
+            Next
+        End If
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("infoActuator1")) Is Nothing Then
+        MsgBox "To shift an item up or down a position, double click on the up/down arrows." & vbCrLf & "The ID corresponds to the unique identifier for the scenario.", vbOKOnly, "Sort and Re-Order Library Items"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("infoActuator2")) Is Nothing Then
+        MsgBox "Rename any library item highlighted in blue, by clicking on the cell and typing a new name." & vbCrLf & "Note that all Library Items must have unique names.", vbOKOnly, "Rename Library Items"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("infoActuator3")) Is Nothing Then
+        MsgBox "Give any library item highlighted in blue a description, by clicking on the cell and typing a new name.", vbOKOnly, "Descriptions of Library Items"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("infoActuator4")) Is Nothing Then
+        MsgBox "Double click the 'Go To' button, to navigate directly to the library item." & vbCrLf & "This allows you to edit the contents of that library item.", vbOKOnly, "Go To Library Item"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("infoActuator5")) Is Nothing Then
+        MsgBox "Double click the 'Copy' button, to copy this library item. The library item and its contents will be copied and given the next available unique ID." & vbCrLf & "Note that the new libary item will be given a unique name and may need renaming.", vbOKOnly, "Copy Library Item"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("infoActuator6")) Is Nothing Then
+        MsgBox "Double click the 'Clear' button, to delete a library item and all its contents. Clearing the contents of a Library Item leaves that slot available for new items." & vbCrLf & "Note: there is no undo for this operation.", vbOKOnly, "Clear Library Item"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtLibraryManager.Range("infoActuator7")) Is Nothing Then
+        MsgBox "Double click the 'Import from File' button, to import the contents of an existing model into this model." & vbCrLf & "This includes all of the Library Items in the other model, whether or not they are used. Use this option when you have data in a different Excel file, you want to incorporate into this model. Do not attempt to copy the worksheet manually, as this may corrupt the database.", vbOKOnly, "Import Library from a File"
+        GoTo ExitSub
+    End If
+    
+ExitSub:
+    SetMachineState eventState, updateState, calcState, shtProtect:=shtLibraryManager
+    isblock = False
+    
+End Sub
+Attribute VB_Name = "shtLists"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtMainMenu"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private isblock As Boolean
+
+
+Private Sub Worksheet_BeforeDoubleClick(ByVal theTarget As Range, Cancel As Boolean)
+  
+  Cancel = True
+  
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+   
+  Set theTarget = theTarget.Cells(1, 1)
+  Dim shtName As String
+  
+  Select Case theTarget.Address
+    Case shtMainMenu.Range("ACTUATORSKIDS").Address
+        theTarget.Cells(0, 1).Select
+        shtSkids.Visible = xlSheetVisible
+        shtSkids.Select
+        shtSkids.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORCOLS").Address
+        theTarget.Cells(0, 1).Select
+        shtColumns.Visible = xlSheetVisible
+        shtColumns.Select
+        shtColumns.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORPOOLTANK").Address
+        theTarget.Cells(0, 1).Select
+        shtPoolTanks.Visible = xlSheetVisible
+        shtPoolTanks.Select
+        shtPoolTanks.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORBT").Address
+        theTarget.Cells(0, 1).Select
+        shtBufferTanks.Visible = xlSheetVisible
+        shtBufferTanks.Select
+        shtBufferTanks.Cells(1, 1).Select
+   Case shtMainMenu.Range("ACTUATORCONSTRAINTS").Address
+        theTarget.Cells(0, 1).Select
+        shtConstraints.Visible = xlSheetVisible
+        shtConstraints.Select
+        shtConstraints.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORSUMMARY").Address
+        theTarget.Cells(0, 1).Select
+        shtSummary.Visible = xlSheetVisible
+        shtSummary.Select
+        shtSummary.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORLIBMANAGER").Address
+        theTarget.Cells(0, 1).Select
+        shtLibraryManager.Visible = xlSheetVisible
+        shtLibraryManager.Select
+        shtLibraryManager.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORMATERIALS").Address
+        theTarget.Cells(0, 1).Select
+        shtPumps.Visible = xlSheetVisible
+        shtPumps.Select
+        shtPumps.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORFILTERS").Address
+        theTarget.Cells(0, 1).Select
+        shtFilters.Visible = xlSheetVisible
+        shtFilters.Select
+        shtFilters.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORLPFILTERS").Address
+        theTarget.Cells(0, 1).Select
+        shtLPFilters.Visible = xlSheetVisible
+        shtLPFilters.Select
+        shtLPFilters.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORTANKALLOCATE").Address
+        theTarget.Cells(0, 1).Select
+        shtTankAllocation.Visible = xlSheetVisible
+        shtTankAllocation.Select
+        shtTankAllocation.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORSA").Address
+        theTarget.Cells(0, 1).Select
+        shtSA.Visible = xlSheetVisible
+        shtSA.Select
+        shtSA.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORSOLUTIONSLIST").Address
+        theTarget.Cells(0, 1).Select
+        shtSolutionList.Visible = xlSheetVisible
+        shtSolutionList.Select
+        shtSolutionList.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORPHASESLIST").Address
+        theTarget.Cells(0, 1).Select
+        shtPhaseList.Visible = xlSheetVisible
+        shtPhaseList.Select
+        shtPhaseList.Cells(1, 1).Select
+    Case shtMainMenu.Range("ACTUATORLIB1").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(1, 1)
+        Sheets(shtName).Visible = xlSheetVisible
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB2").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(2, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB3").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(3, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB4").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(4, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB5").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(5, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB6").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(6, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB7").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(7, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB8").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(8, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB9").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(9, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB10").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(10, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB11").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(11, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB12").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(12, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB13").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(13, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB14").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(14, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB15").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(15, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB16").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(16, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB17").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(17, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB18").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(18, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB19").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(19, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ACTUATORLIB20").Address
+        theTarget.Cells(0, 1).Select
+        shtName = shtLibraryManager.Range("ORDEREDLIBUSED").Cells(20, 1)
+        If shtName = "" Then GoTo ExitSub
+        Sheets(shtName).Visible = xlSheetVisible
+        Sheets(shtName).Select
+    Case shtMainMenu.Range("ActuatorResetExcel").Address
+        MsgBox "The Reset Excel button sets the workbook calculation behavior to automatic and other workbook settings to their default values.", vbOKOnly, "Reset Excel"
+        GoTo ExitSub
+    End Select
+
+ExitSub:
+    isblock = False
+        
+End Sub
+    
+Attribute VB_Name = "shtMaterials"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "shtPhaseList"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Worksheet_Activate()
+    'Load when activated
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=ActiveSheet
+
+    LibraryFunctions.LoadPhasesList
+    
+    'Re-enable events, protect main
+    SetMachineState eventState, updateState, calcState, shtMainMenu
+
+    
+End Sub
+Attribute VB_Name = "shtPoolTanks"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtPumps"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtRefMenu"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Worksheet_BeforeDoubleClick(ByVal theTarget As Range, Cancel As Boolean)
+    
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=shtRefMenu
+  
+    Set theTarget = theTarget.Cells(1, 1)
+    If Not Intersect(theTarget, shtRefMenu.Range("ActuatorRefreshMenus")) Is Nothing Then
+      ImportExport.ReCopyMenu
+    End If
+
+    'Re-enable events, protect main
+    SetMachineState eventState, updateState, calcState, shtRefMenu
+
+ExitSub:
+  Cancel = True
+
+End Sub
+
+
+Private Sub Worksheet_SelectionChange(ByVal theTarget As Range)
+   
+    Set theTarget = theTarget.Cells(1, 1)
+    If Not Intersect(theTarget, shtRefMenu.Range("ActuatorInfo1")) Is Nothing Then
+        MsgBox "Double click to refresh all menus. This will copy the template of buttons on this page, to all other pages in the model." & vbCrLf & vbCrLf & "Caution: there is no undo for this operation.", vbOKOnly, "Populate Menu Items"
+        GoTo ExitSub
+    End If
+    
+ExitSub:
+    
+End Sub
+Attribute VB_Name = "shtSA"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private isblock As Boolean
+
+Private Sub Worksheet_SelectionChange(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+    
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=shtSA
+     
+    Set theTarget = theTarget.Cells(1, 1)
+    
+    If Not Intersect(theTarget, shtSA.Range("ACTUATORRUN")) Is Nothing Then
+        runSA
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtSA.Range("infoActuator1")) Is Nothing Then
+        MsgBox "A sensitivity analysis aims to identify how a particular variable affects the fit of a particular process." & vbCrLf & "'Range' defines the variable in the model that will be changed. This cell must refer to a named range in the model, that will be altered." & vbCrLf & "Base value, high value, and step size determine the values that the range can take. For example, a base value of 1 and high value of 10, with a step size of 1 will produce 10 experiments testing at the point 1,2,3,..., 10." & "The color scale gives a visual indication of where the key constraints are. Constraints closer to the base value are shown in a stronger color, further from the base value are less strong. You can set the color scale by changing the color in this cell.", vbOKOnly, "Set Up Sensitivity Analysis"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtSA.Range("infoActutor2")) Is Nothing Then
+        MsgBox "The output of a sensitivity analysis shows how, as the variable chosen changes between its base and high value, the point at which key constraint types are violated. The number in the cell indicates the first time that a particular constraint type has been violated, i.e. no longer 'fits'. Cells are blank if the constraint is never violated." & vbCrLf & "Note that if the constraint type or unit operation checking is turned off on the 'Summary' tab, the cells associated with that constraint will never be violated.", vbOKOnly, "Sensitivity Analysis Outputs"
+        GoTo ExitSub
+    End If
+
+ExitSub:
+    SetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, shtProtect:=shtSA
+    isblock = False
+    
+End Sub
+
+Sub runSA()
+
+'This sub runs a sensitivity analysis on a single cell in a worksheet.
+'The output is a graph, by unit operation and constraint, indicating problems.
+'This code is (c) 2011 Bioproduction Group. All Rights Reserved.
+
+
+'If Base Value = High value, exit sub
+If shtSA.Range("SAINPUT").Cells(3, 1).Value = shtSA.Range("SAINPUT").Cells(4, 1).Value Then
+    MsgBox ("Base Value is identical to High Value. Please enter different values.")
+    Exit Sub
+End If
+
+'Get the inputs.
+Dim inputrange As String
+inputrange = "SAINPUT"
+
+Dim outputrange As String
+outputrange = "SAOUTPUT"
+
+Dim therange As String
+therange = shtSA.Range(inputrange).Cells(1, 1)
+
+Dim originalval As Double
+originalval = shtSummary.Range(therange).Cells(1, 1).Value
+
+Dim val As Double
+Dim fromval As Double
+Dim toval As Double
+Dim stepval As Double
+If IsNumeric(Range(inputrange).Cells(3, 1)) Then
+    fromval = shtSA.Range(inputrange).Cells(3, 1)
+Else
+    fromval = 1
+End If
+If IsNumeric(Range(inputrange).Cells(4, 1)) Then
+    toval = shtSA.Range(inputrange).Cells(4, 1)
+Else
+    toval = 1
+End If
+If IsNumeric(Range(inputrange).Cells(5, 1)) Then
+    stepval = shtSA.Range(inputrange).Cells(5, 1)
+Else
+    stepval = 1
+End If
+
+Dim updateAllocations As Boolean
+If shtSA.Range(inputrange).Cells(6, 1) = "Yes" Then
+    updateAllocations = True
+Else
+    updateAllocations = False
+End If
+
+Dim uniti As Integer
+Dim constj As Integer
+
+Dim numunit As Integer
+numunit = shtSummary.Range("CONSTRAINTS").Rows.Count
+Dim numconstraint As Integer
+numconstraint = shtSummary.Range("CONSTRAINTS").Columns.Count
+
+Dim booviolations() As Boolean
+Dim violationlimit() As Double
+ReDim booviolations(numunit, numconstraint)
+ReDim violationlimit(numunit, numconstraint)
+
+For uniti = 1 To numunit
+    For constj = 1 To numconstraint
+        booviolations(uniti, constj) = False
+    Next
+Next
+
+Dim curoutputrow As Integer
+curoutputrow = 1
+
+For val = fromval To toval Step stepval
+    shtSummary.Range(therange).Cells(1, 1).Value = val
+    
+    If updateAllocations Then Allocation.buffer_tank_allocate BufferPrepAndHold, ReallocateAll, FirstTanktoLastTank
+    shtSummary.Calculate
+    
+    'Do a manual calculation
+    ManualCalculateFit inSh:=shtSA
+    
+    'Get the outputs
+    For uniti = 1 To numunit
+        For constj = 1 To numconstraint
+            If (Not booviolations(uniti, constj)) And shtSummary.Range("CONSTRAINTS").Cells(uniti, constj).Value = "No" Then
+                'Constraint now violated
+                booviolations(uniti, constj) = True
+                'Write the output
+                violationlimit(uniti, constj) = val
+            End If
+        Next
+    Next
+Next
+
+'Done. Write the output.
+Range(outputrange).Clear
+
+'Header row
+For constj = 1 To numconstraint
+   Range(outputrange).Cells(1, constj + 1) = shtSummary.Range("CONSTRAINTNAME").Cells(1, constj)
+   Range(outputrange).Cells(1, constj + 1).WrapText = True
+Next
+For uniti = 1 To numunit
+    Range(outputrange).Cells(uniti + 1, 1) = shtSummary.Range("CONSTRAINTUNITOP").Cells(uniti, 1)
+Next
+
+'Shading
+
+Dim shade As Double
+Dim finalcolor As Long, R As Integer, G As Integer, b As Integer
+finalcolor = Range(inputrange).Cells(7, 1).Interior.Color
+R = finalcolor Mod 256
+G = (finalcolor \ 256) Mod 256
+b = (finalcolor \ 256 \ 256) Mod 256
+  
+For uniti = 1 To numunit
+    For constj = 1 To numconstraint
+        'Output the value
+        If booviolations(uniti, constj) Then
+            'Color the cells (heat map)
+            shade = (1 - ((violationlimit(uniti, constj) - fromval) / (toval - fromval)))
+            With Range(outputrange).Cells(uniti + 1, constj + 1)
+                .Value = violationlimit(uniti, constj)
+                .Interior.Color = RGB(255 - CInt((255 - R) * shade), 255 - CInt((255 - G) * shade), 255 - CInt((255 - b) * shade))
+            End With
+        End If
+    Next
+Next
+
+'Reset the value back to original
+shtSummary.Range(therange).Cells(1, 1).Value = originalval
+    
+
+
+End Sub
+
+Attribute VB_Name = "shtSaved"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtSkids"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "shtSolutionList"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private isblock As Boolean
+
+Private Sub Worksheet_Activate()
+    'Load when activated
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=ActiveSheet
+    
+    'Load when activated
+    LibraryFunctions.LoadSolutionsList
+    
+    'Re-enable events, protect main
+    SetMachineState eventState, updateState, calcState, shtMainMenu
+
+End Sub
+Private Sub Worksheet_SelectionChange(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+    
+    If Not Intersect(theTarget, shtSolutionList.Range("infoActuator1")) Is Nothing Then
+        MsgBox "This form shows a list of solutions prepared by unit operation. This worksheet is not dynamically linked to the other spreadsheets, i.e. can be copied and pasted to other worksheets not related to Bio-Fit.", vbOKOnly, "List of Solutions by Unit Operation"
+        GoTo ExitSub
+    End If
+    
+ExitSub:
+    isblock = False
+    
+End Sub
+
+Attribute VB_Name = "shtSummary"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private isblock As Boolean
+
+Private Sub Worksheet_Activate()
+    If isblock Then Exit Sub
+    isblock = True
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=ActiveSheet
+    ManualCalculateFit inSh:=shtSummary
+ExitSub:
+    SetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, shtProtect:=ActiveSheet
+    isblock = False
+
+End Sub
+
+Private Sub Worksheet_Change(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+   
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=ActiveSheet
+   
+    ManualCalculateFit inSh:=shtSummary
+   
+    Dim theItem As Integer
+    Set theTarget = theTarget.Cells(1, 1)
+    If Not Intersect(theTarget, shtSummary.Range("UNITORDER")) Is Nothing Then
+        shtSummary.Unprotect
+        theItem = theTarget.Row - shtSummary.Range("UNITORDER").Row + 1
+        If shtSummary.Range("UNITORDER").Cells(theItem, 1) <> "" Then
+            ShowAndOrderUnitOperations
+        End If
+    End If
+    
+ExitSub:
+    SetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, shtProtect:=ActiveSheet
+    isblock = False
+    
+End Sub
+
+
+Private Sub Worksheet_BeforeDoubleClick(ByVal theTarget As Range, Cancel As Boolean)
+  If isblock Then Exit Sub
+  Dim theItem As Integer
+  Dim theItemName As String
+  Dim ID As Integer
+  isblock = True
+  Dim theSheet As String
+  
+    Dim eventState As Boolean, updateState As Boolean, calcState As XlCalculation
+    GetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, disable:=True, shtProtect:=ActiveSheet
+  
+  Set theTarget = theTarget.Cells(1, 1)
+  If Not Intersect(theTarget, shtSummary.Range("SORTUP")) Is Nothing Then
+    'Sort Up
+    theItem = theTarget.Row - shtSummary.Range("SORTUP").Row + 1
+    If theItem = 1 Then GoTo ExitSub
+    If shtSummary.Range("UNITORDER").Cells(theItem, 1).Value = "" Then GoTo ExitSub
+    
+    'Swap the names
+    theItemName = shtSummary.Range("UNITORDER").Cells(theItem, 1).Value
+    shtSummary.Range("UNITORDER").Cells(theItem, 1) = shtSummary.Range("UNITORDER").Cells(theItem - 1, 1).Value
+    shtSummary.Range("UNITORDER").Cells(theItem - 1, 1) = theItemName
+        
+    'Refresh the display order
+    ShowAndOrderUnitOperations
+  ElseIf Not Intersect(theTarget, shtSummary.Range("ActuatorClear")) Is Nothing Then
+    'Clear the library
+    theItem = theTarget.Row - shtSummary.Range("ActuatorClear").Row + 1
+    
+    Dim i As Integer
+    For i = theItem + 1 To shtSummary.Range("UNITORDER").Rows.Count
+        If shtSummary.Range("UNITORDER").Cells(i, 1) <> "" Then
+            shtSummary.Range("UNITORDER").Cells(i - 1, 1) = shtSummary.Range("UNITORDER").Cells(i, 1)
+        Else
+            shtSummary.Range("UNITORDER").Cells(i - 1, 1) = ""
+            Exit For
+        End If
+    Next
+    
+    'Refresh the display order
+    ShowAndOrderUnitOperations
+    
+  ElseIf Not Intersect(theTarget, shtSummary.Range("ActuatorGoTo")) Is Nothing Then
+    'Go to
+    theItem = theTarget.Row - shtSummary.Range("ActuatorGoTo").Row + 1
+    theSheet = shtSummary.Range("UNITORDER").Cells(theItem, 1).Value
+    Sheets(theSheet).Visible = xlSheetVisible
+    Sheets(theSheet).Select
+    WBFunctions.Workbook_SheetActivate Sh:=Sheets(theSheet)
+  End If
+  
+ExitSub:
+  SetMachineState eventState:=eventState, updateState:=updateState, calcState:=calcState, shtProtect:=ActiveSheet
+  isblock = False
+  Cancel = True
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+   
+    Dim theItem As Integer
+    Set theTarget = theTarget.Cells(1, 1)
+    If Not Intersect(theTarget, shtSummary.Range("UNITORDER")) Is Nothing Then
+        theItem = theTarget.Row - shtSummary.Range("UNITORDER").Row
+        If shtSummary.Range("UNITORDER").Cells(theItem + 1, 1) = "" And shtSummary.Range("UNITORDER").Cells(theItem, 1) = "" Then
+            'Select the first available item
+            Dim i As Integer
+            For i = 1 To shtSummary.Range("UNITORDER").Rows.Count - 2
+                If shtSummary.Range("UNITORDER").Cells(i + 1, 1) = "" Then
+                    shtSummary.Range("UNITORDER").Cells(i + 1, 1).Select
+                    Exit For
+                End If
+            Next
+        End If
+    ElseIf Not Intersect(theTarget, shtSummary.Range("infoActuator1")) Is Nothing Then
+        MsgBox "This section contains a brief summary of the facility and molecule, cell culture parameters, and scenario information." & vbCrLf & "Any fields appearing blue, can be edited.", vbOKOnly, "Summary Tab"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtSummary.Range("infoActuator2")) Is Nothing Then
+        MsgBox "This section defines the order of process steps for the model. Use the drop-downs in the Unit Operations column to choose from the library of available unit operations. Up to 10 sequential unit operations can be specified.", vbOKOnly, "Process Steps Tab"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtSummary.Range("infoActuator4")) Is Nothing Then
+        MsgBox "This section shows the key constraints for each of the unit operations, organized by constraint type.", vbOKOnly, "Constraints Tab"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtSummary.Range("infoActuator5")) Is Nothing Then
+        MsgBox "Double click the 'Go To' button, to navigate directly to the library item." & vbCrLf & "This allows you to edit the contents of that library item.", vbOKOnly, "Go To Unit Operation"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtSummary.Range("infoActuator6")) Is Nothing Then
+        MsgBox "Double click the 'Clear' button, to remove this unit operation from the list of process steps. Note: if you want to replace the item with a different item, just select the item and choose from the drop-down list. This button is only for clearing the item, but not replacing it. This does not delete the library item, to delete the library item itself go to the Library Manager.", vbOKOnly, "Clear Unit Operation"
+        GoTo ExitSub
+    ElseIf Not Intersect(theTarget, shtSummary.Range("infoActuator7")) Is Nothing Then
+        MsgBox "To shift an item up a position, double click on the up arrows." & vbCrLf & "This will also the change the processing order of the unit operation.", vbOKOnly, "Sort and Re-Order Unit Operations"
+        GoTo ExitSub
+    End If
+    
+ExitSub:
+    isblock = False
+    
+End Sub
+
+Attribute VB_Name = "shtTankAllocation"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private isblock As Boolean
+
+Private Sub Worksheet_SelectionChange(ByVal theTarget As Range)
+    If isblock Then Exit Sub
+    isblock = True
+   
+    Set theTarget = theTarget.Cells(1, 1)
+    If Not Intersect(theTarget, shtTankAllocation.Range("ACTUATORRUN")) Is Nothing Then
+    
+        shtTankAllocation.Unprotect
+        
+        Dim thetankstoallocate As TanksToAllocate
+        thetankstoallocate = BufferPrep
+        If shtTankAllocation.Range("TankSelection").Cells(1, 1).Value = "Buffer Prep Only" Then
+            thetankstoallocate = BufferPrep
+        ElseIf shtTankAllocation.Range("TankSelection").Cells(1, 1).Value = "Buffer Hold Only" Then
+            thetankstoallocate = BufferHold
+        ElseIf shtTankAllocation.Range("TankSelection").Cells(1, 1).Value = "Buffer Prep and Hold" Then
+            thetankstoallocate = BufferPrepAndHold
+        ElseIf shtTankAllocation.Range("TankSelection").Cells(1, 1).Value = "Pool Tanks" Then
+            thetankstoallocate = PoolTanks
+        End If
+        
+        Dim thecellsstoallocate As CellsToAllocate
+        thecellsstoallocate = AllocateOnlyEmptyCells
+        If shtTankAllocation.Range("CellAllocation").Cells(1, 1).Value = "Reallocate All" Then
+            thecellsstoallocate = ReallocateAll
+        ElseIf shtTankAllocation.Range("CellAllocation").Cells(1, 1).Value = "Fix Problems" Then
+            thecellsstoallocate = FixProblems
+        ElseIf shtTankAllocation.Range("CellAllocation").Cells(1, 1).Value = "Allocate only Empty Cells" Then
+            thecellsstoallocate = AllocateOnlyEmptyCells
+        End If
+        
+        Dim theallocate As AllocationRule
+        theallocate = FirstTanktoLastTank
+        If shtTankAllocation.Range("AllocationRule").Cells(1, 1).Value = "First Tank to Last Tank" Then
+            theallocate = FirstTanktoLastTank
+        ElseIf shtTankAllocation.Range("AllocationRule").Cells(1, 1).Value = "Smallest Tank First" Then
+            theallocate = SmallestTankFirst
+        End If
+                    
+        Allocation.buffer_tank_allocate thetankstoallocate, thecellsstoallocate, theallocate
+        
+        If Not shtLists.Range("ISDEBUG").Value = True Then shtTankAllocation.Protect
+    End If
+    
+ExitSub:
+    isblock = False
+    
+End Sub
+
+' InQuest injected base64 decoded content
+' ^:yr
+' +"jh
+
+INQUEST-PP=macro

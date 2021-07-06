@@ -1,0 +1,1414 @@
+Attribute VB_Name = "DOORSExportDialogue"
+Attribute VB_Base = "0{54AE9DC7-FEA8-4996-874D-A597C0A2A853}{9BC9E183-BDD3-435E-943E-8E690B702A9B}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+' Callback on "Export" button click on main dialogue
+' Copyright (c) IBM Corporation 1993, 2011. All Rights Reserved.
+
+' WARNING! If this file is changed, the file needs to be re-signed. See readme for details.
+
+Option Explicit
+
+Private Sub CancelButton_Click()
+    cancelExport
+End Sub
+
+Private Sub ExportButton_Click()
+    DoExport
+End Sub
+
+Private Sub UserForm_Terminate()
+    cancelExport
+End Sub
+Attribute VB_Name = "ExportButtonCallback"
+' Body code for exporting document to DOORS
+' Copyright (c) IBM Corporation 1993, 2015. All Rights Reserved.
+
+' WARNING! If this file is changed, the file needs to be re-signed. See readme for details.
+
+Option Explicit
+
+Dim appDoors
+
+Public exportModuleName As String
+Public exportModuleDesc As String
+Public exportModulePrefix As String
+Public exportModuleAbsno As Long
+Public exportStripNumbers As Boolean
+Public exportCaptureStyles As Boolean
+Public exportBidiSupport As Boolean
+
+Public exportStarted As Boolean
+
+Private lastHeadingLevel As Integer
+Private lastCreateLevel As Integer
+Private paraCount As Long
+Private hasFailed As Boolean
+Public lastWasATableObject As Boolean
+
+'Local version of interface
+Private Const interfaceLocalVersion As Integer = 2
+
+'Character constants
+Private Const carriageReturn As Integer = 13
+Private Const unknownChar As Integer = 12   ' This should maybe be a linefeed but maybe Guy
+                                            ' discovered the value by experiment -- I'm not changing it
+                                            ' without a good reason
+
+'DOORS attributes
+Private Const ALongText As String = """Object Text"""
+Private Const AHeading As String = """Object Heading"""
+
+Private Const bugCheck As String = "please submit a problem report."
+
+'Interface cell constants
+Private Const borderTop As Integer = 1
+Private Const borderBottom As Integer = 2
+Private Const borderLeft As Integer = 4
+Private Const borderRight As Integer = 8
+
+'Interface align constants
+Private Const alignLeft As Integer = 0
+Private Const alignRight As Integer = 1
+Private Const alignCenter As Integer = 2
+Private Const alignFull As Integer = 3
+
+
+'Interface commands
+Private Const interfaceOK As String = "OK"
+Private Const interfaceExists As String = "Exists"
+Private Const interfaceMakeMod As String = "interfaceMakeMod_"
+Private Const interfaceAppendMod As String = "interfaceAppendMod_"
+Private Const interfaceVersion As String = "interfaceVersion_"
+Private Const interfacePasteAttribute As String = "interfacePasteAttribute_"
+Private Const interfaceOLECellPaste As String = "interfaceOLECellPaste_"
+Private Const interfaceStartTable As String = "interfaceStartTable_"
+Private Const interfaceEndTable As String = "interfaceEndTable_"
+Private Const interfaceNewRow As String = "interfaceNewRow_"
+Private Const interfaceNewCell As String = "interfaceNewCell_"
+Private Const interfacePasteCellAttribute As String = "interfacePasteCellAttribute_"
+Private Const interfaceSetCellAttrs As String = "interfaceSetCellAttrs_"
+Private Const interfaceAddObj As String = "interfaceAddObj_"
+Private Const interfaceOLEPaste As String = "interfaceOLEPaste_"
+Private Const interfaceStripHeadings As String = "pragma runLim,0" & vbCrLf & "interfaceStripHeadings_"
+Private Const interfaceDeleteTrigger As String = "interfaceDeleteTrigger_"
+Private Const interfaceEndExport As String = "interfaceEndExport_"
+Private Const interfacePictureFormattingForWordImport As String = "interfacePictureFormattingForWordImport_"
+Private Const interfaceProcessFormatting As String = "interfaceProcessFormatting_"
+Private Const interfaceSetPrefix As String = "interfaceSetPrefix_"
+'
+
+Public Sub cancelExport()
+    If exportStarted Then
+        If Not appDoors Is Nothing Then
+            doorsRun (interfaceDeleteTrigger)
+        End If
+    Else
+        DOORSExportDialogue.Hide
+    End If
+    hasFailed = True
+End Sub
+
+Private Function connectToDOORS() As Boolean
+    On Error GoTo connectHandler
+    Dim sErrMsg As String
+    Set appDoors = CreateObject("DOORS.Application")
+    connectToDOORS = True
+    Exit Function
+connectHandler:
+    sErrMsg = "Unable to communicate with DOORS." + vbCrLf + _
+    "DOORS must be started, and you must have opened a project or folder"
+    
+    MsgBox prompt:=sErrMsg, Buttons:=vbCritical
+    connectToDOORS = False
+End Function
+
+Private Sub doorsRun(s As String)
+    
+    If (hasFailed) Then
+        Exit Sub
+    End If
+    
+    On Error GoTo doorsRunHandler
+    
+    appDoors.RunStr (s)
+    Exit Sub
+
+doorsRunHandler:
+    MsgBox prompt:="Unable to communicate with DOORS.", Buttons:=vbCritical
+    hasFailed = True
+End Sub
+
+Private Function checkVersion() As Boolean
+    Dim strVersion As String
+    Dim intVersion As Integer
+    doorsRun (interfaceVersion)
+    If hasFailed Then
+        checkVersion = False
+        Exit Function
+    End If
+    strVersion = appDoors.Result
+    If (Not IsNumeric(strVersion)) Then
+        MsgBox "Interface version unexpectedly non-numeric; " + bugCheck, vbCritical
+        checkVersion = False
+        Exit Function
+    End If
+    intVersion = Val(strVersion)
+    If (intVersion <> interfaceLocalVersion) Then
+        MsgBox prompt:="This version of the Word interface is version " + Str$(interfaceLocalVersion) + " but the DOORS versions is " + strVersion + ".  Please verify your installation", Buttons:=vbCritical
+        checkVersion = False
+    Else
+        checkVersion = True
+    End If
+End Function
+
+Private Sub makeDoorsObject(ByVal lev As Integer)
+    doorsRun (interfaceAddObj + " " + Str$(lev))
+    lastWasATableObject = False
+End Sub
+
+Private Sub makeModule()
+    Dim commandString As String
+    commandString = interfaceMakeMod + "("
+    commandString = commandString + """" + exportModuleName + """," + """" + exportModuleDesc + ""","
+    If exportModulePrefix = "" Then
+        commandString = commandString + """"""
+        Else
+        commandString = commandString + """" + exportModulePrefix + """"
+    End If
+    commandString = commandString + "," + Str$(exportModuleAbsno) + ")"
+    doorsRun (commandString)
+End Sub
+
+Private Sub pasteToDOORS(lev As Integer, styleName As String)
+    Dim s As String
+    s = interfacePasteAttribute + "("
+    If (lev = wdOutlineLevelBodyText) Then
+        s = s + ALongText
+    Else
+        s = s + AHeading
+    End If
+    s = s + "," + styleName + ")"
+    ' Paste in text
+    doorsRun (s)
+End Sub
+
+' This function is called when you want to actually apply the bullets and indentation information
+Private Sub applyBulletsAndIndents(paragraphNumber As Integer, hasBullets As Boolean, indentLevelPoints As Integer, firstLineIndent As Integer)
+    If ((hasBullets) Or (indentLevelPoints >= 0)) Then
+        If (hasBullets) Then
+           doorsRun (interfaceProcessFormatting + "(true," + Str$(indentLevelPoints) + "," + Str$(paragraphNumber) + "," + Str$(firstLineIndent) + ")")
+        Else
+           doorsRun (interfaceProcessFormatting + "(false," + Str$(indentLevelPoints) + "," + Str$(paragraphNumber) + "," + Str$(firstLineIndent) + ")")
+        End If
+    End If
+End Sub
+
+Private Sub postProcessFormatting(para As Paragraph, ByRef hasBullets As Boolean, ByRef indentLevelPoints As Integer, ByRef firstLineIndent As Integer)
+    Dim otherLineIndent As Integer
+    Dim listTemplate As listTemplate
+    Dim paraRange As Range
+    Dim listFormat As listFormat
+    
+    Set paraRange = para.Range
+    Set listFormat = paraRange.listFormat
+
+    If Not listFormat Is Nothing Then
+        If listFormat.ListType = wdListBullet Then
+            hasBullets = True
+        Else
+            'This may not be required - maintain only to ensure compatibility
+            Set listTemplate = listFormat.listTemplate
+            If Not listTemplate Is Nothing Then
+                If listTemplate.ListLevels(1).NumberStyle = wdListNumberStyleBullet Then
+                    hasBullets = True
+                End If
+            End If
+        End If
+    End If
+    
+    ' Find out if we are indented
+    firstLineIndent = -1 * CInt(para.Format.firstLineIndent)
+    indentLevelPoints = CInt(para.Format.LeftIndent) - firstLineIndent
+    
+End Sub
+
+Private Sub pictureProcessFormatting(myRange As Range, count As Integer)
+    Dim height As Integer
+    Dim width As Integer
+    Dim oleIndex As Integer
+    
+    ' resize all OLEs present in the passed-in range to their original size since the OLEs
+    ' may have lost their size after being pasted into DOORS
+    For oleIndex = 1 To count
+        height = myRange.InlineShapes(oleIndex).height
+        width = myRange.InlineShapes(oleIndex).width
+        doorsRun (interfacePictureFormattingForWordImport + "(" + Str$(height) + "," + Str$(width) + "," + Str$(oleIndex) + ")")
+    Next oleIndex
+    
+End Sub
+
+Private Function getTableCellBorders(c As Cell) As Integer
+    Dim i As Integer
+    i = 0
+    If c.Borders(wdBorderBottom).Visible Then
+        i = i + borderBottom
+    End If
+    If c.Borders(wdBorderTop).Visible Then
+        i = i + borderTop
+    End If
+    If c.Borders(wdBorderLeft).Visible Then
+        i = i + borderLeft
+    End If
+    If c.Borders(wdBorderRight).Visible Then
+        i = i + borderRight
+    End If
+
+    getTableCellBorders = i
+End Function
+
+Private Function getTableCellAlign(p As Paragraphs) As Integer
+    Dim i As Long
+    Dim ret As Integer
+    ret = alignLeft
+    'Alignment can return 9999999 which I guess means "undefined"
+    'in this case we default to "left"
+    i = p.Alignment
+    Select Case i
+        Case wdAlignParagraphLeft
+            ret = alignLeft
+        Case wdAlignParagraphRight
+            ret = alignRight
+        Case wdAlignParagraphCenter
+            ret = alignCenter
+        Case wdAlignParagraphJustify
+            ret = alignFull
+        Case Else
+            ret = alignLeft
+    End Select
+    getTableCellAlign = ret
+End Function
+
+Private Function copyCellText(myRange As Range) As Boolean
+    On Error GoTo cantCopyText
+    If (exportBidiSupport) Then
+        If Not addBidiMarks(myRange) Then GoTo cantCopyText
+    End If
+    
+    myRange.FormattedText.Copy
+    If (exportBidiSupport) Then
+        Dim res As Boolean
+        res = removeBidiMarks(myRange)
+    End If
+    
+    copyCellText = True
+    Exit Function
+
+cantCopyText:
+    copyCellText = False
+End Function
+
+Private Sub dumpTable(t As Table, lev As Integer)
+    'This routine dumps the textual content of a cell into the object text of a
+    'cell in DOORS.
+    'The paragraph style is taken to be the style of first paragraph in the cell
+    
+    Dim myRange As Range
+    Dim i As Integer
+    Dim w As Integer
+    Dim a As Integer
+    Dim c As Cell
+    Dim cIndex As Cell
+    Dim styleName As String
+    Dim tempStyleName As String
+    Dim numParagraphs As Integer
+    Dim para As Paragraph
+    Dim paraNumber As Integer
+    Dim paraSuccessArray() As Boolean  'Use this to make sure we only postprocess
+                                       ' paragraphs we successfully sent to DOORS
+    
+    Dim rowNo As Long
+    Dim rowCount As Long
+    Dim colNo As Long
+    Dim colCount As Long
+    Dim cellIsValid() As Boolean
+    
+    Dim needUndo As Boolean
+    Dim isRtl As Boolean
+    
+    rowNo = 1
+    doorsRun (interfaceStartTable)
+    
+    'As per Word VBA ref, accessing rows can fail because of verically merged cells
+    'Accessing cell(i,j) can also fail
+    'instead we select the table and use the selection to find out what cells are valid
+
+    rowCount = t.Rows.count
+    colCount = t.Columns.count
+
+    ReDim cellIsValid(rowCount, colCount) As Boolean
+    For rowNo = 1 To rowCount
+        For colNo = 1 To colCount
+            cellIsValid(rowNo, colNo) = False
+        Next colNo
+    Next rowNo
+    
+    'Select the whole table and identify the cells which Word recognizes
+    t.Select
+    For Each cIndex In Selection.Cells
+        cellIsValid(cIndex.rowIndex, cIndex.ColumnIndex) = True
+    Next cIndex
+    
+    isRtl = False
+    If (exportBidiSupport) Then
+        If t.TableDirection = wdTableDirectionRtl Then
+            isRtl = True
+        End If
+    End If
+    
+    rowNo = 1
+    colNo = 1
+    On Error GoTo outOfTable
+    While (rowNo <= rowCount)
+        doorsRun (interfaceNewRow)
+        If isRtl Then
+            colNo = colCount
+        Else
+            colNo = 1
+        End If
+        While ((isRtl And colNo >= 1) Or (Not isRtl And colNo <= colCount))
+            If (hasFailed) Then
+                Exit Sub
+            End If
+            'Accessing Cell(i,j) can fail if there are merged cells, so check it is valid
+            If cellIsValid(rowNo, colNo) Then
+                Set c = t.Cell(rowNo, colNo)
+
+                a = alignLeft
+                doorsRun (interfaceNewCell)
+    
+                numParagraphs = c.Range.Paragraphs.count
+                If (numParagraphs <> 0) Then
+                    If (exportCaptureStyles) Then
+                        'We only capture the name of the first paragraph
+                        Dim validObj As Object
+                        Set validObj = c.Range.Paragraphs(1).Style
+                        If (IsObjectValid(validObj)) Then
+                            tempStyleName = c.Range.Paragraphs(1).Style.NameLocal
+                            tempStyleName = Replace(tempStyleName, """", "\""")
+                            styleName = """" + tempStyleName + """"
+                        End If
+                    Else
+                        styleName = "null"
+                    End If
+                    
+                    Set myRange = c.Range
+                    myRange.MoveEnd Unit:=wdCharacter, count:=-1
+                    
+                    a = getTableCellAlign(myRange.Paragraphs)
+    
+                    ReDim paraSuccessArray(numParagraphs)
+                    ' Copy each paragraph in turn.  If we tried to copy the whole text, the rtf
+                    ' would include bullet point characters instead of things in bullet style,
+                    ' and we'd have to try to fix these on the DOORS side.
+                    paraNumber = 1
+                    For Each para In c.Range.Paragraphs
+                        Set myRange = para.Range
+                        myRange.MoveEnd Unit:=wdCharacter, count:=-1
+                        If copyCellText(myRange) Then
+                            doorsRun (interfacePasteCellAttribute + "(" + ALongText + "," + styleName + ")")
+                            paraSuccessArray(paraNumber) = True
+                            paraNumber = paraNumber + 1
+                        Else
+                            paraSuccessArray(paraNumber) = False
+                        End If
+                    Next para
+                    'Now do the postprocessing.
+                    paraNumber = 1
+                    For Each para In c.Range.Paragraphs
+                        If paraSuccessArray(paraNumber) Then
+                            'To take care of applying the bullets and indentation
+                            'when the user is dumping a table
+                            Dim hasBullets As Boolean
+                            Dim indentLevelPoints As Integer
+                            Dim firstLineIndent As Integer
+                            hasBullets = False
+                            
+                            postProcessFormatting para, hasBullets, indentLevelPoints, firstLineIndent
+                            applyBulletsAndIndents paraNumber, hasBullets, indentLevelPoints, firstLineIndent
+                        End If
+                        paraNumber = paraNumber + 1
+                    Next para
+                    Set myRange = Nothing
+                End If
+                i = getTableCellBorders(c)
+                If (c.width = wdUndefined) Then
+                ' Assumes c.PreferredWidthType is wdPreferredWidthPoints
+                    w = c.PreferredWidth
+                Else
+                    w = c.width
+                End If
+                doorsRun (interfaceSetCellAttrs + "(" + Str$(i) + "," + Str$(w) + "," + Str$(a) + ")")
+            End If  'cellIsValid(rowNo, colNo)
+            If isRtl Then
+                colNo = colNo - 1
+            Else
+                colNo = colNo + 1
+            End If
+        Wend
+        rowNo = rowNo + 1
+    Wend
+
+outOfTable:
+    doorsRun (interfaceEndTable)
+    Selection.Collapse Direction:=wdCollapseEnd
+End Sub
+
+'Function will return true if the shape contained in paragraph is converted
+'to inlineshape else function will return false
+Private Function canConvertToInline(tempPara As Paragraph) As Boolean
+On Error GoTo convertToInlineHandler
+    canConvertToInline = False
+    If (tempPara.Range.InlineShapes.count > 0 And Not IsNull(tempPara.Range.ShapeRange.Item(1).ConvertToInlineShape)) Then
+        canConvertToInline = True
+    End If
+convertToInlineHandler:
+    On Error GoTo 0
+    Exit Function
+End Function
+
+Private Sub dumpShapeRange(myRange As Range, ByVal createLevel As Integer, styleName As String, tempDoc As Document)
+    Dim sh As Shape
+    
+'Things in ShapeRange are the "float over text" objects -- create them in separate
+'DOORS objects after the main object
+On Error GoTo dumpShapeHandler
+    Dim tempPara As Paragraph
+    Set tempPara = tempDoc.Paragraphs.Item(1)
+    For Each sh In myRange.ShapeRange
+        sh.Select
+        Application.Selection.Copy
+        
+        'Modified 'float over text' Word pictures when exported to DOORS may
+        ' be seen without the modifications.  This error is also seen when
+        ' the picture is copy-pasted into WordPad.  Seems like RTF has problems
+        ' displaying a modified 'float over text' Word picture.
+        'To get around this problem, the 'float over text' picture is converted
+        ' to 'inline with text' picture and then copy-pasted to DOORS.  Also,
+        ' any cropping in the picture is removed so that the picture regains its
+        ' original height and width.  This is done so that the
+        ' pictureProcessFormatting() call which scales the inline pictures works.
+        ' Removing the cropping does not affect existing behaviour since DOORS
+        ' (RTF) ignores cropping information.
+        'An exception to the above workaround is the "WordArt" (msoTextEffect)
+        ' picture.  RTF seems to have problems displaying such pictures that are
+        ' in 'inline with text' layout.  Hence such pictures are not converted to
+        ' 'inline with text'.
+        Dim croppedRange As Range
+        Dim floatShape As Boolean
+        Dim oleCount As Integer
+        floatShape = True
+        tempPara.Range.Paste
+
+        'Skip 'WordArt' pictures from converting to inline
+        ' Also skip groups for Word 2010 or later
+        If sh.Type = msoTextEffect Or sh.Type = msoEmbeddedOLEObject Then GoTo floatHandler
+        
+        ' msoCanvas might have multiple CanvasItems and those are not exported!
+        ' and this trick is needed with Word 2007 (Office Version 12!) and newer
+        Dim msWordVersion As Integer
+        msWordVersion = Val(Application.Version)
+
+        If msWordVersion >= 12 And sh.Type = msoCanvas Then
+            If (msWordVersion >= 14) Then
+                ' Deleting the tempPara range crashes Word 2012 and up...
+                ' So don't!
+            Else
+                ' clear tempPara and selected to make target for PasteSpecial
+                tempPara.Range.Delete
+            End If
+            tempPara.Range.Select
+
+            ' apparently Word msoCanvas can be copied to Paint without any problems
+            ' in DOORS we need to paste it as OLE Object and then we do not loose quality!
+            Selection.PasteSpecial DataType:=wdPasteOLEObject
+                
+            If (msWordVersion >= 14) Then
+                ' In Word 2010 and up,  we end up with the pasted copy in the original document
+                ' - which is poor but seems to be tHe only way to make it work.  So delete that copy
+                '  This makes the document dirty but I can't seem to work around it - changing the
+                ' active document doesn't help.
+                Selection.Copy
+                Selection.Delete
+            Else
+                ' Copy the OLE from the temp doc to the clipboard
+                tempPara.Range.Select
+                tempPara.Range.Copy
+            End If
+        Else
+            If msWordVersion >= 14 And (sh.Type = msoAutoShape Or sh.Type = msoGroup) Then
+                ' need to treat autoshapes and groups differently in Word 2010
+                ' clear tempPara and selected to make target for PasteSpecial
+                tempPara.Range.Delete
+                tempPara.Range.Select
+                ' paste the autoShape as a metafile
+                Selection.PasteSpecial DataType:=wdPasteMetafilePicture
+                Selection.Copy
+            End If
+        End If
+        
+        ' following function will call float handler if the shape can't be converted
+        'in to the inlineshape
+        If canConvertToInline(tempPara) = False Then
+            GoTo floatHandler
+        Else
+            floatShape = False
+            On Error GoTo inlineCropHandler
+            tempPara.Range.InlineShapes.Item(1).PictureFormat.CropBottom = 0
+            tempPara.Range.InlineShapes.Item(1).PictureFormat.CropLeft = 0
+            tempPara.Range.InlineShapes.Item(1).PictureFormat.CropRight = 0
+            tempPara.Range.InlineShapes.Item(1).PictureFormat.CropTop = 0
+inlineCropHandler:
+            On Error GoTo 0
+            Set croppedRange = getTextRange(tempPara)
+            If copyParaText(myRange:=croppedRange, createLevel:=createLevel) Then
+                'Paste into DOORS
+                pasteToDOORS lev:=tempPara.OutlineLevel, styleName:=styleName
+            End If
+            oleCount = tempPara.Range.InlineShapes.count
+            If (oleCount > 0) Then
+                pictureProcessFormatting tempPara.Range, oleCount
+            End If
+        End If
+floatHandler:
+        If floatShape Then
+            makeDoorsObject (createLevel)
+            pasteToDOORS lev:=wdOutlineLevelBodyText, styleName:=styleName
+        End If
+        Selection.Collapse Direction:=wdCollapseEnd
+        tempPara.Range.Delete
+    Next sh
+
+dumpShapeHandler:
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Function copyParaText(myRange As Range, createLevel As Integer) As Boolean
+    On Error GoTo cantCopyText
+    If (exportBidiSupport) Then
+        If Not addBidiMarks(myRange) Then GoTo cantCopyText
+    End If
+    
+    'Copy to clipboard
+    myRange.FormattedText.Copy
+    
+    'Make object
+    makeDoorsObject (createLevel)
+    lastCreateLevel = createLevel
+
+    copyParaText = True
+    Exit Function
+
+cantCopyText:
+    copyParaText = False
+End Function
+
+Private Function getTextRange(para As Paragraph) As Range
+    Dim charCount As Long
+    Dim i As Long
+    Dim s As String
+    Static office2013OrNewer As Long
+
+    Set getTextRange = para.Range
+
+    ' Lop off carriage return(s) and parabreak from end
+    charCount = getTextRange.Characters.count
+    If (charCount > 0) Then
+
+        ' Office 2013 fails to export images if this function trims a line containing just an image
+        ' (The copy to clipboard fails, and then the paste throws up an error message about the empty clipboard)
+        ' So we just return the whole paragraph and it all works fine.
+        If ((charCount = 2) And (getTextRange.Characters.First.text = "/")) Then
+            ' Cache the version number coversion and comparison for speed
+            Dim msWordVersion As Integer
+            msWordVersion = Val(Application.Version)
+            
+            If (office2013OrNewer = 0) Then
+                If (msWordVersion >= 15) Then
+                    office2013OrNewer = 1
+                Else
+                    office2013OrNewer = 2
+                End If
+            End If
+
+            If (office2013OrNewer = 1) Then
+                Exit Function
+            End If
+        End If
+
+        s = getTextRange.Characters.Last.text
+
+        ' Check for hidden carriage return (the 'Hidden' checkbox is checked in
+        ' the font properties dialog for the carriage return character.  If
+        ' it is hidden, 's' will be empty, and the Asc(s) function will give a
+        ' runtime error.  To avoid this, check for s with 0 length before
+        ' proceeding.
+        If (0 <> Len(s)) Then
+            i = Asc(s)
+            While (charCount > 0) And ((i = unknownChar) Or (i = carriageReturn))
+                getTextRange.MoveEnd Unit:=wdCharacter, count:=-1
+                charCount = charCount - 1
+                If (charCount > 0) Then
+                    s = getTextRange.Characters.Last.text
+                    If (0 <> Len(s)) Then
+                        i = Asc(s)
+                    Else
+                        i = unknownChar
+                    End If
+                End If
+            Wend
+        End If
+    End If
+            
+    ' Lop off carriage return(s) and parabreak from beginning
+    If (charCount > 0) Then
+        s = getTextRange.Characters.First.text
+        i = Asc(s)
+        While (charCount > 0) And ((i = unknownChar) Or (i = carriageReturn))
+            getTextRange.MoveStart Unit:=wdCharacter, count:=1
+            charCount = charCount - 1
+            If (charCount > 0) Then
+                s = getTextRange.Characters.First.text
+                If (0 <> Len(s)) Then
+                    i = Asc(s)
+                Else
+                    i = unknownChar
+                End If
+            End If
+        Wend
+    End If
+End Function
+
+Private Sub dumpParagraphs()
+    Dim lev As Integer
+    Dim createLevel As Integer
+    Dim inATable As Boolean
+    Dim para As Paragraph
+    Dim myRange As Range
+    Dim styleName As String
+    Dim oleCount As Integer
+    Dim tempStyleName As String
+    Dim trackingChanged As Boolean
+    Dim replaceSelectionChanged
+    replaceSelectionChanged = False
+    trackingChanged = False
+    inATable = False
+       
+    'Temporary document for removing cropping from images.  This doc is not
+    'visible and is closed without saving any changes.
+    Dim tempDoc As Document
+    Dim docTemplate As Template
+    Set docTemplate = ActiveDocument.AttachedTemplate
+    Dim activeDoc As Document
+    Set activeDoc = Application.ActiveDocument
+
+    ' Change the TrackRevisions property for the ActiveDocument
+    ' to true if it is false so that in case the user has turned
+    ' off the tracking after tracking changes before exporting
+    ' the document to DOORS the deleted portion and the related
+    ' rtf stuff is stripped off by the word object when copying
+    ' the content to the clipboard
+    If Not activeDoc.TrackRevisions Then
+        activeDoc.TrackRevisions = True
+        trackingChanged = True
+    End If
+    
+    If Not Options.ReplaceSelection Then
+        Options.ReplaceSelection = True
+        replaceSelectionChanged = True
+    End If
+
+    Set tempDoc = Application.Documents.Add(docTemplate.FullName, , , False)
+
+    activeDoc.Activate
+    Dim tempPara As Paragraph
+    'Use existing default paragraph in document instead of adding a new one.
+     Set tempPara = tempDoc.Paragraphs(1)
+    
+    For Each para In ActiveDocument.Paragraphs
+        If (hasFailed) Then
+            Exit Sub
+        End If
+
+        progressStep
+        
+        lev = para.OutlineLevel
+        If (lev = wdOutlineLevelBodyText) Then
+            createLevel = lastHeadingLevel + 1
+        Else
+            createLevel = lev
+            lastHeadingLevel = lev
+        End If
+               
+        If (para.Range.Tables.count <> 0) Then
+            If Not inATable Then
+                inATable = True
+                If (lastWasATableObject) Then
+                    ' Create dummy node with null heading and text.
+                    makeDoorsObject (lastCreateLevel)
+                End If
+                dumpTable t:=para.Range.Tables.Item(1), lev:=createLevel
+                lastWasATableObject = True
+            End If
+        Else
+            ' Not in a table, a regular paragraph
+            inATable = False
+            
+            ' Trim off any junk
+            Set myRange = getTextRange(para)
+            
+            If (exportCaptureStyles) Then
+                Dim validObj As Object
+                Set validObj = para.Style
+                If (IsObjectValid(validObj)) Then
+                    tempStyleName = para.Style.NameLocal
+                    tempStyleName = Replace(tempStyleName, """", "\""")
+                    styleName = """" + tempStyleName + """"
+                End If
+            Else
+                styleName = "null"
+            End If
+                
+            'Any cropping in the picture is removed so that the picture regains its
+            ' original height and width.  This is done so that the
+            ' pictureProcessFormatting() call which scales the inline pictures works.
+            Dim croppedRange As Range
+            
+            'On copying the paragraph information from the currently Active Document to
+            ' the temporary document , the indentation as well as the bullet information is lost
+            ' As a result we find out the indentation and the bullet information before hand for the
+            ' current paragraph so that the same can be applied to the temporary paragraph
+            
+            Dim hasBullets As Boolean
+            Dim indentLevelPoints As Integer
+            Dim firstLineIndent As Integer
+            hasBullets = False
+            If myRange = Null Or myRange = "" Then GoTo noInlineShapes
+            
+            postProcessFormatting para, hasBullets, indentLevelPoints, firstLineIndent
+            myRange.Copy
+            'For some reason, Word copies the entire Table of Contents along
+            ' with an additional newline character when the TOC 1 para is
+            ' copied.  Because of this only the last newline character gets
+            ' pasted to the tempPara.Range as a para can have only one
+            ' newline.  We need to delete all but the first (TOC 1) para.
+            'We do these shenanigans after pasting the para directly into
+            ' the temporary document.
+            tempDoc.Range.Paste
+            
+            '*** TODO: Verify the If condition - Word para formats other than
+            ' TOC 1 may also be doing the same mischief as TOC 1 does.  In
+            ' that case we may remove the check for TOC 1 and just do the check
+            ' for number of paragraphs, which in any case should be done. ***
+            If (tempDoc.Range.Paragraphs.count > 1) Then
+            
+               Dim tempRange As Range
+               
+               If (tempDoc.Range.Paragraphs.count > 2) Then
+               
+                'Delete all but first and last paragraphs.  The last para
+                ' contains the last newline in the document.  It cannot be
+                ' deleted.  We will need to delete the TOC 1 para newline.
+                
+                    Set tempRange = tempDoc.Range( _
+                        tempDoc.Paragraphs(2).Range.Start, _
+                        tempDoc.Paragraphs(tempDoc.Range.Paragraphs.count - 1).Range.End)
+                    tempRange.Delete
+                End If
+                'Now there are two paragraphs.  The second para contains the
+                ' last newline of the document.  The first para is the TOC 1
+                ' para.  We delete its newline char.
+                'Go to the end of para, select the immediate next character
+                ' (newline) and delete it.
+                Set tempRange = tempDoc.Range.Paragraphs(1).Range
+                tempRange.Collapse wdCollapseEnd
+                tempRange.MoveEnd wdCharacter, -1
+                tempRange.End = tempRange.Start + 1
+                If (tempRange.Characters(1) = vbCr) Then
+                ' Delete throws errors in case of any cross references. In case
+                ' of TOC, a delete is must. Anything other seems not to a key
+                ' differentiator to include as a condition.
+                    On Error GoTo rangeDeleteHandler:
+                        tempRange.Delete
+                End If
+            Else
+                tempPara.Range.Paste
+            End If
+            
+            If (exportBidiSupport) Then
+                tempPara.Range.ParagraphFormat.ReadingOrder = myRange.ParagraphFormat.ReadingOrder
+            End If
+            
+rangeDeleteHandler:
+            On Error GoTo 0
+            Dim count As Integer
+            If tempPara.Range.InlineShapes.count <> 0 Then
+                On Error Resume Next
+                For count = 1 To tempPara.Range.InlineShapes.count
+                    If tempPara.Range.InlineShapes.Item(count).Type <> wdInlineShapeHorizontalLine Then
+                        tempPara.Range.InlineShapes.Item(count).PictureFormat.CropBottom = 0
+                        tempPara.Range.InlineShapes.Item(count).PictureFormat.CropLeft = 0
+                        tempPara.Range.InlineShapes.Item(count).PictureFormat.CropRight = 0
+                        tempPara.Range.InlineShapes.Item(count).PictureFormat.CropTop = 0
+                    End If
+cropHandler:
+                Next count
+                On Error GoTo 0
+            End If
+
+            Set croppedRange = getTextRange(tempPara)
+                        
+            If (croppedRange.InlineShapes.count > 0 And croppedRange.Characters.count <= 1) Then
+                ' If only ole is present in a paragraph, the ole name gets changed to "document"
+                ' Exporter wants a text to render its name as is in the Word document.
+                ' So inserting a space after the ole object while exporting to DOORS.
+                croppedRange.InsertAfter (" ")
+            End If
+            
+            Dim bSkip As Boolean
+            bSkip = False
+            
+            Dim msWordVersion As Integer
+            msWordVersion = Val(Application.Version)
+
+            ' a some special case where in Word 2003 a picture is exported twice
+            '  1 - start heading
+            ' 21 - paragraph mark
+            ' in Word 2010 MS changed that again... and now there is '/' sign
+            If ((msWordVersion >= 11) And (Len(croppedRange) >= 2)) Then
+                If (Asc(Left(croppedRange, 1)) = 1 And (Asc(Mid(croppedRange, 2, 1)) = 21)) Then
+                    bSkip = True
+                End If
+            Else
+                If ((msWordVersion >= 14) And (Len(croppedRange) >= 1)) Then
+                    If (croppedRange = "/") Then
+                        bSkip = True
+                    End If
+                End If
+            End If
+
+            If Not bSkip Then
+                If copyParaText(myRange:=croppedRange, createLevel:=createLevel) Then
+                    'Paste into DOORS
+                    pasteToDOORS lev:=lev, styleName:=styleName
+                    'Actually apply the bullets and indentation to the Doors object
+                    applyBulletsAndIndents 0, hasBullets, indentLevelPoints, firstLineIndent
+                End If
+            End If
+            
+            'Scale pictures so that large inline OLE objects are displayed correctly
+            oleCount = tempPara.Range.InlineShapes.count
+            If (oleCount > 0) Then
+                pictureProcessFormatting tempPara.Range, oleCount
+            End If
+            tempDoc.Range.Delete
+
+noInlineShapes:
+            'add the "float over text" pictures as separate objects
+            dumpShapeRange myRange:=para.Range, createLevel:=createLevel, styleName:=styleName, tempDoc:=tempDoc
+
+            Set myRange = Nothing
+
+        End If ' End of else, in a normal paragraph
+    Next para
+    
+    'Note: Closing hidden documents without saving causes Word to stop responding
+    '(Refer MSDN KB article ID: Q220419 - WD2000: ActiveWindow.Visible Property
+    'Causes Word to Appear to Stop Responding).
+    'To get around this problem, the temp doc is first made visible just before
+    'closing it without saving.
+    tempDoc.ActiveWindow.Visible = True
+    tempDoc.Close (False) 'this is a temporary document that we don't want to save
+    Set tempDoc = Nothing
+    If trackingChanged Then
+        activeDoc.TrackRevisions = False
+    End If
+    If replaceSelectionChanged Then
+        Options.ReplaceSelection = False
+    End If
+End Sub
+
+Private Function checkDoorsString(ByVal toCheck As String, ByVal thingAs As String) As Boolean
+    Dim l As Long
+    Dim count As Long
+    Dim s As String
+    Dim isVoid As Boolean
+    
+    l = Len(toCheck)
+    If (l < 1) Then
+        If (thingAs = "Module description") Or (thingAs = "Module prefix") Then
+            'its OK to have a blank module description or prefix in DOORS Black
+            checkDoorsString = True
+        Else
+            MsgBox ("The " + thingAs + " must have at least one character")
+            checkDoorsString = False
+        End If
+        Exit Function
+    End If
+    
+    ' isvoid check - check for string being all spaces
+    ' module name is the only one this applies to
+    
+    isVoid = True
+    
+    For count = 1 To l
+        s = Mid(toCheck, count, 1)
+        If s <> " " Then
+            isVoid = False
+        End If
+    Next count
+
+    If isVoid And (thingAs <> "Module description") And (thingAs <> "Module prefix") Then
+        MsgBox ("The " + thingAs + " consists entirely of spaces.  DOORS does not allow this style of " + thingAs)
+        checkDoorsString = False
+        Exit Function
+    End If
+
+    ' we leave all "invalid character" checks to DOORS except for ones which break parsing
+    
+    For count = 1 To l
+        s = Mid(toCheck, count, 1)
+        If (s = """") Or (s = "\") Then
+           MsgBox ("The " + thingAs + " contains the invalid character " + s + ".  Please enter another " + thingAs + ".")
+           checkDoorsString = False
+           Exit Function
+        End If
+    Next count
+        
+    
+    checkDoorsString = True
+End Function
+
+Private Function initData() As Boolean
+    ' Get settings from dialogue box
+    
+    ' Name
+    exportModuleName = DOORSExportDialogue.ModuleNameBox.text
+    If (Not checkDoorsString(exportModuleName, "Module name")) Then
+        initData = False
+        Exit Function
+    End If
+    
+    ' Description
+    exportModuleDesc = DOORSExportDialogue.ModuleDescBox.text
+    If (Not checkDoorsString(exportModuleDesc, "Module description")) Then
+        initData = False
+        Exit Function
+    End If
+    ' Description can be empty or null, and contain any characters except those
+    ' which break DXL parsing
+    
+    ' Prefix
+    exportModulePrefix = DOORSExportDialogue.ModulePrefixBox.text
+    If (Not checkDoorsString(exportModulePrefix, "Module prefix")) Then
+        initData = False
+        Exit Function
+    End If
+    ' Prefix can be empty or null, and contain any characters except those
+    ' which break DXL parsing
+    
+    ' Absolute numbers
+    If Not IsNumeric(DOORSExportDialogue.ModuleAbsnoBox.Value) Then
+        initData = False
+        MsgBox ("The starting absolute number must be an integer greater than 0")
+        Exit Function
+    End If
+    exportModuleAbsno = DOORSExportDialogue.ModuleAbsnoBox.Value
+    If Not (exportModuleAbsno > 0) Then
+        initData = False
+        MsgBox ("The starting absolute number must be an integer greater than 0")
+        Exit Function
+    End If
+    
+    ' Strip headings, boolean
+    exportStripNumbers = DOORSExportDialogue.ModuleStripBox.Value
+    
+    ' Strip headings, boolean
+    exportCaptureStyles = DOORSExportDialogue.ModuleStyleBox.Value
+    
+    'Bidi support
+    exportBidiSupport = DOORSExportDialogue.ModuleBidiBox.Value
+    
+    lastHeadingLevel = 0
+    lastCreateLevel = 0
+    hasFailed = False
+    initData = True
+End Function
+
+Private Sub lockDialogue(ByVal doIt As Boolean)
+    DOORSExportDialogue.ModuleNameBox.Enabled = (Not doIt)
+    DOORSExportDialogue.ModuleNameBox.Locked = doIt
+    DOORSExportDialogue.ModuleDescBox.Enabled = (Not doIt)
+    DOORSExportDialogue.ModuleDescBox.Locked = doIt
+    DOORSExportDialogue.ModulePrefixBox.Enabled = (Not doIt)
+    DOORSExportDialogue.ModulePrefixBox.Locked = doIt
+    DOORSExportDialogue.ModuleAbsnoBox.Enabled = (Not doIt)
+    DOORSExportDialogue.ModuleAbsnoBox.Locked = doIt
+    DOORSExportDialogue.ModuleStripBox.Enabled = (Not doIt)
+    DOORSExportDialogue.ModuleStripBox.Locked = doIt
+    DOORSExportDialogue.ModuleStyleBox.Enabled = (Not doIt)
+    DOORSExportDialogue.ModuleStyleBox.Locked = doIt
+    DOORSExportDialogue.ModuleBidiBox.Enabled = (Not doIt)
+    DOORSExportDialogue.ModuleBidiBox.Locked = doIt
+    DOORSExportDialogue.ExportButton.Enabled = (Not doIt)
+    DOORSExportDialogue.ExportButton.Locked = doIt
+    DOORSExportDialogue.Repaint
+End Sub
+
+Private Function StartExport() As Boolean
+    Dim doorsRet As String
+    Dim probReport As String
+    Dim newCommand As String
+    
+    ' Open OLE connection to DOORS
+    If (Not connectToDOORS) Then
+        StartExport = False
+        Exit Function
+    End If
+    
+    ' Check interface version
+    If (Not checkVersion) Then
+        StartExport = False
+        Exit Function
+    End If
+    
+    
+    ' Make the module
+    makeModule
+    If (hasFailed) Then
+        StartExport = False
+        Exit Function
+    End If
+    
+    ' Check for append and other errors
+    doorsRet = appDoors.Result
+    If (doorsRet <> interfaceOK) Then
+        If (doorsRet = interfaceExists) Then
+            If (MsgBox("The specified module exists, would you like to append to it?", vbYesNo) <> vbYes) Then
+                StartExport = False
+                Exit Function
+            Else
+                newCommand = interfaceAppendMod + " """ + exportModuleName + """"
+                doorsRun (newCommand)
+                doorsRet = appDoors.Result
+                If (doorsRet <> interfaceOK) Then
+                    MsgBox (doorsRet)
+                    StartExport = False
+                    Exit Function
+                End If
+                    
+                'If we do not put any value to Module Prefix text box of VBA interface
+                'exportModulePrefix gets a null value and by this we mean that we do not want
+                'to change the current prefix. So in that case we do not need to create a new
+                'command to overwrite the existing prefix.
+                'On the other hand if we put some value of Module Prefix text box in the VBA
+                'interface we mean that the current value of prefix should overwrite the
+                'existing prefix and a new command must be created and executed to do so.
+                If exportModulePrefix <> "" Then
+                    newCommand = interfaceSetPrefix + " """ + exportModulePrefix + """"
+                    doorsRun (newCommand)
+                    doorsRet = appDoors.Result
+                    If (doorsRet <> interfaceOK) Then
+                        MsgBox (doorsRet)
+                        StartExport = False
+                        Exit Function
+                    End If
+                End If
+        
+            End If
+        Else
+            probReport = "DOORS failed to create the requested module: " + doorsRet
+            MsgBox (probReport)
+            StartExport = False
+            Exit Function
+        End If
+    End If
+    
+    'Throw into page layout
+    ActiveWindow.View.Type = wdPageView
+    
+    'Dump text structure
+    lockDialogue (True)
+    progressStart (paraCount)
+    dumpParagraphs
+    lockDialogue (False)
+    progressEnd
+    StartExport = True
+End Function
+
+Private Sub EndExport()
+    If exportStripNumbers Then
+        doorsRun (interfaceStripHeadings)
+    End If
+    doorsRun (interfaceEndExport)
+    Set appDoors = Nothing
+End Sub
+
+Public Sub DoExport()
+
+    paraCount = ActiveDocument.Paragraphs.count
+    If paraCount < 2 Then
+        If MsgBox("There is only one paragraph in this document.  Are you sure you want to export it?", vbYesNo) <> vbYes Then
+            Exit Sub
+        End If
+    End If
+    
+    If Not initData Then
+        Exit Sub
+    End If
+
+    exportStarted = True
+    
+    Dim showingRevisions As Boolean
+    showingRevisions = ActiveDocument.ShowRevisions
+    
+    Application.ScreenUpdating = False
+    ActiveDocument.ShowRevisions = False
+             
+    StatusBar = "Exporting to DOORS, please wait..."
+    'System.Cursor = wdCursorWait
+    If StartExport Then
+        EndExport
+    End If
+    DOORSExportDialogue.Hide
+    
+    ActiveDocument.ShowRevisions = showingRevisions
+    Application.ScreenUpdating = True
+    
+    StatusBar = "Export completed"
+    'System.Cursor = wdCursorNormal
+End Sub
+
+Private Function checkChar1(text As String) As Boolean
+
+    If (text = "(" Or text = ")" Or text = "[" Or text = "]" Or text = "<" Or text = ">" Or text = ChrW(8211)) Then
+        checkChar1 = True
+    End If
+
+End Function
+
+Private Function addBidiMarks(myRange As Range) As Boolean
+    Dim i As Integer
+    Dim n As Integer
+    Dim lang As Long
+
+    On Error GoTo cantAddMarks
+    
+    n = myRange.Characters.count
+    i = 1
+    
+    If (n > 1) Then
+        While (i <= n)
+            If (myRange.Characters(i) = ChrW(8207) Or myRange.Characters(i) = ChrW(8206)) Then
+                myRange.Characters(i).Delete
+                i = i - 1
+                n = myRange.Characters.count
+                If (n < 1) Then GoTo lab
+            Else
+                lang = myRange.Characters(i).LanguageID
+                If (myRange.Characters(i).text = " ") Then
+                    If (lang = wdHebrew Or lang = wdArabic) Then
+                        myRange.Characters(i).InsertBefore (ChrW(8207))
+                    Else
+                        myRange.Characters(i).InsertBefore (ChrW(8206))
+                    End If
+                    i = i + 1
+                    n = n + 1
+                Else
+                    If (checkChar1(myRange.Characters(i).text)) Then
+                        If (myRange.Characters(i) = ChrW(8211) Or myRange.Characters(i) = ChrW(8212)) Then
+                            If (lang = wdHebrew Or lang = wdArabic) Then
+                                myRange.Characters(i - 1).InsertAfter (ChrW(1488))
+                                myRange.Characters(i).InsertAfter ("-")
+                                myRange.Characters(i).Delete
+                            Else
+                                myRange.Characters(i - 1).InsertAfter ("-")
+                            End If
+                            myRange.Characters(i + 1).Delete
+                        End If
+                        If (lang = wdHebrew Or lang = wdArabic) Then
+                            myRange.Characters(i).InsertBefore (ChrW(8207))
+                            i = i + 1
+                            n = n + 1
+                        End If
+                    End If
+                End If
+            End If
+            i = i + 1
+        Wend
+    End If
+    
+lab:
+    If (myRange.ParagraphFormat.ReadingOrder = wdReadingOrderRtl) Then
+        myRange.InsertBefore (ChrW(8207))
+    Else
+        myRange.InsertBefore (ChrW(8206))
+    End If
+        
+    addBidiMarks = True
+    Exit Function
+    
+cantAddMarks:
+
+    addBidiMarks = False
+
+End Function
+
+Private Function removeBidiMarks(myRange As Range) As Boolean
+
+    Dim i As Integer
+    Dim n As Integer
+    
+    i = 1
+    n = myRange.Characters.count
+    
+    If (n > 1) Then
+        While (i <= n)
+            If (myRange.Characters(i) = ChrW(8207) Or myRange.Characters(i) = ChrW(8206)) Then
+                myRange.Characters(i).Delete
+                i = i - 1
+                n = myRange.Characters.count
+            End If
+            i = i + 1
+        Wend
+    End If
+    
+End Function
+
+Attribute VB_Name = "Progress"
+' Progress bar code
+' Copyright (c) IBM Corporation 1993, 2011. All Rights Reserved.
+
+' WARNING! If this file is changed, the file needs to be re-signed. See readme for details.
+
+Option Explicit
+
+Private noProgressPoints As Long
+Private progressPoint As Long
+Private Const pointsBetweenStep As Long = 10
+
+Private Sub progressRefresh(point As Long)
+    DOORSExportDialogue.ProgressLabel.Caption = "Exporting paragraph " + Str$(point) + " of " + Str$(noProgressPoints)
+    DOORSExportDialogue.ProgressFrame.Repaint
+End Sub
+
+Public Sub progressStart(num As Long)
+    noProgressPoints = num
+    progressPoint = 0
+    DOORSExportDialogue.CancelButton.SetFocus
+    DOORSExportDialogue.Repaint
+    progressRefresh (1)
+End Sub
+
+Public Sub progressStep()
+    DoEvents
+    progressPoint = progressPoint + 1
+    If (progressPoint Mod pointsBetweenStep = 0) Then
+        progressRefresh (progressPoint)
+    End If
+End Sub
+
+Public Sub progressEnd()
+    DOORSExportDialogue.ProgressLabel.Caption = ""
+    DOORSExportDialogue.Repaint
+End Sub
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "ToolbarButtonCallback"
+' Callback on toolbar button or menu item click
+' Copyright (c) IBM Corporation 1993, 2011. All Rights Reserved.
+
+' WARNING! If this file is changed, the file needs to be re-signed. See readme for details.
+
+Option Explicit
+
+Public Sub ExportToDoors()
+    Dim s As String
+    Dim l As Long
+    
+    exportStarted = False
+    
+    If Documents.count < 1 Then
+        MsgBox "No documents are open"
+        Exit Sub
+    End If
+
+    On Error GoTo noActiveDocument
+
+    'In reality ActiveDocument will raise an error if there is no
+    'active document, so we have to catch the error.  It is perfectly feasible
+    'to have a documents.count of > 0 but still have no active document.  This
+    'kind of thing happens when the user is using Outlook as their mail editor
+    
+    If (IsNull(ActiveDocument)) Then
+        'This line of code will never actually be executed
+        GoTo noActiveDocument
+    End If
+
+    'Clear handler
+    On Error GoTo 0
+
+    'Infer module settings
+    s = Trim(ActiveDocument.Name)
+
+    'Trim the file extension off, if present.
+    l = InStrRev(s, ".")
+    If (l > 1) Then
+        s = Left(s, l - 1)
+    End If
+
+    If ((s = "") Or (Len(s) = 0)) Then
+        DOORSExportDialogue.ModuleNameBox.text = "Enter the module name here."
+        DOORSExportDialogue.ModuleDescBox.text = "Enter the description here."
+    Else
+        DOORSExportDialogue.ModuleNameBox.text = s
+        DOORSExportDialogue.ModuleDescBox.text = s
+    End If
+
+    DOORSExportDialogue.ModulePrefixBox.text = ""
+    DOORSExportDialogue.ModuleAbsnoBox.Value = 1
+    DOORSExportDialogue.ModuleStripBox.Value = True
+    DOORSExportDialogue.ModuleStyleBox.Value = True
+    
+    DOORSExportDialogue.Show
+    
+    Exit Sub
+
+noActiveDocument:
+    MsgBox "There is no active document"
+    Exit Sub
+    
+End Sub
+
+' InQuest injected base64 decoded content
+' zPhw$
+' jwez
+
+INQUEST-PP=macro

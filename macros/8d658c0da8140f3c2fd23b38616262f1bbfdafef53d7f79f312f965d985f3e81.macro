@@ -1,0 +1,3641 @@
+Attribute VB_Name = "AttributeRule"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private m_ruleCode As String
+Private m_dependentAttributeId As String
+Private m_dependentValue As String
+
+' A rule can be validation rule, auto-transform rule or auto-population rule.
+' Possible types are: VALIDATION_RULE_TYPE, AUTOTRANSFORM_RULE_TYPE, POPULATE_RULE_TYPE defined in Constants module
+Private m_ruleType As Integer
+
+Public Sub init(ruleCode As String, dependentAttributeId As String, dependentValue As String, ruleType As Integer)
+   m_ruleCode = ruleCode
+   m_dependentAttributeId = dependentAttributeId
+   m_dependentValue = dependentValue
+   
+   m_ruleType = ruleType
+End Sub
+
+Public Property Get ruleCode() As String
+   ruleCode = m_ruleCode
+End Property
+
+Public Property Get dependentAttributeId() As String
+   dependentAttributeId = m_dependentAttributeId
+End Property
+
+Public Property Get dependentValue() As String
+   dependentValue = m_dependentValue
+End Property
+
+Public Property Get ruleType() As Integer
+   ruleType = m_ruleType
+End Property
+
+Public Property Get hasDependentAttributeId() As Boolean
+    hasDependentAttributeId = Not (IsEmpty(dependentAttributeId) Or Trim(dependentAttributeId) = "")
+End Property
+
+Public Property Get hasDependentValue() As Boolean
+    hasDependentValue = Not (IsEmpty(m_dependentValue) Or Trim(m_dependentValue) = "")
+End Property
+
+Public Property Get hasEmptyOperand()
+    hasEmptyOperand = Not (hasDependentAttributeId Or hasDependentValue)
+End Property
+Attribute VB_Name = "BuyerToggleButtonModule"
+Option Explicit
+
+Private Const HIDE_VALUE = "hide"
+Private Const SHOW_VALUE = "show"
+Private Const BUTTON_CELL = "B4"
+Private Const VID_VALUE_STORED_IN_ROW = "2"
+Private Const VID_CELL_VALUE = "VID="
+Private Const BT_ROW = 4
+Private Const BT_COL_RANGE_START = 2
+Private Const BT_COL_RANGE_END = 3
+Private Const BT_HEIGHT = 32
+
+Public Sub addBuyerToggleButton()
+    Dim sh As Worksheet
+    If buyerVisibleFeatureEnabled = True Then
+        For Each sh In ActiveWorkbook.Worksheets
+            If isSheetApplicable(sh) Then
+                Debug.Print (sh.Name)
+                addToggleButtonToSheet sh
+            End If
+        Next sh
+    End If
+End Sub
+
+
+Public Function addToggleButtonToSheet(sh As Worksheet)
+    Dim btn As Button
+    Dim btCell As Range
+    Dim b As Excel.Shape
+    Dim isProtected As Boolean
+    
+    If sh.ProtectContents Then isProtected = True
+    sh.Unprotect
+    Set btCell = sh.Range(sh.cells(BT_ROW, BT_COL_RANGE_START), sh.cells(BT_ROW, BT_COL_RANGE_END))
+    Set btn = sh.Buttons.Add(btCell.Left, btCell.Top, btCell.Width, BT_HEIGHT)
+    With btn
+         .Caption = toggleButtonCaption
+         .OnAction = "Toggle"
+    End With
+    If isProtected Then sh.Protect
+End Function
+
+
+Public Sub Toggle()
+    
+    Dim rCell As Range
+    Dim rTest As Range
+    Dim lCol As Long
+    Dim hidden As Boolean 'Flag for current toggle status
+    Dim isProtected As Boolean
+    
+    If ActiveSheet.ProtectContents Then isProtected = True
+    ActiveSheet.Unprotect
+    'Get current state of toggle button
+    If InStr(1, ActiveSheet.Range(BUTTON_CELL).value, HIDE_VALUE) Then
+        hidden = True
+    Else
+        hidden = False
+    End If
+    
+    'We now loop through the columns from left to right.
+    For lCol = 1 To ActiveSheet.UsedRange.Columns.Count Step 1
+    'rCell is set = the cell lCol to the right of cell D2.
+        Set rCell = ActiveSheet.Range("D" + VID_VALUE_STORED_IN_ROW).Offset(0, lCol)
+        If InStr(1, rCell.value, VID_CELL_VALUE + "N") Then
+            ActiveSheet.Columns(rCell.column).hidden = Not hidden
+        Else
+            ActiveSheet.Columns(rCell.column).hidden = False
+        End If
+    Next
+    
+    'Set current state of toggle button
+    If hidden = True Then
+        ActiveSheet.Range(BUTTON_CELL).value = SHOW_VALUE
+    Else
+        ActiveSheet.Range(BUTTON_CELL).value = HIDE_VALUE
+    End If
+    If isProtected Then ActiveSheet.Protect
+End Sub
+Attribute VB_Name = "ClientSideValidator"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private totalTask As Long
+Private doneTask As Long
+
+Private rowsToValidateInCurrentSheet As Collection
+Private errorRowsInWorkbookPerWorkSheet As New Collection
+
+Public Sub registerErrorRow(cell As Range)
+    Dim shName As String: shName = cell.Worksheet.Name
+    
+    ' Check if no error for this worksheet till now
+    If Not ifExistsInCollection(errorRowsInWorkbookPerWorkSheet, shName) Then
+        Dim newColl As New Collection
+        AddIntoCollection errorRowsInWorkbookPerWorkSheet, shName, newColl
+    End If
+
+    Dim errorRowsInWorksheet As Collection
+    Set errorRowsInWorksheet = errorRowsInWorkbookPerWorkSheet(shName)
+
+    Dim row As String: row = "" & cell.row
+    If Not ifExistsInCollection(errorRowsInWorksheet, row) Then
+        ' in excel, we iterate on values instead of keys. So let us have value as same as key. This is crucial as we iterate later using same assumption
+        AddIntoCollection errorRowsInWorksheet, row, row
+    End If
+End Sub
+
+Public Sub startClientSideValidation()
+    ProgressBarForm.setProgressBar 0, True
+    computeTask ' compute the quantity of task that we are going to do.
+    
+    Debug.Print "number of sheets: " & ActiveWorkbook.Sheets.Count
+    
+    Dim numRowsValidated As Integer: numRowsValidated = 0
+    Dim totalNumOfRowsInErrorInWorkbook As Integer: totalNumOfRowsInErrorInWorkbook = 0
+    Dim activeShBeforeValidation As Worksheet: Set activeShBeforeValidation = ActiveWorkbook.ActiveSheet
+    
+    Dim sh As Worksheet
+    For Each sh In ActiveWorkbook.Worksheets
+        If isSheetApplicable(sh) Then
+            ' Due to some reason, farmula evaluation fails if current sheet is not active sheet
+            sh.Activate
+            doValidationForCurrentSheet sh
+            numRowsValidated = numRowsValidated + rowsToValidateInCurrentSheet.Count
+            If ifExistsInCollection(errorRowsInWorkbookPerWorkSheet, sh.Name) Then
+                totalNumOfRowsInErrorInWorkbook = totalNumOfRowsInErrorInWorkbook + errorRowsInWorkbookPerWorkSheet(sh.Name).Count
+            End If
+        End If
+    Next sh
+    
+    Set currentErrorRowsInWorkbookPerWorkSheet = errorRowsInWorkbookPerWorkSheet
+    
+    activeShBeforeValidation.Activate ' before doValidationForCurrentSheet we activate each sheet. We should again activate the sheet which was active before
+    
+    ProgressBarForm.setProgressBar 1, True
+    ProgressBarForm.destroyProgressBar
+    
+    Dim popMsg As String
+    Dim userChoice As Integer
+    Dim shouldShowOnlyErrorRows As Boolean: shouldShowOnlyErrorRows = False
+    If Not isNewMacro Then
+    ' New macro is not enabled
+        popMsg = substituteParam(ValidationPopupMsg, "num-rows", numRowsValidated & "")
+        popMsg = substituteParam(popMsg, "num-error-rows", totalNumOfRowsInErrorInWorkbook & "")
+        If popMsg <> "" Then
+            msgBoxForAll popMsg, vbOKOnly
+            If totalNumOfRowsInErrorInWorkbook > 0 And showOnlyErrRowsMsg <> "" Then
+                userChoice = msgBoxForAll(showOnlyErrRowsMsg, vbYesNo, DEFAULT_MSGBOX_TITLE, 2)
+                If userChoice = vbYes Then
+                    shouldShowOnlyErrorRows = True
+                End If
+            End If
+        End If
+    
+        If shouldShowOnlyErrorRows = True Then
+            hideRows errorRowsInWorkbookPerWorkSheet
+        Else ' Let us show all rows if vendor chooses to see all rows, or if there are no error rows
+            showAllRowsInWorkbook
+        End If
+    Else
+    ' New macro is enabled
+        popMsg = substituteParam(showValidationResults, "num-rows", numRowsValidated & "")
+        popMsg = substituteParam(popMsg, "num-error-rows", totalNumOfRowsInErrorInWorkbook & "")
+        If popMsg <> "" Then
+            'Error exists
+            If totalNumOfRowsInErrorInWorkbook > 0 Then
+                popMsg = popMsg & Chr(13) & ifSeeErrors
+                userChoice = msgBoxForAll(popMsg, vbYesNo, DEFAULT_MSGBOX_TITLE, 2)
+                If userChoice = vbYes Then
+                    shouldShowOnlyErrorRows = True
+                    If clickedClose Then
+                        contClose = False
+                    End If
+                Else
+                    shouldShowOnlyErrorRows = False
+                    showAllRowsInWorkbook
+                    If clickedClose Then
+                        contClose = True
+                    End If
+                End If
+            'Error doesn't exist
+            Else
+                If Not clickedClose Then
+                    msgBoxForAll popMsg, vbOKOnly, DEFAULT_MSGBOX_TITLE
+                Else
+                    popMsg = popMsg & Chr(13) & ifContinueToClose
+                    userChoice = msgBoxForAll(popMsg, vbYesNo, DEFAULT_MSGBOX_TITLE, 2)
+                    If userChoice = vbYes Then
+                        contClose = True
+                    Else
+                        contClose = False
+                    End If
+                End If
+            End If
+        Else
+            If clickedClose Then
+                contClose = True
+            End If
+        End If
+        If shouldShowOnlyErrorRows = True Then
+            hideRows errorRowsInWorkbookPerWorkSheet
+        Else ' Let us show all rows if vendor chooses to see all rows, or if there are no error rows
+            showAllRowsInWorkbook
+        End If
+        clickedClose = False
+        Worksheets(HIDDEN_WORKSHEET).Range("HD_IS_MACRO_RUN").value = "true"
+    End If
+End Sub
+
+Private Sub computeTask()
+    totalTask = 0: doneTask = 0
+    
+    Dim Sheet As Worksheet
+    For Each Sheet In ActiveWorkbook.Worksheets
+        If isSheetApplicable(Sheet) Then
+            ' ignore first column
+            totalTask = totalTask + Sheet.UsedRange.Columns.Count - 1
+        End If
+    Next Sheet
+End Sub
+
+Public Sub doValidationForCurrentSheet(currentSheet As Worksheet)
+    Debug.Print ("validating attributes for sheet: " & currentSheet.Name)
+    Application.EnableEvents = True
+    
+    Dim attrId As String, counter As Integer
+    Dim templAttr As New TemplateAttribute
+    Dim timerObj As New TimerForMacOrWindows
+    timerObj.resetTimer ' use the object as VBA optimizes by creating object when it is used first
+    
+    DoEvents ' Let us allow Excel to update progress bar at start
+    Set rowsToValidateInCurrentSheet = getRowsToValidate(currentSheet, MAX_CONTIGUOUS_EMPTY_ROWS)
+    
+    Application.ScreenUpdating = True
+    
+    clearErrorMessagesInSheet currentSheet
+    Application.ScreenUpdating = False
+    
+    For counter = 2 To currentSheet.UsedRange.Columns.Count
+        doneTask = doneTask + 1
+        On Error Resume Next ' If error comes while validating this column, go to next column
+        
+        attrId = getAttributeId(currentSheet, counter)
+        Debug.Print "counter: " & counter & ", now: " & Now; ", sheet: " & currentSheet.Name & ", column: " & counter & ", attrId: " & attrId
+        
+        If Not isAttributeInCache(currentSheet.Name, attrId) Then
+            Debug.Print "attr not found in cache: attrId: " & attrId
+        Else
+            Set templAttr = getAttribute(currentSheet.Name, attrId)
+            Debug.Print "attr found in cache: attrName: " & templAttr.displayName
+            validateColumn currentSheet, templAttr, counter
+        End If
+        
+        ProgressBarForm.setProgressBar doneTask / totalTask, True
+        If counter Mod NUM_COLUMNS_PER_DO_EVENTS_CALL = 0 Then
+            DoEvents
+           ' Application.Wait Now + TimeSerial(0, 0, 1)
+        End If
+    Next counter
+    
+    If InStr(currentSheet.Name, SKU_INFO_WORKSHEET) > 0 Then
+        ' We do it after validateCell() because validateCell clears Bad cell-style from earlier validation
+        ' It is a child sheet, validate style names in child sheet against same in parent sheet
+        validateParentAndChildren currentSheet
+    End If
+    
+    ' Validation for this sheet finished. Let us add metrics for validation of this sheet
+    Dim timeTakenInValidation As Long, numErrorRows As Integer, numAllRows As Integer
+    numAllRows = rowsToValidateInCurrentSheet.Count
+    If ifExistsInCollection(errorRowsInWorkbookPerWorkSheet, currentSheet.Name) Then
+        numErrorRows = errorRowsInWorkbookPerWorkSheet(currentSheet.Name).Count
+    Else: numErrorRows = 0
+    End If
+    timeTakenInValidation = timerObj.getTimeDiff
+    
+    metricsManagerForWorkbook.addMetricsForValidation currentSheet, numErrorRows, timeTakenInValidation, numAllRows
+    
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub validateColumn(currentSheet As Worksheet, attr As TemplateAttribute, column As Integer)
+    
+    ' apply conditional formatting over the whole column in case they may have been modified
+    ' This will help restoring any copy-paste which would might have overwritten conditional formatting
+    ' Please note that same cannot be done for dropdowns. The reason is doing same for dropdowns will overwrite tooltips too
+    restoreConditionalFormatting currentSheet, column, END_ROW_NUM_FOR_VALIDATION
+    restoreDropdownAndTooltipOnProtectedSheet currentSheet, column, END_ROW_NUM_FOR_VALIDATION
+    
+    Dim cells As Range, currCell As Range
+    Set cells = getCellsInColumn(currentSheet, attr.column)
+    Dim numValidatedCellsInColumn As Integer: numValidatedCellsInColumn = 0
+    For Each currCell In cells
+        On Error Resume Next ' if validation of this cell causes error, continue validation next cell.
+        ' validate every cell including dropdown, dependent dropdown, required, conditional required and validation rules
+        If ifExistsInCollection(rowsToValidateInCurrentSheet, "" & currCell.row) Then
+            validateCell attr, currCell
+            numValidatedCellsInColumn = numValidatedCellsInColumn + 1
+            If numValidatedCellsInColumn Mod NUM_CELLS_PER_DO_EVENTS_CALL = 0 Then
+                DoEvents ' We need to call DoEvents in small interval so that excel does not seem hung
+            End If
+        End If
+    Next currCell
+    
+        ' Duplicate Detection. We do it after validateCell() because validateCell clears Bad cell-style from earlier validation
+    If attr.isUnique Then
+        ValidateColumnForUniqueValues attr, column
+    End If
+End Sub
+
+Private Sub validateCell(attr As TemplateAttribute, currentCell As Range)
+    ' Check if cell is read-only. For example, it can be completed item
+    If shouldSkipValidationForCell(currentCell) Then
+        Exit Sub
+    End If
+    
+    ' Normal seems to work in japanese machines where as bad doesn't. And also bad1 seems to work where as normal1 doesn't one japanese machines. All of them seem to work fine on en windows machines.Also refer to (tt:0014323689)
+    currentCell.Style = "Normal" ' reset cell style to Normal
+    
+    ' Conditional Requirement and for empty cells
+    validateRequirement attr, currentCell
+    
+    ' Validate values selected in dropdowns
+    validateDropdown attr, currentCell
+    
+    ' Check for greater than and less than and uppercase
+    ValidationRulesHelper.validateByValidationRules attr, currentCell
+    
+End Sub
+
+' This is to clear error messages in existing cells before we validate this sheet
+Private Sub clearErrorMessagesInSheet(Sheet As Worksheet)
+    Dim topLeftCell As Range, bottomRightCell As Range, applicableRange As Range
+    Set topLeftCell = Sheet.cells(FIRST_DATA_ROW_INDEX, FIRST_COLUMN_TO_PARSE)
+    Set bottomRightCell = Sheet.cells(Sheet.UsedRange.Rows.Count, Sheet.UsedRange.Columns.Count)
+    
+    Set applicableRange = Sheet.Range(topLeftCell, bottomRightCell)
+    
+    applicableRange.ClearComments
+    
+    Dim counter As Integer ' Let us reset style of empty/default rows
+    For counter = FIRST_DATA_ROW_INDEX To Sheet.UsedRange.Rows.Count
+        On Error Resume Next ' The error comes if some cells are merged across rows
+        If Not ifExistsInCollection(rowsToValidateInCurrentSheet, counter & "") Then
+            'Normal/bad1 seems to work fine on japanese machine that we tested on Normal1/bad did not (tt:0014323689)
+
+            Sheet.Rows(counter).Style = "Normal" ' reset cell style to Normal
+        End If
+    Next counter
+End Sub
+
+Public Function isRowInError(sh As Worksheet, rowNum As Integer) As Boolean
+    If ifExistsInCollection(errorRowsInWorkbookPerWorkSheet, sh.Name) Then
+        Dim rowNumStr As String, errorRowsInSheet As Collection
+        rowNumStr = "" & rowNum
+        Set errorRowsInSheet = errorRowsInWorkbookPerWorkSheet(sh.Name)
+        
+        isRowInError = ifExistsInCollection(errorRowsInSheet, rowNumStr)
+    Else
+        isRowInError = False
+    End If
+End Function
+
+Attribute VB_Name = "Constants"
+Global Const MAX_VALIDATION_RULES = 10
+
+Global Const VALIDATION_RULE_TYPE = 1
+Global Const AUTOTRANSFORM_RULE_TYPE = 2
+Global Const POPULATE_RULE_TYPE = 3
+
+Global Const HIDDEN_WORKSHEET = "Hidden"
+Global Const HIDDEN_WORKSHEET_DEPENDROPDOWN_FORMULA = "Hidden_DepenDropdownFormula"
+Global Const ITEM_SHEET_WORKSHEET = "Item_Sheet"
+Global Const SKU_INFO_WORKSHEET = "Sku_Info"
+
+Global Const TYPE_KEY = "TYPE"
+Global Const REQUIRED_KEY = "REQ"
+Global Const UNIQUE_KEY = "UNIQ"
+Global Const DEFAULT_KEY = "DEFAULT"
+Global Const PARENT_DROPDOWN_KEY = "PARENT_DROPDOWN"
+Global Const CONDTIONAL_FORMULA_KEY = "CONDTIONAL_FORMULA"
+Global Const CONDITIONAL_RULE_PREFIX = "c_"
+Global Const VALIDATION_RULE_PREFIX = "v_"
+Global Const OR_KEY = "OR"
+Global Const AND_KEY = "AND"
+
+Global Const OPERATION_IS_NULL = "isNull"
+Global Const OPERATION_NOT_NULL = "notNull"
+Global Const OPERATION_LESS_THAN = "lessThan"
+Global Const OPERATION_LESS_THAN_EQUAL = "lessThanEqual"
+Global Const OPERATION_MORE_THAN = "moreThan"
+Global Const OPERATION_MORE_THAN_EQUAL = "moreThanEqual"
+Global Const OPERATION_EQUAL_TO = "equalTo"
+Global Const OPERATION_NOT_EQUAL_TO = "notEqualTo"
+Global Const OPERATION_DIVISIBLE_BY = "divisibleBy"
+Global Const OPERATION_NOT_DIVISIBLE_BY = "notDivisibleBy"
+
+Global Const LEFT_ATTR_PARAM = "left-attr"
+Global Const RIGHT_ATTR_PARAM = "right-attr"
+Global Const RIGHT_VALUE_PARAM = "right-value"
+
+Global Const EXTERNAL_ID_SPECIAL_INSTRUCTION = "externalId"
+Global Const EXTERNAL_ID_TYPE_SPECIAL_INSTRUCTION = "externalIdType"
+Global Const VENDOR_SKU_SPECIAL_INSTRUCTION = "vendorSKU"
+Global Const PARENT_IDENTIFIER_SPECIAL_INSTRUCTION = "parentIdentifier"
+
+Global Const BOOLEAN_TYPE = "booleanType"
+Global Const CURRENCY_TYPE = "currencyType"
+Global Const DATE_TYPE = "dateType"
+Global Const DOUBLE_TYPE = "doubleType"
+Global Const INTEGER_TYPE = "integerType"
+Global Const STRING_TYPE = "stringType"
+Global Const DROPDOWN_TYPE = "dropdownType"
+Global Const DEPENDENT_DROPDOWN_TYPE = "dependentDropdownType"
+
+Global Const EXTERNAL_ID_VALIDATION_RULE_CODE = "EXT"
+
+Global Const NUM_ERROR_MESSAGES = "NUM_ERROR_MESSAGES"
+Global Const DECIMAL_CHARACTER = "DECIMAL_CHARACTER"
+Global Const SUPPORTED_VSS_DATE_FORMATS = "SUPPORTED_VSS_DATE_FORMATS"
+Global Const VALIDATION_POPUP_MSG = "VALIDATION_POPUP_MSG"
+Global Const SHOW_ONLY_ERROR_ROWS_MSG = "SHOW_ONLY_ERROR_ROWS_MSG"
+Global Const STARTING_VALIDATION = "STARTING_VALIDATION_BEFORE_CLOSE"
+Global Const SHOW_VALIDATION_RESULTS = "SHOW_VALIDATION_RESULTS"
+Global Const IF_CONTINUE_TO_CLOSE = "IF_CONTINUE_TO_CLOSE"
+Global Const IF_SEE_ERRORS = "IF_SEE_ERRORS"
+Global Const CELL_STYLES_TO_SKIP_VALIDATION = "CELL_STYLES_TO_SKIP_VALIDATION"
+Global Const BUTTON_VALIDATE_TEMPLATE = "BUTTON_VALIDATE_TEMPLATE"
+Global Const BUTTON_SHOW_ERRORS = "BUTTON_SHOW_ERRORS"
+Global Const BUTTON_SHOW_ALL = "BUTTON_SHOW_ALL"
+Global Const POPUP_MSG_VALIDATE_TEMPLATE = "POPUP_MSG_VALIDATE_TEMPLATE"
+Global Const ROW_NUM_IN_COND_FORMULA = "ROW_NUM_IN_COND_FORMULA"
+Global Const IS_NEW_MACRO = "IS_NEW_MACRO"
+
+Global Const BAD_CELL_STYLE = "Bad1"
+Global Const COMMENT_WIDTH = 150
+Global Const CONDITIONAL_ERR_MSG_COMMENT_WIDTH = 300
+Global Const CONDITIONAL_ERR_MSG_COMMENT_HEIGHT = 150
+
+Global Const FIRST_COLUMN_TO_PARSE = 2
+Global Const ATTRIBUTE_HEADER_ROW_INDEX = 2
+Global Const ATTRIBUTE_NAME_ROW_INDEX = 5
+Global Const SAMPLE_DATA_ROW_INDEX = 6
+Global Const FIRST_DATA_ROW_INDEX = 7
+
+Global Const OFFICE_2007_VERSION = "12"
+Global Const OFFICE_2010_VERSION = "14"
+
+Global Const TYPE_ISBN10_CODE = 1
+Global Const TYPE_ASIN_CODE = 2
+Global Const TYPE_UPC_CODE = 6
+Global Const TYPE_EAN_CODE = 7 ' ISBN13 is also 7
+Global Const TYPE_MAGAZINEBARCODE_CODE = 690
+Global Const TYPE_MODELSTOCKNUMBER_CODE = 9
+Global Const TYPE_CATALOGALPHANUMERIC_CODE = 10
+Global Const TYPE_GTIN_CODE = 317
+Global Const TYPE_CATALOGNUMBER_CODE = 14
+Global Const TYPE_JOYOPRODUCTID_CODE = 693
+Global Const TYPE_NONUNIQUEEAN_CODE = 697
+Global Const TYPE_CODABAR_CODE = 720
+Global Const TYPE_MAGAZINEBARCODEPLUSISSUEANDYEAR_CODE = 711
+Global Const TYPE_ZAPPOSPRIVATELABELPRODUCTID_CODE = 719
+
+' The below constant is used in this way: if we find 20 contiguous rows to be empty, we will skip validating all rows below such 20 rows
+Global Const MAX_CONTIGUOUS_EMPTY_ROWS = 20
+Global Const END_ROW_NUM_FOR_VALIDATION = 10000
+Global Const NUM_COLUMNS_PER_DO_EVENTS_CALL = 20
+Global Const NUM_CELLS_PER_DO_EVENTS_CALL = 400
+
+Global Const IS_BUYER_OVERRIDE = "isBuyerOverride"
+Global Const TOGGLE_BUTTON_CAPTION = "adv_ic_toggle_buyer_columns"
+Global Const BUYER_VISIBLE_FEATURE_ENABLED_LABLE = "BUYER_VISIBLE_FEATURE_ENABLED"
+'VISPLAT-602
+Global Const MARKETPLACE_LABEL = "Marketplace"
+
+Global Const TEMPLATE_DROPDOWN_VALIDATION_ENABLED_KEY = "TEMPLATE_DROPDOWN_VALIDATION_ENABLED"
+Attribute VB_Name = "DateParser"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Function parseDate(dateStr As String)
+    Dim colNumber As Integer
+    If IsEmpty(supportedVSSDateFormats) Then
+        ' isEmpty tells if variable was initialized
+        Err.Raise -1, "Could not find date formats to use for validation"
+    End If
+    
+    For colNumber = 2 To UBound(supportedVSSDateFormats, 2)
+        If supportedVSSDateFormats(1, colNumber) <> "" Then
+            Dim dateFormat As String: dateFormat = supportedVSSDateFormats(1, colNumber)
+            parseDate = parseDateWithFormat(dateStr, dateFormat)
+            If Not parseDate = "" Then ' date was parsed successfully, let us return it
+                Exit For
+            End If
+        Else
+            Exit For ' no more date formats present, stop here
+        End If
+    Next colNumber
+End Function
+
+Public Function parseDateWithFormat(dateStr As String, format As String)
+    parseDateWithFormat = ""
+    
+    If Not Len(dateStr) = Len(format) Then ' this logic is as per in VSSItemCreationServiceLibs. See Utils.java#134
+        Exit Function
+    End If
+    
+    ' Since length of input date string and format string is exactly same, we can retrieve dd, mm and yyyy in precise way
+    ' yyyy can be 2 digits long or 4 digits long. We need to take care of that.
+    Dim mm As String, dd As String, yyyy As String
+    
+    Select Case format
+        Case "MM/dd/yyyy"
+            If Mid(dateStr, 3, 1) = "/" And Mid(dateStr, 6, 1) = "/" Then
+                mm = Mid(dateStr, 1, 2): dd = Mid(dateStr, 4, 2): yyyy = Mid(dateStr, 7, 4)
+            End If
+        Case "MM/dd/yy"
+            If Mid(dateStr, 3, 1) = "/" And Mid(dateStr, 6, 1) = "/" Then
+                mm = Mid(dateStr, 1, 2): dd = Mid(dateStr, 4, 2): yyyy = Mid(dateStr, 7, 2)
+            End If
+        Case "M/d/yy"
+            If Mid(dateStr, 2, 1) = "/" And Mid(dateStr, 4, 1) = "/" Then
+                mm = Mid(dateStr, 1, 1): dd = Mid(dateStr, 3, 1): yyyy = Mid(dateStr, 5, 2)
+            End If
+        Case "M/d/yyyy"
+            If Mid(dateStr, 2, 1) = "/" And Mid(dateStr, 4, 1) = "/" Then
+                mm = Mid(dateStr, 1, 1): dd = Mid(dateStr, 3, 1): yyyy = Mid(dateStr, 5, 4)
+            End If
+        Case "MM/d/yy"
+            If Mid(dateStr, 3, 1) = "/" And Mid(dateStr, 5, 1) = "/" Then
+                mm = Mid(dateStr, 1, 2): dd = Mid(dateStr, 4, 1): yyyy = Mid(dateStr, 6, 2)
+            End If
+        Case "MM/d/yyyy"
+            If Mid(dateStr, 3, 1) = "/" And Mid(dateStr, 5, 1) = "/" Then
+                mm = Mid(dateStr, 1, 2): dd = Mid(dateStr, 4, 1): yyyy = Mid(dateStr, 6, 4)
+            End If
+        Case "M/dd/yy"
+            If Mid(dateStr, 2, 1) = "/" And Mid(dateStr, 5, 1) = "/" Then
+                mm = Mid(dateStr, 1, 1): dd = Mid(dateStr, 3, 2): yyyy = Mid(dateStr, 6, 2)
+            End If
+        Case "M/dd/yyyy"
+            If Mid(dateStr, 2, 1) = "/" And Mid(dateStr, 5, 1) = "/" Then
+                mm = Mid(dateStr, 1, 1): dd = Mid(dateStr, 3, 2): yyyy = Mid(dateStr, 6, 4)
+            End If
+        Case "yyyyMMdd"
+            mm = Mid(dateStr, 5, 2): dd = Mid(dateStr, 7, 2): yyyy = Mid(dateStr, 1, 4)
+        Case "dd/MM/yyyy"
+            If Mid(dateStr, 3, 1) = "/" And Mid(dateStr, 6, 1) = "/" Then
+                mm = Mid(dateStr, 4, 2): dd = Mid(dateStr, 1, 2): yyyy = Mid(dateStr, 7, 4)
+            End If
+        Case "dd/MM/yy"
+            If Mid(dateStr, 3, 1) = "/" And Mid(dateStr, 6, 1) = "/" Then
+                mm = Mid(dateStr, 4, 2): dd = Mid(dateStr, 1, 2): yyyy = Mid(dateStr, 7, 2)
+            End If
+        Case "yyyy/MM/dd"
+            If Mid(dateStr, 5, 1) = "/" And Mid(dateStr, 8, 1) = "/" Then
+                mm = Mid(dateStr, 6, 2): dd = Mid(dateStr, 9, 2): yyyy = Mid(dateStr, 1, 4)
+            End If
+    End Select
+    
+    If isWholeNumber(mm) And isWholeNumber(dd) And isWholeNumber(yyyy) Then
+        ' if mm and dd is one character, we will just prefix 0.
+        ' but if yyyy is 2 character, that we need to handle it carefully.
+        If Len(mm) = 1 Then
+            mm = "0" & mm
+        End If
+        If Len(dd) = 1 Then
+            dd = "0" & dd
+        End If
+        If Len(yyyy) = 2 Then
+            yyyy = convertYYYYFrom2Digits(yyyy)
+        End If
+        
+        Dim finalDateStr As String
+        finalDateStr = yyyy & "-" & mm & "-" & dd
+        
+        'Now validate if this is a valid date in the aspect that month, date are correct for that year
+        If IsDate(finalDateStr) Then
+            ' here we are leveraging the fact that isDate assumes that yyyy-mm-dd has mm before dd
+            ' if it was mm-dd-yyyy, isDate is lenient that mm can be before dd or mm can be after dd
+            parseDateWithFormat = finalDateStr
+        End If
+    End If
+End Function
+
+' we will replicate logic of Java SimpleDateFormat class to get 4 digit year from 2 digit year
+Private Function convertYYYYFrom2Digits(yearStr As String) As String
+    ' see SimpleFormat.java#initializeDefaultCentrury where we set defaultCenturyStartYear = current year - 80
+    ' See SimpleFormat#1665, where we convert yy to yyyy using defaultCenturyStartYear in below way
+    Dim defaultCenturyStartYear As Integer
+    defaultCenturyStartYear = Year(Date) - 80
+    
+    Dim ambiguousTwoDigitYear As Integer
+    ambiguousTwoDigitYear = defaultCenturyStartYear Mod 100
+    
+    Dim retYear As String
+    retYear = Int(yearStr) + Int(defaultCenturyStartYear / 100) * 100
+    
+    If yearStr < ambiguousTwoDigitYear Then
+        retYear = retYear + 100
+    End If
+    convertYYYYFrom2Digits = retYear
+End Function
+
+Private Function isWholeNumber(value As String) As Boolean
+    Dim counter As Integer, ch As String
+    For counter = 1 To Len(value)
+        ch = Mid(value, counter, 1)
+        If ch < "0" Or ch > "9" Then
+            isWholeNumber = False
+            Exit Function
+        End If
+    Next counter
+    
+    isWholeNumber = True
+End Function
+Attribute VB_Name = "ErrorLogger"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private numMessages As Integer
+
+Private Const MAX_ERRORS_TO_LOG = 100
+
+Private Sub Class_Initialize()
+    numMessages = 0
+End Sub
+
+Public Sub logError(functionName As String, error As String)
+    If numMessages >= MAX_ERRORS_TO_LOG Then
+        Exit Sub
+    End If
+    
+    Dim sh As Worksheet
+    Dim currentRow As Integer
+    For Each sh In Worksheets
+        If sh.Name = HIDDEN_WORKSHEET Then
+            numMessages = numMessages + 1
+            currentRow = sh.UsedRange.Rows.Count + 1
+            If currentRow > 1 Then ' Do sanity heck if sh.UsedRange.Rows.Count was not 0
+                sh.cells(currentRow, 1) = functionName
+                sh.cells(currentRow, 2) = error
+            End If
+        End If
+    Next sh
+End Sub
+
+Attribute VB_Name = "ErrorMessagesConstants"
+Option Explicit
+
+Global Const COND_MANDATORY_ERR_MSGS = "COND_MANDATORY_ERR_MSGS"
+Global Const COND_MANDATORY_ERR_MSG = "COND_MANDATORY_ERR_MSG"
+
+Global Const COND_MANDATORY_EMPTY = "COND_MANDATORY_EMPTY"
+Global Const COND_MANDATORY_NOT_EMPTY = "COND_MANDATORY_NOT_EMPTY"
+Global Const COND_MANDATORY_LESS_THAN_ATTR = "COND_MANDATORY_LESS_THAN_ATTR"
+Global Const COND_MANDATORY_LESS_THAN = "COND_MANDATORY_LESS_THAN"
+Global Const COND_MANDATORY_LESS_EQUAL_ATTR = "COND_MANDATORY_LESS_EQUAL_ATTR"
+Global Const COND_MANDATORY_LESS_EQUAL = "COND_MANDATORY_LESS_EQUAL"
+Global Const COND_MANDATORY_MORE_THAN_ATTR = "COND_MANDATORY_MORE_THAN_ATTR"
+Global Const COND_MANDATORY_MORE_THAN = "COND_MANDATORY_MORE_THAN"
+Global Const COND_MANDATORY_MORE_EQUAL_ATTR = "COND_MANDATORY_MORE_EQUAL_ATTR"
+Global Const COND_MANDATORY_MORE_EQUAL = "COND_MANDATORY_MORE_EQUAL"
+Global Const COND_MANDATORY_EQUAL_ATTR = "COND_MANDATORY_EQUAL_ATTR"
+Global Const COND_MANDATORY_EQUAL = "COND_MANDATORY_EQUAL"
+Global Const COND_MANDATORY_NOT_EQUAL_ATTR = "COND_MANDATORY_NOT_EQUAL_ATTR"
+Global Const COND_MANDATORY_NOT_EQUAL = "COND_MANDATORY_NOT_EQUAL"
+Global Const COND_MANDATORY_DIVISIBLE_ATTR = "COND_MANDATORY_DIVISIBLE_ATTR"
+Global Const COND_MANDATORY_DIVISIBLE = "COND_MANDATORY_DIVISIBLE"
+Global Const COND_MANDATORY_NOT_DIVISBLE_ATTR = "COND_MANDATORY_NOT_DIVISBLE_ATTR"
+Global Const COND_MANDATORY_NOT_DIVISBLE = "COND_MANDATORY_NOT_DIVISBLE"
+
+Global Const PARENT_WITH_NO_CHILDREN = "PARENT_WITH_NO_CHILDREN"
+Global Const CHILD_WITH_UNKNOWN_PARENT = "CHILD_WITH_UNKNOWN_PARENT"
+Global Const DUPLICATE_PARENT = "DUPLICATE_PARENT"
+Global Const DUPLICATE_VENDOR_SKU = "DUPLICATE_VENDOR_SKU"
+Global Const DUPLICATE_EXTERNAL_ID = "DUPLICATE_EXTERNAL_ID"
+
+Global Const INVALID_VALUE_IN_DROPDOWN = "INVALID_VALUE_IN_DROPDOWN"
+Global Const INVALID_VALUE_IN_DPENDENT_DROPDOWN = "INVALID_VALUE_IN_DPENDENT_DROPDOWN"
+
+Global Const IS_REQUIRED = "IS_REQUIRED"
+
+Global Const INVALID_BOOLEAN = "INVALID_BOOLEAN"
+Global Const INVALID_DOUBLE = "INVALID_DOUBLE"
+Global Const INVALID_DATE = "INVALID_DATE"
+Global Const INVALID_INTEGER = "INVALID_INTEGER"
+Global Const INVALID_CURRENCY = "INVALID_CURRENCY"
+Global Const LESS_THAN_ZERO = "LESS_THAN_ZERO"
+
+Global Const STRING_LONGER_THAN_ALLOWED = "STRING_LONGER_THAN_ALLOWED"
+Global Const STRING_LONGER_THAN_ALLOWED_ATTR = "STRING_LONGER_THAN_ALLOWED_ATTR"
+Global Const STRING_TINIER_THAN_ALLOWED = "STRING_TINIER_THAN_ALLOWED"
+Global Const STRING_TINIER_THAN_ALLOWED_ATTR = "STRING_TINIER_THAN_ALLOWED_ATTR"
+ 
+Global Const DATE_AFTER_ALLOWED = "DATE_AFTER_ALLOWED"
+Global Const DATE_AFTER_ALLOWED_ATTR = "DATE_AFTER_ALLOWED_ATTR"
+Global Const DATE_BEFORE_ALLOWED = "DATE_BEFORE_ALLOWED"
+Global Const DATE_BEFORE_ALLOWED_ATTR = "DATE_BEFORE_ALLOWED_ATTR"
+Global Const DOUBLE_MORE_THAN_ALLOWED = "DOUBLE_MORE_THAN_ALLOWED"
+Global Const DOUBLE_MORE_THAN_ALLOWED_ATTR = "DOUBLE_MORE_THAN_ALLOWED_ATTR"
+Global Const DOUBLE_LESS_THAN_ALLOWED = "DOUBLE_LESS_THAN_ALLOWED"
+Global Const DOUBLE_LESS_THAN_ALLOWED_ATTR = "DOUBLE_LESS_THAN_ALLOWED_ATTR"
+
+Global Const INVALID_DEPENDENT_ATTR_VALUE = "INVALID_DEPENDENT_ATTR_VALUE"
+
+Global Const CAPS_NOT_ALLOWED = "CAPS_NOT_ALLOWED"
+
+Global Const INVALID_EXTERNAL_ID_TYPE = "INVALID_EXTERNAL_ID_TYPE"
+Global Const INVALID_ISBN = "INVALID_ISBN"
+Global Const INVALID_EAN = "INVALID_EAN"
+Global Const INVALID_UPC = "INVALID_UPC"
+Global Const INVALID_GTIN = "INVALID_GTIN"
+
+' These error messages are not present for now and instead error messages with hard-coded english texts are being used for now
+' This may be because there error messages would be internal customer facing.
+' Later if we want to internationalise these error messages, we would not want to change VBA code
+' For this I have put below placeHolders for which VBA code will check. If found, VBA will use them else will use present non-standard error messages
+
+Global Const INVALID_ASIN = "INVALID_ASIN"
+Global Const INVALID_MAGAZINEBARCODE = "INVALID_MAGAZINEBARCODE"
+Global Const INVALID_CATALOGALPHANUMERIC = "INVALID_CATALGALPHANUMERIC"
+Global Const INVALID_CATALOGNUMBER = "INVALID_CATALOGNUMBER"
+Global Const INVALID_JOYOPRODUCTID = "INVALID_JOYOPRODUCTID"
+Global Const INVALID_NONUNIQUEEAN = "INVALID_NONUNIQUEEAN"
+Global Const INVALID_CODABAR = "INVALID_CODABAR"
+Global Const INVALID_MAGAZINEBARCODEPLUSISSUEANDYEAR = "INVALID_MAGAZINEBARCODEPLUSISSUEANDYEAR"
+Global Const INVALID_ZAPPOSPRIVATELABELPRODUCTID = "INVALID_ZAPPOSPRIVATELABELPRODUCTID"
+
+Attribute VB_Name = "ErrorMessagesModule"
+' these are private constants
+Private Const FIRST_ERROR_COLUMN = 1
+Private Const SECOND_ERROR_COLUMN = 2
+
+Public Sub parseErrorMessages()
+    Dim sh As Worksheet: Set sh = Worksheets(HIDDEN_WORKSHEET)
+    Set errorList = New Collection
+    
+    Dim startRow As Integer: endRow = 0
+    
+    Dim rowNum As Integer
+    For rowNum = 1 To sh.UsedRange.Rows.Count
+        If endRow = 0 Then
+            If sh.cells(rowNum, FIRST_ERROR_COLUMN).value = NUM_ERROR_MESSAGES Then
+                ' 2nd cell contains number of error messages
+                endRow = rowNum + sh.cells(rowNum, SECOND_ERROR_COLUMN).value
+            End If
+        ElseIf rowNum > endRow Then
+            Exit For
+        Else
+            Dim errorMessage As String: errorMessage = sh.cells(rowNum, SECOND_ERROR_COLUMN).value
+            If Not Trim(errorMessage) = "" Then
+                ' 1st cell is error-name and 2nd cell is actual error message
+                AddIntoCollection errorList, sh.cells(rowNum, FIRST_ERROR_COLUMN).value, errorMessage
+            End If
+        End If
+    Next rowNum
+End Sub
+
+Public Function substituteParam(errorMsg As String, param As String, paramVal As String) As String
+    Dim result As String
+    
+    Dim toFind1 As String, toFind2 As String
+    
+    ' Also see AmznString.java, it says it can either ${X} or ${hash-get X}. We mostly use ${hash-get X}
+    toFind1 = "${hash-get " & param & "}"
+    toFind2 = "${" & param & "}"
+    
+    substituteParam = Replace(errorMsg, toFind1, paramVal)
+    substituteParam = Replace(substituteParam, toFind2, paramVal)
+End Function
+
+Attribute VB_Name = "ExcelMenuUIModule"
+Option Explicit
+' This code is for Excel Menu which is applicable for office versions other than Office 2007 and Office 2010
+
+' it subroutine is called from ThisWorkbook whenever the workbook is activated.
+' it subroutine is called from ThisWorkbook whenever the workbook is activated.
+' This will add amazon menu for this workbook when this workbook is selected
+' See http://msdn.microsoft.com/en-us/library/bb241279%28v=office.12%29.aspx for more details
+Private Const XLSX_FILE_FORMAT = 51
+Private Const XLSM_FILE_FORMAT = 52
+Private Const MAC_XLSM_FILE_FORMAT = 53
+  
+' This will add amazon menu for this workbook when this workbook is selected
+Sub addAmazonMenu()
+    Dim cmbBar As CommandBar
+    Dim cmbControl As CommandBarControl
+    
+    ' TODO: menus are not localized for now. We will localize it business asks.
+    ' More specifically, it is difficult to localize ribbon buttons as they are hard-coded in xlsm file.
+    Set cmbBar = Application.CommandBars("Worksheet Menu Bar")
+    Set cmbControl = cmbBar.Controls.Add(Type:=msoControlPopup, temporary:=True) 'adds a menu item to the Menu Bar
+    With cmbControl
+        .Caption = getMenuItemNameForAdd 'names the menu item
+        With .Controls.Add(Type:=msoControlButton) 'adds a dropdown button to the menu item
+            .Caption = validateTemplateButtonLabel  'adds a description to the menu item
+            .OnAction = "runValidateOnExcelMenu" 'runs the specified macro
+        End With
+        With .Controls.Add(Type:=msoControlButton)
+            .Caption = showErrorsButtonLabel
+            .OnAction = "hideRowsForLastValidation"
+        End With
+        With .Controls.Add(Type:=msoControlButton) 'adds a dropdown button to the menu item
+            .Caption = showAllButtonLabel  'adds a description to the menu item
+            .OnAction = "showAllRowsInWorkbook" 'runs the specified macro
+        End With
+        If buyerVisibleFeatureEnabled = True Then
+            With .Controls.Add(Type:=msoControlButton) 'adds a dropdown button to the menu item
+                .Caption = toggleButtonCaption  'adds a description to the menu item
+                .OnAction = "toggleBuyerColumns" 'runs the specified macro
+            End With
+        End If
+    End With
+End Sub
+
+' it subroutine is called from ThisWorkbook whenever the workbook is deactivated.
+' This will remove amazon menu for this workbook when another workbook is selected
+Public Sub deleteAmazonMenu()
+    On Error GoTo deleteAmazonMenu_End 'in case the menu item has already been deleted
+    Application.CommandBars("Worksheet Menu Bar").Controls(getMenuItemNameForDelete).Delete 'delete the menu item
+deleteAmazonMenu_End:
+    ' logError sometimes causes error when called from this method and a new Non-VIS workbook is being opened.
+    On Error GoTo deleteAmazonMenu_End2
+    logger.logError "ExcelMenuUIModule.deleteAmazonMenu", Err.Description
+deleteAmazonMenu_End2:
+End Sub
+
+Public Sub runValidateOnExcelMenu()
+    ProgressBarForm.startProgressBar
+End Sub
+
+' It tells if we should add Amazon menu. We add Amazon menu to Menubar only when Excel Ribbon is not available
+Public Function shouldAddMenu() As Boolean
+    ' 12 corresponds to Office 2007 and 14 corresponds to Office 2010
+    ' If it is Office 2007 or Office 2010 and it is XLSX or XLSM file, let us not add amazon menu as we will use Excel Ribbon
+    ' Ideally we should use constants like XlFileFormat.xlOpenXMLWorkbook or XlFileFormat.xlOpenXMLWorkbookMacroEnabled, but it causes compile error in Excel 2003
+    If Not (Application.Version = OFFICE_2007_VERSION Or Application.Version = OFFICE_2010_VERSION) Or Not (ThisWorkbook.FileFormat = XLSX_FILE_FORMAT Or ThisWorkbook.FileFormat = XLSM_FILE_FORMAT Or ThisWorkbook.FileFormat = MAC_XLSM_FILE_FORMAT) Then
+        shouldAddMenu = True
+    Else: shouldAddMenu = False
+    End If
+End Function
+
+Private Function getMenuItemNameForAdd() As String
+    If marketplace = "IN" Then
+        getMenuItemNameForAdd = "&Merchant"
+    Else
+        getMenuItemNameForAdd = "&Amazon"
+    End If
+End Function
+
+Private Function getMenuItemNameForDelete() As String
+    If marketplace = "IN" Then
+        getMenuItemNameForDelete = "Merchant"
+    Else
+        getMenuItemNameForDelete = "Amazon"
+    End If
+End Function
+Attribute VB_Name = "ExcelRibbonUIModule"
+Option Explicit
+
+' This code is for Excel Ribbon which is applicable for Office 2007 and Office 2010
+
+' Callback for validateButton onAction
+' Please note that we declare ribbon references as Object. It is beause on mac, Ribbon classes are not defined.
+' Sub onValidate(control As IRibbonControl).
+Sub onValidate(control As Object)
+    ProgressBarForm.startProgressBar
+End Sub
+
+Sub onUnhideAllRows(control As Object)
+    showAllRowsInWorkbook
+End Sub
+
+Sub onShowErrorRows(control As Object)
+    hideRowsForLastValidation
+End Sub
+
+If buyerVisibleFeatureEnabled = True Then
+    Sub onToggleBuyerColumns(control As Object)
+        toggleBuyerColumns
+    End Sub
+End If
+Attribute VB_Name = "GlobalModule"
+Option Explicit
+
+Global errorList As Collection
+Global templateAttributesForSheets As New Collection
+Global isCommaAsDecimal As Boolean
+Global supportedVSSDateFormats As Variant ' we store complete row into this variable
+Global cellStylesToSkip As New Collection
+Global ValidationPopupMsg As String
+Global showOnlyErrRowsMsg As String
+Global startingValidation As String
+Global showValidationResults As String
+Global ifContinueToClose As String
+Global ifSeeErrors As String
+Global validateTemplateButtonLabel As String
+Global showErrorsButtonLabel As String
+Global showAllButtonLabel As String
+Global validateTemplatePopupMsg As String
+Global rowNumInCondFormula As Integer
+Global isBuyerOverride As String
+Global toggleButtonCaption As String
+Global buyerVisibleFeatureEnabled As Boolean
+' VISPLAT-602
+Global marketplace As String
+Global DEFAULT_MSGBOX_TITLE As String
+
+Global isTemplateDropdownValidationEnabled As Boolean
+
+Global logger As New ErrorLogger
+Global metricsManagerForWorkbook As New MetricsManager
+
+Global currentErrorRowsInWorkbookPerWorkSheet As Collection
+Global sysDecimalSep As String
+
+Global contClose As Boolean
+Global clickedClose As Boolean
+Global isNewMacro As Boolean
+
+Global TOGGLE_STATE_VALUE As String
+
+Private Const ATTRIBUTE_CACHE_DELIMITER = "!"
+Private Const HIDE_VALUE = "hide"
+Private Const SHOW_VALUE = "show"
+Private Const VID_VALUE_STORED_IN_ROW = "2"
+Private Const VID_CELL_VALUE = "VID="
+
+Public Sub AddAttribute(ByRef attr As TemplateAttribute, sheetName As String, attributeId As String)
+    AddIntoCollection templateAttributesForSheets, sheetName & ATTRIBUTE_CACHE_DELIMITER & attributeId, attr
+End Sub
+
+Public Function getAttribute(sheetName As String, attributeId As String) As TemplateAttribute
+    If isAttributeInCache(sheetName, attributeId) Then
+        Set getAttribute = templateAttributesForSheets.Item(sheetName & ATTRIBUTE_CACHE_DELIMITER & attributeId)
+    Else
+        Set getAttribute = Nothing
+    End If
+End Function
+
+Public Function isAttributeInCache(sheetName As String, attributeId As String) As Boolean
+    isAttributeInCache = ifExistsInCollection(templateAttributesForSheets, sheetName & ATTRIBUTE_CACHE_DELIMITER & attributeId)
+End Function
+
+Public Function getAttributeName(sheetName As String, attributeId As String) As String
+    Dim attr As TemplateAttribute
+    Set attr = getAttribute(sheetName, attributeId)
+    If Not attr Is Nothing Then
+        getAttributeName = attr.displayName
+    Else ' still not in the collection? Lets look into the sheet
+        ' This is for unit tests.
+        Dim sh As Worksheet, colNum As Integer, attrIdStr As String
+        Set sh = Worksheets(sheetName)
+        For colNum = FIRST_COLUMN_TO_PARSE To sh.UsedRange.Columns.Count
+            attrIdStr = getAttributeId(sh, colNum)
+            
+            If attrIdStr = attributeId Then
+                getAttributeName = sh.cells(ATTRIBUTE_NAME_ROW_INDEX, colNum).value
+                Exit For
+            End If
+        Next colNum
+    End If
+End Function
+
+Public Sub AddIntoCollection(ByRef collObj As Collection, key As String, val As Variant)
+    DeleteFromCollection collObj, key
+    
+    collObj.Add val, key
+End Sub
+
+Public Sub DeleteFromCollection(ByRef collObj As Collection, key As String)
+    If ifExistsInCollection(collObj, key) Then ' VBA collection throws error if key is already present and we add it again
+        collObj.Remove (key)
+    End If
+End Sub
+
+Public Function ifExistsInCollection(ByRef collObj As Collection, key As String) As Boolean
+    On Error GoTo ValueDoesNotExists
+    collObj.Item (key) ' VBA collection throws error if key is not present and we query key
+    ifExistsInCollection = True
+    GoTo ValueExists
+    
+ValueDoesNotExists:
+    ifExistsInCollection = False
+ValueExists:
+End Function
+
+Public Function getDecimalSep()
+    If CInt("0,1") = 0 Then ' True if "," is separator
+        sysDecimalSep = ","
+    Else
+        sysDecimalSep = "."
+    End If
+End Function
+
+Public Function isSheetApplicable(sh As Worksheet) As Boolean
+    ' If sheet name starts with Item_Sheet or Sku_Info, then it is a worksheet to be validated
+    isSheetApplicable = InStr(sh.Name, ITEM_SHEET_WORKSHEET) = 1 Or InStr(sh.Name, SKU_INFO_WORKSHEET) = 1
+End Function
+
+Public Function getAttributeId(sh As Worksheet, column As Integer)
+    getAttributeId = ""
+    Dim attrStr As String
+    
+    attrStr = Trim(sh.cells(ATTRIBUTE_HEADER_ROW_INDEX, column).value)
+    
+    ' strip the metadata
+    If InStr(attrStr, " ") > 0 Then
+        attrStr = Mid(attrStr, 1, InStr(attrStr, " ") - 1)
+    End If
+    
+    ' strip special instruction prefix. eg: externalId_122821
+    If InStr(attrStr, "_") > 0 Then
+        attrStr = Mid(attrStr, InStr(attrStr, "_") + 1)
+    End If
+    
+    getAttributeId = attrStr
+End Function
+
+' This is used to translate a formula from sample row to the row being validated
+Public Function translateFormula(cell As Range, originalFormula As String, fromRow As Integer) As String
+    Dim tmpFormula As String, finalFormula As String
+    
+    ' usage of convertFormula is ConvertFormula(Formula, FromReferenceStyle, ToReferenceStyle, ToAbsolute, RelativeTo)
+    ' for more details see http://msdn.microsoft.com/en-us/library/aa223841%28v=office.11%29.aspx
+    ' we compute formula relative to fromRow
+    tmpFormula = Application.ConvertFormula(originalFormula, xlA1, xlR1C1, xlRelRowAbsColumn, cell.Worksheet.cells(fromRow, cell.column))
+    ' On above relative formula, we apply absolute to toRow
+    finalFormula = Application.ConvertFormula(tmpFormula, xlR1C1, xlA1, xlAbsolute, cell)
+
+    translateFormula = finalFormula
+End Function
+
+Public Function getCellsInColumn(sh As Worksheet, column As Integer) As Range
+    Set getCellsInColumn = sh.Range(sh.cells(FIRST_DATA_ROW_INDEX, column), sh.cells(sh.UsedRange.Rows.Count, column))
+End Function
+
+' Used to log error for a cell
+Public Function getCellDetail(cell As Range) As String
+    getCellDetail = ""
+    If Not cell Is Nothing Then
+        getCellDetail = cell.Worksheet.Name & ATTRIBUTE_CACHE_DELIMITER & "R" & cell.row & "C" & cell.column
+    End If
+End Function
+
+' TODO rename it as addErrorToCell
+Public Sub addComment(cell As Range, comment As String)
+    On Error GoTo addComment_end
+    If Not comment = "" Then
+        cell.ClearComments
+        cell.addComment Text:=comment
+        ' Work-around for issue-3 reported in https://tt.amazon.com/0014323689. Ideallt addComment should do the job.
+        ' But I found that for the attached file in this ticket, issue 3 could only be fixed by adding extra following line.
+        ' Let us try to ensure that we do not see issue-3
+        cell.comment.Text comment
+        
+        cell.Style = BAD_CELL_STYLE
+        cell.comment.Shape.Width = COMMENT_WIDTH
+        ActiveSheet.Columns(cell.column).hidden = False 'Unhide the column on error
+        ProgressBarForm.validator.registerErrorRow cell
+    End If
+    
+    Exit Sub
+    
+addComment_end:
+    logger.logError "GlobalModule.addComment", "error caught while adding error into cell: " & getCellDetail(cell) & ", error was: " & Err.Description
+End Sub
+
+Public Function getRowsToValidate(sh As Worksheet, maxContiguousEmptyRows As Integer) As Collection
+    On Error GoTo getRowsToValidate_end
+    
+    Dim retCollection As New Collection, attrMapCache As New Collection
+    
+    Dim attrId As String, counter As Integer
+    Dim templAttr As New TemplateAttribute
+    
+    ' get All attributes
+    For counter = FIRST_COLUMN_TO_PARSE To sh.UsedRange.Columns.Count
+        attrId = getAttributeId(sh, counter)
+        If Not isAttributeInCache(sh.Name, attrId) Then
+            ' Debug.Print "attr not found in cache: attrId: " & attrId
+        Else
+            ' Debug.Print "attr found: " & attrId
+            Set templAttr = getAttribute(sh.Name, attrId)
+            AddIntoCollection attrMapCache, "" & counter, templAttr ' convert counter into string data type before adding into collection
+        End If
+    Next counter
+    
+    Dim rowCounter As Integer, currContiguousEmptyRows As Integer
+    Dim rowToCheck As Variant
+    Dim isEmptyOrDefaultRow As Boolean
+    
+    currContiguousEmptyRows = 0
+    For rowCounter = FIRST_DATA_ROW_INDEX To sh.UsedRange.Rows.Count
+        rowToCheck = sh.Rows(rowCounter)
+        isEmptyOrDefaultRow = True
+        For counter = FIRST_COLUMN_TO_PARSE To sh.UsedRange.Columns.Count
+            If ifExistsInCollection(attrMapCache, "" & counter) Then
+                Set templAttr = attrMapCache("" & counter)
+                If Not (rowToCheck(1, counter) = "" Or rowToCheck(1, counter) = templAttr.defaultValue) Then
+                    ' This cell is either not empty or does not have default value, we will validate this row
+                    AddIntoCollection retCollection, "" & rowCounter, rowCounter
+                    isEmptyOrDefaultRow = False
+                    currContiguousEmptyRows = 0
+                    Exit For
+                End If
+            End If
+        Next counter
+        
+        If (rowCounter * sh.UsedRange.Columns.Count) Mod NUM_CELLS_PER_DO_EVENTS_CALL = 0 Then
+            DoEvents ' We need to call DoEvents in small interval so that excel does not seem hung
+        End If
+        
+        If isEmptyOrDefaultRow Then
+            currContiguousEmptyRows = currContiguousEmptyRows + 1
+            If currContiguousEmptyRows = maxContiguousEmptyRows Then
+                Exit For
+            End If
+        End If
+    Next rowCounter
+    
+    Set getRowsToValidate = retCollection
+    Exit Function
+    
+getRowsToValidate_end:
+    logger.logError "GlobalModule.getRowsToValidate", "Error caught for sheet: " & sh.Name & ", error was: " & Err.Description
+    Set getRowsToValidate = New Collection ' return empty collection
+End Function
+
+Public Sub initializeGlobalVars()
+    ErrorMessagesModule.parseErrorMessages
+
+   ' Default : Enabled
+    isTemplateDropdownValidationEnabled = True
+    
+    Dim hiddenSheet As Worksheet: Set hiddenSheet = Worksheets(HIDDEN_WORKSHEET)
+    
+    ' Initialize Decimal Separator defined by the System
+    getDecimalSep
+    
+    Dim rowNum As Integer
+    For rowNum = 1 To hiddenSheet.UsedRange.Rows.Count
+        Dim firstCellStr As String
+        firstCellStr = hiddenSheet.cells(rowNum, 1).value
+        
+        If firstCellStr = IS_NEW_MACRO Then
+            If hiddenSheet.cells(rowNum, 2).value = "true" Then
+                isNewMacro = True
+            Else: isNewMacro = False
+            End If
+        ElseIf firstCellStr = DECIMAL_CHARACTER Then
+            ' 2nd cell contains decimal character to be used. for DE and FR it can be comma
+            If hiddenSheet.cells(rowNum, 2).value = "," Then
+                isCommaAsDecimal = True
+            Else: isCommaAsDecimal = False
+            End If
+        ElseIf firstCellStr = SUPPORTED_VSS_DATE_FORMATS Then
+            supportedVSSDateFormats = hiddenSheet.Rows(rowNum)
+        ElseIf firstCellStr = CELL_STYLES_TO_SKIP_VALIDATION Then
+            Dim colNum As Integer
+            For colNum = 2 To hiddenSheet.UsedRange.Columns.Count
+                If hiddenSheet.cells(rowNum, colNum).value <> "" Then
+                    AddIntoCollection cellStylesToSkip, hiddenSheet.cells(rowNum, colNum).value, hiddenSheet.cells(rowNum, colNum).value
+                Else
+                    Exit For
+                End If
+            Next colNum
+        ElseIf firstCellStr = VALIDATION_POPUP_MSG Then
+            ValidationPopupMsg = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = SHOW_ONLY_ERROR_ROWS_MSG Then
+            showOnlyErrRowsMsg = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = STARTING_VALIDATION Then
+            startingValidation = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = SHOW_VALIDATION_RESULTS Then
+            showValidationResults = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = IF_CONTINUE_TO_CLOSE Then
+            ifContinueToClose = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = IF_SEE_ERRORS Then
+            ifSeeErrors = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = BUTTON_VALIDATE_TEMPLATE Then
+            validateTemplateButtonLabel = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = BUTTON_SHOW_ERRORS Then
+            showErrorsButtonLabel = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = BUTTON_SHOW_ALL Then
+            showAllButtonLabel = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = POPUP_MSG_VALIDATE_TEMPLATE Then
+            validateTemplatePopupMsg = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = IS_BUYER_OVERRIDE Then
+            isBuyerOverride = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = MARKETPLACE_LABEL Then
+            marketplace = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = BUYER_VISIBLE_FEATURE_ENABLED_LABLE Then
+            buyerVisibleFeatureEnabled = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = TOGGLE_BUTTON_CAPTION Then
+            toggleButtonCaption = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = TEMPLATE_DROPDOWN_VALIDATION_ENABLED_KEY Then
+            isTemplateDropdownValidationEnabled = hiddenSheet.cells(rowNum, 2).value
+        ElseIf firstCellStr = ROW_NUM_IN_COND_FORMULA Then
+            rowNumInCondFormula = hiddenSheet.cells(rowNum, 2).value
+            Exit For ' ROW_NUM_IN_COND_FORMULA is last string to parse and so we can exit and skip reading other cells
+        End If
+    Next rowNum
+    
+    If marketplace = "IN" Then
+        DEFAULT_MSGBOX_TITLE = "Merchant"
+    Else
+        DEFAULT_MSGBOX_TITLE = "Amazon"
+    End If
+    
+    If IsEmpty(isBuyerOverride) Then
+        isBuyerOverride = "true"
+    End If
+    
+    If IsEmpty(supportedVSSDateFormats) Then
+        logger.logError "GlobalModule.initializeGlobalVars", "Could not initialize supportedVSSDateFormats"
+    End If
+    If ValidationPopupMsg = "" Then
+        logger.logError "GlobalModule.initializeGlobalVars", "Could not initialize ValidationPopupMsg"
+    End If
+    If showValidationResults = "" Then
+        logger.logError "GlobalModule.initializeGlobalVars", "Could not initialize showValidationResults"
+    End If
+End Sub
+
+Public Function hasValidation(cell As Range) As Boolean
+    If cell.Validation Is Nothing Then ' cell.Validation is never nothing. One way is to read cell.Validation.Formula1 and catch the error
+        hasValidation = False
+        Exit Function
+    End If
+    
+    Dim formula As String
+    On Error GoTo hasValidation_end
+    formula = cell.Validation.Formula1
+    hasValidation = True
+    Exit Function
+    
+hasValidation_end:
+    hasValidation = False
+End Function
+
+Public Sub restoreDropdownAndTooltipOnProtectedSheet(sh As Worksheet, column As Integer, endRowNumForValidation As Integer)
+    ' swallow any error caused here. we would log the error into hidden sheet
+    On Error GoTo restoreDropdownAndTooltipOnProtectedSheet_end
+    Dim isProtected As Boolean
+    isProtected = sh.ProtectContents
+    
+    ' Note that once we start to protect data worksheets with password, here we will have to provide password here and to sh.Protect
+    If isProtected Then
+        sh.Unprotect
+    End If
+    
+    restoreDropdownAndTooltipOnUnprotectedSheet sh, column, endRowNumForValidation
+    
+     ' look at http://www.ozgrid.com/forum/showthread.php?t=80702
+    ' DrawingObjects = False allows adding/deleting comments
+    ' Contents = True makes locked cells unselectable
+    ' UserInterfaceOnly argument is unreliable and does not work in my case and hence not using it
+    ' Scenarios = True protects scenarios. Till now we used to protect Scenarios and we are continuing the same
+    ' AllowUsingPivotTables = False as we used to have the same till now
+    ' Other arguments are quite self-explanatory
+    If isProtected Then
+        sh.Protect DrawingObjects:=False, AllowFormattingCells:=True, AllowFormattingColumns:=True, AllowFormattingRows:=True, Contents:=True, UserInterfaceOnly:=True
+    End If
+    Exit Sub
+    
+restoreDropdownAndTooltipOnProtectedSheet_end:
+    logger.logError "GlobalModule.restoreDropdownAndTooltipOnProtectedSheet", "Error caught for column: " & column & ", error was: " & Err.Description
+End Sub
+
+Public Sub restoreDropdownAndTooltipOnUnprotectedSheet(sh As Worksheet, column As Integer, endRowNumForValidation As Integer)
+    ' swallow any error caused here. we would log the error into hidden sheet
+    On Error GoTo restoreDropdownAndTooltipOnUnprotectedSheet_end
+    If sh.Name = ITEM_SHEET_WORKSHEET And column > 14 Then
+        Debug.Print "bk"
+    End If
+    
+    If InStr(sh.cells(ATTRIBUTE_HEADER_ROW_INDEX, column), DEPENDENT_DROPDOWN_TYPE) > 0 Then
+        ' This function does not work as expected for dependent dropdowns. Not sure how to restore dependent dropdowns
+        ' challenges are: 1) below code makes all cells depend upon first row of parent dropdown
+        '                               - This is happening because TranslateFormula() returns absolute formula. One quick hacky work around is replacing $7 with 7.
+        '                          2) below code fails when parent cell is empty as formula would evaluate to error
+        '                               - This is something I do not know how to get rid of.
+        '                               - In user interface, when formula evaluates to error, Excel asks if you still want to continue
+        '                               - But in macro, it just fails.
+        Exit Sub
+    End If
+    
+    Dim sampleCell As Range: Set sampleCell = sh.cells(SAMPLE_DATA_ROW_INDEX, column)
+    If Not hasValidation(sampleCell) Then
+        Exit Sub
+    End If
+    
+    
+    Dim toolTip As String: toolTip = sampleCell.Validation.InputMessage
+    Dim formula As String: formula = sampleCell.Validation.Formula1
+    If formula <> "" Then
+        formula = translateFormula(sh.cells(FIRST_DATA_ROW_INDEX, column), formula, SAMPLE_DATA_ROW_INDEX)
+    End If
+    
+    Dim validationType As Long: validationType = sampleCell.Validation.Type
+    Dim dropdownCells As Range
+    Set dropdownCells = sh.Range(sh.cells(FIRST_DATA_ROW_INDEX, column), sh.cells(endRowNumForValidation, column))
+    
+    ' overwrite dropdownCells with dropdown afresh. We do this as user may have overwritten dropdowns
+    With dropdownCells.Validation
+        .Delete
+        .Add Type:=validationType, AlertStyle:=xlValidAlertStop, Operator:=xlBetween, Formula1:=formula
+        .IgnoreBlank = True
+        .InCellDropdown = True
+        .ShowError = True
+        .InputMessage = toolTip
+    End With
+    
+    Exit Sub
+    
+restoreDropdownAndTooltipOnUnprotectedSheet_end:
+    logger.logError "GlobalModule.restoreDropdownAndTooltipOnUnprotectedSheet", "Error caught for column: " & column & ", error was: " & Err.Description
+End Sub
+
+Public Sub restoreConditionalFormatting(sh As Worksheet, column As Integer, endRowNumForValidation As Integer)
+    ' swallow any error caused here. we would log the error into hidden sheet
+    On Error GoTo restoreConditionalFormattings_end
+    ' Even when sampleCell is protected, the below subroutine works. It is perhaps bacause we just extend conditional formatting to other cells and do not modify any property of sample cell
+    
+    Dim cellsToRestore As Range
+    Set cellsToRestore = sh.Range(sh.cells(FIRST_DATA_ROW_INDEX, column), sh.cells(endRowNumForValidation, column))
+    
+    Dim sampleCell As Range: Set sampleCell = sh.cells(SAMPLE_DATA_ROW_INDEX, column)
+    If (Not sampleCell.FormatConditions Is Nothing) And (sampleCell.FormatConditions.Count = 1) Then
+        Dim formatConditionObj As FormatCondition
+        Set formatConditionObj = sampleCell.FormatConditions.Item(1)
+        formatConditionObj.ModifyAppliesToRange Union(sampleCell, cellsToRestore)
+    End If
+    Exit Sub
+    
+restoreConditionalFormattings_end:
+    logger.logError "GlobalModule.restoreConditionalFormatting", "Error caught for column: " & column & ", error was: " & Err.Description
+End Sub
+
+' This subroutine is called from menu through option: 'Show only Error Rows'
+Public Sub hideRowsForLastValidation()
+    If currentErrorRowsInWorkbookPerWorkSheet Is Nothing Then
+        msgBoxForAll validateTemplatePopupMsg, vbOKOnly
+    Else
+        hideRows currentErrorRowsInWorkbookPerWorkSheet
+    End If
+End Sub
+
+Public Sub hideRows(errorRowsInWorkbook As Collection)
+    ' rowsToHideInWorkbook is a map with sheet-name mapped to another collection of rows in that sheet
+    Dim sh As Worksheet
+    Application.ScreenUpdating = False
+
+    For Each sh In ActiveWorkbook.Worksheets
+        If ifExistsInCollection(errorRowsInWorkbook, sh.Name) Then
+            
+            ' Let us hide all submission rows, Later we will show those error rows
+            showOrHideAllRowsInWorksheet sh, True
+            
+            Dim errorRowsInSheet As Collection
+            Set errorRowsInSheet = errorRowsInWorkbook(sh.Name)
+            Dim rowNumStr As Variant
+            For Each rowNumStr In errorRowsInSheet
+                On Error Resume Next ' If error comes while unhiding this row, still unhide next row
+                sh.Rows(Int(rowNumStr)).hidden = False
+            Next rowNumStr
+        End If
+    Next sh
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub showAllRowsInWorkbook()
+    Dim sh As Worksheet
+    Application.ScreenUpdating = False
+
+    For Each sh In ActiveWorkbook.Worksheets
+        If isSheetApplicable(sh) Then
+            showOrHideAllRowsInWorksheet sh, False
+        End If
+    Next sh
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub toggleBuyerColumns()
+    If buyerVisibleFeatureEnabled = True Then
+        If IsEmpty(TOGGLE_STATE_VALUE) Then
+            TOGGLE_STATE_VALUE = "show"
+        End If
+        Dim rCell As Range
+        Dim rTest As Range
+        Dim lCol As Long
+        Dim hidden As Boolean 'Flag for current toggle status
+        Dim isProtected As Boolean
+        Debug.Print ("Start")
+        Debug.Print (TOGGLE_STATE_VALUE)
+        If InStr(1, TOGGLE_STATE_VALUE, HIDE_VALUE) Then
+            hidden = True
+        Else
+            hidden = False
+        End If
+        
+        Dim Sheet As Worksheet
+        For Each Sheet In ActiveWorkbook.Worksheets
+            If isSheetApplicable(Sheet) Then
+                Debug.Print (Sheet.Name)
+                'We now loop through the columns from left to right.
+                For lCol = 1 To Sheet.UsedRange.Columns.Count Step 1
+                'rCell is set = the cell lCol to the right of cell D2.
+                    Set rCell = Sheet.Range("D" + VID_VALUE_STORED_IN_ROW).Offset(0, lCol)
+                    If InStr(1, rCell.value, VID_CELL_VALUE + "N") Then
+                        Sheet.Columns(rCell.column).hidden = Not hidden
+                    Else
+                        Sheet.Columns(rCell.column).hidden = False
+                    End If
+                Next
+            End If
+        Next Sheet
+        
+        'Set current state of toggle button
+        If hidden = True Then
+            TOGGLE_STATE_VALUE = SHOW_VALUE
+        Else
+            TOGGLE_STATE_VALUE = HIDE_VALUE
+        End If
+        Debug.Print ("End")
+    End If
+End Sub
+
+Private Sub showOrHideAllRowsInWorksheet(sh As Worksheet, shouldHide As Boolean)
+    On Error GoTo showOrHideAllRowsInWorksheet_end
+    Dim topLeftCell As Range, bottomRightCell As Range, applicableRange As Range
+    Set topLeftCell = sh.cells(FIRST_DATA_ROW_INDEX, FIRST_COLUMN_TO_PARSE)
+    Set bottomRightCell = sh.cells(sh.UsedRange.Rows.Count, sh.UsedRange.Columns.Count)
+
+    ' Let us hide all submission rows, Later we will show those error rows
+    Set applicableRange = sh.Range(topLeftCell, bottomRightCell)
+    applicableRange.EntireRow.hidden = shouldHide
+    Exit Sub ' Successful
+
+showOrHideAllRowsInWorksheet_end:
+    ' For example the error can be thrown if the user has protected relevant cells. Let us swallow any such errors.
+    ' TODO do below
+    ' If we see such issue to be frequent, we may later have to think to optimize it. One way for optimization can be below:
+    ' Try to hide/show say 500 rows. If fails, hide/show first 250 and next 250 separately. Which ever fails, again divide in half and hide/show. This approach should be optimal and will lead into show/hide of most of rows being successful.
+    ' The worst time complexity would be: N + N/2 + N/4 + N/8 + ... < 2N
+    ' This approach has been implemented as showOrHideAllRowsInWorksheetRecursively, but is NOT being used now. I am not sure if it is overkill or not
+End Sub
+
+
+Private Sub showOrHideAllRowsInWorksheetRecursively(sh As Worksheet, firstRow As Integer, lastRow As Integer, shouldHide As Boolean)
+    On Error GoTo showOrHideAllRowsInWorksheetRecursively_end
+    Dim topLeftCell As Range, bottomRightCell As Range, applicableRange As Range
+    Set topLeftCell = sh.cells(firstRow, FIRST_COLUMN_TO_PARSE)
+    Set bottomRightCell = sh.cells(lastRow, sh.UsedRange.Columns.Count)
+
+    ' Let us hide all submission rows, Later we will show those error rows
+    Set applicableRange = sh.Range(topLeftCell, bottomRightCell)
+    applicableRange.EntireRow.hidden = shouldHide
+    Exit Sub ' Successful
+    
+showOrHideAllRowsInWorksheetRecursively_end:
+    ' if the error is thrown, what to do? We still want to do our best
+    ' In case of error, let us split the range in two halves and again try to unhide/hide row
+    ' Do below
+    ' Say, we are trying to hide/show 500 rows. If fails, hide/show first 250 and next 250 separately. Which ever fails, again divide in half and hide/show that one. This approach should be optimal and will lead into show/hide of all possible rows being successful.
+    ' The worst time complexity would be: N + N/2 + N/4 + N/8 + ... < 2N
+    If firstRow < lastRow Then
+        Dim middleRow As Integer
+        middleRow = Int((firstRow + lastRow) / 2)
+        showOrHideAllRowsInWorksheetRecursively sh, firstRow, middleRow, shouldHide
+        showOrHideAllRowsInWorksheetRecursively sh, middleRow, lastRow, shouldHide
+    ' Else firstRow = lastRow, in which case, we will not try recursively any more
+    End If
+
+End Sub
+Attribute VB_Name = "MessageBoxModule"
+Option Explicit
+
+#If VBA7 Then ' In case of Office 2010, it is VBA 7. PtrSafe should be used as explained in http://msdn.microsoft.com/en-us/library/gg278832.aspx . Below we do the same
+' Also we use 'Any' data type for prompt instead of 'Long' data type. In VBA7, it should be LongPtr and in earlier versions it should be Long. Instead we use 'Any' as suggested in solution at http://stackoverflow.com/questions/10402822/passing-a-lpctstr-parameter-to-an-api-call-from-vba-in-a-ptrsafe-and-unicode-saf
+
+Private Declare PtrSafe Function APIMsgBox _
+Lib "User32" Alias "MessageBoxW" _
+(Optional ByVal hWnd As Long, _
+Optional ByVal Prompt As Any, _
+Optional ByVal title As String, _
+Optional ByVal Buttons As Long) _
+As Long
+
+#Else
+
+Private Declare Function APIMsgBox _
+Lib "User32" Alias "MessageBoxW" _
+(Optional ByVal hWnd As Long, _
+Optional ByVal Prompt As Any, _
+Optional ByVal title As String, _
+Optional ByVal Buttons As Long) _
+As Long
+
+#End If
+
+' This function encodes a string and returns encoded string. Encoded string can be used in AppleScript even if it originally contained japanese/chinese characters
+Private Function encodeStringForAppleScript(str As String) As String
+    Dim counter As Integer, encodedStr As String
+    For counter = 1 To Len(str)
+        Dim hexVal As String
+        hexVal = Hex(AscW(Mid(str, counter, 1)))
+        If Len(hexVal) < 4 Then
+            hexVal = Application.Rept("0", 4 - Len(hexVal)) & hexVal
+        End If
+        encodedStr = encodedStr & hexVal
+    Next counter
+
+    Dim leftMagicChr As String: leftMagicChr = ChrW(171)
+    Dim rightMagicChr As String: rightMagicChr = ChrW(187)
+
+    encodeStringForAppleScript = leftMagicChr & "data utxt" & encodedStr & rightMagicChr & " as unicode text"
+End Function
+
+Public Function msgBoxForMac(msg As String, buttonType As Integer, title As String, default As Integer) As Integer
+    
+    Dim displayCode As String, buttonsCode As String, titleCode As String
+    If buttonType = vbOKOnly Then
+        buttonsCode = "buttons {""OK""} default button 1"
+    ElseIf buttonType = vbYesNo Then
+        buttonsCode = "buttons {""Yes"", ""No""} default button " & default
+    Else
+        Err.Raise 1, "invalid button type"
+    End If
+    
+    Dim response As String
+    displayCode = "display dialog " & encodeStringForAppleScript(msg)
+    titleCode = " with title " & encodeStringForAppleScript(title)
+    
+    response = MacScript("button returned of (" & displayCode & " " & buttonsCode & " " & titleCode & ")")
+    
+    If response = "OK" Then
+        msgBoxForMac = vbOK
+    ElseIf response = "Yes" Then
+        msgBoxForMac = vbYes
+    ElseIf response = "No" Then
+        msgBoxForMac = vbNo
+    Else
+        Err.Raise 1, "invalid response returned from display dialog of AppleScript"
+    End If
+End Function
+
+Public Function msgBoxForWindows(msg As String, buttonType As Integer, title As String, default As Integer) As Integer
+    If Not (buttonType = vbOKOnly Or buttonType = vbYesNo) Then
+        ' Throw error as this button type is not implemented for Mac
+        Err.Raise 1, "invalid button type"
+    End If
+    
+    If default = 1 Then
+        buttonType = buttonType + vbDefaultButton1
+    ElseIf default = 2 Then
+        buttonType = buttonType + vbDefaultButton2
+    ElseIf default = 3 Then
+        buttonType = buttonType + vbDefaultButton3
+    ElseIf default = 4 Then
+        buttonType = buttonType + vbDefaultButton4
+    End If
+    
+    msgBoxForWindows = APIMsgBox(Prompt:=StrPtr(msg), Buttons:=buttonType, title:=StrConv(title, vbUnicode))
+End Function
+
+' This functions supports unicode characters in both msg and title
+' It can be called in below ways:
+' msgBoxForAll("message text", vbOKOnly)
+' msgBoxForAll("message text", vbOKOnly, title:="title text")
+' msgBoxForAll("message text", vbOKOnly, default:=1)
+Public Function msgBoxForAll(msg As String, buttonType As Integer, Optional title As String, Optional default As Integer) As Integer
+    If default = 0 Then ' First option is default option
+        default = 1
+    End If
+    
+    If title = "" Then ' Default title
+        title = DEFAULT_MSGBOX_TITLE
+    End If
+    
+    If InStr(Application.OperatingSystem, "Mac") Then
+        msgBoxForAll = msgBoxForMac(msg, buttonType, title, default)
+    Else
+        msgBoxForAll = msgBoxForWindows(msg, buttonType, title, default)
+    End If
+End Function
+
+Attribute VB_Name = "MetricsManager"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private metricsPerSheetInWorkbook As Collection
+
+Private Sub Class_Initialize()
+    Dim sh As Worksheet
+    Set metricsPerSheetInWorkbook = New Collection
+    
+    Dim metricsForSheet As WorksheetMetrics
+    For Each sh In Worksheets
+        If isSheetApplicable(sh) Then
+            Set metricsForSheet = New WorksheetMetrics
+            metricsForSheet.initializeForSheet sh.Name
+            AddIntoCollection metricsPerSheetInWorkbook, sh.Name, metricsForSheet
+        End If
+    Next sh
+End Sub
+
+Public Sub addMetricsForValidation(sh As Worksheet, numErrorsInValidation As Integer, timeTaken As Long, numSKUs As Integer)
+    If ifExistsInCollection(metricsPerSheetInWorkbook, sh.Name) Then
+        Dim metricsForSheet As WorksheetMetrics
+        Set metricsForSheet = metricsPerSheetInWorkbook(sh.Name)
+        metricsForSheet.addMetricsForValidaionRun numErrorsInValidation, timeTaken, numSKUs
+    End If
+End Sub
+
+Attribute VB_Name = "ProgressBarForm"
+Attribute VB_Base = "0{E82B01A2-6FE1-4940-9969-6B1B0D62E4BE}{691D688A-4EFA-4CF0-AE92-2D5656D7C7F4}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+Option Explicit
+
+' Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+
+Private m_validator As New ClientSideValidator
+
+Public Property Get validator() As ClientSideValidator
+    Set validator = m_validator
+End Property
+
+' An example suroutine to use progressbar
+Sub runProgressBar()
+    Dim intIndex As Integer
+    Dim sngPercent As Single
+    Dim intMax As Integer
+    
+    intMax = 10
+    
+    For intIndex = 1 To intMax
+        sngPercent = intIndex / intMax
+        
+        setProgressBar sngPercent, True
+        DoEvents
+        '------------------------
+        ' Your code would go here
+        '------------------------
+        ' Sleep 100
+        Application.Wait (Now + TimeSerial(0, 0, 1))
+    Next
+
+End Sub
+
+Sub setProgressBar(Percent As Single, ShowValue As Boolean)
+    Const PAD = "                         "
+    
+    If ShowValue Then
+        blueTextLabel.Caption = PAD & format(Percent, "0%")
+        whiteTextLabel.Caption = blueTextLabel.Caption
+        whiteTextLabel.Width = frontLabel.Width
+    End If
+    frontLabel.Width = Int(frontLabel.Tag * Percent)
+
+End Sub
+
+Sub startProgressBar()
+    Application.Cursor = xlWait
+    Show
+End Sub
+
+Sub destroyProgressBar()
+    Application.Cursor = xlDefault
+    Unload Me
+End Sub
+
+Private Sub UserForm_Activate()
+    ' Even if validator is instance field, we instantiate afresh every time we run validation on the file.
+    Set m_validator = New ClientSideValidator
+    validator.startClientSideValidation
+End Sub
+
+Private Sub UserForm_Initialize()
+
+    ' ProgressBar1
+    frontLabel.Tag = frontLabel.Width
+    frontLabel.Width = 0
+    blueTextLabel.Caption = ""
+    whiteTextLabel.Caption = ""
+
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = 0 Then
+        Cancel = True ' Do not allow user to close progressbar even when he clicks close button.
+    End If
+End Sub
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "TemplateAttribute"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private m_attributeId As String
+Private m_displayName As String
+Private m_attributeType As String
+Private m_sheetName As String
+Private m_column As Integer
+
+Private m_isRequired As Boolean
+
+'We support at most 10 validation rules. After that the rules will be ignored
+Private m_validationRules(0 To (Constants.MAX_VALIDATION_RULES - 1)) As AttributeRule
+Private m_validationRulesCount As Integer
+
+Private m_externalIdTypeCodeMap As New Collection
+
+Private m_isUnique As Boolean
+Private m_defaultValue As String
+Private m_parentDropdownId As String ' in VBA we always define attribute id as string
+
+'We do not store conditional rules into memory as we use excel for validating them.
+'But we still compute error message and store it.
+Private m_conditionalErrMsg As String
+
+Private m_sampleDropdownFormula As String
+Private m_sampleConditionalFormula As String
+
+Private decoder As New UrlDecoder
+
+Public Property Get attributeId() As String
+   attributeId = m_attributeId
+End Property
+
+Public Property Get displayName() As String
+   displayName = m_displayName
+End Property
+
+Public Property Get attributeType() As String
+    attributeType = m_attributeType
+End Property
+
+Public Property Get sheetName() As String
+    sheetName = m_sheetName
+End Property
+
+Public Property Get column() As Integer
+    column = m_column
+End Property
+
+Public Property Get isRequired() As Boolean
+    isRequired = m_isRequired
+End Property
+
+Public Property Get validationRules() As Variant
+    validationRules = m_validationRules
+End Property
+
+Public Property Get externalIdTypeCodeMap() As Collection
+    Set externalIdTypeCodeMap = m_externalIdTypeCodeMap
+End Property
+
+Public Property Get isUnique() As Boolean
+    isUnique = m_isUnique
+End Property
+
+Public Property Get defaultValue() As String
+    defaultValue = m_defaultValue
+End Property
+
+Public Property Get parentDropdownId() As String
+    parentDropdownId = m_parentDropdownId
+End Property
+
+Public Property Get validationRulesCount() As Integer
+    validationRulesCount = m_validationRulesCount
+End Property
+
+Public Property Get conditionalErrMsg() As String
+    conditionalErrMsg = m_conditionalErrMsg
+End Property
+
+Public Property Get sampleDropdownFormula() As String
+    sampleDropdownFormula = m_sampleDropdownFormula
+End Property
+
+Public Property Get sampleConditionalFormula() As String
+    sampleConditionalFormula = m_sampleConditionalFormula
+End Property
+
+Public Sub init(attrStr As String, column As Integer, sheetName As String)
+    m_displayName = Worksheets(sheetName).cells(ATTRIBUTE_NAME_ROW_INDEX, column)
+    m_sheetName = sheetName
+    m_conditionalErrMsg = ""
+    m_isUnique = False
+    m_column = column
+    
+    Dim arrayFromAttrStr() As String: arrayFromAttrStr = Split(attrStr)
+    If UBound(arrayFromAttrStr) < 2 Then
+        logger.logError "TemplateAttribute.init", "Error: attribute metadata array size was less than 2, metadata was: " & attrStr
+        Err.Raise -1, Description:="metadata for column: " & column & " is invalid"
+    End If
+    
+    ' Fetch the attribute id.
+    m_attributeId = arrayFromAttrStr(0)
+    If InStr(m_attributeId, "_") > 0 Then
+        m_attributeId = Mid(m_attributeId, InStr(m_attributeId, "_") + 1)
+    End If
+    
+    ' Fetch the attribute type
+    m_attributeType = Mid(arrayFromAttrStr(1), Len(TYPE_KEY) + 2) ' skip `TYPE:`
+    
+    ' Find if attribute is required
+    If Mid(arrayFromAttrStr(2), Len(REQUIRED_KEY) + 2) = "Y" Then ' skip `REQ:`
+        m_isRequired = True
+    Else: m_isRequired = False
+    End If
+    
+    Dim sampleCell As Range, sampleFormula As String: Set sampleCell = Worksheets(sheetName).cells(SAMPLE_DATA_ROW_INDEX, column)
+    If (attributeType = DROPDOWN_TYPE) Then
+        If hasValidation(sampleCell) Then
+            If sampleCell.Validation.Formula1 <> "" Then
+                m_sampleDropdownFormula = sampleCell.Validation.Formula1
+            End If
+        End If
+    End If
+ 
+    If (attributeType = DEPENDENT_DROPDOWN_TYPE) Then
+        Dim hiddenDropdownFormulaSheet As Worksheet: Set hiddenDropdownFormulaSheet = Worksheets(HIDDEN_WORKSHEET_DEPENDROPDOWN_FORMULA)
+        Dim rowNum As Integer
+            For rowNum = 1 To hiddenDropdownFormulaSheet.UsedRange.Rows.Count
+                If hiddenDropdownFormulaSheet.cells(rowNum, 1).value = m_attributeId Then
+                    m_sampleDropdownFormula = hiddenDropdownFormulaSheet.cells(rowNum, 2).value
+                End If
+        Next rowNum
+    End If
+    
+    ' Parse the rules
+    If UBound(arrayFromAttrStr) > 2 Then
+        Dim validationRulesIndex As Integer, conditionalRulesIndex As Integer, counter As Integer
+        validationRulesIndex = 0
+        conditionalRulesIndex = 0
+        
+        ' 0, 1 and 2 are attrId, TYPE and REQ and from 3 rules start
+        For counter = 3 To UBound(arrayFromAttrStr)
+            Dim attrRuleStr As String: attrRuleStr = arrayFromAttrStr(counter)
+            
+            If InStr(attrRuleStr, VALIDATION_RULE_PREFIX) = 1 And validationRulesIndex < MAX_VALIDATION_RULES Then
+                addValidationRule attrRuleStr, validationRulesIndex
+                validationRulesIndex = validationRulesIndex + 1
+            ElseIf attrRuleStr = UNIQUE_KEY Then
+                m_isUnique = True
+            ElseIf InStr(attrRuleStr, DEFAULT_KEY) = 1 Then
+                Dim tmpDefaultValue As String
+                tmpDefaultValue = Mid(attrRuleStr, Len(DEFAULT_KEY) + 2) ' skip 'DEFAULT_KEY:'
+                m_defaultValue = decoder.decodeString(tmpDefaultValue)
+            ElseIf InStr(attrRuleStr, PARENT_DROPDOWN_KEY) = 1 Then
+                m_parentDropdownId = Mid(attrRuleStr, Len(PARENT_DROPDOWN_KEY) + 2) ' skip 'PARENT_DROPDOWN:'
+            ElseIf InStr(attrRuleStr, CONDTIONAL_FORMULA_KEY) = 1 Then
+                ' In Excel 2003, we were not able to fetch conditional formatting formula from cell properly. Now we fetch it from metadata
+                m_sampleConditionalFormula = decoder.decodeString(Mid(attrRuleStr, Len(CONDTIONAL_FORMULA_KEY) + 2))  ' skip 'CONDTIONAL_FORMULA:'
+                ' For XLS, we use 1st row in conditional formula where as we use 6th row for XLSX.
+                ' rowNumInCondFormula indicates the same. Let us translate it to 6th row in both cases.
+                m_sampleConditionalFormula = translateFormula(sampleCell, m_sampleConditionalFormula, rowNumInCondFormula)
+            End If
+        Next counter
+        
+        m_validationRulesCount = validationRulesIndex
+    End If
+    
+    ' if it is external id special instruction, ass EXT validation rule
+    populateExternalIdMetadata attrStr
+End Sub
+
+Private Sub populateExternalIdMetadata(attrStr As String)
+    Dim sh As Worksheet: Set sh = Worksheets(sheetName)
+    Dim counter As Integer
+    
+    ' first add EXT validation rule if this is an external id special instruction.
+    ' We see if it contains externalId but does not contain externalIdType
+    If InStr(attrStr, EXTERNAL_ID_SPECIAL_INSTRUCTION) > 0 And InStr(attrStr, EXTERNAL_ID_TYPE_SPECIAL_INSTRUCTION) = 0 Then
+        ' find out external id type special instruction
+        For counter = 1 To sh.UsedRange.Columns.Count
+            If InStr(sh.cells(ATTRIBUTE_HEADER_ROW_INDEX, counter).value, EXTERNAL_ID_TYPE_SPECIAL_INSTRUCTION) > 0 Then
+                ' found external id type attribute
+                Dim externalIdTypeAttributeId As String
+                externalIdTypeAttributeId = getAttributeId(sh, counter)
+                addValidationRule VALIDATION_RULE_PREFIX & EXTERNAL_ID_VALIDATION_RULE_CODE & ";" & externalIdTypeAttributeId, validationRulesCount
+                m_validationRulesCount = m_validationRulesCount + 1
+                Exit For
+            End If
+        Next counter
+    End If
+    
+    ' if this attribute contains EXT validation rule, populate external-id type code map
+    For counter = 0 To (validationRulesCount - 1)
+        If validationRules(counter).ruleCode = EXTERNAL_ID_VALIDATION_RULE_CODE And validationRules(counter).hasDependentAttributeId Then
+            Dim hiddenSheet As Worksheet: Set hiddenSheet = Worksheets(HIDDEN_WORKSHEET)
+            Dim rowNum As Integer
+            For rowNum = 1 To hiddenSheet.UsedRange.Rows.Count
+                If hiddenSheet.cells(rowNum, 1).value = validationRules(counter).dependentAttributeId Then
+                    Dim dropdownDisplayText As String, dropdownExternalCode As String
+                    dropdownDisplayText = hiddenSheet.cells(rowNum, 2).value
+                    dropdownExternalCode = hiddenSheet.cells(rowNum, 3).value
+                    AddIntoCollection m_externalIdTypeCodeMap, dropdownDisplayText, dropdownExternalCode
+                End If
+            Next rowNum
+        End If
+    Next counter
+End Sub
+
+Private Sub addValidationRule(attrRuleStr As String, ByVal index As Integer)
+    attrRuleStr = Mid(attrRuleStr, Len(VALIDATION_RULE_PREFIX) + 1) ' skip v_
+    Dim colonIndex As Integer, semicolonIndex As Integer
+    Dim validationCode As String, dependentAttributeId As String, dependentValue As String
+    
+    colonIndex = InStr(attrRuleStr, ":")
+    semicolonIndex = InStr(attrRuleStr, ";")
+  
+    ' We need to check for ':' first because dependentValue may contain ';'
+    If colonIndex > 0 Then
+        ' Sample - MAX:40
+        dependentAttributeId = ""
+        dependentValue = decoder.decodeString(Mid(attrRuleStr, colonIndex + 1))
+        validationCode = Left(attrRuleStr, colonIndex - 1)
+    ElseIf semicolonIndex > 0 Then
+        ' Sample - DAF;1977063
+        dependentAttributeId = Mid(attrRuleStr, semicolonIndex + 1)
+        dependentValue = ""
+        validationCode = Left(attrRuleStr, semicolonIndex - 1)
+    Else
+        ' Sample - CAP
+        dependentAttributeId = ""
+        dependentValue = ""
+        validationCode = attrRuleStr
+    End If
+    
+    Dim newValidationRule As New AttributeRule
+    newValidationRule.init validationCode, dependentAttributeId, dependentValue, VALIDATION_RULE_TYPE
+    Set m_validationRules(index) = newValidationRule
+End Sub
+
+Public Sub populateConditionalErrMsg(ByVal attrStr As String)
+    '  We use excel formula to validate the Conditional requirement rules.
+    ' Excel formula is already embedded in the file and so we do not need to store these rules into memory.
+    ' These rules parsed here are used to build the error message to be shown after validation
+    
+    ' Even if conditional requirement error msg building fails, we do not want to stop other validations. so swallow any error
+    On Error GoTo populateConditionalErrMsg_end
+    
+    Dim index As Integer, counter As Integer
+    Dim arrayFromAttrStr() As String: arrayFromAttrStr = Split(attrStr): index = 0
+    
+    For counter = 3 To UBound(arrayFromAttrStr)
+        Dim attrRuleStr As String: attrRuleStr = arrayFromAttrStr(counter)
+            
+        If InStr(attrRuleStr, CONDITIONAL_RULE_PREFIX) = 1 Then
+            attrRuleStr = Mid(attrRuleStr, Len(CONDITIONAL_RULE_PREFIX) + 1) ' skip c_
+            If attrRuleStr = OR_KEY Then
+                ' Conditional rules are applied with OR
+                m_conditionalErrMsg = errorList(COND_MANDATORY_ERR_MSGS) & Chr(10) & m_conditionalErrMsg
+            ElseIf attrRuleStr = AND_KEY Then
+                ' Conditional rules are applied with AND
+                m_conditionalErrMsg = errorList(COND_MANDATORY_ERR_MSG) & Chr(10) & m_conditionalErrMsg
+            Else
+                index = index + 1
+                m_conditionalErrMsg = m_conditionalErrMsg & Chr(10) & index & ". " & getConditionalErrMsgForRule(attrRuleStr)
+            End If
+        End If
+    Next counter
+    
+    ' If conditional rules are applied with 'OR', error message has 'Please note... , for this item either:'
+    ' If conditional rules are applied with 'AND', error message has 'Please note... , for this item:'
+    ' But if there is only one conditional rule: error message should always have 'Please note... , for this item:'
+    If index = 1 Then
+        m_conditionalErrMsg = Replace(m_conditionalErrMsg, errorList(COND_MANDATORY_ERR_MSGS), errorList(COND_MANDATORY_ERR_MSG))
+    End If
+    
+    ' for Mac, new line is \r instead of \n
+    If InStr(Application.OperatingSystem, "Mac") Then
+        m_conditionalErrMsg = Replace(m_conditionalErrMsg, Chr(10), Chr(13))
+    End If
+    
+    Exit Sub
+    
+populateConditionalErrMsg_end:
+    logger.logError "TemplateAttribute.populateConditionalErrMsg", "Error caught: " & Err.Description
+    m_conditionalErrMsg = ""
+End Sub
+
+Private Function getConditionalErrMsgForRule(attrRuleStr) As String
+    Dim operation As String, leftAttributeId As String, rightAttributeId As String, rightValue As String
+    
+    operation = Mid(attrRuleStr, 1, InStr(attrRuleStr, ":") - 1) ' Extract operation code
+    leftAttributeId = Mid(attrRuleStr, InStr(attrRuleStr, ":") + 1) ' Store remaining string in leftAttributeId
+    
+    ' Please note that first we need to search ':' and then ';'. It is because rightAttributeValue may contain ';'
+    If InStr(leftAttributeId, ":") > 1 Then
+        ' Sample - equalTo:1977063:Yes
+        rightValue = decoder.decodeString(Mid(leftAttributeId, InStr(leftAttributeId, ":") + 1))
+        leftAttributeId = Mid(leftAttributeId, 1, InStr(leftAttributeId, ":") - 1)
+        rightAttributeId = ""
+    ElseIf InStr(leftAttributeId, ";") > 1 Then
+        ' Sample - equalTo:1977063;1977062
+        rightAttributeId = Mid(leftAttributeId, InStr(leftAttributeId, ";") + 1)
+        leftAttributeId = Mid(leftAttributeId, 1, InStr(leftAttributeId, ";") - 1)
+        rightValue = ""
+    Else
+        ' Sample - isNull:1977063
+        rightValue = ""
+        rightAttributeId = ""
+    End If
+    
+    ' Fetch attribute names using attribute ids so that can be substituted in error messages
+    Dim leftAttrName As String, rightAttrName As String
+    leftAttrName = getAttributeName(m_sheetName, leftAttributeId)
+    If Not Trim(rightAttributeId) = "" Then
+        rightAttrName = getAttributeName(m_sheetName, rightAttributeId)
+    Else: rightAttrName = ""
+    End If
+
+    ' key: <operation_code>
+    ' value: array(1, <error_message>) | if neither right-attribute nor right-value are applicable
+    ' value: array(2, <error_message_for_attr>, <error_message_for_value>) | if right-attribute or right-value is applicable
+    Dim errorsMap As New Collection
+    AddIntoCollection errorsMap, OPERATION_IS_NULL, Array(1, COND_MANDATORY_EMPTY)
+    AddIntoCollection errorsMap, OPERATION_NOT_NULL, Array(1, COND_MANDATORY_NOT_EMPTY)
+    AddIntoCollection errorsMap, OPERATION_LESS_THAN, Array(2, COND_MANDATORY_LESS_THAN_ATTR, COND_MANDATORY_LESS_THAN)
+    AddIntoCollection errorsMap, OPERATION_LESS_THAN_EQUAL, Array(2, COND_MANDATORY_LESS_EQUAL_ATTR, COND_MANDATORY_LESS_EQUAL)
+    AddIntoCollection errorsMap, OPERATION_MORE_THAN, Array(2, COND_MANDATORY_MORE_THAN_ATTR, COND_MANDATORY_MORE_THAN)
+    AddIntoCollection errorsMap, OPERATION_MORE_THAN_EQUAL, Array(2, COND_MANDATORY_MORE_EQUAL_ATTR, COND_MANDATORY_MORE_EQUAL)
+    AddIntoCollection errorsMap, OPERATION_EQUAL_TO, Array(2, COND_MANDATORY_EQUAL_ATTR, COND_MANDATORY_EQUAL)
+    AddIntoCollection errorsMap, OPERATION_NOT_EQUAL_TO, Array(2, COND_MANDATORY_NOT_EQUAL_ATTR, COND_MANDATORY_NOT_EQUAL)
+    AddIntoCollection errorsMap, OPERATION_DIVISIBLE_BY, Array(2, COND_MANDATORY_DIVISIBLE_ATTR, COND_MANDATORY_DIVISIBLE)
+    AddIntoCollection errorsMap, OPERATION_NOT_DIVISIBLE_BY, Array(2, COND_MANDATORY_NOT_DIVISBLE_ATTR, COND_MANDATORY_NOT_DIVISBLE)
+    
+    Dim returnValue As String
+    If Not ifExistsInCollection(errorsMap, operation) Then
+        logger.logError "TemplateAttribute.getConditionalErrMsgForRule", "Error: invalid operation '" & operation & "' for conditional requirement"
+        Err.Raise 1, "invalid operation for conditional requirement"
+    End If
+    
+    Dim itemInErrorsMap() As Variant: itemInErrorsMap = errorsMap(operation)
+    If itemInErrorsMap(0) = 1 Then
+        returnValue = errorList(itemInErrorsMap(1))
+    ElseIf itemInErrorsMap(0) = 2 Then
+        If rightValue = "" Then
+            returnValue = substituteRightAttr(errorList(itemInErrorsMap(1)), rightAttrName)
+        Else
+            returnValue = substituteRightValue(errorList(itemInErrorsMap(2)), rightValue)
+        End If
+    End If
+    
+    returnValue = substituteParam(returnValue, LEFT_ATTR_PARAM, leftAttrName)
+    getConditionalErrMsgForRule = returnValue
+End Function
+
+Private Function substituteRightAttr(errMsg As String, rightAttrName As String) As String
+    ' substitute 'right-attr' in error message
+    substituteRightAttr = substituteParam(errMsg, RIGHT_ATTR_PARAM, rightAttrName)
+End Function
+
+Private Function substituteRightValue(errMsg As String, rightValue As String) As String
+    ' substitute 'right-value' in error message
+    substituteRightValue = substituteParam(errMsg, RIGHT_VALUE_PARAM, rightValue)
+End Function
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    If isNewMacro Then
+        clickedClose = True
+        contClose = True
+        MsgBox startingValidation, , DEFAULT_MSGBOX_TITLE
+        runValidateOnExcelMenu
+        If Not contClose Then
+            Cancel = True
+        End If
+    End If
+End Sub
+
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+    initializeGlobalVars
+    ' MsgBox ("Starting populating atributes of the file")
+    Debug.Print ("Starting populating atributes of the file")
+    
+    populateAttributesForWorkbook
+End Sub
+
+Private Sub Workbook_Open()
+    initializeGlobalVars
+    ' MsgBox ("Starting populating atributes of the file")
+    Debug.Print ("Starting populating atributes of the file")
+    
+    populateAttributesForWorkbook
+    
+    ' in Office 2010, Workbook_Activate is not called if permission is asked to enable Macro and user provides the permission. If file is again reopen, no permisson is asked and hence Workbook_Activate is called
+    ' Let us do this in Workbook_Open too to solve this issue
+    If shouldAddMenu Then
+        deleteAmazonMenu
+        addAmazonMenu
+    End If
+    'addBuyerToggleButton
+End Sub
+
+Public Sub populateAttributesForSheet(Sheet As Worksheet)
+    ' MsgBox ("populating attributes for sheet: " & sheet.Name)
+    Debug.Print ("populating attributes for sheet: " & Sheet.Name)
+    
+    Application.EnableEvents = True
+    
+    Dim attrStr As String, counter As Integer
+    
+    For counter = FIRST_COLUMN_TO_PARSE To Sheet.UsedRange.Columns.Count
+        On Error Resume Next ' If error comes while parsing this column attribute, go to next column
+        
+        attrStr = Sheet.cells(ATTRIBUTE_HEADER_ROW_INDEX, counter)
+        If IsEmpty(attrStr) Or Trim(attrStr) = "" Then
+            Exit For
+        End If
+        
+        ' if 'TYPE' is there in attribute string, then metadata is present for attribute and so we should parse it
+        If InStr(attrStr, TYPE_KEY) > 0 Then
+            createTemplateAttribute attrStr, counter, Sheet.Name
+        End If
+    Next counter
+    
+    ' We build conditional error message in second iteration as for it we need all attributes to be already populated
+    For counter = FIRST_COLUMN_TO_PARSE To Sheet.UsedRange.Columns.Count
+        Dim attr As TemplateAttribute
+        Set attr = getAttribute(Sheet.Name, getAttributeId(Sheet, counter))
+        
+        attrStr = Sheet.cells(ATTRIBUTE_HEADER_ROW_INDEX, counter)
+        If Not (attr Is Nothing) Then
+            attr.populateConditionalErrMsg attrStr
+        End If
+    Next counter
+End Sub
+
+Public Sub createTemplateAttribute(attrStr As String, column As Integer, sheetName As String)
+    Dim attr As New TemplateAttribute
+    attr.init attrStr, column, sheetName
+    
+    AddAttribute attr, sheetName, attr.attributeId
+End Sub
+
+Public Sub populateAttributesForWorkbook()
+    Dim sh As Worksheet
+    
+    ' MsgBox "number of sheets: " & ActiveWorkbook.Sheets.Count
+    Debug.Print "number of sheets: " & ActiveWorkbook.Sheets.Count
+    
+    For Each sh In ActiveWorkbook.Worksheets
+        If isSheetApplicable(sh) Then
+            populateAttributesForSheet sh
+        End If
+    Next sh
+End Sub
+
+Private Sub Workbook_WindowActivate(ByVal Wn As Window)
+    If shouldAddMenu Then
+        deleteAmazonMenu
+        addAmazonMenu
+    End If
+    'addBuyerToggleButton
+End Sub
+
+Private Sub Workbook_WindowDeactivate(ByVal Wn As Window)
+    If shouldAddMenu Then
+        deleteAmazonMenu
+    End If
+End Sub
+
+Private Sub Workbook_SheetChange(ByVal Sheet As Object, ByVal Target As Range)
+    If ((Not isSheetApplicable(Sheet)) Or (Not isTemplateDropdownValidationEnabled)) Then
+        Exit Sub
+    End If
+    
+    Dim cell As Range
+    
+    For Each cell In Target.cells
+        Dim attr As TemplateAttribute
+        Set attr = getAttribute(Sheet.Name, getAttributeId(Sheet, cell.column))
+        
+        If Not (attr Is Nothing) Then
+            If (attr.attributeType = DROPDOWN_TYPE Or attr.attributeType = DEPENDENT_DROPDOWN_TYPE) Then
+                Dim valid As Boolean
+                valid = isDropdownValid(attr, cell)
+                
+                If Not valid Then
+                    Application.EnableEvents = False
+                    cell.cells.value = ""
+                    Application.EnableEvents = True
+                End If
+            End If
+        End If
+    Next cell
+End Sub
+Attribute VB_Name = "TimerForMacOrWindows"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+#If Win64 Then ' In case of Office 2010, it is VBA 7. PtrSafe should be used as explained in http://msdn.microsoft.com/en-us/library/gg278832.aspx . Below we do the same
+' Also we use 'Any' data type for prompt instead of 'Long' data type. In VBA7, it should be LongPtr and in earlier versions it should be Long. Instead we use 'Any' as suggested in solution at http://stackoverflow.com/questions/10402822/passing-a-lpctstr-parameter-to-an-api-call-from-vba-in-a-ptrsafe-and-unicode-saf
+
+Private Declare PtrSafe Function GetTickCountAPI _
+Lib "KERNEL32" Alias "GetTickCount64" () As LongLong
+
+#Else
+
+Private Declare Function GetTickCountAPI _
+Lib "KERNEL32" Alias "GetTickCount" () As Long
+
+#End If
+
+Private startTime As Variant
+
+' This returns Long1 - Long 2 or LongLong1 - LongLong2. VBA allows them to typecast to Long without any problem
+Public Function getTimeDiff() As Long
+    Dim currentTime As Variant
+    currentTime = getTimeInMilliSeconds
+    
+    getTimeDiff = currentTime - startTime
+End Function
+
+Public Sub resetTimer()
+    startTime = getTimeInMilliSeconds
+End Sub
+
+' In Mac, it returns Long type.
+' In VBA6, it returns Long Type
+' In VBA7, it returns LongLong type
+Private Function getTimeInMilliSeconds() As Variant
+    If InStr(Application.OperatingSystem, "Mac") Then
+        Dim timeInMax As Long
+        timeInMax = timer * 1000
+        getTimeInMilliSeconds = timeInMax
+    Else
+        getTimeInMilliSeconds = GetTickCountAPI
+    End If
+End Function
+
+Private Sub Class_Initialize()
+    resetTimer
+End Sub
+Attribute VB_Name = "UnitTestHelper"
+Option Explicit
+
+Public Function NewTemplateAttribute() As TemplateAttribute
+    Set NewTemplateAttribute = New TemplateAttribute
+End Function
+
+Public Function NewUrlDecoder() As UrlDecoder
+    Set NewUrlDecoder = New UrlDecoder
+End Function
+
+Public Function NewDateParser() As DateParser
+    Set NewDateParser = New DateParser
+End Function
+
+Public Function NewAttributeRule() As AttributeRule
+    Set NewAttributeRule = New AttributeRule
+End Function
+
+Attribute VB_Name = "UrlDecoder"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Public Function decodeString(encodedStr As String) As String
+    Dim length As Integer
+    length = Len(encodedStr)
+    
+    If length > 0 Then
+        Dim index As Integer
+        Dim ch As String
+        Dim result As String
+        
+        result = ""
+        index = 1
+        Do While index <= length
+            ch = Mid(encodedStr, index, 1)
+            If Not ch = "%" Then
+                If ch = "+" Then
+                    ' replace '+' with space
+                    result = result & " "
+                Else: result = result & ch
+                End If
+                index = index + 1
+            Else
+                ' We encountered '%', let us decode characters after '%'.
+                ' For a multi-byte character, there will be multiple '%' for that character.
+                ' So increment in index variable depends upon that. getUnicodePoint() takes care of this.
+                Dim unicodepoint As Long
+                unicodepoint = getUnicodePoint(encodedStr, index) ' index is passed by reference
+                result = result & ChrW(unicodepoint)
+            End If
+        Loop
+        decodeString = result
+    Else: decodeString = encodedStr
+    End If
+End Function
+
+Private Function getUnicodePoint(encodedStr As String, ByRef start As Integer) As Long
+    ' See http://en.wikipedia.org/wiki/UTF-8#Design for more details
+    
+    Dim numEncodedBytes As Integer
+    Dim result As Long
+    
+    Dim firstEncodedByte As String
+    firstEncodedByte = UCase(Mid(encodedStr, start + 1, 2)) ' let us upper-case hexadecimal characters, as later we use string comparison
+    result = val("&H" & firstEncodedByte) ' convert hexadecimal characters to number
+    
+    ' process first byte.
+    Select Case firstEncodedByte
+    Case "00" To "7F"
+        numEncodedBytes = 1
+        result = result - 0 ' it means result = result, thus no change
+    Case "80" To "BF"
+        Err.Raise 1, "Invalid encoded character in " & encodedStr
+    Case "C0" To "DF"
+        numEncodedBytes = 2
+        result = result - 192 ' 192 is 0xC0. Strip xC0
+    Case "E0" To "EF"
+        numEncodedBytes = 3
+        result = result - 224 ' 224 is 0xE0. Strip xE0
+    Case "F0" To "F7"
+        numEncodedBytes = 4
+        result = result - 240 ' 240 is 0xF0. Strip xF0
+    Case "F8" To "FB"
+        numEncodedBytes = 5
+        result = result - 248 ' 248 is 0xF8. Strip xF8
+    Case "FC" To "FD"
+        numEncodedBytes = 6
+        result = result - 252 ' 252 is 0xFC. Strip xFC
+    Case Else
+        Err.Raise 1, "Invalid encoded character in " & encodedStr
+    End Select
+    
+    ' if numEncodedBytes > 1, it is multi-byte character, process bytes after the 'first byte'
+    Dim i As Long
+    For i = 2 To numEncodedBytes
+        ' Sample - %BC
+        Dim ch As String
+        ch = Mid(encodedStr, start - 3 + (3 * i), 1)
+        If Not ch = "%" Then
+            logger.logError "UrlDecoder.getUnicodePoint", "Invalid encoded character '" & ch & "' in " & encodedStr
+            Err.Raise 1, "Invalid encoded character '" & ch & "' in " & encodedStr
+        End If
+        
+        ch = UCase(Mid(encodedStr, start - 2 + (3 * i), 2))
+        If ch < "80" Or ch >= "C0" Then
+            logger.logError "UrlDecoder.getUnicodePoint", "Invalid encoded character '" & ch & "' in " & encodedStr
+            Err.Raise 1, "Invalid encoded character  '" & ch & "' in " & encodedStr
+        End If
+        
+        result = result * (2 ^ 6) ' shift 6 bits
+        result = result + val("&H" & ch) - 128 ' 128 is x80. Strip x80 and append last 6 bits of current byte into result.
+    Next i
+    
+    start = start + (3 * numEncodedBytes) ' shift start pointer. Note that it was passed by reference
+    getUnicodePoint = result
+End Function
+Attribute VB_Name = "ValidationHelper"
+Option Explicit
+
+' This validates both normal requirement and conditional requirement
+Public Sub validateRequirement(attr As TemplateAttribute, currentCell As Range)
+    If Not (currentCell.comment Is Nothing) Then ' cell is already in error and so skip further validation
+        Exit Sub
+    End If
+    
+    If Not Trim(currentCell.value) = "" Then
+        Exit Sub
+    End If
+    
+    ' Cell is empty as it did not exited the subroutine till now. Let us see if it is required attribute
+    Dim errMsg As String
+    Dim isErrMsgForConditionalRequired As Boolean
+    If attr.isRequired Then
+        errMsg = errorList(IS_REQUIRED)
+    ElseIf Not attr.sampleConditionalFormula = "" Then
+        ' the attribute is conditionally required. let us evaluate if current cell staisfies condition
+        Dim conditionalFormula As String
+        conditionalFormula = translateFormula(currentCell, attr.sampleConditionalFormula, SAMPLE_DATA_ROW_INDEX)
+        
+        Dim formulaResult As Variant
+        formulaResult = Evaluate(conditionalFormula)
+        
+        ' formula evaluates to true then we populate the error message
+        If IsError(formulaResult) Then
+            logger.logError "ValidationHelper.validateRequirement", "caught error for cell: " & getCellDetail(currentCell) & ", while evaluating formula: " & conditionalFormula
+        ElseIf formulaResult = True Then
+            errMsg = attr.conditionalErrMsg
+            isErrMsgForConditionalRequired = True
+        End If
+    End If
+    
+    addComment currentCell, errMsg
+    If Not currentCell.comment Is Nothing And isErrMsgForConditionalRequired Then
+        currentCell.comment.Shape.Width = CONDITIONAL_ERR_MSG_COMMENT_WIDTH
+        currentCell.comment.Shape.Height = CONDITIONAL_ERR_MSG_COMMENT_HEIGHT
+    End If
+End Sub
+
+Public Function isDropdownValid(attr As TemplateAttribute, currentCell As Range)
+    If Trim(currentCell.value) = "" Or attr.sampleDropdownFormula = "" Then
+        isDropdownValid = True
+        Exit Function
+    End If
+
+    Dim result As Boolean: result = True
+    
+    Dim dropdownFormula As String, parentDropdownCell As Range
+    dropdownFormula = attr.sampleDropdownFormula
+    If attr.attributeType = "dependentDropdownType" Then
+        dropdownFormula = translateFormula(currentCell, attr.sampleDropdownFormula, 6)
+        ' We are using CELL("address") in formula for dependent dropdowns. Evaluate() cannot handle CELL("address") so we handle it ourselves
+        ' "\"" of C or Java is written in VBA as """"
+        dropdownFormula = Replace(dropdownFormula, "CELL(""address"")", """" & currentCell.Address & """")
+        
+        ' In case of dependent dropdowns, we also check if value for parent dropdown was selected correctly.
+        ' For this, check what is error message on that corresponding parent dropdown cell. Also check if parent dropdown cell is empty as in that case error can be 'it is required' or 'conditional mandatory error'
+        Dim parentDropdownAttr As TemplateAttribute
+        Set parentDropdownAttr = getAttribute(attr.sheetName, attr.parentDropdownId)
+        If Not parentDropdownAttr Is Nothing Then
+            Set parentDropdownCell = currentCell.Worksheet.cells(currentCell.row, parentDropdownAttr.column)
+            
+            If parentDropdownCell.value = "" Then
+                result = False
+            End If
+        End If
+    End If
+        
+    Dim dropdownValues As Variant
+    dropdownValues = Evaluate(dropdownFormula)
+
+    Dim cellVal As String
+    cellVal = UCase(Trim(currentCell.value)) ' trim and also case-insensitive
+    
+    If IsError(dropdownValues) Then
+        result = False
+    ElseIf IsArray(dropdownValues) = False Then ' In this case dropdownValues is single entry and is a string
+        If cellVal <> UCase(dropdownValues) Then ' It did not match with sole value in dropdown
+            result = False
+        End If
+    Else
+        ' we were able to fetch dropdown values. So we just need to check if entered value belongs to them
+        Dim val As Variant
+        
+        result = False
+        For Each val In dropdownValues
+            If cellVal = UCase(val) Then
+                result = True
+                Exit For
+            End If
+        Next val
+    End If
+
+    isDropdownValid = result
+End Function
+
+Public Sub validateDropdown(attr As TemplateAttribute, currentCell As Range)
+    If Not (currentCell.comment Is Nothing) Then ' cell is already in error and so skip further validation
+        Exit Sub
+    End If
+    
+    If Trim(currentCell.value) = "" Or attr.sampleDropdownFormula = "" Then
+        Exit Sub
+    End If
+    
+    Dim errMsg As String
+    Dim dropdownFormula As String, parentDropdownCell As Range
+    dropdownFormula = attr.sampleDropdownFormula
+    If attr.attributeType = "dependentDropdownType" Then
+        dropdownFormula = translateFormula(currentCell, attr.sampleDropdownFormula, 6)
+        ' We are using CELL("address") in formula for dependent dropdowns. Evaluate() cannot handle CELL("address") so we handle it ourselves
+        ' "\"" of C or Java is written in VBA as """"
+        dropdownFormula = Replace(dropdownFormula, "CELL(""address"")", """" & currentCell.Address & """")
+        
+        ' In case of dependent dropdowns, we also check if value for parent dropdown was selected correctly.
+        ' For this, check what is error message on that corresponding parent dropdown cell. Also check if parent dropdown cell is empty as in that case error can be 'it is required' or 'conditional mandatory error'
+        Dim parentDropdownAttr As TemplateAttribute
+        Set parentDropdownAttr = getAttribute(attr.sheetName, attr.parentDropdownId)
+        If Not parentDropdownAttr Is Nothing Then
+            Set parentDropdownCell = currentCell.Worksheet.cells(currentCell.row, parentDropdownAttr.column)
+            If Not (parentDropdownCell.comment Is Nothing) Then ' There is error on parent dropdown cell
+                Dim grandParentDropdownAttrName As String, parentDependentDropdownErrMsg As String
+                ' parent dropdown may be just normal dependent dropdown, in that case grandParentDropdownAttrName evaluates to empty string
+                grandParentDropdownAttrName = getAttributeName(parentDropdownAttr.sheetName, parentDropdownAttr.parentDropdownId)
+                parentDependentDropdownErrMsg = substituteParam(errorList(INVALID_VALUE_IN_DPENDENT_DROPDOWN), "dep-attr", grandParentDropdownAttrName)
+                If parentDropdownCell.value = "" Or parentDropdownCell.comment.Text = errorList(INVALID_VALUE_IN_DROPDOWN) Or parentDropdownCell.comment.Text = parentDependentDropdownErrMsg Then
+                    errMsg = errorList(INVALID_VALUE_IN_DROPDOWN)
+                End If
+            End If
+        End If
+    End If
+    
+    If errMsg = "" Then
+        Dim dropdownValues As Variant
+        dropdownValues = Evaluate(dropdownFormula)
+        
+        ' parent dropdown was selected correctly or not, that we are already checking above. So now we will just treat it as normal dropdowm
+        ' If we have come till this point, then the parent dropdown was selected correctly.
+        ' Case 1: no values in dropdown. In this case variable 'dropdownValues' will evaluate to Error because no values in dropdown means invalid namerange
+        ' Case 2: one value in dropdown. In this case isArray(dropdownValues) will evaluate to false
+        ' Case 3: more than one values in dropdown. In this case isArray(dropdownValues) will evaluate to true
+        
+        Dim cellVal As String
+        cellVal = UCase(Trim(currentCell.value)) ' trim and also case-insensitive
+        
+        If IsError(dropdownValues) Then
+            If attr.attributeType = DROPDOWN_TYPE Then
+                logger.logError "ValidationHelper.validateDropdown", "Error: could not fetch the dropdown values from hidden sheet for dropdown for cell: " & getCellDetail(currentCell)
+            Else:
+                ' No value in dropdown, let us inform user that no value can be chosen in this dropdown so that he knows that he is making an error
+                ' He may be able to correct it by changing parent dropdown value
+                errMsg = errorList(INVALID_VALUE_IN_DROPDOWN)
+            End If
+        ElseIf IsArray(dropdownValues) = False Then ' In this case dropdownValues is single entry and is a string
+            If cellVal <> UCase(dropdownValues) Then ' It did not match with sole value in dropdown
+                errMsg = errorList(INVALID_VALUE_IN_DROPDOWN)
+            End If
+        Else
+            ' we were able to fetch dropdown values. So we just need to check if entered value belongs to them
+            Dim val As Variant, found As Boolean
+            
+            found = False
+            For Each val In dropdownValues
+                If cellVal = UCase(val) Then
+                    found = True
+                    Exit For
+                End If
+            Next val
+            
+            If Not found Then
+                errMsg = errorList(INVALID_VALUE_IN_DROPDOWN)
+            End If
+        End If
+    End If
+    
+    ' We want to simulate server side validation. Server side validation for dependent dropdown sets error as per below logic. See AttributeValidatorByTypeDependentDropdown.java
+    ' 1) we always set error: INVALID_VALUE_IN_DROPDOWN except the below case
+    ' 2) If parent dropdown value is itself empty, we set error: INVALID_VALUE_IN_DPENDENT_DROPDOWN
+    
+    ' As we are setting error message as INVALID_VALUE_IN_DROPDOWN always, let us see if we need to set it as INVALID_VALUE_IN_DPENDENT_DROPDOWN
+    If attr.attributeType = DEPENDENT_DROPDOWN_TYPE And errMsg <> "" Then
+        If Not (parentDropdownCell Is Nothing) Then
+            If parentDropdownCell.value = "" Then
+                Dim parentDropdownAttrName As String
+                parentDropdownAttrName = getAttributeName(attr.sheetName, attr.parentDropdownId)
+                If parentDropdownAttrName = "" Then
+                    logger.logError "ValidationHelper.validateDropdown", "Error: could not find the parent dropdown attribute name for cell: " & getCellDetail(currentCell)
+                    Exit Sub ' parent dropdown name not found, let us skip putting comment for this cell!
+                End If
+                errMsg = substituteParam(errorList(INVALID_VALUE_IN_DPENDENT_DROPDOWN), "dep-attr", parentDropdownAttrName)
+            End If
+        End If
+    End If
+    
+    addComment currentCell, errMsg
+End Sub
+
+Public Sub ValidateColumnForUniqueValues(attr As TemplateAttribute, colNumber As Integer)
+    Dim cells As Range
+    Dim currentSheet As Worksheet: Set currentSheet = Worksheets(attr.sheetName)
+    
+    Debug.Print ("Numbers of row: " & currentSheet.UsedRange.Rows.Count)
+    Set cells = getCellsInColumn(currentSheet, colNumber)
+    
+    Dim currentCell As Range
+    Dim val As String
+    Dim firstCellRowNum As Variant
+    
+    Dim hashSetToDetectDuplicate As New Collection
+    
+    Dim errorMsg As String: errorMsg = getErrorMsgForUniqueColumn(attr, colNumber)
+    Debug.Print "error message for duplicate: " & errorMsg
+    If errorMsg = "" Then ' no error message defined for this case. What to do? Ideally there should be a generic error message
+        logger.logError "ValidationHelper.ValidateColumnForUniqueValues", "Error: could not find an error message to display for the cell: " & getCellDetail(currentCell)
+        Exit Sub
+    End If
+    
+    Dim numValidatedCellsInColumn As Integer: numValidatedCellsInColumn = 0
+    For Each currentCell In cells
+        val = currentCell.value
+        If Not (IsEmpty(val) Or Trim(val) = "") Then
+            If ifExistsInCollection(hashSetToDetectDuplicate, val) Then
+                firstCellRowNum = hashSetToDetectDuplicate.Item(val)
+                ' If row is completed, we still see if it is duplicate. The only difference is that we do not put error on such cell. It helps if any other normal row has dupliate value
+                If Not shouldSkipValidationForCell(currentCell) Then
+                    addComment currentCell, errorMsg
+                End If
+                ' add error into first duplicate value. We do this for each occurence of that duplicate value
+                ' But complexity is still 2*N, and update of screen is set to off and so should be okay
+                
+                Dim firstDuplicateCell As Range: Set firstDuplicateCell = currentSheet.cells(firstCellRowNum, colNumber)
+                ' If row is completed, we still see if it is duplicate. The only difference is that we do not put error on such cell. It helps if any other normal row has dupliate value
+                If Not shouldSkipValidationForCell(firstDuplicateCell) Then
+                    addComment currentSheet.cells(firstCellRowNum, colNumber), errorMsg
+                End If
+            Else
+                AddIntoCollection hashSetToDetectDuplicate, val, currentCell.row
+            End If
+        End If
+        
+        numValidatedCellsInColumn = numValidatedCellsInColumn + 1
+        If numValidatedCellsInColumn Mod NUM_CELLS_PER_DO_EVENTS_CALL = 0 Then
+            DoEvents ' We need to call DoEvents in small interval so that excel does not seem hung
+        End If
+    Next currentCell
+End Sub
+
+Private Function getErrorMsgForUniqueColumn(attr As TemplateAttribute, colNumber As Integer) As String
+    ' decide error message to be shown
+    Dim specialInstruction As String, attrStr As String: attrStr = Worksheets(attr.sheetName).cells(2, colNumber)
+    If InStr(attrStr, attr.attributeId) > 1 Then
+        specialInstruction = Mid(attrStr, 1, InStr(attrStr, attr.attributeId) - 2)
+    Else: specialInstruction = ""
+    End If
+    
+    getErrorMsgForUniqueColumn = ""
+    
+    Select Case specialInstruction
+    Case Is = EXTERNAL_ID_SPECIAL_INSTRUCTION
+        getErrorMsgForUniqueColumn = errorList(DUPLICATE_EXTERNAL_ID)
+    Case Is = VENDOR_SKU_SPECIAL_INSTRUCTION
+        getErrorMsgForUniqueColumn = errorList(DUPLICATE_VENDOR_SKU)
+    Case Is = PARENT_IDENTIFIER_SPECIAL_INSTRUCTION
+        getErrorMsgForUniqueColumn = errorList(DUPLICATE_PARENT)
+    Case Else
+        ' else check if it has EXT rule
+        Dim counter As Integer
+        For counter = 0 To (attr.validationRulesCount - 1)
+            If attr.validationRules(counter).ruleCode = EXTERNAL_ID_VALIDATION_RULE_CODE Then
+                getErrorMsgForUniqueColumn = errorList(DUPLICATE_EXTERNAL_ID)
+                Exit For
+            End If
+        Next counter
+    End Select
+    
+End Function
+
+Public Sub validateParentAndChildren(childSheet As Worksheet)
+    'swallow any error here
+    On Error GoTo validateParentAndChildren_end
+    
+    Dim styleColumnInParent As Integer, styleColumnInChild As Integer
+    Dim parentCells As Range, childCells As Range
+    Dim parentSheet As Worksheet
+    Set parentSheet = Worksheets(Replace(childSheet.Name, SKU_INFO_WORKSHEET, ITEM_SHEET_WORKSHEET))
+    
+    styleColumnInParent = getParentIdentifierColumn(parentSheet)
+    Set parentCells = getCellsInColumn(parentSheet, styleColumnInParent)
+    styleColumnInChild = getParentIdentifierColumn(childSheet)
+    Set childCells = getCellsInColumn(childSheet, styleColumnInChild)
+    
+    ' Get style attribute name
+    Dim styleAttributeId As String, styleAttributeName As String
+    styleAttributeId = getAttributeId(childSheet, styleColumnInChild)
+    styleAttributeName = getAttributeName(childSheet.Name, styleAttributeId)
+    If styleAttributeName = "" Then
+        Err.Raise "Could not find style attribute name for worksheet: " & childSheet.Name
+    End If
+
+    Dim parentsHash As New Collection, childsHash As New Collection, duplicateParentsHash As New Collection
+    storeCellsIntoHash parentCells, parentsHash, duplicateParentsHash
+    storeCellsIntoHash childCells, childsHash, Nothing
+    
+    Dim numValidatedCellsInColumn As Integer: numValidatedCellsInColumn = 0
+    
+    ' The above hashes have been built for completed rows too. We will only skip putting errors on completed rows.
+    Dim cellValue As String, parentCell As Range, childCell As Range
+    For Each parentCell In parentCells
+        cellValue = parentCell.value
+        If Trim(cellValue) = "" Or shouldSkipValidationForCell(parentCell) Then
+            ' skip it
+        ElseIf ifExistsInCollection(duplicateParentsHash, cellValue) Then
+            ' it is a duplicate parent
+            addComment parentCell, errorList(DUPLICATE_PARENT)
+        ElseIf Not ifExistsInCollection(childsHash, cellValue) Then
+            ' it is parent with no child
+            addComment parentCell, substituteParam(errorList(PARENT_WITH_NO_CHILDREN), "parent-identifier", styleAttributeName)
+        End If
+        numValidatedCellsInColumn = numValidatedCellsInColumn + 1
+        If numValidatedCellsInColumn Mod NUM_CELLS_PER_DO_EVENTS_CALL = 0 Then
+            DoEvents ' We need to call DoEvents in small interval so that excel does not seem hung
+        End If
+    Next parentCell
+    
+    numValidatedCellsInColumn = 0
+    For Each childCell In childCells
+        cellValue = childCell.value
+        If Trim(cellValue) = "" Or shouldSkipValidationForCell(childCell) Then
+            ' skip it
+        ElseIf ifExistsInCollection(duplicateParentsHash, cellValue) Then
+            ' it is a child with duplicate parent
+            addComment childCell, errorList(DUPLICATE_PARENT)
+        ElseIf Not ifExistsInCollection(parentsHash, cellValue) Then
+            ' it is child with no parent
+            addComment childCell, substituteParam(errorList(CHILD_WITH_UNKNOWN_PARENT), "parent-identifier", styleAttributeName)
+        End If
+        numValidatedCellsInColumn = numValidatedCellsInColumn + 1
+        If numValidatedCellsInColumn Mod NUM_CELLS_PER_DO_EVENTS_CALL = 0 Then
+            DoEvents ' We need to call DoEvents in small interval so that excel does not seem hung
+        End If
+    Next childCell
+    
+    Debug.Print "childColumn: " & styleColumnInChild, " parentColumn: ", styleColumnInParent
+    Exit Sub
+    
+validateParentAndChildren_end:
+    logger.logError "ValidationHelper.validateParentAndChildren", "Error caught for sheet: " & childSheet.Name & ", error was: " & Err.Description
+End Sub
+
+Public Function getParentIdentifierColumn(Sheet As Worksheet) As Integer
+    Dim attrCell As Range
+    Dim cellsToCheck As Range
+    
+    Set cellsToCheck = Sheet.Range(Sheet.cells(ATTRIBUTE_HEADER_ROW_INDEX, FIRST_COLUMN_TO_PARSE), Sheet.cells(ATTRIBUTE_HEADER_ROW_INDEX, Sheet.UsedRange.Columns.Count))
+    
+    For Each attrCell In cellsToCheck
+        If InStr(attrCell.value, PARENT_IDENTIFIER_SPECIAL_INSTRUCTION) Then
+            getParentIdentifierColumn = attrCell.column
+            Exit Function
+        End If
+    Next attrCell
+    
+    logger.logError "ValidationHelper.getParentIdentifierColumn", "Could not find parent column for worksheet: " & Sheet.Name
+    Err.Raise "Could not find parent column for worksheet: " & Sheet.Name
+End Function
+
+Private Sub storeCellsIntoHash(cells As Range, hashObject As Collection, duplicateHashObject As Collection)
+    Dim iterCell As Range, cellValue As String
+    Dim numValidatedCellsInColumn As Integer: numValidatedCellsInColumn = 0
+    For Each iterCell In cells
+        cellValue = iterCell.value
+        If Trim(cellValue) <> "" Then
+            If Not ifExistsInCollection(hashObject, cellValue) Then
+                AddIntoCollection hashObject, cellValue, cellValue
+            ElseIf Not (duplicateHashObject Is Nothing) Then
+                AddIntoCollection duplicateHashObject, cellValue, cellValue
+            End If
+        End If
+        
+        numValidatedCellsInColumn = numValidatedCellsInColumn + 1
+        If numValidatedCellsInColumn Mod NUM_CELLS_PER_DO_EVENTS_CALL = 0 Then
+            DoEvents ' We need to call DoEvents in small interval so that excel does not seem hung
+        End If
+    Next iterCell
+End Sub
+
+' This function checks if the cell has a cell style which is supposed to be read-only. List of read-only cell styles is pulled from hidden sheet
+' for example: LineItemError, Existing, notUpdatable, autoPopulatedData, Completed are read-only cell styles
+Public Function shouldSkipValidationForCell(cell As Range) As Boolean
+    ' cellStylesToSkip contains list of all read-only cell styles
+    shouldSkipValidationForCell = ifExistsInCollection(cellStylesToSkip, cell.Style)
+End Function
+
+
+Attribute VB_Name = "ValidationRulesHelper"
+Option Explicit
+
+Private Const DEP_ATTR = "dep-attr"
+Private Const MAX_VALUE = "max-value"
+Private Const MIN_VALUE = "min-value"
+
+Public Sub validateByValidationRules(attr As TemplateAttribute, cell As Range)
+    If Not (cell.comment Is Nothing) Then ' cell is already in error and so skip further validation
+        Exit Sub
+    End If
+    
+    Dim cellValue As String
+    cellValue = Trim(cell.value)
+    If cellValue = "" Then
+        Exit Sub
+    End If
+    
+    ' validate by attribute type
+    ' Look at below files to understand server side validation:
+    ' 1) AbstractAttributeValidatorByType.java
+    ' 2) AttributeValidatorByTypeBoolean.java
+    ' 3) AttributeValidatorByTypeCurrency.java
+    ' 4) AttributeValidatorByTypeDate.java
+    ' 5) AttributeValidatorByTypeDouble.java
+    ' 6) AttributeValidatorByTypeInteger.java
+    ' 7) AttributeValidatorByTypeString.java
+    
+    If Not validateByType(attr, cellValue, cell) Then
+        ' cell did not have valid value, validateByType() sets the error message. Skip further validation
+        Exit Sub
+    End If
+    
+    ' sanitize value being validated
+    Dim errMsg As String
+    
+    Dim counter As Integer, dateParserObject As New DateParser
+    For counter = 0 To (attr.validationRulesCount - 1)
+        Dim attrRule As AttributeRule
+        Set attrRule = attr.validationRules(counter)
+        
+        ' get operand value
+        Dim operandValue As String, dependentAttrName As String
+        If attrRule.hasDependentValue Then
+            operandValue = attrRule.dependentValue
+        ElseIf attrRule.hasDependentAttributeId Then
+            Dim dependentAttribute As TemplateAttribute
+            Set dependentAttribute = getAttribute(attr.sheetName, attrRule.dependentAttributeId)
+            
+            If dependentAttribute Is Nothing Then ' attribute is not in cache! abort
+                logger.logError "ValidationRulesHelper.validateByValidationRules", "Error: dependentAttribute was not present in cache for attribute id: " & attr.attributeId
+                Err.Raise 1, "dependentAttribute was not present in cache for attribute id: " & attr.attributeId
+                Exit Sub
+            End If
+            operandValue = Worksheets(attr.sheetName).cells(cell.row, dependentAttribute.column).value
+            dependentAttrName = dependentAttribute.displayName
+            
+            If operandValue = "" Then
+                errMsg = substituteParam(errorList(INVALID_DEPENDENT_ATTR_VALUE), "dep-attr", dependentAttrName)
+                addComment cell, errMsg
+                Exit Sub
+            End If
+        End If
+        
+        Dim operandValueAsDate As String
+        
+        Select Case attrRule.ruleCode
+        Case "MAX"
+            If isValidNumber(operandValue, DOUBLE_TYPE) Then
+                If Len(cellValue) > Int(operandValue) Then
+                    If attrRule.hasDependentAttributeId Then
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(STRING_LONGER_THAN_ALLOWED_ATTR), DEP_ATTR, dependentAttrName)
+                    Else
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(STRING_LONGER_THAN_ALLOWED), MAX_VALUE, operandValue)
+                    End If
+                End If
+            End If
+        Case "MIN"
+            If isValidNumber(operandValue, DOUBLE_TYPE) Then
+                If Len(cellValue) <= operandValue Then
+                    If attrRule.hasDependentAttributeId Then
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(STRING_TINIER_THAN_ALLOWED_ATTR), DEP_ATTR, dependentAttrName)
+                    Else
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(STRING_TINIER_THAN_ALLOWED), MIN_VALUE, operandValue)
+                    End If
+                End If
+            End If
+        Case "MVA"
+            If isValidNumber(operandValue, DOUBLE_TYPE) Then
+                If Evaluate(cellValue) > Evaluate(operandValue) Then
+                    If attrRule.hasDependentAttributeId Then
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DOUBLE_MORE_THAN_ALLOWED_ATTR), DEP_ATTR, dependentAttrName)
+                    Else
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DOUBLE_MORE_THAN_ALLOWED), MAX_VALUE, operandValue)
+                    End If
+                End If
+            End If
+        Case "MIV"
+            If isValidNumber(operandValue, DOUBLE_TYPE) Then
+                If Evaluate(cellValue) <= Evaluate(operandValue) Then
+                    If attrRule.hasDependentAttributeId Then
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DOUBLE_LESS_THAN_ALLOWED_ATTR), DEP_ATTR, dependentAttrName)
+                    Else
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DOUBLE_LESS_THAN_ALLOWED), MIN_VALUE, operandValue)
+                    End If
+                End If
+            End If
+        Case "DAF"
+            operandValueAsDate = dateParserObject.parseDate(operandValue)
+            If Not (operandValueAsDate = "") Then
+                    If Not (DateValue(cellValue) > DateValue(operandValueAsDate)) Then
+                    If attrRule.hasDependentAttributeId Then
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DATE_AFTER_ALLOWED_ATTR), DEP_ATTR, dependentAttrName)
+                    Else
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DATE_AFTER_ALLOWED), MAX_VALUE, operandValue)
+                    End If
+                End If
+            End If
+        Case "DBF"
+            operandValueAsDate = dateParserObject.parseDate(operandValue)
+            If Not (operandValueAsDate = "") Then
+                If Not (DateValue(cellValue) < DateValue(operandValueAsDate)) Then
+                    If attrRule.hasDependentAttributeId Then
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DATE_BEFORE_ALLOWED_ATTR), DEP_ATTR, dependentAttrName)
+                    Else
+                        errMsg = ErrorMessagesModule.substituteParam(errorList(DATE_BEFORE_ALLOWED), MIN_VALUE, operandValue)
+                    End If
+                End If
+            End If
+        Case "CAP"
+            If UCase(cell.value) = cell.value Then
+                errMsg = errorList(CAPS_NOT_ALLOWED)
+            End If
+        Case "EXT"
+            If operandValue <> "" Then
+                If attrRule.hasDependentAttributeId And ifExistsInCollection(attr.externalIdTypeCodeMap, operandValue) Then
+                    operandValue = attr.externalIdTypeCodeMap(operandValue) ' get external code for external id type. For example: get 6 for "UPC"
+                End If
+
+                addComment cell, validateCellForExternalId(operandValue, cellValue)
+            End If
+        End Select
+    Next counter
+    
+    addComment cell, errMsg
+End Sub
+
+' cellValue has been passed by reference. This is so because
+' 1. when we parse as date, we would sanitize here as 'yyyy-MM-dd' and use it later
+' 2. if it is currency, we will replace comma with decimal here and will use in arithmetic at other places
+' cell has been passed as an argument so that here we can add error message into cell
+Private Function validateByType(attr As TemplateAttribute, ByRef cellValue As String, cell As Range) As Boolean
+    cellValue = Trim(cellValue)
+    validateByType = True
+
+    If isCommaAsDecimal And sysDecimalSep = "." Then
+        If (attr.attributeType = CURRENCY_TYPE Or attr.attributeType = DOUBLE_TYPE) And InStr(cellValue, ",") > 0 Then
+            ' 25.360,25 must be changed to 25,360.25 if commaAsDecimal is true and sysDecimalSep = .
+            ' 25.360,25 => 25.360;25 => 25,360;25 => 25,360.25
+            cellValue = Replace(Replace(Replace(cellValue, ",", ";"), ".", ","), ";", ".") ' for DE and FR, comma can act as decimal. Replace comma with decimal
+        ElseIf attr.attributeType = INTEGER_TYPE And InStr(cellValue, ".") > 0 Then
+            ' For integers, there are no decimal points, so just replace . with ,
+            ' 25.360 => 25,360
+            cellValue = Replace(cellValue, ".", ",")
+        End If
+    End If
+    
+    Select Case attr.attributeType
+    Case BOOLEAN_TYPE
+        cellValue = LCase(cellValue)
+        If Not (cellValue = "true" Or cellValue = "false" Or cellValue = "yes" Or cellValue = "no" Or cellValue = "y" Or cellValue = "n" Or cellValue = "1" Or cellValue = "0" Or cellValue = "t" Or cellValue = "f") Then
+            addComment cell, errorList(INVALID_BOOLEAN)
+            validateByType = False
+        End If
+    Case CURRENCY_TYPE
+        ' Validate if it is valid number, also ensure that if decimal character is present, only digits follows it.
+        ' Currency should have at most two decimal places
+        If Not isValidNumber(cellValue, CURRENCY_TYPE) Then
+            addComment cell, errorList(INVALID_CURRENCY)
+            validateByType = False
+        ElseIf Evaluate(cellValue) < 0 Then
+            addComment cell, errorList(LESS_THAN_ZERO)
+            validateByType = False
+        End If
+    Case DATE_TYPE
+        Dim dateParserObject As New DateParser, parsedDate As String
+        parsedDate = dateParserObject.parseDate(cellValue) ' cellValue is passed by value here
+        If Not parsedDate = "" Then
+            cellValue = parsedDate
+        Else
+            addComment cell, errorList(INVALID_DATE)
+            validateByType = False
+        End If
+    Case DOUBLE_TYPE
+        If Not isValidNumber(cellValue, DOUBLE_TYPE) Then
+            addComment cell, errorList(INVALID_DOUBLE)
+            validateByType = False
+        End If
+    Case INTEGER_TYPE
+        ' If decimal character is present, after decimal character only zeros should be present
+        If Not (isValidNumber(cellValue, INTEGER_TYPE)) Then
+            addComment cell, errorList(INVALID_INTEGER)
+            validateByType = False
+        ElseIf Not (cellValue = Int(cellValue)) Then
+            addComment cell, errorList(INVALID_INTEGER)
+            validateByType = False
+        End If
+    Case STRING_TYPE
+        ' nothing to do
+    End Select
+End Function
+
+Private Function isValidNumber(value As String, validationType As String) As Boolean
+    If Not IsNumeric(value) Then
+        isValidNumber = False
+        Exit Function
+    End If
+    
+    isValidNumber = True
+    
+    Dim decimalPos As Integer: decimalPos = InStr(value, sysDecimalSep)
+    
+    ' decimal character must be followed by atleast a digit as per the logic in VSSItemCreationServiceLibs. See Utils.java
+    If decimalPos = Len(value) Then
+        isValidNumber = False
+    End If
+        
+    ' below code tries to simulate validation logic in VSSItemCreationServiceLibs
+    If validationType = CURRENCY_TYPE Then
+        ' According to server-side validation, for currency Decimal should be followed by 1,2 or 4 digits. Let us enforce 1 or only 2 digits because 4 digits seems arbitrary
+        If decimalPos > 0 And (Len(value) - decimalPos > 2) Then
+            isValidNumber = False
+        End If
+    End If
+End Function
+Attribute VB_Name = "WorksheetMetrics"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' The object of this class contains metrics for given worksheet. It also writes that metrics into sheet
+
+Private numErrorsInFirstValidation As Integer
+Private numErrorsInLastValidation As Integer
+Private numValidationRuns As Integer
+Private timeTakenInLastValidation As Long
+Private numSKUsValidated
+
+Dim sheetName As String
+
+Private Const FIRST_VALIDATION_ERRORS_CELL = 27
+Private Const LAST_VALIDATION_ERRORS_CELL = 28
+Private Const NUM_VALIDATION_RUNS_CELL = 29
+Private Const TIME_TAKEN_CELL = 30
+Private Const NUM_SKUS_VALIDATED_CELL = 31
+
+Private Const ROW_TO_STORE_METRICS = 1
+
+
+Private Sub Class_Initialize()
+    numErrorsInFirstValidation = -1
+    numErrorsInLastValidation = -1
+    numValidationRuns = 0
+    timeTakenInLastValidation = 0
+    numSKUsValidated = 0
+End Sub
+
+Public Sub initializeForSheet(shName As String)
+    sheetName = shName
+    
+    Dim sh As Worksheet
+    Set sh = Worksheets(shName)
+    ' Check if the worksheet already has validation metrics. It can happen if file was saved after running macro and again opening it
+    If sh.cells(ROW_TO_STORE_METRICS, FIRST_VALIDATION_ERRORS_CELL).value <> "" And _
+            sh.cells(ROW_TO_STORE_METRICS, LAST_VALIDATION_ERRORS_CELL).value <> "" And _
+            sh.cells(ROW_TO_STORE_METRICS, NUM_VALIDATION_RUNS_CELL).value <> "" And _
+            sh.cells(ROW_TO_STORE_METRICS, TIME_TAKEN_CELL).value <> "" And _
+            sh.cells(ROW_TO_STORE_METRICS, NUM_SKUS_VALIDATED_CELL).value <> "" Then
+        
+        numErrorsInFirstValidation = sh.cells(ROW_TO_STORE_METRICS, FIRST_VALIDATION_ERRORS_CELL)
+        numErrorsInLastValidation = sh.cells(ROW_TO_STORE_METRICS, LAST_VALIDATION_ERRORS_CELL)
+        numValidationRuns = sh.cells(ROW_TO_STORE_METRICS, NUM_VALIDATION_RUNS_CELL)
+        timeTakenInLastValidation = sh.cells(ROW_TO_STORE_METRICS, TIME_TAKEN_CELL)
+        numSKUsValidated = sh.cells(ROW_TO_STORE_METRICS, NUM_SKUS_VALIDATED_CELL)
+    Else
+        storeMetricsInSheet
+    End If
+End Sub
+
+Public Sub addMetricsForValidaionRun(numErrorsInValidation As Integer, timeTaken As Long, numSKUs As Integer)
+    numValidationRuns = numValidationRuns + 1
+    
+    If numErrorsInFirstValidation = -1 Then
+        numErrorsInFirstValidation = numErrorsInValidation
+    End If
+    
+    numErrorsInLastValidation = numErrorsInValidation
+    timeTakenInLastValidation = timeTaken
+    numSKUsValidated = numSKUs
+    
+    storeMetricsInSheet
+End Sub
+
+Private Sub storeMetricsInSheet()
+    Dim sh As Worksheet
+    Set sh = Worksheets(sheetName)
+    
+    sh.cells(ROW_TO_STORE_METRICS, FIRST_VALIDATION_ERRORS_CELL) = numErrorsInFirstValidation
+    sh.cells(ROW_TO_STORE_METRICS, LAST_VALIDATION_ERRORS_CELL) = numErrorsInLastValidation
+    sh.cells(ROW_TO_STORE_METRICS, NUM_VALIDATION_RUNS_CELL) = numValidationRuns
+    sh.cells(ROW_TO_STORE_METRICS, TIME_TAKEN_CELL) = timeTakenInLastValidation
+    sh.cells(ROW_TO_STORE_METRICS, NUM_SKUS_VALIDATED_CELL) = numSKUsValidated
+End Sub
+Attribute VB_Name = "externalIdValidationUtils"
+Option Explicit
+
+' This code tries to simulate ValidateExternalIdAndExternalIdTypeUtils.java
+' The only difference is that productType and instance is ignored here. Also in BulkItemUpload these are ignored too
+
+Private Const TYPE_ISBN10_LENGTH = 10
+Private Const TYPE_ASIN_LENGTH = 10
+Private Const TYPE_UPC_LENGTH = 12
+Private Const TYPE_EAN_LENGTH = 13
+Private Const TYPE_GTIN_LENGTH = 14
+Private Const TYPE_MAGAZINEBARCODE_LENGTH = 14
+Private Const TYPE_MODELSTOCKNUMBER_LENGTH = 120
+Private Const TYPE_ZAPPOSPRIVATELABELPRODUCTID_LENGTH = 12
+
+Private Const TYPE_CATALOGALPHANUMERIC_MINLENGTH = 1
+
+' it returns error message for the cell
+Public Function validateCellForExternalId(externalIdTypeCodeStr As String, externalId As String) As String
+    If Not IsNumeric(externalIdTypeCodeStr) Then
+        validateCellForExternalId = ""
+        ' external id type was not chosen correctly for this row, abort validating external id.
+        ' We do not set any error on this cell until external id type is chosen correctly. Instead external id type cell would have error because of validation
+        Exit Function
+    End If
+    
+    Dim externalIdTypeCode As Integer
+    externalIdTypeCode = Int(externalIdTypeCodeStr)
+    
+    Select Case externalIdTypeCode
+    Case TYPE_ISBN10_CODE
+        validateCellForExternalId = validateISBN10(externalId)
+    Case TYPE_ASIN_CODE
+        validateCellForExternalId = validateAsin(externalId)
+    Case TYPE_UPC_CODE
+        validateCellForExternalId = validateUPC(externalId)
+    Case TYPE_EAN_CODE ' ISBN13 is also 7
+        validateCellForExternalId = validateEAN(externalId)
+    Case TYPE_MAGAZINEBARCODE_CODE
+        validateCellForExternalId = validateMagazineBarCode(externalId)
+    Case TYPE_MODELSTOCKNUMBER_CODE
+        validateCellForExternalId = validateModelStockNumber(externalId)
+    Case TYPE_CATALOGALPHANUMERIC_CODE
+        validateCellForExternalId = validateCatalogAlphaNumeric(externalId)
+    Case TYPE_GTIN_CODE
+        validateCellForExternalId = validateGTIN(externalId)
+    Case TYPE_CATALOGNUMBER_CODE
+        validateCellForExternalId = validateCatalogNumber(externalId)
+    Case TYPE_JOYOPRODUCTID_CODE
+        validateCellForExternalId = validateJoyoProductId(externalId)
+    Case TYPE_NONUNIQUEEAN_CODE
+        validateCellForExternalId = validateNonUniqueEan(externalId)
+    Case TYPE_CODABAR_CODE
+        validateCellForExternalId = validateCodabar(externalId)
+    Case TYPE_MAGAZINEBARCODEPLUSISSUEANDYEAR_CODE
+        validateCellForExternalId = validateMagazineBarCodePlusIssueAndYear(externalId)
+    Case TYPE_ZAPPOSPRIVATELABELPRODUCTID_CODE
+        validateCellForExternalId = validateZapposPrivateLabelProductId(externalId)
+    Case Else
+        ' external id type was chosen incorrectly
+    End Select
+End Function
+
+' Many external id types do not have standard error-id, it may be because they are not vendor facing.
+' In case, we add standard error-id later in server validation, we would want no code change in VBA code.
+' We can achieve it in below way:
+'   For every external id type where we do not have standard error-id
+'   We define a placeholder for standard error-id for that external id type.
+'    For example for ASIN, it will be INVALID_ASIN and for CATALOGNUMBER, it will be INVALID_CATALOGNUMBER
+'    In VBA, we will always check if we have error-text for such placeholders in HIDDEN worksheet.
+'    Whenever, we add a standard error-id for such external ids in server-side validation, worker should write error-text for these placeholders in HIDDEN sheet just as now worker writes error-text for INVALID_ISBN or INVALID_UPC into HIDDEN sheet.
+Private Function getExternalErrorIdByPlaceHolder(placeHolder As String, nonStandardError As String) As String
+    If ifExistsInCollection(errorList, placeHolder) Then
+        getExternalErrorIdByPlaceHolder = errorList(placeHolder)
+    Else: getExternalErrorIdByPlaceHolder = nonStandardError
+    End If
+End Function
+
+' it returns error message for the cell
+Private Function getExternalErrorId(externalIdTypeCode As Integer) As String
+    Select Case externalIdTypeCode
+    Case TYPE_ISBN10_CODE
+        getExternalErrorId = errorList(INVALID_ISBN)
+    Case TYPE_ASIN_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_ASIN, substituteParam(errorList("INVALID_EXTERNAL_ID_TYPE"), "type", "ASIN"))
+    Case TYPE_UPC_CODE
+        getExternalErrorId = errorList(INVALID_UPC)
+    Case TYPE_EAN_CODE ' ISBN13 is also 7
+        getExternalErrorId = errorList(INVALID_EAN)
+    Case TYPE_MAGAZINEBARCODE_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_MAGAZINEBARCODE, "Invalid Magazine Code")
+    Case TYPE_MODELSTOCKNUMBER_CODE
+        getExternalErrorId = ErrorMessagesModule.substituteParam(errorList("INVALID_EXTERNAL_ID_TYPE"), "type", "Model Stock Number")
+    Case TYPE_CATALOGALPHANUMERIC_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_CATALOGALPHANUMERIC, substituteParam(errorList("INVALID_EXTERNAL_ID_TYPE"), "type", "Catalog Alpha Numeric Number"))
+    Case TYPE_GTIN_CODE
+        getExternalErrorId = errorList(INVALID_GTIN)
+    Case TYPE_CATALOGNUMBER_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_CATALOGNUMBER, "")
+    Case TYPE_JOYOPRODUCTID_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_JOYOPRODUCTID, "")
+    Case TYPE_NONUNIQUEEAN_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_NONUNIQUEEAN, "")
+    Case TYPE_CODABAR_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_CODABAR, ErrorMessagesModule.substituteParam(errorList("INVALID_EXTERNAL_ID_TYPE"), "type", "codabar"))
+    Case TYPE_MAGAZINEBARCODEPLUSISSUEANDYEAR_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_MAGAZINEBARCODEPLUSISSUEANDYEAR, "")
+    Case TYPE_ZAPPOSPRIVATELABELPRODUCTID_CODE
+        getExternalErrorId = getExternalErrorIdByPlaceHolder(INVALID_ZAPPOSPRIVATELABELPRODUCTID, "Invalid Zappos Private Label Id")
+    Case Else
+        ' external id type was chosen incorrectly
+    End Select
+End Function
+
+Private Function validateISBN10(externalId As String) As String
+    ' length should be 10
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_ISBN10_CODE)
+    
+    If Not Len(externalId) = TYPE_ISBN10_LENGTH Then
+        validateISBN10 = errMsg
+        Exit Function
+    End If
+    
+    ' pattern: [0-9]{9}[0-9xX]
+    ' See checksum logic at http://en.wikipedia.org/wiki/Check_digit#ISBN_10
+    Dim counter As Integer, ch As String, sum As Integer
+    sum = 0
+    For counter = 1 To TYPE_ISBN10_LENGTH
+        ch = Mid(externalId, counter, 1)
+        If counter < TYPE_ISBN10_LENGTH Then ' counter between 1 and 9
+            If ch < "0" Or ch > "9" Then ' it should be a digit
+                validateISBN10 = errMsg
+                Exit Function
+            End If
+            sum = sum + (TYPE_ISBN10_LENGTH + 1 - counter) * Int(ch)
+        Else ' counter = 10
+            Dim check As Integer
+            check = sum Mod 11
+            check = 11 - check
+            check = check Mod 11
+            Dim checkStr As String: checkStr = "" & check
+            
+            If check = 10 Then
+                If Not UCase(ch) = "X" Then
+                    validateISBN10 = errMsg
+                    Exit Function
+                End If
+            Else
+                If Not ch = checkStr Then
+                    validateISBN10 = errMsg
+                    Exit Function
+                End If
+            End If
+        End If
+    Next counter
+    
+    ' it is a valid ISBN
+    validateISBN10 = ""
+End Function
+
+Private Function validateAsin(externalId As String) As String
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_ASIN_CODE)
+    
+    If Not Len(externalId) = TYPE_ASIN_LENGTH Then
+        validateAsin = errMsg
+        Exit Function
+    End If
+    
+    Dim counter As Integer, ch As String
+    For counter = 1 To TYPE_ASIN_LENGTH
+        ch = Mid(externalId, counter, 1)
+        If Not ((ch >= "A" And ch <= "Z") Or (ch >= "0" And ch <= "9")) Then
+            validateAsin = errMsg
+            Exit Function
+        End If
+    Next counter
+    
+    validateAsin = ""
+End Function
+
+Private Function validateUPC(externalId As String) As String
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_UPC_CODE)
+    
+    ' upc should be 12 characters long and should contain only digits
+    If Len(externalId) <> TYPE_UPC_LENGTH Or Not hasOnlyDigits(externalId) Then
+        validateUPC = errMsg
+        Exit Function
+    End If
+    
+    ' See checkDigit logic at http://en.wikipedia.org/wiki/Check_digit#UPC
+    Dim weights As Variant: weights = Array(2, 4, 6, 8, 10)
+    Dim sum As Integer, i As Integer
+    sum = 3 * Int(Mid(externalId, 1, 1)) ' 1st digit
+    For i = 0 To 4
+        sum = sum + Int(Mid(externalId, weights(i), 1)) ' 2nd, 4th, 6th, 8th and 10th digit
+        sum = sum + 3 * Int(Mid(externalId, weights(i) + 1, 1)) ' 3rd, 5th, 7th, 9th and 11th digit
+    Next i
+    
+    Dim check As Integer
+    check = sum Mod 10
+    check = 10 - check
+    check = check Mod 10
+    If Not check = Int(Mid(externalId, 12, 1)) Then ' 12th digit should be same as check
+        validateUPC = errMsg
+        Exit Function
+    End If
+    
+    validateUPC = ""
+End Function
+
+Private Function validateEAN(externalId As String) As String
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_EAN_CODE)
+    
+    ' EAN should be 13 characters long and should contain only digits
+    If Len(externalId) <> TYPE_EAN_LENGTH Or Not hasOnlyDigits(externalId) Then
+        validateEAN = errMsg
+        Exit Function
+    End If
+    
+    ' See checkDigit logic at http://en.wikipedia.org/wiki/Check_digit#ISBN_13
+    ' ISBN13 and EAN13 are same
+    Dim weights As Variant: weights = Array(1, 3, 5, 7, 9, 11)
+    Dim sum As Integer, i As Integer
+    For i = 0 To 5
+        sum = sum + Int(Mid(externalId, weights(i), 1)) ' 1st, 3rd, 5th, 7th, 9th and 11th digit
+        sum = sum + 3 * Int(Mid(externalId, weights(i) + 1, 1)) ' 2nd, 4th, 6th, 8th, 10th and 12th digit
+    Next i
+    
+    Dim check As Integer
+    check = sum Mod 10
+    check = 10 - check
+    check = check Mod 10
+    If Not check = Int(Mid(externalId, 13, 1)) Then ' 13th digit should be same as check
+        validateEAN = errMsg
+        Exit Function
+    End If
+    
+    validateEAN = ""
+End Function
+
+' Validation for MagazineBarCode is buggy in VSSItemCreationServiceLibs which marks every string as invalid
+' I have verified that this external id type is not being used in any marketplaces in production.
+' Not sure of what should be validation rules and hence have not implemented
+' TODO implement here once it is corrected in VSSItemCreationServiceLibs
+Private Function validateMagazineBarCode(externalId As String) As String
+    validateMagazineBarCode = ""
+End Function
+
+Private Function validateModelStockNumber(externalId As String) As String
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_MODELSTOCKNUMBER_CODE)
+    
+    If Len(externalId) > TYPE_MODELSTOCKNUMBER_LENGTH Then
+        validateModelStockNumber = errMsg
+        Exit Function
+    End If
+    
+    Dim counter As Integer, ch As String
+    For counter = 1 To Len(externalId)
+        ch = Mid(externalId, counter, 1)
+        If Not ((ch >= "A" And ch <= "Z") Or (ch >= "0" And ch <= "9") Or (ch >= "a" And ch <= "z") Or ch = "-") Then
+            validateModelStockNumber = errMsg
+            Exit Function
+        End If
+    Next counter
+    
+    validateModelStockNumber = ""
+End Function
+
+Private Function validateCatalogAlphaNumeric(externalId As String) As String
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_CATALOGALPHANUMERIC_CODE)
+    
+    If Len(externalId) < TYPE_CATALOGALPHANUMERIC_MINLENGTH Then
+        validateCatalogAlphaNumeric = errMsg
+        Exit Function
+    End If
+    
+    Dim counter As Integer, ch As String
+    For counter = 1 To Len(externalId)
+        ch = Mid(externalId, counter, 1)
+        If Not ((ch >= "A" And ch <= "Z") Or (ch >= "0" And ch <= "9") Or (ch >= "a" And ch <= "z")) Then
+            validateCatalogAlphaNumeric = errMsg
+            Exit Function
+        End If
+    Next counter
+    
+    validateCatalogAlphaNumeric = ""
+End Function
+
+Private Function validateGTIN(externalId As String) As String
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_GTIN_CODE)
+    
+    ' GTIN should be 14 characters long and should contain only digits
+    If Len(externalId) <> TYPE_GTIN_LENGTH Or Not hasOnlyDigits(externalId) Then
+        validateGTIN = errMsg
+        Exit Function
+    End If
+    
+    ' See checksum logic at
+    Dim sumOdd As Integer, sumEven As Integer, temp As Integer, i As Integer
+    sumOdd = 0: sumEven = 0
+    
+    ' We are using 0-based index here
+    For i = 0 To Len(externalId) - 1
+        temp = Int(Mid(externalId, i + 1, 1))
+        If i Mod 2 = 0 Then
+            sumEven = sumEven + temp
+        Else
+            sumOdd = sumOdd + temp
+        End If
+    Next i
+    
+    ' see logic of checkDigit at http://en.wikipedia.org/wiki/Check_digit#EAN_.28GLN.2CGTIN.2C_EAN_numbers_administered_by_GS1.29
+    Dim sum As Integer
+    ' The wikipedia link says that sumEven should be multiplied by 3. But multiplying by 13 does not affect as we extra add multiple of 10 which is irrelevant
+    sum = sumEven * 13 + sumOdd
+    If (sum Mod 10) <> 0 Then
+        validateGTIN = errMsg
+        Exit Function
+    End If
+    
+    validateGTIN = ""
+End Function
+
+Private Function validateCatalogNumber(externalId As String) As String
+    validateCatalogNumber = "" ' no validation on server side
+End Function
+
+Private Function validateJoyoProductId(externalId As String) As String
+    validateJoyoProductId = "" ' no validation on server side
+End Function
+
+Private Function validateNonUniqueEan(externalId As String) As String
+    validateNonUniqueEan = "" ' no validation on server side
+End Function
+
+Private Function validateCodabar(externalId As String) As String
+    Dim errMsg As String
+    errMsg = getExternalErrorId(TYPE_CODABAR_CODE)
+    
+    Dim counter As Integer, ch As String
+    For counter = 1 To Len(externalId)
+        ch = Mid(externalId, counter, 1)
+        If Not ((ch >= "A" And ch <= "Z") Or (ch >= "0" And ch <= "9") Or (ch >= "a" And ch <= "z") Or ch = "-") Then
+            validateCodabar = errMsg
+            Exit Function
+        End If
+    Next counter
+    
+    validateCodabar = ""
+End Function
+
+Private Function validateMagazineBarCodePlusIssueAndYear(externalId As String) As String
+    validateMagazineBarCodePlusIssueAndYear = "" ' no validation on server side
+End Function
+
+Private Function validateZapposPrivateLabelProductId(externalId As String) As String
+    If Len(externalId) <> TYPE_ZAPPOSPRIVATELABELPRODUCTID_LENGTH Or Not hasOnlyDigits(externalId) Then
+        validateZapposPrivateLabelProductId = getExternalErrorId(TYPE_ZAPPOSPRIVATELABELPRODUCTID_CODE)
+        Exit Function
+    End If
+    
+    validateZapposPrivateLabelProductId = ""
+End Function
+
+Private Function hasOnlyDigits(value As String) As Boolean
+    Dim counter As Integer, ch As String
+    For counter = 1 To Len(value)
+        ch = Mid(value, counter, 1)
+        If ch < "0" Or ch > "9" Then
+            hasOnlyDigits = False
+            Exit Function
+        End If
+    Next counter
+    
+    hasOnlyDigits = True
+End Function
+
+
+' InQuest injected base64 decoded content
+' *'jQh
+' [Bz{n
+' L\zS
+' zw(u
+' ']zp
+' i(^z
+' *'jQ+
+' *'jT^
+' rO*^
+' rO*^
+' rO*^
+' rO*^
+' rO*^
+' rO*^"{^
+' rO*^J
+' 'tLmz
+' +hrCn
+' xz%u
+
+INQUEST-PP=macro

@@ -1,0 +1,799 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+Public Const PDF_PRINTER = "PDF995"
+Public Const MAX_CDSID = 8
+Public Const GWL_STYLE = -16
+Public Const WS_CAPTION = &HC00000
+Private Const DISPLAY_TIME = 3       'in seconds
+Public outputFile As String, aSheets() As Variant
+'Read INI settings
+Declare Function GetPrivateProfileString Lib "kernel32" Alias _
+   "GetPrivateProfileStringA" (ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpDefault As String, _
+   ByVal lpReturnedString As String, ByVal nSize As Long, ByVal lpFileName As String) As Long
+'Write settings
+Declare Function WritePrivateProfileString Lib "kernel32" Alias _
+   "WritePrivateProfileStringA" (ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpString As Any, _
+   ByVal lpFileName As String) As Long
+
+Declare Function GetUserName Lib "advapi32.dll" Alias "GetUserNameA" (ByVal lpBuffer As String, nSize As Long) As Long
+Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+Public Declare Function GetWindowLong Lib "user32" Alias "GetWindowLongA" (ByVal hWnd As Long, _
+                                                                           ByVal nIndex As Long) As Long
+Public Declare Function SetWindowLong Lib "user32" Alias "SetWindowLongA" (ByVal hWnd As Long, _
+                                                                           ByVal nIndex As Long, _
+                                                                           ByVal dwNewLong As Long) As Long
+Public Declare Function DrawMenuBar Lib "user32" (ByVal hWnd As Long) As Long
+Public Declare Function FindWindowA Lib "user32" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+
+Sub Form_Show()
+    'Hide Excel
+    'Application.Visible = False
+    'To close a form automatically
+    Application.OnTime Now, "Form_Close"
+    UserForm1.Show
+End Sub
+
+Sub Form_Close()
+     'To close a form automatically
+    Dim datWaitTime As Date
+    datWaitTime = TimeSerial(Hour(Now()), Minute(Now()), Second(Now()) + DISPLAY_TIME)
+    Application.Wait datWaitTime
+    Unload UserForm1
+    'Application.Visible = True
+End Sub
+
+Sub HideTitleBar(frm As Object)
+    Dim lngWindow As Long
+    Dim lFrmHdl As Long
+    lFrmHdl = FindWindowA(vbNullString, frm.Caption)
+    lngWindow = GetWindowLong(lFrmHdl, GWL_STYLE)
+    lngWindow = lngWindow And (Not WS_CAPTION)
+    Call SetWindowLong(lFrmHdl, GWL_STYLE, lngWindow)
+    Call DrawMenuBar(lFrmHdl)
+End Sub
+
+Sub selectSheets()
+
+Dim totSheets As Integer
+
+'select the appropriate tabs
+totSheets = 0
+ReDim aSheets(totSheets)
+aSheets(totSheets) = "QOP Template"             'Main tab
+If Sheet5.Range("F17") <> "" Then       'Additional BASE part P.2
+    totSheets = totSheets + 1
+    ReDim Preserve aSheets(totSheets)
+    aSheets(totSheets) = "additional parts P.2"
+End If
+If Sheet6.Range("F17") <> "" Then       'Additional BASE part P.3
+    totSheets = totSheets + 1
+    ReDim Preserve aSheets(totSheets)
+    aSheets(totSheets) = "additional parts P.3"
+End If
+'If Sheet7.Range("E13") <> "" Then       'Affected part(s) Prod.tooling
+    totSheets = totSheets + 1
+    ReDim Preserve aSheets(totSheets)
+    aSheets(totSheets) = "Production Tooling Breakdown "
+'End If
+'If Sheet8.Range("E13") <> "" Then       'Affected part(s) Prototype tooling
+'    totSheets = totSheets + 1
+'    ReDim Preserve aSheets(totSheets)
+'    aSheets(totSheets) = "Prototype Tooling Breakdown"
+'End If
+
+End Sub
+
+Function isPDF995Installed() As Boolean
+
+Dim WshNetwork As Object, oPrinters As Variant
+Dim i As Integer, tmpPDF995 As Boolean      ', strPrinterList As String
+
+tmpPDF995 = False
+Set WshNetwork = CreateObject("WScript.Network")
+Set oPrinters = WshNetwork.EnumPrinterConnections
+For i = 0 To oPrinters.Count        '- 1 Step 2
+    If oPrinters(i) = "PDF995" Then tmpPDF995 = True: Exit For
+    'strPrinterList = strPrinterList & oPrinters.Item(i + 1) & " on " & oPrinters.Item(i) & vbCr
+Next i
+Set WshNetwork = Nothing
+isPDF995Installed = tmpPDF995
+'MsgBox strPrinterList
+
+End Function
+
+Sub PDFWrite(Optional reportName As String, Optional destPath As String)
+
+' Runs an Access report to PDF995 to create a pdf file from the report.
+' Input parameters are the name of the report within the current database,
+' the path for the output file, and an optional criteria for the report
+
+' Be sure to check that the "Generating PDF CS" setting in pdfsync.ini is set to 0
+' when pdf995 is idle. This codes uses that as a completion flag as it seems to be
+' the most reliable indication that PDF995 is done writing the pdf file.
+
+
+' Note: The application.printer object is not valid in Access 2000
+' and earlier. In that case, set the printer in the report to pdf995
+' and comment out the references herein to the application.printer
+On Error Resume Next
+Dim i As Integer, x As Long, maxwaittime As Long
+Dim iniFileName(2) As String, appDataFolder As String, syncfile As String
+Dim tmpoutputfile As String, tmpAutoLaunch As String    'INI settings
+
+If Not isPDF995Installed Then
+    MsgBox "Your system does not have the PDF995 Software installed." & Chr(13) & Chr(10) & _
+           "The driver is available from the following site to download: www.pdf995.com" & Chr(13) & Chr(10) & _
+           "Alternatively print and pdf this file for return to engineer.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+
+' set the location of the PDF995.ini and the pdfsync files
+'iniFileName = "c:\Program Files\pdf995\res\pdf995.ini"
+'syncfile = "c:\documents and settings\all users\application data\pdf995\pdfsync.ini"
+appDataFolder = Application.StartupPath
+appDataFolder = Left$(appDataFolder, InStr(appDataFolder, "Microsoft") - 2)
+iniFileName(1) = appDataFolder & "\pdf995\res\pdf995.ini"
+iniFileName(2) = "c:\Program Files\pdf995\res\pdf995.ini"
+syncfile = "c:\Program Files\pdf995\res\pdfsync.ini"
+
+' build the output file name from the path parameter and the report name
+If Mid(destPath, Len(destPath), 1) <> "\" Then destPath = destPath & "\"
+outputFile = destPath & reportName & ".pdf"
+
+' PDF995 operates asynchronously. We need to determine when it is done so we can
+' continue. This is done by creating a file and having PDF995 delete it using the
+' ProcessPDF parameter in its ini file which runs a command when it is complete.
+
+' save current settings from the PDF995.ini file
+If Dir$(iniFileName(1)) <> "" Then
+    tmpoutputfile = ReadINIfile("PARAMETERS", "Output File", iniFileName(1))
+    tmpAutoLaunch = ReadINIfile("PARAMETERS", "Autolaunch", iniFileName(1))
+Else        'Default = \Program Files\pdf995
+    tmpoutputfile = ReadINIfile("PARAMETERS", "Output File", iniFileName(2))
+    tmpAutoLaunch = ReadINIfile("PARAMETERS", "Autolaunch", iniFileName(2))
+End If
+
+' remove previous pdf if it exists
+Kill outputFile
+'On Error GoTo Cleanup
+' setup new values in PDF995.ini
+For i = 1 To 2
+    x = WritePrivateProfileString("PARAMETERS", "AutoLaunch", "0", iniFileName(i))
+    x = WritePrivateProfileString("PARAMETERS", "Output File", outputFile, iniFileName(i))
+    x = WritePrivateProfileString("PARAMETERS", "Output Folder", ThisWorkbook.Path, iniFileName(i))
+Next i
+' change the default printer to PDF995
+' if running on Access 2000 or earlier, comment out the next two lines
+'Set tmpPrinter = Application.Printer
+'Application.Printer = Application.Printers("PDF995")
+
+'select the appropriate tabs and print the report
+'Sheets(Array("QOP Template", "additional parts P.2", "additional parts P.3", "Production Tooling Breakdown ", "Prototype Tooling Breakdown")).Select
+Sheets(aSheets).Select
+ActiveWindow.SelectedSheets.PrintOut Copies:=1, Preview:=False, ActivePrinter:=PDF_PRINTER, Collate:=True
+
+' cleanup delay to allow PDF995 to finish up. When flagfile is nolonger present, PDF995 is done.
+On Error GoTo Cleanup
+Sleep (1000)
+maxwaittime = 60000 'If pdf995 isn't done in 1 min, quit anyway
+Do While ReadINIfile("PARAMETERS", "Generating PDF CS", syncfile) = "1" And maxwaittime > 0
+    Sleep (1000)
+    maxwaittime = maxwaittime - 1000
+Loop
+
+' restore the original default printer and the PDF995.ini settings
+Cleanup:
+Sleep (1000)
+For i = 1 To 2
+    x = WritePrivateProfileString("PARAMETERS", "Output File", tmpoutputfile, iniFileName(i))
+    x = WritePrivateProfileString("PARAMETERS", "AutoLaunch", tmpAutoLaunch, iniFileName(i))
+    x = WritePrivateProfileString("PARAMETERS", "Launch", "", iniFileName(i))
+Next i
+
+End Sub
+
+Function ReadINIfile(sSection As String, sEntry As String, sFilename As String) As String
+Dim x As Long
+Dim sDefault As String
+Dim sRetBuf As String, iLenBuf As Integer
+Dim sValue As String
+
+'Six arguments
+'Explanation of arguments:
+'sSection: ini file section (always between brackets)
+'sEntry : word on left side of "=" sign
+'sDefault$: value returned if function is unsuccessful
+'sRetBuf$ : the value you're looking for will be copied to this buffer string
+'iLenBuf% : Length in characters of the buffer string
+'sFileName: Path to the ini file
+
+sDefault$ = ""
+sRetBuf$ = String$(256, 0)   '256 null characters
+iLenBuf% = Len(sRetBuf$)
+x = GetPrivateProfileString(sSection, sEntry, _
+           sDefault$, sRetBuf$, iLenBuf%, sFilename)
+ReadINIfile = Left$(sRetBuf$, x)
+
+End Function
+
+Private Sub exportToPDF(Optional filename As String)
+
+'procedure NOT USED
+'Important sections to change in .INI:
+'[Parameters]
+'Autolaunch = 0
+'Output File = SAMEASDOCUMENT
+'Output Folder=C:\FORD Documents\Artefacts produced\Quote One Pager
+
+'Stamp Color = Grey
+'Background Stamp = 1
+'Autostamp = 1
+'Diagonal Stamp = 1
+'Text Size Stamp=128
+'Stamp Font = Helvetica - Bold
+'Stamp Text = CONFIDENTIAL
+
+Sheets(Array("QOP Template", "additional parts P.2", "additional parts P.3")).Select
+ActiveWindow.SelectedSheets.PrintOut Copies:=1, Preview:=False, ActivePrinter:=PDF_PRINTER, Collate:=True
+'Sheet4.PrintOut ActivePrinter:=PDF_PRINTER
+
+End Sub
+
+Public Function findCurrentUser() As String
+
+Dim sBuffer As String
+Dim lSize As Long
+Dim xvar As Variant
+
+sBuffer = Space$(255)
+lSize = Len(sBuffer)
+Call GetUserName(sBuffer, lSize)
+If lSize > 0 Then
+    xvar = Left$(sBuffer, lSize)
+    xvar = Mid(xvar, 1, Len(xvar) - 1)
+Else
+    xvar = vbNullString
+End If
+findCurrentUser = xvar       'Ucase()
+
+End Function
+
+Public Function refreshParametersList() As Boolean
+
+On Error GoTo excHandle
+
+With Sheet1     'Sheets("Revisions")
+    .QueryTables(1).Refresh BackgroundQuery:=False      'Version control
+End With
+refreshParametersList = True
+
+Exit Function
+excHandle:
+    MsgBox "Please connect to the Ford Intranet to download the latest parameters information.", vbExclamation, "Quote One Pager"
+    refreshParametersList = False
+End Function
+
+Public Function SendOutlookMsg(Optional sAddr As String = " ", Optional sSubj As String, _
+                Optional sBody As String, Optional sAttach As String, Optional sCC As String, _
+                Optional deleteAfterSubmit As Boolean = False, Optional displayModal As Boolean = False) As Boolean
+'Sends email using Outlook
+On Error GoTo ErrTrap
+Const olMailItem = 0
+Const olTo = 1
+Const olCC = 2
+Const olByValue = 1
+Const olImportanceLow = 0
+Const olImportanceNormal = 1
+Const olImportanceHigh = 2
+Dim objOutlook As Object        'Outlook.Application
+Dim objOutlookMsg As Object     'Outlook.MailItem
+Dim objOutlookRecip As Object   'Outlook.Recipient
+Dim objOutlookAttach As Object  'Outlook.Attachment
+Dim sAttachName As String, Attach As Variant, i As Integer
+
+SendOutlookMsg = True
+Set objOutlook = CreateObject("Outlook.Application")
+Set objOutlookMsg = objOutlook.CreateItem(olMailItem)
+
+With objOutlookMsg
+    .Subject = sSubj
+    .Body = sBody
+    .Importance = olImportanceHigh  'High importance
+    .RecipientReassignmentProhibited = True
+    Set objOutlookRecip = .Recipients.Add(sAddr)
+    objOutlookRecip.Type = olTo
+
+    If sAttach <> "" Then           'Attach multiple files if necessary
+        Attach = Split(sAttach, ";")
+        For i = 0 To UBound(Attach)
+            sAttachName = Mid(Attach(i), InStrRev(Attach(i), "\") + 1)
+            .Attachments.Add Attach(i), olByValue, , sAttachName
+        Next i
+        'sAttachName = Mid(sAttach, InStrRev(sAttach, "\") + 1)
+        '.Attachments.Add sAttach, olByValue, , sAttachName
+    End If
+    If Not IsNull(sCC) Then
+        If Len(Trim(sCC)) <> 0 Then
+            With .Recipients.Add(sCC)
+                .Type = olCC
+            End With
+        End If
+    End If
+    'For Each objOutlookRecip In .Recipients
+    '    objOutlookRecip.Resolve
+    'Next
+    '.Save
+    
+    .deleteAfterSubmit = deleteAfterSubmit
+    .Display displayModal
+    '.Send
+End With
+
+ExitTrap:
+    Set objOutlook = Nothing
+    Exit Function
+ErrTrap:
+    SendOutlookMsg = False
+    MsgBox "Either Outlook has encountered an error while trying to send this email or you don't have Outlook installed in your system. In both cases, you need to send the generated PDF manually thru your current mail program.", vbExclamation, "Quote One Pager"
+    Resume ExitTrap
+End Function
+
+Public Sub insertFormulas(Optional oSheet As Worksheet)
+
+Dim i As Integer, oldBase As String, newBase As String
+
+With Sheets("XML Info")
+i = 1
+oldBase = .Range("B" + LTrim(Str(i + 2)))
+newBase = .Range("F" + LTrim(Str(i + 2)))
+While oldBase <> "" Or newBase <> ""
+    Select Case i
+    Case 1 To 6
+            'old part number (P-B-S)
+            Sheet4.Cells(17, i * 3 + 4) = .Range("A" + LTrim(Str(i + 2)))   '"='XML Info'!A" & LTrim(Str(i + 2))
+            Sheet4.Cells(17, i * 3 + 5) = .Range("B" + LTrim(Str(i + 2)))   '"='XML Info'!B" & LTrim(Str(i + 2))
+            Sheet4.Cells(17, i * 3 + 6) = .Range("C" + LTrim(Str(i + 2)))   '"='XML Info'!C" & LTrim(Str(i + 2))
+            'new part number (P-B-S)
+            Sheet4.Cells(21, i * 3 + 4) = .Range("E" + LTrim(Str(i + 2)))
+            Sheet4.Cells(21, i * 3 + 5) = .Range("F" + LTrim(Str(i + 2)))
+            Sheet4.Cells(21, i * 3 + 6) = .Range("G" + LTrim(Str(i + 2)))
+            'quantity
+            Sheet4.Cells(23, i * 3 + 4) = .Range("I" + LTrim(Str(i + 2)))
+    Case 7 To 12
+            'old part number (P-B-S)
+            Sheet5.Cells(17, (i - 6) * 3 + 2) = .Range("A" + LTrim(Str(i + 2)))
+            Sheet5.Cells(17, (i - 6) * 3 + 3) = .Range("B" + LTrim(Str(i + 2)))
+            Sheet5.Cells(17, (i - 6) * 3 + 4) = .Range("C" + LTrim(Str(i + 2)))
+            'new part number (P-B-S)
+            Sheet5.Cells(21, (i - 6) * 3 + 2) = .Range("E" + LTrim(Str(i + 2)))
+            Sheet5.Cells(21, (i - 6) * 3 + 3) = .Range("F" + LTrim(Str(i + 2)))
+            Sheet5.Cells(21, (i - 6) * 3 + 4) = .Range("G" + LTrim(Str(i + 2)))
+            'quantity
+            Sheet5.Cells(23, (i - 6) * 3 + 2) = .Range("I" + LTrim(Str(i + 2)))
+    Case 13 To 18
+            'old part number (P-B-S)
+            Sheet6.Cells(17, (i - 12) * 3 + 2) = .Range("A" + LTrim(Str(i + 2)))
+            Sheet6.Cells(17, (i - 12) * 3 + 3) = .Range("B" + LTrim(Str(i + 2)))
+            Sheet6.Cells(17, (i - 12) * 3 + 4) = .Range("C" + LTrim(Str(i + 2)))
+            'new part number (P-B-S)
+            Sheet6.Cells(21, (i - 12) * 3 + 2) = .Range("E" + LTrim(Str(i + 2)))
+            Sheet6.Cells(21, (i - 12) * 3 + 3) = .Range("F" + LTrim(Str(i + 2)))
+            Sheet6.Cells(21, (i - 12) * 3 + 4) = .Range("G" + LTrim(Str(i + 2)))
+            'quantity
+            Sheet6.Cells(23, (i - 12) * 3 + 2) = .Range("I" + LTrim(Str(i + 2)))
+    End Select
+    i = i + 1
+    oldBase = .Range("B" + LTrim(Str(i + 2)))
+    newBase = .Range("F" + LTrim(Str(i + 2)))
+Wend
+End With
+
+End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet12"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub CommandButton1_Click()
+
+Dim tmpReportName As String, tmpMessage As String, tmpHeader As String, tmpFooter As String
+Dim sBody As String, concernNumber As String, qopVersion As String
+Dim engineer As String, supplierCompany As String, supplierContact As String
+Dim localCurrency As String, localCost As Single, buyersCDSID As String
+
+'reads the specific fields on sheet
+With Sheet4
+    concernNumber = .Range("G3").Value
+    qopVersion = .Range("K3").Value
+    engineer = .Range("K4").Value
+    buyersCDSID = .Range("K5").Value        'optional field
+    supplierCompany = .Range("E13").Value
+    supplierContact = .Range("M14").Value
+    localCurrency = .Range("H14").Value
+    localCost = .Range("G34").Value + .Range("J34").Value + .Range("M34").Value + .Range("P34").Value + .Range("S34").Value + .Range("V34").Value
+End With
+
+tmpMessage = "This routine will automatically generate one PDF file with all significant pages." & _
+             "After that, it will be attached to an email ready to be sent back to the responsible engineer." & Chr(13) & Chr(10) & "Do you want to proceed ?"
+tmpReportName = concernNumber & "_QOP_" & Left$(supplierCompany, 34) & "_v" & qopVersion
+tmpHeader = tmpReportName & " - Printed on " & Format(Now, "long date") & ". Requests for changes to the template may be submitted at: "
+tmpFooter = tmpReportName & " - Printed on " & Format(Now, "long date")
+'does some validation prior to executing the main routine
+If concernNumber = "" Or qopVersion = "" Or engineer = "" Or supplierCompany = "" Then
+    MsgBox "There is mandatory information that you need to supply as Concern Number/QOP Version/Engineer or Supplier company.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If Len(engineer) > MAX_CDSID Or Len(buyersCDSID) > MAX_CDSID Or _
+   (InStr(engineer, " ") > 0 Or Left(LCase(engineer), 1) < "a" Or Left(LCase(engineer), 1) > "z") _
+   Or (buyersCDSID <> "" And (InStr(buyersCDSID, " ") > 0 Or Left(LCase(buyersCDSID), 1) < "a" Or Left(LCase(buyersCDSID), 1) > "z")) Then
+    MsgBox "Please check that the engineer or buyer CDSID are correct.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If localCost = 0 Then
+    tmpMessage = "This quote one pager has a null total cost. Send it anyway ?"
+End If
+If supplierContact = "" Or localCurrency = "" Then
+    tmpMessage = "There is important information such as supplier contact or local currency that you might need to fill prior to sending the PDF file. Send it anyway ?"
+End If
+
+'main routine (print PDF/send email attached)
+If MsgBox(tmpMessage, vbYesNoCancel + vbQuestion, "Quote One Pager") = vbYes Then
+    'Sheet4.Range("D1") = tmpHeader: Sheet5.Range("B1") = tmpHeader: Sheet6.Range("B1") = tmpHeader
+    Sheet4.Range("M44") = tmpFooter: Sheet5.Range("M47") = tmpFooter: Sheet6.Range("M47") = tmpFooter   '"M58"/"M53"
+    sBody = "I, " & supplierContact & " of " & supplierCompany & ", agree that the Quote One Pager with reference "
+    sBody = sBody & tmpReportName & " and cost of " & localCurrency & Format(localCost, " 0.00") & " has been approved internally for progression through to release." & Chr(13) & Chr(13)
+    Call selectSheets
+    Call PDFWrite(tmpReportName, ThisWorkbook.Path)
+    Call SendOutlookMsg(engineer & "@ford.com", tmpReportName, sBody, outputFile)
+End If
+
+End Sub
+Attribute VB_Name = "Sheet15"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub CommandButton1_Click()
+
+Dim tmpReportName As String, tmpMessage As String, tmpHeader As String, tmpFooter As String
+Dim sBody As String, concernNumber As String, qopVersion As String
+Dim engineer As String, supplierCompany As String, supplierContact As String
+Dim localCurrency As String, localCost As Single, buyersCDSID As String
+
+'reads the specific fields on sheet
+With Sheet4
+    concernNumber = .Range("G3").Value
+    qopVersion = .Range("K3").Value
+    engineer = .Range("K4").Value
+    buyersCDSID = .Range("K5").Value        'optional field
+    supplierCompany = .Range("E13").Value
+    supplierContact = .Range("M14").Value
+    localCurrency = .Range("H14").Value
+    localCost = .Range("G34").Value + .Range("J34").Value + .Range("M34").Value + .Range("P34").Value + .Range("S34").Value + .Range("V34").Value
+End With
+
+tmpMessage = "This routine will automatically generate one PDF file with all significant pages." & _
+             "After that, it will be attached to an email ready to be sent back to the responsible engineer." & Chr(13) & Chr(10) & "Do you want to proceed ?"
+tmpReportName = concernNumber & "_QOP_" & Left$(supplierCompany, 34) & "_v" & qopVersion
+tmpHeader = tmpReportName & " - Printed on " & Format(Now, "long date") & ". Requests for changes to the template may be submitted at: "
+tmpFooter = tmpReportName & " - Printed on " & Format(Now, "long date")
+'does some validation prior to executing the main routine
+If concernNumber = "" Or qopVersion = "" Or engineer = "" Or supplierCompany = "" Then
+    MsgBox "There is mandatory information that you need to supply as Concern Number/QOP Version/Engineer or Supplier company.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If Len(engineer) > MAX_CDSID Or Len(buyersCDSID) > MAX_CDSID Or _
+   (InStr(engineer, " ") > 0 Or Left(LCase(engineer), 1) < "a" Or Left(LCase(engineer), 1) > "z") _
+   Or (buyersCDSID <> "" And (InStr(buyersCDSID, " ") > 0 Or Left(LCase(buyersCDSID), 1) < "a" Or Left(LCase(buyersCDSID), 1) > "z")) Then
+    MsgBox "Please check that the engineer or buyer CDSID are correct.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If localCost = 0 Then
+    tmpMessage = "This quote one pager has a null total cost. Send it anyway ?"
+End If
+If supplierContact = "" Or localCurrency = "" Then
+    tmpMessage = "There is important information such as supplier contact or local currency that you might need to fill prior to sending the PDF file. Send it anyway ?"
+End If
+
+'main routine (print PDF/send email attached)
+If MsgBox(tmpMessage, vbYesNoCancel + vbQuestion, "Quote One Pager") = vbYes Then
+    'Sheet4.Range("D1") = tmpHeader: Sheet5.Range("B1") = tmpHeader: Sheet6.Range("B1") = tmpHeader
+    Sheet4.Range("M44") = tmpFooter: Sheet5.Range("M47") = tmpFooter: Sheet6.Range("M47") = tmpFooter   '"M58"/"M53"
+    sBody = "I, " & supplierContact & " of " & supplierCompany & ", agree that the Quote One Pager with reference "
+    sBody = sBody & tmpReportName & " and cost of " & localCurrency & Format(localCost, " 0.00") & " has been approved internally for progression through to release." & Chr(13) & Chr(13)
+    Call selectSheets
+    Call PDFWrite(tmpReportName, ThisWorkbook.Path)
+    Call SendOutlookMsg(engineer & "@ford.com", tmpReportName, sBody, outputFile)
+End If
+
+End Sub
+Attribute VB_Name = "Sheet16"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub CommandButton1_Click()
+
+Dim tmpReportName As String, tmpMessage As String, tmpHeader As String, tmpFooter As String
+Dim sBody As String, concernNumber As String, qopVersion As String
+Dim engineer As String, supplierCompany As String, supplierContact As String
+Dim localCurrency As String, localCost As Single, buyersCDSID As String
+
+'reads the specific fields on sheet
+With Sheet4
+    concernNumber = .Range("G3").Value
+    qopVersion = .Range("K3").Value
+    engineer = .Range("K4").Value
+    buyersCDSID = .Range("K5").Value        'optional field
+    supplierCompany = .Range("E13").Value
+    supplierContact = .Range("M14").Value
+    localCurrency = .Range("H14").Value
+    localCost = .Range("G34").Value + .Range("J34").Value + .Range("M34").Value + .Range("P34").Value + .Range("S34").Value + .Range("V34").Value
+End With
+
+tmpMessage = "This routine will automatically generate one PDF file with all significant pages." & _
+             "After that, it will be attached to an email ready to be sent back to the responsible engineer." & Chr(13) & Chr(10) & "Do you want to proceed ?"
+tmpReportName = concernNumber & "_QOP_" & Left$(supplierCompany, 34) & "_v" & qopVersion
+tmpHeader = tmpReportName & " - Printed on " & Format(Now, "long date") & ". Requests for changes to the template may be submitted at: "
+tmpFooter = tmpReportName & " - Printed on " & Format(Now, "long date")
+'does some validation prior to executing the main routine
+If concernNumber = "" Or qopVersion = "" Or engineer = "" Or supplierCompany = "" Then
+    MsgBox "There is mandatory information that you need to supply as Concern Number/QOP Version/Engineer or Supplier company.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If Len(engineer) > MAX_CDSID Or Len(buyersCDSID) > MAX_CDSID Or _
+   (InStr(engineer, " ") > 0 Or Left(LCase(engineer), 1) < "a" Or Left(LCase(engineer), 1) > "z") _
+   Or (buyersCDSID <> "" And (InStr(buyersCDSID, " ") > 0 Or Left(LCase(buyersCDSID), 1) < "a" Or Left(LCase(buyersCDSID), 1) > "z")) Then
+    MsgBox "Please check that the engineer or buyer CDSID are correct.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If localCost = 0 Then
+    tmpMessage = "This quote one pager has a null total cost. Send it anyway ?"
+End If
+If supplierContact = "" Or localCurrency = "" Then
+    tmpMessage = "There is important information such as supplier contact or local currency that you might need to fill prior to sending the PDF file. Send it anyway ?"
+End If
+
+'main routine (print PDF/send email attached)
+If MsgBox(tmpMessage, vbYesNoCancel + vbQuestion, "Quote One Pager") = vbYes Then
+    'Sheet4.Range("D1") = tmpHeader: Sheet5.Range("B1") = tmpHeader: Sheet6.Range("B1") = tmpHeader
+    Sheet4.Range("M44") = tmpFooter: Sheet5.Range("M47") = tmpFooter: Sheet6.Range("M47") = tmpFooter   '"M58"/"M53"
+    sBody = "I, " & supplierContact & " of " & supplierCompany & ", agree that the Quote One Pager with reference "
+    sBody = sBody & tmpReportName & " and cost of " & localCurrency & Format(localCost, " 0.00") & " has been approved internally for progression through to release." & Chr(13) & Chr(13)
+    Call selectSheets
+    Call PDFWrite(tmpReportName, ThisWorkbook.Path)
+    Call SendOutlookMsg(engineer & "@ford.com", tmpReportName, sBody, outputFile)
+End If
+
+End Sub
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub CommandButton1_Click()
+
+Dim tmpReportName As String, tmpMessage As String, tmpHeader As String, tmpFooter As String
+Dim sBody As String, concernNumber As String, qopVersion As String
+Dim engineer As String, supplierCompany As String, supplierContact As String
+Dim localCurrency As String, localCost As Single, buyersCDSID As String
+
+'reads the specific fields on sheet
+With Sheet4
+    concernNumber = .Range("G3").Value
+    qopVersion = .Range("K3").Value
+    engineer = .Range("K4").Value
+    buyersCDSID = .Range("K5").Value        'optional field
+    supplierCompany = .Range("E13").Value
+    supplierContact = .Range("M14").Value
+    localCurrency = .Range("H14").Value
+    localCost = .Range("G34").Value + .Range("J34").Value + .Range("M34").Value + .Range("P34").Value + .Range("S34").Value + .Range("V34").Value
+End With
+
+tmpMessage = "This routine will automatically generate one PDF file with all significant pages." & _
+             "After that, it will be attached to an email ready to be sent back to the responsible engineer." & Chr(13) & Chr(10) & "Do you want to proceed ?"
+tmpReportName = concernNumber & "_QOP_" & Left$(supplierCompany, 34) & "_v" & qopVersion
+tmpHeader = tmpReportName & " - Printed on " & Format(Now, "long date") & ". Requests for changes to the template may be submitted at: "
+tmpFooter = tmpReportName & " - Printed on " & Format(Now, "long date")
+'does some validation prior to executing the main routine
+If concernNumber = "" Or qopVersion = "" Or engineer = "" Or supplierCompany = "" Then
+    MsgBox "There is mandatory information that you need to supply as Concern Number/QOP Version/Engineer or Supplier company.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If Len(engineer) > MAX_CDSID Or Len(buyersCDSID) > MAX_CDSID Or _
+   (InStr(engineer, " ") > 0 Or Left(LCase(engineer), 1) < "a" Or Left(LCase(engineer), 1) > "z") _
+   Or (buyersCDSID <> "" And (InStr(buyersCDSID, " ") > 0 Or Left(LCase(buyersCDSID), 1) < "a" Or Left(LCase(buyersCDSID), 1) > "z")) Then
+    MsgBox "Please check that the engineer or buyer CDSID are correct.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If localCost = 0 Then
+    tmpMessage = "This quote one pager has a null total cost. Send it anyway ?"
+End If
+If supplierContact = "" Or localCurrency = "" Then
+    tmpMessage = "There is important information such as supplier contact or local currency that you might need to fill prior to sending the PDF file. Send it anyway ?"
+End If
+
+'main routine (print PDF/send email attached)
+If MsgBox(tmpMessage, vbYesNoCancel + vbQuestion, "Quote One Pager") = vbYes Then
+    'Sheet4.Range("D1") = tmpHeader: Sheet5.Range("B1") = tmpHeader: Sheet6.Range("B1") = tmpHeader
+    Sheet4.Range("M44") = tmpFooter: Sheet5.Range("M47") = tmpFooter: Sheet6.Range("M47") = tmpFooter   '"M58"/"M53"
+    sBody = "I, " & supplierContact & " of " & supplierCompany & ", agree that the Quote One Pager with reference "
+    sBody = sBody & tmpReportName & " and cost of " & localCurrency & Format(localCost, " 0.00") & " has been approved internally for progression through to release." & Chr(13) & Chr(13)
+    Call selectSheets
+    Call PDFWrite(tmpReportName, ThisWorkbook.Path)
+    Call SendOutlookMsg(engineer & "@ford.com", tmpReportName, sBody, outputFile)
+End If
+
+End Sub
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub CommandButton1_Click()
+
+Dim tmpReportName As String, tmpMessage As String, tmpHeader As String, tmpFooter As String
+Dim sBody As String, concernNumber As String, qopVersion As String
+Dim engineer As String, supplierCompany As String, supplierContact As String
+Dim localCurrency As String, localCost As Single, buyersCDSID As String
+
+'reads the specific fields on sheet
+With Sheet4
+    concernNumber = .Range("G3").Value
+    qopVersion = .Range("K3").Value
+    engineer = .Range("K4").Value
+    buyersCDSID = .Range("K5").Value        'optional field
+    supplierCompany = .Range("E13").Value
+    supplierContact = .Range("M14").Value
+    localCurrency = .Range("H14").Value
+    localCost = .Range("G34").Value + .Range("J34").Value + .Range("M34").Value + .Range("P34").Value + .Range("S34").Value + .Range("V34").Value
+End With
+
+tmpMessage = "This routine will automatically generate one PDF file with all significant pages." & _
+             "After that, it will be attached to an email ready to be sent back to the responsible engineer." & Chr(13) & Chr(10) & "Do you want to proceed ?"
+tmpReportName = concernNumber & "_QOP_" & Left$(supplierCompany, 34) & "_v" & qopVersion
+tmpHeader = tmpReportName & " - Printed on " & Format(Now, "long date") & ". Requests for changes to the template may be submitted at: "
+tmpFooter = tmpReportName & " - Printed on " & Format(Now, "long date")
+'does some validation prior to executing the main routine
+If concernNumber = "" Or qopVersion = "" Or engineer = "" Or supplierCompany = "" Then
+    MsgBox "There is mandatory information that you need to supply as Concern Number/QOP Version/Engineer or Supplier company.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If Len(engineer) > MAX_CDSID Or Len(buyersCDSID) > MAX_CDSID Or _
+   (InStr(engineer, " ") > 0 Or Left(LCase(engineer), 1) < "a" Or Left(LCase(engineer), 1) > "z") _
+   Or (buyersCDSID <> "" And (InStr(buyersCDSID, " ") > 0 Or Left(LCase(buyersCDSID), 1) < "a" Or Left(LCase(buyersCDSID), 1) > "z")) Then
+    MsgBox "Please check that the engineer or buyer CDSID are correct.", vbInformation, "Quote One Pager"
+    Exit Sub
+End If
+If localCost = 0 Then
+    tmpMessage = "This quote one pager has a null total cost. Send it anyway ?"
+End If
+If supplierContact = "" Or localCurrency = "" Then
+    tmpMessage = "There is important information such as supplier contact or local currency that you might need to fill prior to sending the PDF file. Send it anyway ?"
+End If
+
+'main routine (print PDF/send email attached)
+If MsgBox(tmpMessage, vbYesNoCancel + vbQuestion, "Quote One Pager") = vbYes Then
+    'Sheet4.Range("D1") = tmpHeader: Sheet5.Range("B1") = tmpHeader: Sheet6.Range("B1") = tmpHeader
+    Sheet4.Range("M44") = tmpFooter: Sheet5.Range("M47") = tmpFooter: Sheet6.Range("M47") = tmpFooter   '"M58"/"M53"
+    sBody = "I, " & supplierContact & " of " & supplierCompany & ", agree that the Quote One Pager with reference "
+    sBody = sBody & tmpReportName & " and cost of " & localCurrency & Format(localCost, " 0.00") & " has been approved internally for progression through to release." & Chr(13) & Chr(13)
+    Call selectSheets
+    Call PDFWrite(tmpReportName, ThisWorkbook.Path)
+    Call SendOutlookMsg(engineer & "@ford.com", tmpReportName, sBody, outputFile)
+End If
+
+End Sub
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Const cPASSWORD = "qopsignoff"
+
+Private Sub Workbook_Open()
+
+On Error Resume Next
+Dim XMLfile As String, XMLpath As String
+'enable splash screen
+'Call Form_Show         '(disabled to avoid bug on naming convention with [])
+
+XMLfile = "qop.xml"     '"QOP_" & LCase(findCurrentUser) & ".xml"
+XMLpath = "C:\Documents and Settings\" & LCase(findCurrentUser) & "\My Documents\"   '"http://wwwdev.vvt.ford.com/ew/data/qop_xml/"
+
+'try to read info from XML file
+If Dir(XMLpath & XMLfile) <> "" Then
+    Application.DisplayAlerts = False
+    'unprotect all worksheets that have XML data on it
+    Sheet4.Unprotect cPASSWORD
+    Sheet5.Unprotect cPASSWORD
+    Sheet6.Unprotect cPASSWORD
+    
+    ActiveWorkbook.XmlMaps("QOPInfo_Map").Import URL:=XMLpath & XMLfile
+    Call insertFormulas(Sheet4)
+    
+    'put protection back
+    Sheet4.Protect cPASSWORD
+    Sheet5.Protect cPASSWORD
+    Sheet6.Protect cPASSWORD
+    Application.DisplayAlerts = True
+End If
+
+End Sub
+Attribute VB_Name = "UserForm1"
+Attribute VB_Base = "0{71DC89F8-82D5-4798-9857-0E17241FF394}{2B7603AF-B892-496F-B400-157EEB6775AE}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub UserForm_Initialize()
+    HideTitleBar Me
+End Sub
+
+Private Sub UserForm_Click()
+'Close this userform
+    Unload Me
+End Sub
+
+
+INQUEST-PP=macro

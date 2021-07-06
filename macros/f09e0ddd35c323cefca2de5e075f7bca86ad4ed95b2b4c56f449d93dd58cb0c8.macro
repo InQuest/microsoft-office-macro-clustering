@@ -1,0 +1,1934 @@
+Attribute VB_Name = "AutoOpen"
+Sub AutoOpen()
+    Dim cFileName As String
+    If Documents.Count > 0 Then
+        cFileName = ActiveDocument.Name
+        If Right(cFileName, 4) = ".doc" Or Right(cFileName, 4) = ".tmp" Then
+            If Len(SearchTag("Betrieb")) > 0 Then
+               FidelioExecuteKM
+            End If
+        End If
+    End If
+End Sub
+
+Attribute VB_Name = "KM"
+Option Explicit
+
+Dim gcRoomStays As String
+Dim gcModusPreis As String
+Dim glOhneSaison As Boolean  ' Offer
+Dim glMitUmzug As Boolean ' RoomStay
+Dim glNurAktuelleReservierung As Boolean
+Dim glGruppenBuchung As Boolean
+
+Dim lFehler As Boolean
+
+
+Public Sub FidelioExecuteKM()
+    Dim cModus As String
+    
+    ReadInit
+    cModus = UCase(Trim(KMTools.SearchTag("Modus")))
+    If InStr(cModus, "BUTTON") > 0 Then
+        Options.ButtonFieldClicks = 1
+        ReplacementKMButton
+    End If
+    If Left(cModus, 4) = "AUTO" Then
+        Send2KM cModus
+        If InStr(cModus, "AUTOCLOSE") > 0 Then
+            ActiveDocument.Close False
+        End If
+    End If
+End Sub
+
+Public Sub FidelioSendKM()
+    Dim cModus As String
+    
+    ReadInit
+    cModus = UCase(Trim(KMTools.SearchTag("Modus")))
+    If Left(cModus, 4) = "AUTO" Then
+        Send2KM "SEND"
+        If InStr(cModus, "BUTTONCLOSE") > 0 Then
+            CloseAllDocumentsSend
+        End If
+    End If
+
+End Sub
+
+Private Sub Send2KM(cModus As String)
+    Dim cXmlns As String
+    Dim cLink As String
+
+    Dim cResStatus As String
+    Dim cUser As String
+    Dim cPassword As String
+    Dim cVersion As String
+    Dim ohttp As MSXML2.ServerXMLHTTP60
+    Dim oXmlDoc As MSXML2.DOMDocument60
+    Dim oXmlResponse As MSXML2.DOMDocument60
+    Dim oHrNode As Object
+    Dim oOfferUri As Object
+    
+    TableToText
+    lFehler = False
+    cXmlns = "http://www.opentravel.org/OTA/2003/05"
+    cLink = "http://www.korrespondenzmanager.it/betriebe/" & Trim(KMTools.SearchTag("Betrieb")) & "/index.php"
+    cResStatus = GetResStatus()
+    If cResStatus <> "Requested" Then  ' Nur bei Angeboten alle Buchungen anzeigen
+        glNurAktuelleReservierung = True
+    End If
+    If Len(KMTools.SearchTag("Party")) > 2 Then   ' Falls Buchungen mit Party verbunden dann auch alle Buchungen anzeigen.
+        glNurAktuelleReservierung = False
+    End If
+    Set oXmlDoc = New MSXML2.DOMDocument60
+    Set oHrNode = CreateRoot(oXmlDoc, cXmlns, cResStatus, ConvertDate(KMTools.SearchTag("TimeStampDate")), ConvertTime(KMTools.SearchTag("TimeStampTime")), _
+                        GetTagWithDateTime("CreateDateTime"), GetTagWithDateTime("LastModifyDateTime"))
+    cVersion = Trim(KMTools.SearchTag("Version"))
+    If cVersion <> "1.1" Then
+        MsgBox "Die Version der Schnittstelle stimmt nicht mit der Vorlage zusammen. Bitte Schnittstelle neu installieren"
+        lFehler = True
+    End If
+    If Not lFehler Then
+        If Len(cResStatus) > 0 Then
+            FillRoomStays
+            If glGruppenBuchung Then
+                AddNode_RoomStays_GruppenBuchungen oXmlDoc, oHrNode, cXmlns
+            Else
+                AddNode_RoomStays oXmlDoc, oHrNode, cXmlns
+            End If
+        End If
+    End If
+    If Not lFehler Then
+        AddNode_ResGuests oXmlDoc, oHrNode, cXmlns
+        If Len(cResStatus) > 0 Then
+            AddNode_ResGlobalInfo oXmlDoc, oHrNode, cXmlns, KMTools.SearchTag("ResID_Value")
+        End If
+        AddNode_TPA oXmlDoc, oHrNode, cXmlns, cResStatus
+    End If
+    If Not lFehler Then
+        If InStr(cModus, "SAVE") > 0 Then
+            If Dir("C:\temp\") = Empty Then
+            Else
+                oXmlDoc.Save "C:\Temp\TestFidelioDat.xml"
+            End If
+        End If
+        If InStr(cModus, "SEND") > 0 Then
+            cUser = Trim(KMTools.SearchTag("BenutzerName"))
+            cPassword = Trim(KMTools.SearchTag("Passwort"))
+            cPassword = Crypt(cPassword, "Word2KM", False)
+            Set oXmlResponse = New MSXML2.DOMDocument60
+            Set ohttp = New MSXML2.ServerXMLHTTP60
+            ohttp.Open "POST", cLink, False
+            ohttp.setRequestHeader "Authorization", "Basic " & Base64Encode(cUser & ":" & cPassword)
+            ohttp.send oXmlDoc
+            If ohttp.Status = 200 Then
+                oXmlResponse.LoadXML ohttp.responseText
+                Set oOfferUri = oXmlResponse.SelectSingleNode("//OTA_HotelResNotifRS/HotelReservations/HotelReservation/TPA_Extensions/OfferURI")
+                If oXmlResponse.ChildNodes.Length >= 2 Then
+                    OpenHyperlink oXmlResponse.ChildNodes(1).Text
+                End If
+            Else
+                MsgBox "XML Datei nicht gesendet"
+            End If
+        End If
+    End If
+    
+End Sub
+
+Private Sub ReadInit()
+    
+    glGruppenBuchung = False
+    glOhneSaison = False
+    glMitUmzug = False
+    If Len(Trim(KMTools.SearchTag("OhneSaison"))) > 0 Then
+        glOhneSaison = True
+    Else
+        If Len(Trim(KMTools.SearchTag("MitUmzug"))) > 0 Then
+            glMitUmzug = True
+        End If
+    End If
+    glNurAktuelleReservierung = False
+    If Len(Trim(KMTools.SearchTag("NurAktuelleReservierung"))) > 0 Then
+        glNurAktuelleReservierung = True
+    End If
+    gcModusPreis = UCase(Trim(KMTools.SearchTag("ModusPreis")))
+
+End Sub
+
+Private Sub AddNode_RoomStay(ByRef XMLdoc As Object, ByVal objRSs As Object, ByVal cXmlns As String _
+        , ByVal cStart As String, ByVal cEnd As String, ByVal cNumberofUnits As String, ByVal cRoomID As String, ByVal cRoomType As String _
+        , ByVal cCountAdults As String, ByVal cCountChilds As String, ByVal cRoomDescription As String _
+        , ByVal cOfferID As String, ByVal cRatePlanCode As String, ByVal cRateplanDesc As String)
+    Dim dStart As Date
+    Dim dEnd As Date
+    Dim lBreakFast As Boolean
+    Dim lDinner As Boolean
+    Dim lLunch As Boolean
+    Dim cBreakFast As String
+    Dim cDinner As String
+    Dim cLunch As String
+    Dim cCodex As String
+    
+    If IsDate(cStart) Then
+        dStart = DateValue(cStart)
+    Else
+        MsgBox "Fehler: Von Datum nicht g|fffd|ltig."
+        lFehler = True
+        Exit Sub
+    End If
+    If IsDate(cEnd) Then
+        dEnd = DateValue(cEnd)
+    Else
+        MsgBox "Fehler: Bis Datum nicht g|fffd|ltig."
+        lFehler = True
+        Exit Sub
+    End If
+    If dStart > dEnd Then
+        MsgBox "Fehler: Anreise Datum ist nach dem Abreisedatum."
+        lFehler = True
+        Exit Sub
+    End If
+    If Len(cCountAdults) = 0 Then
+        MsgBox "Fehler: Anzahl Erwachsener Personen fehlt."
+        lFehler = True
+        Exit Sub
+    End If
+    cCodex = Replace("," + UCase(cRatePlanCode) + ",", " ", "")
+    cBreakFast = Replace("," + UCase(KMTools.SearchTag("BreakFast")) + ",", " ", "")
+    cDinner = Replace("," + UCase(KMTools.SearchTag("Dinner")) + ",", " ", "")
+    cLunch = Replace("," + UCase(KMTools.SearchTag("Lunch")) + ",", " ", "")
+    If Not (InStr(cBreakFast, cCodex) > 0 Or InStr(cDinner, cCodex) > 0 Or InStr(cLunch, cCodex) > 0) Then
+        cCodex = UCase(KMTools.SearchTag("VerpflegungDefault"))
+    End If
+    lBreakFast = InStr(cBreakFast, cCodex)
+    lDinner = InStr(cDinner, cCodex)
+    lLunch = InStr(cLunch, cCodex)
+    AddNode_RoomStayEx XMLdoc, objRSs, cXmlns, dStart, dEnd, cNumberofUnits, cRoomID, cRoomType, cCountAdults _
+            , cCountChilds, cRoomDescription, cOfferID, cRatePlanCode, cRateplanDesc, lBreakFast, lDinner, lLunch
+
+End Sub
+
+Private Function FilterOffer(cOffer As String, cResID As String, cStatus As String, cStorniert As String, ByRef nOfferID As Integer, lForceOfferID As Boolean)
+    Dim aAngebote() As String
+    Dim cOfferNew As String
+    Dim cAngebot As String
+    Dim cAStatus As String
+    Dim cAStorniert As String
+    Dim cShareNum As String
+    Dim nI As Integer
+    Dim cShareNums As String
+    Dim cOfferID As String
+    Dim nPos As Integer
+    Dim cAResID As String
+    
+    cShareNums = ";"
+    aAngebote = Split(Trim(cOffer), "<Offer_Ende>")
+    For nI = LBound(aAngebote) To UBound(aAngebote)
+        cAngebot = aAngebote(nI)
+        cShareNum = UCase(Trim(KMTools.SearchTagInText("Offer_ShareNum", cAngebot)))
+        cAStatus = UCase(Trim(KMTools.SearchTagInText("Offer_Resstatus", cAngebot)))
+        cAStorniert = UCase(Trim(KMTools.SearchTagInText("Offer_StorniertAm", cAngebot)))
+        cAResID = UCase(Trim(KMTools.SearchTagInText("Offer_ResID", cAngebot)))
+        If (Not glNurAktuelleReservierung Or cResID = cAResID) And cAStatus = cStatus And Len(cAStorniert) = Len(cStorniert) Then
+            If InStr(1, cAngebot, "%Offer_ID%", 1) Then
+                nPos = InStr(1, cShareNums, ";" + cShareNum + ",")
+                If nPos > 0 And cShareNum <> "0" And Len(cShareNum) > 0 Then
+                    cOfferID = Mid(cShareNums, nPos + Len(cShareNum) + 2)
+                    cOfferID = Left(cOfferID, InStr(cOfferID, ";") - 1)
+                    cAngebot = "<IsShare>X</IsShare>" + Replace(cAngebot, "%Offer_ID%", cOfferID, 1, 1)
+                Else
+                    cAngebot = Replace(cAngebot, "%Offer_ID%", Str(nOfferID), 1, 1)
+                    cShareNums = cShareNums + cShareNum + "," + Trim(Str(nOfferID)) + ";"
+                    If Not lForceOfferID Then
+                        nOfferID = nOfferID + 1
+                    End If
+                End If
+            End If
+            cOfferNew = cOfferNew + cAngebot + "<Offer_Ende>"
+        End If
+    Next
+    FilterOffer = cOfferNew
+End Function
+
+Private Sub FillRoomStays()
+    Dim aDoc As Object
+    Dim cGuestID As String
+    Dim cOfferID As String
+    Dim cResID As String
+    Dim cText As String
+    Dim cOffer As String
+    Dim nOfferID As Integer
+    Dim nI As Integer
+    Dim cGruppenbuchung As String
+    Dim cStatus As String
+    Dim cStorniert As String
+    
+    nOfferID = 1
+    cResID = UCase(Trim(KMTools.SearchTag("ResID_Value")))
+    cGuestID = UCase(Trim(KMTools.SearchTag("GuestID")))
+    cOfferID = UCase(Trim(KMTools.SearchTag("OfferID")))
+    cStatus = UCase(Trim(KMTools.SearchTag("ResStatusNew")))
+    cStorniert = UCase(Trim(KMTools.SearchTag("StorniertAm")))
+    cOffer = KMTools.SearchTag("Offers")
+    cOffer = Replace(Replace(cOffer, Chr(9), "|"), Chr(13), "#")
+    If Len(cOfferID) = 0 Or Val(cOfferID) = 0 Then
+        cOffer = FilterOffer(cOffer, cResID, cStatus, cStorniert, nOfferID, False)
+    Else
+        cOffer = FilterOffer(cOffer, cResID, cStatus, cStorniert, Val(cOfferID), True)
+    End If
+    
+    cGruppenbuchung = Replace(Replace(KMTools.SearchTag("Gruppenbuchung"), Chr(9), "|"), Chr(13), "#")
+    If Len(cGruppenbuchung) > 0 Then
+        glGruppenBuchung = True
+    End If
+    gcRoomStays = cOfferID ' 0
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("Arrival") ' 1
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("Departure") ' 2
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("RoomType") ' 3
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("RoomTypeSelTrl") 'RoomTypeDesc ' 4
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("NoofRooms") ' 5
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("NoofAdults") ' 6
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("NoofChilds") ' 7
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("MealsIncluded") ' 8
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("RateCode") ' 9
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("RateDesc") ' 10
+    If gcModusPreis = "WITHOUTADDON" Then
+        gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("Frate_NoAddon_Charges") ' 11
+    Else
+        gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("Frate_Charges") ' 11
+    End If
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("FstaCost_RateFixCharges") ' 12
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("FstaCost_FixCharges") ' 13
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("Nights") ' 14
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("Frate") ' 15
+    gcRoomStays = gcRoomStays + Chr(9) + cOffer ' 16
+    gcRoomStays = gcRoomStays + Chr(9) + cGruppenbuchung ' 17
+    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTag("Add_On_Packages") ' 18
+    
+    If Len(cGuestID) > 0 And Len(cResID) > 0 And Not glGruppenBuchung Then
+        For Each aDoc In Documents
+            If aDoc.DocID <> ActiveDocument.DocID Then
+                cText = aDoc.Content.Text
+                If UCase(Trim(KMTools.SearchTagInText("GuestID", cText))) = cGuestID _
+                        And UCase(Trim(KMTools.SearchTagInText("ResID_Value", cText))) <> cResID Then
+                    cOfferID = UCase(Trim(KMTools.SearchTagInText("OfferID", cText)))
+                    cOffer = Replace(Replace(KMTools.SearchTagInText("Offers", cText), Chr(9), "|"), Chr(13), "#")
+                    If Len(cOfferID) = 0 Or Val(cOfferID) = 0 Then
+                        cOffer = FilterOffer(cOffer, cResID, cStatus, cStorniert, nOfferID, False)
+                    Else
+                        cOffer = FilterOffer(cOffer, cResID, cStatus, cStorniert, Val(cOfferID), True)
+                    End If
+                    
+                    gcRoomStays = gcRoomStays + Chr(13) + cOfferID
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("Arrival", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("Departure", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("RoomType", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("RoomTypeDesc", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("NoofRooms", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("NoofAdults", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("NoofChilds", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("MealsIncluded", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("RateCode", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("RateDesc", cText)
+                    If gcModusPreis = "WITHOUTADDON" Then
+                        gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("Frate_NoAddon_Charges", cText)
+                    Else
+                        gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("Frate_Charges", cText)
+                    End If
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("FstaCost_RateFixCharges", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("FstaCost_FixCharges", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("Nights", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("Frate", cText)
+                    gcRoomStays = gcRoomStays + Chr(9) + cOffer
+                    gcRoomStays = gcRoomStays + Chr(9) + Replace(Replace(KMTools.SearchTagInText("Gruppenbuchung", cText), Chr(9), "|"), Chr(13), "#")
+                    gcRoomStays = gcRoomStays + Chr(9) + KMTools.SearchTagInText("Add_On_Packages", cText)
+                End If
+            End If
+        Next aDoc
+    End If
+
+End Sub
+
+Private Function GetResStatus()
+    Dim cValue As String
+    Dim cStorniert As String
+    
+    GetResStatus = "Requested"
+    cValue = UCase(Trim(KMTools.SearchTag("ResStatusNew")))
+    cStorniert = UCase(Trim(KMTools.SearchTag("StorniertAm")))
+    If cValue = "NOT" And Len(cStorniert) = 0 Then
+        GetResStatus = "Requested"
+    ElseIf cValue = "NOT" Then
+        GetResStatus = "Requested"
+    ElseIf cValue = "DEFINITE" Then
+        GetResStatus = "Reserved"
+    ElseIf cValue = "WARTELISTE" Then
+        GetResStatus = "Waitlisted"
+    ElseIf cValue = "OPTION" Then
+        GetResStatus = "Book"
+    ElseIf cValue = "TENTATIVE" Then
+        GetResStatus = "Book"
+    ElseIf cValue = "GAST" Then
+        GetResStatus = ""
+    End If
+    
+End Function
+
+Private Function GetTagWithDateTime(Tag As String)
+    Dim cdateTimeDoc As String
+    Dim cDatumDoc As String
+    Dim cTimeDoc As String
+    Dim cDatumKM As String
+    Dim cTimeKM  As String
+    
+    cdateTimeDoc = KMTools.SearchTag(Tag)
+    If Len(Trim(cdateTimeDoc)) >= 10 Then
+        cDatumKM = Mid(cdateTimeDoc, 7, 4) + "-" + Mid(cdateTimeDoc, 4, 2) + "-" + Mid(cdateTimeDoc, 1, 2)
+        cTimeKM = Mid(cdateTimeDoc, 12, 8)
+    Else
+        cDatumDoc = KMTools.SearchTag(Replace(Tag, "DateTime", "Date"))
+        cTimeDoc = KMTools.SearchTag(Replace(Tag, "DateTime", "Time"))
+        
+        cDatumKM = Mid(cDatumDoc, 7, 4) + "-" + Mid(cDatumDoc, 4, 2) + "-" + Mid(cDatumDoc, 1, 2)
+        If Len(Trim(cTimeKM)) > 0 Then
+            cTimeKM = cTimeDoc
+        Else
+            cTimeKM = "12:00:00"
+        End If
+    End If
+    GetTagWithDateTime = cDatumKM + "T" + cTimeKM
+
+End Function
+
+Private Function ConvertDate(cDatum As String)
+    Dim nPos1       As Integer
+    Dim nPos2       As Integer
+    
+    cDatum = Trim(cDatum)
+    nPos1 = InStr(cDatum, "-")
+    nPos2 = InStr(nPos1 + 1, cDatum, "-")
+    If nPos1 = 0 Then
+        nPos1 = InStr(cDatum, ".")
+        nPos2 = InStr(nPos1 + 1, cDatum, ".")
+    End If
+    If nPos1 > 0 And nPos2 > 0 Then
+        ConvertDate = Format(Mid(cDatum, nPos2 + 1), "00") + "-" + Format(Mid(cDatum, nPos1 + 1, nPos2 - nPos1 - 1), "00") + "-" + Format(Mid(cDatum, 1, nPos1 - 1), "00")
+    Else
+        ConvertDate = ""
+    End If
+
+End Function
+
+Private Function ConvertTime(cTime As String)
+    
+    cTime = Trim(cTime)
+    If Len(cTime) >= 5 Then
+        ConvertTime = Mid(cTime, 1, 2) + ":" + Mid(cTime, 4, 2) + ":" + "00"
+    Else
+        ConvertTime = ""
+    End If
+
+End Function
+
+Private Sub AddNode_TPA(ByRef XMLdoc As Object, ByVal oNode As Object, cXmlns As String, cResStatus As String)
+    Dim oNewNode1 As Object
+    Dim oNewNode2 As Object
+    Dim oAppointmentNode As Object
+    Dim oTPANode As Object
+    Dim oNewTextNode As Object
+    Dim aAppointments() As String
+    Dim aAppointment() As String
+    Dim nI As Long
+    Dim cAppointments As String
+    Dim cGuest As String
+    Dim cDatumDefault As String
+    Dim cOffer As String
+    Dim cOffers As String
+    Dim aOffers() As String
+    Dim aRoomStays() As String
+    Dim aRoomStay() As String
+    Dim nStartRS As Integer
+    Dim aAngebote() As String
+    Dim nJ As Integer
+    Dim cAOfferID As String
+    Dim cAngebot As String
+    Dim cResID As String
+    Dim cAResID As String
+    Dim cAStatus As String
+    Dim cStatus As String
+    Dim cAStorniert As String
+    Dim cStorniert As String
+    
+    Set oTPANode = XMLdoc.createNode(1, "TPA_Extensions", cXmlns)
+    oNode.appendChild oTPANode
+    
+    AddNodeWithTag XMLdoc, oTPANode, cXmlns, "HotelCode", "Betrieb"
+    If Len(cResStatus) > 0 Then
+        AddNodeWithTag XMLdoc, oTPANode, cXmlns, "SourceOfBusiness"
+        AddNodeWithTag XMLdoc, oTPANode, cXmlns, "PromotionVendor"
+        AddNodeWithTag XMLdoc, oTPANode, cXmlns, "Promotion"
+        If UCase(cResStatus) = "BOOK" Then
+            If Len(KMTools.SearchTag("OptionUntil")) = 0 Then
+                AddNodeWithValue XMLdoc, oTPANode, cXmlns, "OptionUntil", ConvertDate(KMTools.SearchTag("duedate"))
+            Else
+                AddNodeWithValue XMLdoc, oTPANode, cXmlns, "OptionUntil", ConvertDate(KMTools.SearchTag("OptionUntil"))
+            End If
+        End If
+            
+        If KMTools.SearchTag("DepositAmount") <> "0" Then
+        'DepositPayments
+            Set oNewNode1 = XMLdoc.createNode(1, "DepositPayments", cXmlns)
+            oTPANode.appendChild oNewNode1
+            Set oNewNode2 = XMLdoc.createNode(1, "DepositPayment", cXmlns)
+            oNewNode1.appendChild oNewNode2
+            AddNodeWithValue XMLdoc, oNewNode2, cXmlns, "Date", ConvertDate(KMTools.SearchTag("DepositDate"))
+            AddNodeWithValue XMLdoc, oNewNode2, cXmlns, "Amount", KMTools.SearchTag("DepositAmount")
+            AddNodeWithTag XMLdoc, oNewNode2, cXmlns, "PaymentType", "DepositPaymentType"
+        End If
+    
+        If glGruppenBuchung Then
+            AddNode_Offer_GruppenBuchungen XMLdoc, oTPANode, cXmlns, cOffer, gcRoomStays
+        Else
+            ' Welche Offer sind vorhanden und sollen angeboten werden.
+            cOffers = ","
+            cResID = UCase(Trim(KMTools.SearchTag("ResID_Value")))
+            cStatus = UCase(Trim(KMTools.SearchTag("ResStatusNew")))
+            cStorniert = UCase(Trim(KMTools.SearchTag("StorniertAm")))
+            aRoomStays() = Split(gcRoomStays, Chr(13))
+            For nI = LBound(aRoomStays) To UBound(aRoomStays)
+                aRoomStay() = Split(aRoomStays(nI), Chr(9))
+                If UBound(aRoomStay) - LBound(aRoomStay) >= 17 Then
+                    If ((Len(Trim(aRoomStay(LBound(aRoomStay) + 1))) > 0) Or Len(Trim(aRoomStay(LBound(aRoomStay) + 17))) > 0) And Trim(aRoomStay(LBound(aRoomStay) + 0)) <> "Nr" Then
+                        nStartRS = LBound(aRoomStay)
+                        cOffer = aRoomStay(LBound(aRoomStay) + 0)
+                        cOffer = Trim(cOffer)
+                        If IsEmptyNumeric(cOffer) Then
+                            cOffer = "1"
+                        End If
+                        If Not InStr(cOffers, "," + cOffer + ",") > 0 Then
+                            cOffers = cOffers + cOffer + ","
+                        End If
+                        aAngebote = Split(Trim(aRoomStay(nStartRS + 16)), "<Offer_Ende>")
+                        For nJ = LBound(aAngebote) To UBound(aAngebote)
+                            cAngebot = aAngebote(nJ)
+                            cAResID = KMTools.SearchTagInText("Offer_ResID", cAngebot)
+                            cAStatus = UCase(Trim(KMTools.SearchTagInText("Offer_Resstatus", cAngebot)))
+                            cAStorniert = UCase(Trim(KMTools.SearchTagInText("Offer_StorniertAm", cAngebot)))
+                            If (Not glNurAktuelleReservierung Or cResID = cAResID) And cAStatus = cStatus And Len(cAStorniert) = Len(cStorniert) Then
+                                cAngebot = aAngebote(nJ)
+                                cAOfferID = UCase(Trim(KMTools.SearchTagInText("Offer_OfferID", cAngebot)))
+                                cAOfferID = Trim(cAOfferID)
+                                If Val(cAOfferID) > 0 And Not InStr(cOffers, "," + cAOfferID + ",") > 0 Then
+                                    cOffers = cOffers + cAOfferID + ","
+                                End If
+                            End If
+                        Next nJ
+                    End If
+                End If
+            Next nI
+            aOffers() = Split(cOffers, ",")
+            For nI = LBound(aOffers) + 1 To UBound(aOffers) - 1
+                cOffer = aOffers(nI)
+                AddNode_Offer XMLdoc, oTPANode, cXmlns, cOffer, gcRoomStays
+            Next
+        End If
+     End If
+    'User
+    Set oNewNode1 = XMLdoc.createNode(1, "User", cXmlns)
+    oTPANode.appendChild oNewNode1
+    AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "Code", "UserCode"
+    AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "Name", "UserName"
+    AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "FullName", "UserFullName"
+
+End Sub
+
+Private Sub AddNode_ResGuests(ByRef XMLdoc As Object, ByVal oNode As Object, cXmlns As String)
+    Dim oNewNode1 As Object
+    Dim oNewNode2 As Object
+    Dim oTextNode As Object
+    Dim oCustomer As Object
+    Dim cValue As String
+    
+    If Len(Trim(KMTools.SearchTag("GuestID"))) > 0 Then
+        Set oNewNode1 = XMLdoc.createNode(1, "ResGuests", cXmlns)
+        oNode.appendChild oNewNode1
+        
+        Set oNewNode2 = XMLdoc.createNode(1, "ResGuest", cXmlns)
+        oNewNode1.appendChild oNewNode2
+        
+        Set oNewNode1 = XMLdoc.createNode(1, "Profiles", cXmlns)
+        oNewNode2.appendChild oNewNode1
+        
+        Set oNewNode2 = XMLdoc.createNode(1, "ProfileInfo", cXmlns)
+        oNewNode1.appendChild oNewNode2
+        
+        Set oNewNode1 = XMLdoc.createNode(1, "UniqueID", cXmlns)
+        AddAttribute XMLdoc, oNewNode1, "Type", 1
+        AddAttribute XMLdoc, oNewNode1, "ID", KMTools.SearchTag("GuestID")
+        oNewNode2.appendChild oNewNode1
+        
+        Set oNewNode1 = XMLdoc.createNode(1, "Profile", cXmlns)
+        AddAttribute XMLdoc, oNewNode1, "ProfileType", 1
+        oNewNode2.appendChild oNewNode1
+        
+        Set oCustomer = XMLdoc.createNode(1, "Customer", cXmlns)
+'        AddAttribute XMLdoc, oCustomer, "Gender", ConvertGender(KMTools.SearchTag("Gender"))
+        AddAttribute XMLdoc, oCustomer, "BirthDate", ConvertDate(KMTools.SearchTag("BirthDate"))
+        AddAttribute XMLdoc, oCustomer, "Language", KMTools.ConvertLanguage(KMTools.SearchTag("Lang"))
+        oNewNode1.appendChild oCustomer
+        
+        Set oNewNode1 = XMLdoc.createNode(1, "PersonName", cXmlns)
+        oCustomer.appendChild oNewNode1
+        
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "NamePrefix", "NamePrefix"
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "NameTitle", "NameTitle"
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "GivenName", "GivenName"
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "Surname", "Surname"
+        
+'        AddNode_Telephone XMLdoc, oCustomer, cXmlns, "Telephone_Typ1", "1"
+'        AddNode_Telephone XMLdoc, oCustomer, cXmlns, "Telephone_Typ3", "3"
+'        AddNode_Telephone XMLdoc, oCustomer, cXmlns, "Telephone_Typ5", "5"
+        
+        AddNodeWithTag XMLdoc, oCustomer, cXmlns, "Email", "Email"
+        
+        Set oNewNode1 = XMLdoc.createNode(1, "Address", cXmlns)
+        oCustomer.appendChild oNewNode1
+        
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "AddressLine", "AddressLine"
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "CityName", "CityName"
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "PostalCode", "PostalCode"
+        
+        Set oNewNode2 = XMLdoc.createNode(1, "StateProv", cXmlns)
+        AddAttribute XMLdoc, oNewNode2, "StateCode", KMTools.SearchTag("StateProv")
+        oNewNode1.appendChild oNewNode2
+            
+        Set oNewNode2 = XMLdoc.createNode(1, "CountryName", cXmlns)
+        AddAttribute XMLdoc, oNewNode2, "Code", KMTools.SearchTag("CountryName")
+        oNewNode1.appendChild oNewNode2
+            
+        Set oNewNode1 = XMLdoc.createNode(1, "TPA_Extensions", cXmlns)
+        oCustomer.appendChild oNewNode1
+        
+'        AddNodeWithValue XMLdoc, oNewNode1, cXmlns, "Newsletter", ConvertLogic(KMTools.SearchTag("Newsletter"))
+        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "Salutation"
+        AddNodeWithValue XMLdoc, oNewNode1, cXmlns, "LastStay", ConvertDate(KMTools.SearchTag("LastStay"))
+'        AddNodeWithTag XMLdoc, oNewNode1, cXmlns, "LastStay"
+    End If
+
+End Sub
+
+Private Sub AddNode_RoomStays(ByRef XMLdoc As Object, ByVal oNode As Object, cXmlns As String)
+    Dim aAngebot() As String
+    Dim aAngebote() As String
+    Dim aAufenthalt() As String
+    Dim aAufenthalte() As String
+    Dim aRoomStay() As String
+    Dim aRoomStays() As String
+    Dim cAOfferID As String
+    Dim cAResID As String
+    Dim cAStatus As String
+    Dim cAStorniert As String
+    Dim cAngebot As String
+    Dim cBis As String
+    Dim cCountAdults As String
+    Dim cCountChilds As String
+    Dim cNumberofUnits As String
+    Dim cOfferID As String
+    Dim cRatePlanCode As String
+    Dim cRateplanDesc As String
+    Dim cResID As String
+    Dim cRoomDescription As String
+    Dim cRoomType As String
+    Dim cStatus As String
+    Dim cStorniert As String
+    Dim cVon As String
+    Dim nI As Integer
+    Dim nK As Integer
+    Dim nL As Integer
+    Dim nStartA As Integer
+    Dim nStartRS As Integer
+    Dim objRSs As Object
+    
+    Set objRSs = XMLdoc.createNode(1, "RoomStays", cXmlns)
+    oNode.appendChild objRSs
+    aRoomStays() = Split(gcRoomStays, Chr(13))
+    For nI = LBound(aRoomStays) To UBound(aRoomStays)
+        aRoomStay() = Split(aRoomStays(nI), Chr(9))
+        If UBound(aRoomStay) - LBound(aRoomStay) >= 17 Then
+            nStartRS = LBound(aRoomStay)
+            cResID = UCase(Trim(KMTools.SearchTag("ResID_Value")))
+            cStatus = UCase(Trim(KMTools.SearchTag("ResStatusNew")))
+            cStorniert = UCase(Trim(KMTools.SearchTag("StorniertAm")))
+            cOfferID = aRoomStay(nStartRS + 0)
+            aAngebote = Split(Trim(aRoomStay(nStartRS + 16)), "<Offer_Ende>")
+            For nK = LBound(aAngebote) To UBound(aAngebote)
+                cAngebot = aAngebote(nK)
+                cAResID = UCase(Trim(KMTools.SearchTagInText("Offer_ResID", cAngebot)))
+                cAStatus = UCase(Trim(KMTools.SearchTagInText("Offer_Resstatus", cAngebot)))
+                cAStorniert = UCase(Trim(KMTools.SearchTagInText("Offer_StorniertAm", cAngebot)))
+                cAOfferID = UCase(Trim(KMTools.SearchTagInText("Offer_OfferID", cAngebot)))
+                If Len(cAOfferID) = 0 Or Val(cAOfferID) = 0 Then
+                    cAOfferID = cOfferID
+                End If
+                If Len(cAResID) > 0 And (Not glNurAktuelleReservierung Or cResID = cAResID) And cAStatus = cStatus And Len(cAStorniert) = Len(cStorniert) Then
+                    If glMitUmzug Then
+                        aAufenthalte = Split(KMTools.SearchTagInText("Offer_Aufenthalt", cAngebot), "#")
+                        cBis = ""
+                        cVon = KMTools.SearchTagInText("Offer_Arrival", cAngebot)
+                        For nL = LBound(aAufenthalte) To UBound(aAufenthalte)
+                            aAufenthalt = Split(aAufenthalte(nL), "|")
+                            If UBound(aAufenthalt) - LBound(aAufenthalt) >= 9 Then
+                                nStartA = LBound(aAufenthalt)
+                                If Len(cBis) > 0 Then
+                                    If cRoomType <> HTMLEntititesDecode(aAufenthalt(nStartA + 9)) Then
+                                        cVon = cBis
+                                        cBis = aAufenthalt(nStartA + 0)
+                                        AddNode_RoomStay XMLdoc, objRSs, cXmlns, cVon, cBis, cNumberofUnits, "", cRoomType, cCountAdults, cCountChilds _
+                                                     , cRoomDescription, cAOfferID, cRatePlanCode, cRateplanDesc
+                                        If lFehler Then
+                                            Exit Sub
+                                        End If
+                                        cVon = aAufenthalt(nStartA + 0)
+                                    End If
+                                Else
+                                    cVon = aAufenthalt(nStartA + 0)
+                                End If
+                                cBis = aAufenthalt(nStartA + 0)
+                                cRoomType = HTMLEntititesDecode(aAufenthalt(nStartA + 9))
+                                cRoomDescription = aAufenthalt(nStartA + 1)
+                                cNumberofUnits = KMTools.SearchTagInText("Offer_NumberOfUnits", cAngebot)
+                                cCountAdults = aAufenthalt(nStartA + 2)
+                                cCountChilds = Str(Val(aAufenthalt(nStartA + 7)) - Val(cCountAdults))
+                                cRatePlanCode = aAufenthalt(nStartA + 8)
+                                cRateplanDesc = aAufenthalt(nStartA + 6)
+                            End If
+                        Next
+                        If Len(cBis) > 0 Then
+                            cBis = KMTools.SearchTagInText("Offer_Departure", cAngebot)
+                            AddNode_RoomStay XMLdoc, objRSs, cXmlns, cVon, cBis, cNumberofUnits, "", cRoomType, cCountAdults, cCountChilds _
+                                         , cRoomDescription, cAOfferID, cRatePlanCode, cRateplanDesc
+                            If lFehler Then
+                                Exit Sub
+                            End If
+                        End If
+                    Else
+                        cVon = KMTools.SearchTagInText("Offer_Arrival", cAngebot)
+                        cBis = KMTools.SearchTagInText("Offer_Departure", cAngebot)
+                        cRoomType = HTMLEntititesDecode(KMTools.SearchTagInText("Offer_RoomTyp", cAngebot))
+                        cRoomDescription = KMTools.SearchTagInText("Offer_RoomTypDesc", cAngebot)
+                        cNumberofUnits = KMTools.SearchTagInText("Offer_NumberOfUnits", cAngebot)
+                        cCountAdults = KMTools.SearchTagInText("Offer_AdultNo", cAngebot)
+                        cCountChilds = KMTools.SearchTagInText("Offer_ChildNo", cAngebot)
+                        cRatePlanCode = KMTools.SearchTagInText("Offer_RateCode", cAngebot)
+                        cRateplanDesc = KMTools.SearchTagInText("Offer_RateCodeDesc", cAngebot)
+                        AddNode_RoomStay XMLdoc, objRSs, cXmlns, cVon, cBis, cNumberofUnits, "", cRoomType, cCountAdults, cCountChilds _
+                                     , cRoomDescription, cAOfferID, cRatePlanCode, cRateplanDesc
+                        If lFehler Then
+                            Exit Sub
+                        End If
+                    End If
+                End If
+            Next
+        End If
+    Next
+
+End Sub
+
+Private Sub AddNode_Offer(ByRef XMLdoc As Object, ByVal oTPANode As Object, ByVal cXmlns, ByVal cOffer As String, ByVal cRoomStays As String)
+    Dim aAngebote() As String
+    Dim aAufenthalt() As String
+    Dim aAufenthalte() As String
+    Dim aPackage() As String
+    Dim aPackages() As String
+    Dim aRoomStay() As String
+    Dim aRoomStays() As String
+    Dim cAOfferID As String
+    Dim cAResID As String
+    Dim cAStatus As String
+    Dim cAStorniert As String
+    Dim cAmount As String
+    Dim cAngebot As String
+    Dim cBis As String
+    Dim cCountAdults As String
+    Dim cCountChilds As String
+    Dim cDescription As String
+    Dim cDiscount As String
+    Dim cNumberofUnits As String
+    Dim cOffer2 As String
+    Dim cPrice As String
+    Dim cRatePlanCode As String
+    Dim cRateplanDesc As String
+    Dim cResID As String
+    Dim cRoomDescription As String
+    Dim cSprache As String
+    Dim cStatus As String
+    Dim cStorniert As String
+    Dim cVon As String
+    Dim cVonPauschal As String
+    Dim nAmountPauschal As Currency
+    Dim nCount As Integer
+    Dim nCrossAmount As Currency
+    Dim nCrossAmountCheck As Currency
+    Dim nI As Integer
+    Dim nJ As Integer
+    Dim nK As Integer
+    Dim nL As Integer
+    Dim nQuantity As Integer
+    Dim nStartA As Integer
+    Dim nStartP As Integer
+    Dim nStartRS As Integer
+    Dim nTage As Integer
+    Dim oItems As Object
+    Dim oNewNode As Object
+    Dim oOfferNode As Object
+    
+    cSprache = KMTools.ConvertLanguage(KMTools.SearchTag("Lang"))
+    nCrossAmount = 0
+    cOffer = Trim(cOffer)
+    Set oOfferNode = XMLdoc.createNode(1, "Offer", cXmlns)
+    oTPANode.appendChild oOfferNode
+    AddNodeWithValue XMLdoc, oOfferNode, cXmlns, "ID", cOffer
+    Set oItems = XMLdoc.createNode(1, "Items", cXmlns)
+    oOfferNode.appendChild oItems
+    aRoomStays() = Split(gcRoomStays, Chr(13))
+    For nI = LBound(aRoomStays) To UBound(aRoomStays)
+        aRoomStay() = Split(aRoomStays(nI), Chr(9))
+        If UBound(aRoomStay) - LBound(aRoomStay) >= 18 Then
+            nStartRS = LBound(aRoomStay)
+            cResID = KMTools.SearchTag("ResID_Value")
+            cStatus = UCase(Trim(KMTools.SearchTag("ResStatusNew")))
+            cStorniert = UCase(Trim(KMTools.SearchTag("StorniertAm")))
+            cOffer2 = aRoomStay(nStartRS + 0)
+            If IsEmptyNumeric(cOffer2) Then
+                cOffer2 = "1"
+            End If
+            aAngebote = Split(Trim(aRoomStay(nStartRS + 16)), "<Offer_Ende>")
+            For nJ = LBound(aAngebote) To UBound(aAngebote)
+                cAngebot = aAngebote(nJ)
+                cAResID = KMTools.SearchTagInText("Offer_ResID", cAngebot)
+                cAStatus = UCase(Trim(KMTools.SearchTagInText("Offer_Resstatus", cAngebot)))
+                cAStorniert = UCase(Trim(KMTools.SearchTagInText("Offer_StorniertAm", cAngebot)))
+                cAOfferID = UCase(Trim(KMTools.SearchTagInText("Offer_OfferID", cAngebot)))
+                If IsEmptyNumeric(cAOfferID) Then
+                    cAOfferID = cOffer2
+                End If
+                If cAOfferID = cOffer And Len(cAResID) > 0 And (Not glNurAktuelleReservierung Or cResID = cAResID) And cAStatus = cStatus And Len(cAStorniert) = Len(cStorniert) Then
+                    nCrossAmountCheck = 0
+                    cDiscount = ""
+                    aAufenthalte = Split(KMTools.SearchTagInText("Offer_Aufenthalt", cAngebot), "#")
+                    cNumberofUnits = KMTools.SearchTagInText("Offer_NumberOfUnits", cAngebot)
+                    nCount = Max(1, Val(cNumberofUnits))
+                    For nL = 1 To nCount
+                        cBis = ""
+                        nAmountPauschal = 0
+                        For nK = LBound(aAufenthalte) To UBound(aAufenthalte)
+                            aAufenthalt = Split(aAufenthalte(nK), "|")
+                            If UBound(aAufenthalt) - LBound(aAufenthalt) >= 9 Then
+                                nStartA = LBound(aAufenthalt)
+                                If Len(cBis) > 0 Then
+                                    If Not (cRatePlanCode = aAufenthalt(nStartA + 8) And IstPauschale(cRatePlanCode)) Then
+                                        cVon = cBis
+                                        cBis = aAufenthalt(nStartA + 0)
+                                        nTage = DateDiff(cVon, cBis)
+                                        If nTage < 0 Then
+                                            MsgBox "Von/Bis im Aufenthalt nicht g|fffd|ltig"
+                                            lFehler = True
+                                            Exit Sub
+                                        End If
+                                        If IstPauschale(cRatePlanCode) Then
+                                            cAmount = Str(nAmountPauschal)
+                                            cPrice = cAmount
+                                            nTage = 1
+                                        Else
+                                            cAmount = Str(Val(ConvertPrice(cPrice)) * nTage)
+                                        End If
+                                        If Not glOhneSaison Then
+                                            cDescription = cRoomDescription + " - " + cRateplanDesc
+                                            cDescription = GetDescription(Val(cCountAdults), Val(cCountChilds), cVon, cBis, cRoomDescription, cRateplanDesc, cSprache)
+                                            AddNode_OfferItem XMLdoc, oItems, cXmlns, cDescription, nTage, cPrice, cAmount, cDiscount
+                                            nCrossAmount = nCrossAmount + Val(cAmount)
+                                            nAmountPauschal = 0
+                                            cVon = aAufenthalt(nStartA + 0)
+                                        End If
+                                        If nL = 1 Then
+                                            nCrossAmountCheck = nCrossAmountCheck + Val(cAmount)
+                                        End If
+                                    Else
+                                        nTage = DateDiff(cVonPauschal, aAufenthalt(nStartA + 0))
+                                        If nTage < 0 Then
+                                            MsgBox "Von/Bis im Aufenthalt nicht g|fffd|ltig"
+                                            lFehler = True
+                                            Exit Sub
+                                        End If
+                                        nAmountPauschal = nAmountPauschal + Val(ConvertPrice(cPrice)) * nTage
+                                    End If
+                                Else
+                                    cVon = aAufenthalt(nStartA + 0)
+                                End If
+                                cVonPauschal = aAufenthalt(nStartA + 0)
+                                cBis = aAufenthalt(nStartA + 0)
+                                cRatePlanCode = aAufenthalt(nStartA + 8)
+                                cRoomDescription = aAufenthalt(nStartA + 5)
+                                cCountAdults = aAufenthalt(nStartA + 2)
+                                cCountChilds = Str(Val(aAufenthalt(nStartA + 7)) - Val(cCountAdults))
+                                cRateplanDesc = aAufenthalt(nStartA + 6)
+                                If gcModusPreis = "WITHOUTADDON" Then
+                                    cPrice = Str(Val(ConvertPrice(aAufenthalt(nStartA + 3))))
+                                Else
+                                    cPrice = Str(Val(ConvertPrice(aAufenthalt(nStartA + 4))))
+                                End If
+                                'cRatePlanDesc = aAufenthalt(nM + ?) 'ToDo
+                            End If
+                        Next nK
+                        If glOhneSaison Then
+                            cBis = KMTools.SearchTagInText("Offer_Departure", cAngebot)
+                            nTage = DateDiff(cVonPauschal, cBis)
+                            cAmount = Str(Val(ConvertPrice(cPrice)) * nTage)
+                            If nL = 1 Then
+                                nCrossAmountCheck = nCrossAmountCheck + Val(cAmount)
+                            End If
+                            cVon = KMTools.SearchTagInText("Offer_Arrival", cAngebot)
+                            nTage = Val(KMTools.SearchTagInText("Offer_Nights", cAngebot))
+                            cRoomDescription = KMTools.SearchTagInText("Offer_RoomTypDescTrl", cAngebot)
+                            cCountAdults = KMTools.SearchTagInText("Offer_AdultNo", cAngebot)
+                            cCountChilds = KMTools.SearchTagInText("Offer_ChildNo", cAngebot)
+                            cRateplanDesc = KMTools.SearchTagInText("Offer_RateCodeDescTrl", cAngebot)
+                            cAmount = Str(nCrossAmountCheck)
+                            cPrice = Str(nCrossAmountCheck / nTage)
+                            nCrossAmount = nCrossAmount + Val(cAmount)
+                        Else
+                            cBis = KMTools.SearchTagInText("Offer_Departure", cAngebot)
+                            nTage = DateDiff(cVon, cBis)
+                            If nTage < 0 Then
+                                MsgBox "Von/Bis im Aufenthalt nicht g|fffd|ltig"
+                                lFehler = True
+                                Exit Sub
+                            End If
+                            If IstPauschale(cRatePlanCode) Then
+                                nTage = DateDiff(cVonPauschal, cBis)
+                                If nTage < 0 Then
+                                    MsgBox "Von/Bis im Aufenthalt nicht g|fffd|ltig"
+                                    lFehler = True
+                                    Exit Sub
+                                End If
+                                nAmountPauschal = nAmountPauschal + Val(ConvertPrice(cPrice)) * nTage
+                                cAmount = Str(nAmountPauschal)
+                                cPrice = cAmount
+                                nTage = 1
+                            Else
+                                cAmount = Str(Val(ConvertPrice(cPrice)) * nTage)
+                            End If
+                            nCrossAmount = nCrossAmount + Val(cAmount)
+                            If nL = 1 Then
+                                nCrossAmountCheck = nCrossAmountCheck + Val(cAmount)
+                            End If
+                        End If
+                        If Len(cBis) > 0 Then
+                            cDescription = cRoomDescription + " - " + cRateplanDesc
+                            cDescription = GetDescription(Val(cCountAdults), Val(cCountChilds), cVon, cBis, cRoomDescription, cRateplanDesc, cSprache)
+                            AddNode_OfferItem XMLdoc, oItems, cXmlns, cDescription, nTage, cPrice, cAmount, cDiscount
+                            If lFehler Then
+                                Exit Sub
+                            End If
+                        End If
+                        ' Packeges auslesen
+                        aPackages = Split(KMTools.SearchTagInText("Offer_Package", cAngebot), "#")
+                        For nK = LBound(aPackages) To UBound(aPackages)
+                            aPackage = Split(aPackages(nK), "|")
+                            nStartP = LBound(aPackage)
+                            If UBound(aPackage) - nStartP >= 6 Then
+                                cDescription = aPackage(nStartP + 4)
+                                nQuantity = aPackage(nStartP + 1)
+                                nCount = aPackage(nStartP + 2)
+                                cPrice = Str(Val(ConvertPrice(aPackage(nStartP + 3))))
+                                nQuantity = nQuantity * nCount
+                                cAmount = Str(Val(cPrice) * nQuantity)
+                                If UBound(aPackage) - nStartP >= 7 Then
+                                    If Val(aPackage(nStartP + 7)) = 1 Then
+                                        cDescription = cDescription + " " + KMTools.SearchTagInText("Offer_Arrival", cAngebot) + " - " + KMTools.SearchTagInText("Offer_Departure", cAngebot)
+                                    End If
+                                End If
+                                If Val(ConvertPrice(cAmount)) <> 0 Then
+                                    AddNode_OfferItem XMLdoc, oItems, cXmlns, cDescription, Str(nQuantity), cPrice, cAmount, cDiscount
+                                    nCrossAmount = nCrossAmount + Val(cAmount)
+                                End If
+                                nCrossAmountCheck = nCrossAmountCheck + Val(cAmount)
+                            End If
+                        Next
+                    Next nL
+                    If Val(ConvertPrice(KMTools.SearchTagInText("Offer_Total", cAngebot))) <> nCrossAmountCheck Then
+                        MsgBox "Achtung Gesamtbetrag stimmt nicht |fffd|berein!"
+                    End If
+                End If
+            Next nJ
+        End If
+    Next nI
+    Set oNewNode = XMLdoc.createNode(1, "Totals", cXmlns)
+    AddNodeWithValue XMLdoc, oNewNode, cXmlns, "GrossAmount", ConvertPrice(Format(nCrossAmount, "###0.00"))
+    oOfferNode.appendChild oNewNode
+
+End Sub
+
+Private Function IstPauschale(cValue) As Boolean
+    IstPauschale = True
+    If UCase(Trim(Left(cValue, 2))) = "HP" Then
+        IstPauschale = False
+    End If
+    IstPauschale = False
+End Function
+
+' --------------------------------------------------
+' ---------------- GruppenBuchungen ----------------
+' --------------------------------------------------
+
+Private Function SortGruppenBuchungen(cGruppenbuchungen As String) As String()
+   Dim nJ       As Long
+   Dim nI       As Long
+   Dim strWert As String
+   Dim cVon1    As String
+   Dim cVon2    As String
+   Dim cBis1    As String
+   Dim dVon1    As Date
+   Dim dVon2    As Date
+   Dim aGruppenbuchungen() As String
+   Dim aGruppenbuchung() As String
+   
+   aGruppenbuchungen = Split(cGruppenbuchungen, "#")
+   For nJ = UBound(aGruppenbuchungen) - 1 To LBound(aGruppenbuchungen) Step -1
+        For nI = LBound(aGruppenbuchungen) To nJ
+            cVon1 = ""
+            cVon2 = ""
+            aGruppenbuchung = Split(aGruppenbuchungen(nI), "|")
+            If UBound(aGruppenbuchung) - LBound(aGruppenbuchung) >= 10 Then
+                cVon1 = aGruppenbuchung(LBound(aGruppenbuchung) + 1)
+                cBis1 = aGruppenbuchung(LBound(aGruppenbuchung) + 2)
+            End If
+            aGruppenbuchung = Split(aGruppenbuchungen(nI + 1), "|")
+            If UBound(aGruppenbuchung) - LBound(aGruppenbuchung) >= 10 Then
+                cVon2 = aGruppenbuchung(LBound(aGruppenbuchung) + 1)
+            End If
+            
+            If IsDate(cVon1) And IsDate(cVon2) Then
+                dVon1 = DateValue(cVon1)
+                dVon2 = DateValue(cVon2)
+                If cBis1 = cVon2 And dVon1 < dVon2 Then
+                    strWert = aGruppenbuchungen(nI)
+                    aGruppenbuchungen(nI) = aGruppenbuchungen(nI + 1)
+                    aGruppenbuchungen(nI + 1) = strWert
+                End If
+            End If
+        Next nI
+    Next nJ
+    SortGruppenBuchungen = aGruppenbuchungen
+  
+End Function
+
+Private Sub AddNode_RoomStays_GruppenBuchungen(ByRef XMLdoc As Object, ByVal oNode As Object, cXmlns As String)
+    Dim aGruppenbuchung() As String
+    Dim aGruppenbuchungen() As String
+    Dim aRoomStay() As String
+    Dim aRoomStays() As String
+    Dim cBis As String
+    Dim cCountAdults As String
+    Dim cCountChilds As String
+    Dim cNumberofUnits As String
+    Dim cOfferID As String
+    Dim cRatePlanCode As String
+    Dim cRateplanDesc As String
+    Dim cRoomDescription As String
+    Dim cRoomType As String
+    Dim cVon As String
+    Dim nI As Integer
+    Dim nK As Integer
+    Dim nStartGB As Integer
+    Dim nStartRS As Integer
+    Dim objRSs As Object
+    
+    Set objRSs = XMLdoc.createNode(1, "RoomStays", cXmlns)
+    oNode.appendChild objRSs
+    aRoomStays() = Split(gcRoomStays, Chr(13))
+    For nI = LBound(aRoomStays) To UBound(aRoomStays)
+        aRoomStay() = Split(aRoomStays(nI), Chr(9))
+        If UBound(aRoomStay) - LBound(aRoomStay) >= 17 Then
+            nStartRS = LBound(aRoomStay)
+            cOfferID = aRoomStay(nStartRS + 0)
+            aGruppenbuchungen = SortGruppenBuchungen(Trim(aRoomStay(nStartRS + 17)))
+            For nK = LBound(aGruppenbuchungen) To UBound(aGruppenbuchungen)
+                aGruppenbuchung = Split(aGruppenbuchungen(nK), "|")
+                If UBound(aGruppenbuchung) - LBound(aGruppenbuchung) >= 10 Then
+                    nStartGB = LBound(aGruppenbuchung)
+                    cVon = aGruppenbuchung(nStartGB + 1)
+                    cBis = aGruppenbuchung(nStartGB + 2)
+                    cNumberofUnits = aGruppenbuchung(nStartGB + 3)
+                    cRoomType = aGruppenbuchung(nStartGB + 4)
+                    cCountAdults = aGruppenbuchung(nStartGB + 6)
+                    cCountChilds = aGruppenbuchung(nStartGB + 7)
+                    cRoomDescription = aGruppenbuchung(nStartGB + 10)
+                    cRatePlanCode = aGruppenbuchung(nStartGB + 11)
+                    cRateplanDesc = aGruppenbuchung(nStartGB + 12)
+                    cCountAdults = Trim(Str(Val(cCountAdults) * Val(cNumberofUnits)))
+                    cCountChilds = Trim(Str(Val(cCountChilds) * Val(cNumberofUnits)))
+                    AddNode_RoomStay XMLdoc, objRSs, cXmlns, cVon, cBis, cNumberofUnits, "", cRoomType, cCountAdults, cCountChilds _
+                                 , cRoomDescription, cOfferID, cRatePlanCode, cRateplanDesc
+                   If lFehler Then
+                       Exit Sub
+                   End If
+                End If
+            Next
+        End If
+    Next
+
+End Sub
+
+Private Sub AddNode_Offer_GruppenBuchungen(ByRef XMLdoc As Object, ByVal oTPANode As Object, ByVal cXmlns, ByVal cOffer As String, ByVal cRoomStays As String)
+    Dim aGruppenbuchung() As String
+    Dim aGruppenbuchungen() As String
+    Dim aPackage() As String
+    Dim aPackages() As String
+    Dim aRoomStay() As String
+    Dim aRoomStays() As String
+    Dim cAmount As String
+    Dim cBis As String
+    Dim cCountAdults As String
+    Dim cCountChilds As String
+    Dim cDescription As String
+    Dim cDiscount As String
+    Dim cPrice As String
+    Dim cQuantity As String
+    Dim cRateplanDesc As String
+    Dim cResID As String
+    Dim cRoomDescription As String
+    Dim cSprache As String
+    Dim cStatus As String
+    Dim cStorniert As String
+    Dim cVon As String
+    Dim nCount As Integer
+    Dim nCrossAmount As Currency
+    Dim nCrossAmountCheck As Currency
+    Dim nI As Integer
+    Dim nJ As Integer
+    Dim nQuantity As Integer
+    Dim nStartGB As String
+    Dim nStartP As Integer
+    Dim nStartRS As Integer
+    Dim nTage As Integer
+    Dim oItems As Object
+    Dim oNewNode As Object
+    Dim oOfferNode As Object
+    
+    cSprache = KMTools.ConvertLanguage(KMTools.SearchTag("Lang"))
+    nCrossAmount = 0
+    nCrossAmountCheck = 0
+    cOffer = Trim(cOffer)
+    Set oOfferNode = XMLdoc.createNode(1, "Offer", cXmlns)
+    oTPANode.appendChild oOfferNode
+    AddNodeWithValue XMLdoc, oOfferNode, cXmlns, "ID", cOffer
+    Set oItems = XMLdoc.createNode(1, "Items", cXmlns)
+    oOfferNode.appendChild oItems
+    
+    aRoomStays() = Split(gcRoomStays, Chr(13))
+    For nI = LBound(aRoomStays) To UBound(aRoomStays)
+        aRoomStay() = Split(aRoomStays(nI), Chr(9))
+        If UBound(aRoomStay) - LBound(aRoomStay) >= 18 Then
+            nStartRS = LBound(aRoomStay)
+            cResID = KMTools.SearchTag("ResID_Value")
+            cStatus = UCase(Trim(KMTools.SearchTag("ResStatusNew")))
+            cStorniert = UCase(Trim(KMTools.SearchTag("StorniertAm")))
+            
+            aGruppenbuchungen = SortGruppenBuchungen(Trim(aRoomStay(nStartRS + 17)))
+            For nJ = LBound(aGruppenbuchungen) To UBound(aGruppenbuchungen)
+                aGruppenbuchung = Split(aGruppenbuchungen(nJ), "|")
+                nStartGB = LBound(aGruppenbuchung)
+                If UBound(aGruppenbuchung) - LBound(aGruppenbuchung) >= 10 Then
+                    cVon = aGruppenbuchung(nStartGB + 1)
+                    cBis = aGruppenbuchung(nStartGB + 2)
+                    nTage = DateDiff(cVon, cBis)
+                    If nTage < 0 Then
+                        MsgBox "Von/Bis in der Gruppenbuchung nicht g|fffd|ltig"
+                        lFehler = True
+                        Exit Sub
+                    End If
+                    cAmount = aGruppenbuchung(LBound(aGruppenbuchung) + 9)
+                    cPrice = aGruppenbuchung(LBound(aGruppenbuchung) + 8)
+                    cQuantity = Trim(Str(Val(aGruppenbuchung(LBound(aGruppenbuchung) + 3)) * nTage))
+                    If Val(ConvertPrice(cPrice)) > 0 Then
+                        If cQuantity <> Trim(Str(Val(ConvertPrice(cAmount)) / Val(ConvertPrice(cPrice)))) Then
+                            MsgBox "Achtung Fehler bei der Menge"
+                        End If
+                    Else
+                        MsgBox "Achtung Fehler bei den Preisen"
+                    End If
+                    cDescription = aGruppenbuchung(LBound(aGruppenbuchung) + 10)
+                    cRateplanDesc = aGruppenbuchung(LBound(aGruppenbuchung) + 12)
+                    cRoomDescription = aGruppenbuchung(LBound(aGruppenbuchung) + 10)
+                    cCountAdults = aGruppenbuchung(LBound(aGruppenbuchung) + 6)
+                    cCountChilds = aGruppenbuchung(LBound(aGruppenbuchung) + 7)
+                    cDescription = GetDescription(Val(cCountAdults), Val(cCountChilds), cVon, cBis, cRoomDescription, cRateplanDesc, cSprache)
+                    cDiscount = ""
+                    AddNode_OfferItem XMLdoc, oItems, cXmlns, cDescription, cQuantity, cPrice, cAmount, cDiscount
+                    nCrossAmount = nCrossAmount + Val(ConvertPrice(cAmount))
+                End If
+            Next
+            For nJ = LBound(aPackages) To UBound(aPackages)
+                cDiscount = ""
+                aPackage = Split(aPackages(nJ), "|")
+                nStartP = LBound(aPackage)
+                If UBound(aPackage) - nStartP >= 5 Then
+                    cDescription = aPackage(nStartP + 4)
+                    nQuantity = aPackage(nStartP + 1)
+                    nCount = aPackage(nStartP + 2)
+                    cPrice = Str(Val(ConvertPrice(aPackage(nStartP + 3))))
+                    cAmount = Str(Val(cPrice) * nQuantity * nCount)
+                    If Val(aPackage(nStartP + 0)) <> 2 Then
+                        AddNode_OfferItem XMLdoc, oItems, cXmlns, cDescription, Str(nQuantity), cPrice, cAmount, cDiscount
+                        nCrossAmount = nCrossAmount + Val(cAmount)
+                    End If
+                    nCrossAmountCheck = nCrossAmountCheck + Val(cAmount)
+                End If
+            Next
+            If 0 <> nCrossAmountCheck Then
+                MsgBox "Achtung Gesamtbetrag stimmt nicht |fffd|berein!"
+            End If
+        End If
+    Next
+    Set oNewNode = XMLdoc.createNode(1, "Totals", cXmlns)
+    AddNodeWithValue XMLdoc, oNewNode, cXmlns, "GrossAmount", ConvertPrice(Format(nCrossAmount, "###0.00"))
+    oOfferNode.appendChild oNewNode
+
+End Sub
+
+
+
+
+Attribute VB_Name = "KMTools"
+Option Explicit
+Option Private Module
+
+#If Win64 Then
+    Private Declare PtrSafe Function ShellExecute Lib "shell32.dll" Alias "ShellExecuteA" _
+        (ByVal hwnd As Long, ByVal lpOperation As String, ByVal lpFile As String, ByVal lpParameters As String, ByVal lpDirectory As String, ByVal nShowCmd As Long) As Long
+    Public Declare PtrSafe Function FileProtocolHandler Lib "url.dll" Alias "FileProtocolHandlerA" _
+        (ByVal hwnd As Long, ByVal hinst As Long, ByVal lpszCmdLine As String, ByVal nShowCmd As Long) As Long
+#Else
+    Private Declare Function ShellExecute Lib "shell32.dll" Alias "ShellExecuteA" _
+        (ByVal hwnd As Long, ByVal lpOperation As String, ByVal lpFile As String, ByVal lpParameters As String, ByVal lpDirectory As String, ByVal nShowCmd As Long) As Long
+    Public Declare Function FileProtocolHandler Lib "url.dll" Alias "FileProtocolHandlerA" _
+        (ByVal hwnd As Long, ByVal hinst As Long, ByVal lpszCmdLine As String, ByVal nShowCmd As Long) As Long
+#End If
+
+Public Function GetMax(n1 As Integer, n2 As Integer) As Integer
+    If n1 > n2 Then
+        GetMax = n1
+    Else
+        GetMax = n2
+    End If
+End Function
+
+Public Sub ConvertHyperlinkToHRef()
+    Dim oLink As Hyperlink
+    Dim cHTMLLink As String
+    Dim cLink As String
+    Dim cText As String
+
+    cHTMLLink = "<a href=""%Link%"" target=""_blank"">%Text%</a>"
+    For Each oLink In ActiveDocument.Hyperlinks
+        cLink = oLink.Address
+        cText = oLink.TextToDisplay
+        If InStr(1, cText, "<a href") = 0 Then
+            oLink.TextToDisplay = Replace(Replace(cHTMLLink, "%Link%", cLink), "%Text%", cText)
+        End If
+    Next
+
+End Sub
+
+Public Sub OpenHyperlink(ByVal Url)
+    Dim r As Long
+    
+    If True Then
+        FileProtocolHandler 0, 0, Url, 1
+    Else
+        r = ShellExecute(0, "Open", Url, 0, 0, 1)
+    End If
+
+End Sub
+
+Public Function Crypt(Inp As String, Key As String, Mode As Boolean) As String
+    Dim z As String
+    Dim i As Integer, Position As Integer
+    Dim cptZahl As Long, orgZahl As Long
+    Dim keyZahl As Long, cptString As String
+    
+    For i = 1 To Len(Inp)
+        Position = Position + 1
+        If Position > Len(Key) Then Position = 1
+        keyZahl = Asc(Mid(Key, Position, 1))
+        
+        If Mode Then
+            'Verschl|fffd|sseln
+            orgZahl = Asc(Mid(Inp, i, 1))
+            cptZahl = orgZahl Xor keyZahl
+            cptString = Hex(cptZahl)
+            If Len(cptString) < 2 Then cptString = "0" & cptString
+            z = z & cptString
+        Else
+            'Entschl|fffd|sseln
+            If i > Len(Inp) \ 2 Then Exit For
+            cptZahl = CByte("&H" & Mid$(Inp, i * 2 - 1, 2))
+            orgZahl = cptZahl Xor keyZahl
+            z = z & Chr$(orgZahl)
+        End If
+    Next i
+    Crypt = z
+End Function
+
+Public Sub CloseAllDocumentsSend()
+    Dim cGuestID As String
+    Dim cText As String
+    Dim aDoc As Object
+    
+    cGuestID = UCase(Trim(SearchTag("GuestID")))
+    For Each aDoc In Documents
+        cText = aDoc.Content.Text
+        If UCase(Trim(SearchTagInText("GuestID", cText))) = cGuestID Then
+            aDoc.Close False
+        End If
+    Next
+
+End Sub
+
+Public Function GetDescription(nErwachsene As Integer, nKinder As Integer, cVon As String, cBis As String, cRoom As String, cRate As String, cSprache As String)
+    Dim nPersonen As Integer
+    Dim cVorlage As String
+    Dim cErwachsene As String
+    Dim cKinder As String
+    Dim cPersonen As String
+    Dim cEPersonen As String
+    Dim cKund As String
+    
+    cRoom = Trim(cRoom)
+    cRate = Trim(cRate)
+    If nErwachsene = 0 Then
+        cErwachsene = ""
+        cEPersonen = ""
+    ElseIf nErwachsene > 1 Then
+        cErwachsene = Trim(Str(nErwachsene)) + " " + ConvertText("Erwachsene", cSprache)
+        cEPersonen = Trim(Str(nErwachsene)) + " " + ConvertText("Personen", cSprache)
+    Else
+        cErwachsene = Trim(Str(nErwachsene)) + " " + ConvertText("Erwachsener", cSprache)
+        cEPersonen = Trim(Str(nErwachsene)) + " " + ConvertText("Person", cSprache)
+    End If
+    If nKinder = 0 Then
+        cKinder = ""
+    ElseIf nKinder > 1 Then
+        cKinder = Trim(Str(nKinder)) + " " + ConvertText("Kinder", cSprache)
+    Else
+        cKinder = Trim(Str(nKinder)) + " " + ConvertText("Kind", cSprache)
+    End If
+    If nErwachsene > 0 And nKinder > 0 Then
+        cKund = ConvertText("und", cSprache)
+    Else
+        cKund = ""
+    End If
+    If nKinder + nErwachsene > 1 Then
+        cPersonen = Trim(Str(nErwachsene + nKinder)) + " " + ConvertText("Personen", cSprache)
+    Else
+        cPersonen = Trim(Str(nErwachsene + nKinder)) + " " + ConvertText("Person", cSprache)
+    End If
+    cVorlage = ConvertText("Beschreibung", cSprache)
+    cVorlage = Replace(cVorlage, "%room%", cRoom)
+    cVorlage = Replace(cVorlage, "%rate%", cRate)
+    cVorlage = Replace(cVorlage, "%adult%", cErwachsene)
+    cVorlage = Replace(cVorlage, "%child%", cKinder)
+    cVorlage = Replace(cVorlage, "%andchild%", cKund)
+    cVorlage = Replace(cVorlage, "%person%", cPersonen)
+    cVorlage = Replace(cVorlage, "%adultperson%", cEPersonen)
+    cVorlage = Replace(cVorlage, "%arrival%", cVon)
+    cVorlage = Replace(cVorlage, "%departure%", cBis)
+    GetDescription = cVorlage
+    
+End Function
+
+Private Function ConvertText(cText As String, cSprache As String)
+    Dim cTag As String
+    
+    If Len(cSprache) = 0 Then
+        cSprache = "DE"
+    End If
+    cTag = cText + "_" + UCase(cSprache)
+    ConvertText = KMTools.SearchTag(cTag)
+    If Len(ConvertText) = 0 Then
+        cTag = cText + "_DE"
+        ConvertText = KMTools.SearchTag(cTag)
+        If Len(ConvertText) = 0 Then
+            ConvertText = cText
+        End If
+    End If
+
+End Function
+
+
+Public Function IsEmptyNumeric(cValue As String)
+    
+    IsEmptyNumeric = False
+    cValue = Trim(cValue)
+    If Len(cValue) = 0 Or Val(cValue) = 0 Then
+        IsEmptyNumeric = True
+    End If
+
+End Function
+
+Public Function Max(nValue1 As Integer, nValue2 As Integer)
+
+    Max = nValue1
+    If nValue2 > nValue1 Then
+        Max = nValue2
+    End If
+    
+End Function
+
+
+Public Function SearchTag(cTag As String)
+    Dim cText As String
+    
+    cText = ActiveDocument.Content.Text
+    SearchTag = SearchTagInText(cTag, cText)
+
+End Function
+
+Public Function SearchTagInText(cTag As String, cText As String)
+    Dim nStart As Long
+    Dim nEnde As Long
+    Dim cSearch As String
+    
+    SearchTagInText = ""
+    cSearch = UCase("<" + cTag + ">")
+    nStart = InStr(UCase(cText), cSearch)
+    If nStart > 0 Then
+        nStart = nStart + Len(cSearch)
+        cSearch = UCase("</" + cTag + ">")
+        nEnde = InStr(nStart, UCase(cText), cSearch)
+        If nEnde > nStart Then
+            nEnde = nEnde
+            SearchTagInText = Mid(cText, nStart, nEnde - nStart)
+        End If
+    End If
+    If Len(SearchTagInText) = 0 Then
+        cSearch = UCase("[" + cTag + "]")
+        nStart = InStr(UCase(cText), cSearch)
+        If nStart > 0 Then
+            nStart = nStart + Len(cSearch)
+            cSearch = UCase("[/" + cTag + "]")
+            nEnde = InStr(nStart, UCase(cText), cSearch)
+            If nEnde > nStart Then
+                nEnde = nEnde
+                SearchTagInText = Mid(cText, nStart, nEnde - nStart)
+            End If
+        End If
+    End If
+    If Left(SearchTagInText, 2) = "<<" And Right(SearchTagInText, 2) = ">>" Then
+        SearchTagInText = ""
+    End If
+
+End Function
+
+Public Sub ReplacementKMButton()
+    Dim findtext As String
+    Dim replacetext As String
+    
+    Selection.Find.ClearFormatting
+    Selection.Find.Replacement.ClearFormatting
+    With Selection.Find
+        .Text = "<KMButton>"
+        .Wrap = wdFindContinue
+        .MatchWildcards = False
+    End With
+
+    'looping to search for all occurrences
+    Do While Selection.Find.Execute
+        'add a field here
+        Selection.Font.Bold = wdToggle
+        Selection.Font.Size = 30
+        Selection.Font.ColorIndex = wdWhite
+        Selection.Range.HighlightColorIndex = wdDarkRed
+        Selection.Fields.Add Range:=Selection.Range, Type:=wdFieldEmpty, Text:="MACROBUTTON FidelioSendKM .   Korrespondenzmanager   ", PreserveFormatting:=False
+    Loop
+    
+    With Selection.Find
+        .Text = "[KMButton]"
+        .Wrap = wdFindContinue
+        .MatchWildcards = False
+    End With
+
+    'looping to search for all occurrences
+    Do While Selection.Find.Execute
+        'add a field here
+        Selection.Font.Bold = wdToggle
+        Selection.Font.Size = 30
+        Selection.Font.ColorIndex = wdWhite
+        Selection.Range.HighlightColorIndex = wdDarkRed
+        Selection.Fields.Add Range:=Selection.Range, Type:=wdFieldEmpty, Text:="MACROBUTTON FidelioSendKM .   Korrespondenzmanager   ", PreserveFormatting:=False
+    Loop
+    
+End Sub
+
+Public Function ReplaceLast(cExpression As String, cFind As String, cReplace As String)
+    ReplaceLast = StrReverse(Replace(StrReverse(cExpression), StrReverse(cFind), StrReverse(cReplace), , 1))
+End Function
+
+Public Function MyASC(OneChar)
+    If OneChar = "" Then MyASC = 0 Else MyASC = Asc(OneChar)
+End Function
+
+Public Sub TableToText()
+    Dim tbl As Table
+  
+    For Each tbl In ActiveDocument.Tables
+        tbl.Range.Font.Size = 8
+        If InStr(tbl.Range.Text, "Anzahlung") Then
+            tbl.Range.Find.Execute findtext:=Chr(13), ReplaceWith:="|", Forward:=True, Replace:=wdReplaceAll
+        End If
+        tbl.Rows.ConvertToText Separator:=wdSeparateByTabs, NestedTables:=True
+    Next tbl
+        
+End Sub
+
+Public Function Base64Encode(inData)
+'rfc1521
+'2001 Antonin Foller, Motobit Software, http://Motobit.cz
+ 
+    Const Base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    Dim cOut, sOut, i
+ 
+    'For each group of 3 bytes
+    For i = 1 To Len(inData) Step 3
+        Dim nGroup, pOut, sGroup
+     
+        'Create one long from this 3 bytes.
+        nGroup = &H10000 * Asc(Mid(inData, i, 1)) + &H100 * MyASC(Mid(inData, i + 1, 1)) + MyASC(Mid(inData, i + 2, 1))
+     
+        'Oct splits the long To 8 groups with 3 bits
+        nGroup = Oct(nGroup)
+     
+        'Add leading zeros
+        nGroup = String(8 - Len(nGroup), "0") & nGroup
+     
+        'Convert To base64
+        pOut = Mid(Base64, CLng("&o" & Mid(nGroup, 1, 2)) + 1, 1) + _
+        Mid(Base64, CLng("&o" & Mid(nGroup, 3, 2)) + 1, 1) + _
+        Mid(Base64, CLng("&o" & Mid(nGroup, 5, 2)) + 1, 1) + _
+        Mid(Base64, CLng("&o" & Mid(nGroup, 7, 2)) + 1, 1)
+     
+        'Add the part To OutPut string
+        sOut = sOut + pOut
+     
+    'Add a new line For Each 76 chars In dest (76*3/4 = 57)
+    'If (I + 2) Mod 57 = 0 Then sOut = sOut + vbCrLf
+     
+    Next
+    Select Case Len(inData) Mod 3
+        Case 1: '8 bit final
+     
+        sOut = Left(sOut, Len(sOut) - 2) + "=="
+        Case 2: '16 bit final
+     
+        sOut = Left(sOut, Len(sOut) - 1) + "="
+    End Select
+    Base64Encode = sOut
+End Function
+
+Public Function DateDiff(cVon As String, cBis As String) As Integer
+    Dim dVon As Date
+    Dim dBis As Date
+    
+    DateDiff = -1
+    If IsDate(cVon) Then
+        dVon = DateValue(cVon)
+    Else
+        Exit Function
+    End If
+    If IsDate(cBis) Then
+        dBis = DateValue(cBis)
+    Else
+        Exit Function
+    End If
+    DateDiff = dBis - dVon
+End Function
+
+
+Public Function HTMLEntititesDecode(p_strText As String) As String
+    Dim strTemp As String
+    strTemp = p_strText
+    
+    strTemp = Replace(strTemp, """", "&quot;")
+    strTemp = Replace(strTemp, "&", "&amp;")
+    strTemp = Replace(strTemp, "'", "&apos;")
+    strTemp = Replace(strTemp, "<", "&lt;")
+    strTemp = Replace(strTemp, ">", "&gt;")
+    strTemp = Replace(strTemp, "", "&nbsp;")
+    strTemp = Replace(strTemp, "|fffd|", "&iexcl;")
+    strTemp = Replace(strTemp, "|fffd|", "&cent;")
+    strTemp = Replace(strTemp, "|fffd|", "&pound;")
+    strTemp = Replace(strTemp, "|fffd|", "&curren;")
+    strTemp = Replace(strTemp, "|fffd|", "&yen;")
+    strTemp = Replace(strTemp, "|fffd|", "&brvbar;")
+    strTemp = Replace(strTemp, "|fffd|", "&sect;")
+    strTemp = Replace(strTemp, "|fffd|", "&uml;")
+    strTemp = Replace(strTemp, "|fffd|", "&copy;")
+    strTemp = Replace(strTemp, "|fffd|", "&ordf;")
+    strTemp = Replace(strTemp, "|fffd|", "&laquo;")
+    strTemp = Replace(strTemp, "|fffd|", "&not;")
+    strTemp = Replace(strTemp, "", "*")
+    strTemp = Replace(strTemp, "|fffd|", "&reg;")
+    strTemp = Replace(strTemp, "|fffd|", "&macr;")
+    strTemp = Replace(strTemp, "|fffd|", "&deg;")
+    strTemp = Replace(strTemp, "|fffd|", "&plusmn;")
+    strTemp = Replace(strTemp, "|fffd|", "&sup2;")
+    strTemp = Replace(strTemp, "|fffd|", "&sup3;")
+    strTemp = Replace(strTemp, "|fffd|", "&acute;")
+    strTemp = Replace(strTemp, "|fffd|", "&micro;")
+    strTemp = Replace(strTemp, "|fffd|", "&para;")
+    strTemp = Replace(strTemp, "|fffd|", "&middot;")
+    strTemp = Replace(strTemp, "|fffd|", "&cedil;")
+    strTemp = Replace(strTemp, "|fffd|", "&sup1;")
+    strTemp = Replace(strTemp, "|fffd|", "&ordm;")
+    strTemp = Replace(strTemp, "|fffd|", "&raquo;")
+    strTemp = Replace(strTemp, "|fffd|", "&frac14;")
+    strTemp = Replace(strTemp, "|fffd|", "&frac12;")
+    strTemp = Replace(strTemp, "|fffd|", "&frac34;")
+    strTemp = Replace(strTemp, "|fffd|", "&iquest;")
+    strTemp = Replace(strTemp, "|fffd|", "&Agrave;")
+    strTemp = Replace(strTemp, "|fffd|", "&Aacute;")
+    strTemp = Replace(strTemp, "|fffd|", "&Acirc;")
+    strTemp = Replace(strTemp, "|fffd|", "&Atilde;")
+    strTemp = Replace(strTemp, "|fffd|", "&Auml;")
+    strTemp = Replace(strTemp, "|fffd|", "&Aring;")
+    strTemp = Replace(strTemp, "|fffd|", "&AElig;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ccedil;")
+    strTemp = Replace(strTemp, "|fffd|", "&Egrave;")
+    strTemp = Replace(strTemp, "|fffd|", "&Eacute;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ecirc;")
+    strTemp = Replace(strTemp, "|fffd|", "&Euml;")
+    strTemp = Replace(strTemp, "|fffd|", "&Igrave;")
+    strTemp = Replace(strTemp, "|fffd|", "&Iacute;")
+    strTemp = Replace(strTemp, "|fffd|", "&Icirc;")
+    strTemp = Replace(strTemp, "|fffd|", "&Iuml;")
+    strTemp = Replace(strTemp, "|fffd|", "&ETH;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ntilde;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ograve;")
+    strTemp = Replace(strTemp, "|fffd|", "&Oacute;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ocirc;")
+    strTemp = Replace(strTemp, "|fffd|", "&Otilde;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ouml;")
+    strTemp = Replace(strTemp, "|fffd|", "&times;")
+    strTemp = Replace(strTemp, "|fffd|", "&Oslash;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ugrave;")
+    strTemp = Replace(strTemp, "|fffd|", "&Uacute;")
+    strTemp = Replace(strTemp, "|fffd|", "&Ucirc;")
+    strTemp = Replace(strTemp, "|fffd|", "&Uuml;")
+
+    
+    HTMLEntititesDecode = strTemp
+End Function
+
+Public Function ConvertPrice(cValue As String)
+    Dim cTemp As String
+    Dim nLen As Long
+    
+    cValue = UCase(cValue)
+    cValue = Replace(cValue, "|fffd|", "")
+    cValue = Replace(cValue, "EUR", "")
+    cValue = Trim(cValue)
+    nLen = Len(cValue)
+    If nLen > 2 Then
+        cTemp = Left(cValue, nLen - 3)
+        cTemp = Replace(cTemp, " ", "")
+        cTemp = Replace(cTemp, Chr(160), "")
+        cTemp = Replace(cTemp, ".", "")
+        cTemp = Replace(cTemp, ",", "")
+        If InStr(Mid(cValue, nLen - 2), ",") Then
+            cTemp = cTemp + Replace(Mid(cValue, nLen - 2), ",", ".")
+        Else
+            cTemp = cTemp + Mid(cValue, nLen - 2)
+        End If
+        ConvertPrice = cTemp
+    Else
+        ConvertPrice = cValue
+    End If
+
+End Function
+
+' XML Methoden
+
+Public Sub AddAttribute(ByRef XMLdoc As Object, ByVal oNode As Object, ByVal cAttribute As String, ByVal cValue As String)
+    Dim oAttribute
+    Dim oNoteAttributes
+    
+    Set oNoteAttributes = oNode.Attributes
+    Set oAttribute = XMLdoc.createAttribute(cAttribute)
+    oAttribute.Text = cValue
+    oNoteAttributes.SetNamedItem oAttribute
+
+End Sub
+
+Public Sub AddNodeWithTag(ByRef XMLdoc As Object, ByVal oNode As Object, ByVal cXmlns As String, ByVal cName As String, Optional cTag As String = "")
+    Dim oNewNode As Object
+    Dim oNewTextNode As Object
+    Dim cValue As String
+    
+    If cTag = "" Then
+        cTag = cName
+    End If
+    
+    cValue = KMTools.SearchTag(cTag)
+    If Len(Trim(cValue)) > 0 Then
+        Set oNewNode = XMLdoc.createNode(1, cName, cXmlns)
+        oNode.appendChild oNewNode
+        Set oNewTextNode = XMLdoc.createTextNode(cValue)
+        oNewNode.appendChild oNewTextNode
+    End If
+        
+End Sub
+
+Public Sub AddNodeWithValue(ByRef XMLdoc As Object, ByVal oNode As Object, ByVal cXmlns As String, ByVal cName As String, ByVal cValue As String)
+    Dim oNewNode As Object
+    Dim oNewTextNode As Object
+    
+    cValue = Trim(cValue)
+    If Len(Trim(cValue)) > 0 Then
+        Set oNewNode = XMLdoc.createNode(1, cName, cXmlns)
+        oNode.appendChild oNewNode
+        Set oNewTextNode = XMLdoc.createTextNode(cValue)
+        oNewNode.appendChild oNewTextNode
+    End If
+        
+End Sub
+
+
+' XML Methoden
+Public Function CreateRoot(ByRef oXmlDoc As Object, cXmlns As String, cResStatus As String, cTimeStampDate As String, cTimeStampTime As String, cCreateDateTime As String, cLastModifyDateTime As String)
+    'Dim cDatum As String
+    'Dim cZeit As String
+    Dim oRoot As Object
+    Dim oHrs As Object
+    Dim oHr As Object
+    Dim oIntro As Object
+
+    Set oRoot = oXmlDoc.createElement("OTA_HotelResNotifRQ")
+    oXmlDoc.appendChild oRoot
+    AddAttribute oXmlDoc, oRoot, "xmlns", cXmlns
+    AddAttribute oXmlDoc, oRoot, "PrimaryLangID", "de"
+    If Len(cTimeStampDate) = 0 Then
+        cTimeStampDate = Format(Now, "yyyy-mm-dd")
+    End If
+    
+    If Len(cTimeStampTime) = 0 Then
+       cTimeStampTime = Format(Now, "hh:nn:ss")
+    End If
+    
+    AddAttribute oXmlDoc, oRoot, "TimeStamp", cTimeStampDate & "T" & cTimeStampTime
+    AddAttribute oXmlDoc, oRoot, "Version", "5.000"
+    
+    Set oHrs = oXmlDoc.createNode(1, "HotelReservations", cXmlns)
+    oRoot.appendChild oHrs
+    
+    Set oHr = oXmlDoc.createNode(1, "HotelReservation", cXmlns)
+    oHrs.appendChild oHr
+    
+    If Len(cResStatus) > 0 Then
+        AddAttribute oXmlDoc, oHr, "CreateDateTime", cCreateDateTime
+        If Len(cLastModifyDateTime) > 0 Then
+            AddAttribute oXmlDoc, oHr, "LastModifyDateTime", cLastModifyDateTime
+        End If
+        AddAttribute oXmlDoc, oHr, "ResStatus", cResStatus
+        AddAttribute oXmlDoc, oHr, "RoomStayReservation", "true"
+    Else
+        AddAttribute oXmlDoc, oHr, "RoomStayReservation", "false"
+    End If
+    
+    Set oIntro = oXmlDoc.createProcessingInstruction("xml", "version='1.0' encoding='UTF-8'")
+    oXmlDoc.InsertBefore oIntro, oXmlDoc.ChildNodes(0)
+    
+    Set CreateRoot = oHr
+    
+End Function
+
+Public Sub AddNode_ResGlobalInfo(ByRef XMLdoc As Object, ByVal oNode As Object, cXmlns As String, cResID As String)
+    Dim oGlobalInfo As Object
+    Dim oNewNode1 As Object
+    Dim oNewNode2 As Object
+    
+    Set oGlobalInfo = XMLdoc.createNode(1, "ResGlobalInfo", cXmlns)
+    oNode.appendChild oGlobalInfo
+    
+    Set oNewNode2 = XMLdoc.createNode(1, "HotelReservationIDs", cXmlns)
+    oGlobalInfo.appendChild oNewNode2
+    
+    Set oNewNode1 = XMLdoc.createNode(1, "HotelReservationID", cXmlns)
+    AddAttribute XMLdoc, oNewNode1, "ResID_Type", 10
+    AddAttribute XMLdoc, oNewNode1, "ResID_Value", cResID
+    AddAttribute XMLdoc, oNewNode1, "ResID_Source", "PMS"
+    AddAttribute XMLdoc, oNewNode1, "ResID_SourceContext", "PmsConfirmNumber"
+    oNewNode2.appendChild oNewNode1
+
+End Sub
+
+Public Sub AddNode_RoomStayEx(ByRef XMLdoc As Object, ByVal objRSs As Object, ByVal cXmlns As String _
+        , ByVal dStart As Date, ByVal dEnd As Date, ByVal cNumberofUnits As String, ByVal cRoomID As String, ByVal cRoomType As String _
+        , ByVal cCountAdults As String, ByVal cCountChilds As String, ByVal cRoomDescription As String _
+        , ByVal cOfferID As String, ByVal cRatePlanCode As String, ByVal cRateplanDesc As String _
+        , ByVal lBreakFast As Boolean, ByVal lDinner As Boolean, ByVal lLunch As Boolean)
+    
+    Dim objRS As Object
+    Dim objRoomTypes As Object
+    Dim obj1 As Object
+    Dim obj2 As Object
+    
+    Set objRS = XMLdoc.createNode(1, "RoomStay", cXmlns)
+    objRSs.appendChild objRS
+                
+    'Room Types
+    Set objRoomTypes = XMLdoc.createNode(1, "RoomTypes", cXmlns)
+    objRS.appendChild objRoomTypes
+                
+    Set obj2 = XMLdoc.createNode(1, "RoomType", cXmlns)
+    objRoomTypes.appendChild obj2
+    AddAttribute XMLdoc, obj2, "NumberOfUnits", cNumberofUnits
+    AddAttribute XMLdoc, obj2, "RoomTypeCode", cRoomType
+    If Len(cRoomID) > 0 Then
+        AddAttribute XMLdoc, obj2, "RoomID", cRoomID
+    End If
+    Set obj1 = XMLdoc.createNode(1, "RoomDescription", cXmlns)
+    obj2.appendChild obj1
+    AddAttribute XMLdoc, obj1, "Name", cRoomDescription
+                
+    Set obj1 = XMLdoc.createNode(1, "TPA_Extensions", cXmlns)
+    obj2.appendChild obj1
+                
+    Set obj2 = XMLdoc.createNode(1, "OfferID", cXmlns)
+    obj1.appendChild obj2
+                
+    Set obj1 = XMLdoc.createTextNode(Trim(cOfferID))
+    obj2.appendChild obj1
+                
+    ' RatePlans
+    Set obj2 = XMLdoc.createNode(1, "RatePlans", cXmlns)
+    objRS.appendChild obj2
+                
+    Set obj1 = XMLdoc.createNode(1, "RatePlan", cXmlns)
+    obj2.appendChild obj1
+                
+    If Len(cRatePlanCode) > 0 Then
+        AddAttribute XMLdoc, obj1, "RatePlanCode", cRatePlanCode
+    End If
+    
+    If Len(cRateplanDesc) > 0 Then
+        Set obj2 = XMLdoc.createNode(1, "RatePlanDescription", cXmlns)
+        AddAttribute XMLdoc, obj2, "Name", cRateplanDesc
+        obj1.appendChild obj2
+    End If
+            
+    ' Meals Included
+    AddNode_MealsIncluded XMLdoc, obj1, cXmlns, lBreakFast, lDinner, lLunch
+    
+    ' Guest Counts
+    Set obj2 = XMLdoc.createNode(1, "GuestCounts", cXmlns)
+    objRS.appendChild obj2
+    
+    Set obj1 = XMLdoc.createNode(1, "GuestCount", cXmlns)
+    AddAttribute XMLdoc, obj1, "AgeQualifyingCode", 10
+    AddAttribute XMLdoc, obj1, "Count", Trim(Str(Val(cCountAdults) * Val(cNumberofUnits)))
+    obj2.appendChild obj1
+    Set obj1 = XMLdoc.createNode(1, "GuestCount", cXmlns)
+    AddAttribute XMLdoc, obj1, "AgeQualifyingCode", 8
+    AddAttribute XMLdoc, obj1, "Count", Trim(Str(Val(cCountChilds) * Val(cNumberofUnits)))
+    obj2.appendChild obj1
+                    
+    ' TimeStamp
+    Set obj1 = XMLdoc.createNode(1, "TimeSpan", cXmlns)
+    AddAttribute XMLdoc, obj1, "Start", Format(dStart, "yyyy-mm-dd")
+    AddAttribute XMLdoc, obj1, "End", Format(dEnd, "yyyy-mm-dd")
+    objRS.appendChild obj1
+
+End Sub
+
+Private Sub AddNode_MealsIncluded(ByRef XMLdoc As Object, ByVal oNode As Object, cXmlns As String, lBreakFast As Boolean, lDinner As Boolean, lLunch As Boolean)
+    Dim oNewNode As Object
+
+    Set oNewNode = XMLdoc.createNode(1, "MealsIncluded", cXmlns)
+    If lBreakFast Then
+        AddAttribute XMLdoc, oNewNode, "Breakfast", "true"
+    Else
+        AddAttribute XMLdoc, oNewNode, "Breakfast", "false"
+    End If
+    If lDinner Then
+        AddAttribute XMLdoc, oNewNode, "Dinner", "true"
+    Else
+        AddAttribute XMLdoc, oNewNode, "Dinner", "false"
+    End If
+    If lLunch Then
+        AddAttribute XMLdoc, oNewNode, "Lunch", "true"
+    Else
+        AddAttribute XMLdoc, oNewNode, "Lunch", "false"
+    End If
+    oNode.appendChild oNewNode
+
+End Sub
+
+Public Sub AddNode_OfferDescripton(ByRef XMLdoc As Object, ByVal oItems As Object, ByVal cXmlns As String, ByVal cDescription As String)
+    Dim oItem As Object
+
+    Set oItem = XMLdoc.createNode(1, "Item", cXmlns)
+    oItems.appendChild oItem
+    AddNodeWithValue XMLdoc, oItem, cXmlns, "Description", cDescription
+End Sub
+
+Public Sub AddNode_OfferItem(ByRef XMLdoc As Object, ByVal oItems As Object, ByVal cXmlns As String, ByVal cDescription As String _
+        , ByVal cQuantity As String, ByVal cPrice As String, ByVal cAmount As String, ByVal cDiscount As String)
+    Dim oItem As Object
+
+    Set oItem = XMLdoc.createNode(1, "Item", cXmlns)
+    oItems.appendChild oItem
+    AddNodeWithValue XMLdoc, oItem, cXmlns, "Description", cDescription
+    AddNodeWithValue XMLdoc, oItem, cXmlns, "Quantity", cQuantity
+    AddNodeWithValue XMLdoc, oItem, cXmlns, "Price", ConvertPrice(Format(Val(ConvertPrice(cPrice)), "###0.00"))
+    AddNodeWithValue XMLdoc, oItem, cXmlns, "DiscountPercent", ConvertPrice(cDiscount)
+    AddNodeWithValue XMLdoc, oItem, cXmlns, "Amount", ConvertPrice(Format(Val(ConvertPrice(cAmount)), "###0.00"))
+End Sub
+
+Public Function ConvertLanguage(cLanguage As String)
+    Dim cIso() As String
+    Dim cValue As String
+    Dim nI As Long
+    
+    ConvertLanguage = cLanguage
+    cLanguage = UCase(cLanguage)
+    cValue = KMTools.SearchTag("Sprachen")
+    If Len(Trim(cValue)) > 0 Then
+        cIso = Split(cValue, ",")
+    Else
+        cIso = Split("de it en fr")
+    End If
+    For nI = LBound(cIso) To UBound(cIso)
+        cValue = UCase(KMTools.SearchTag(cIso(nI)))
+        If InStr(cValue, cLanguage) Then
+            ConvertLanguage = cIso(nI)
+            Exit For
+        End If
+    Next
+
+End Function
+
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

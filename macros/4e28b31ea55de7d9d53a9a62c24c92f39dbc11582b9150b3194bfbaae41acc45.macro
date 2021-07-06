@@ -1,0 +1,1669 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+
+Public Const pw = "bit"
+Public Const nws1 = 15 'title row
+Public Const nws2 = 15
+Public Const nws3 = 14
+Public Const pink = 13551615    'Range("A1").Interior.Color = pink
+Public Const maroon = 393372    'Range("A1").Font.Color = maroon
+Sub SelectVeta()
+    Dim i As Integer
+    Dim tFile As String, ttmp As String
+    'Retrieve Target Folder Path From User
+    tFile = Application.GetOpenFilename("Excel Files (*.xlsx), *.xlsx", 1, "Select ""Data Lot Filter Groups"" file exported from Veta.")
+    ActiveSheet.Unprotect Password:=pw
+    If tFile = "False" Then
+        Range("D8").Value = "no file selected"
+        Range("Z8").ClearContents
+        ActiveSheet.Protect Password:=pw
+        Exit Sub
+    End If
+    Range("Z8").Value = tFile
+    ttmp = StrReverse(tFile)
+    i = InStr(ttmp, "\")
+    Range("D8").Value = Right(tFile, i - 1)
+    ActiveSheet.Protect Password:=pw
+End Sub
+Sub Select106()
+    Dim i As Integer
+    Dim tFile As String, ttmp As String
+    'Retrieve Target Folder Path From User
+    tFile = Application.GetOpenFilename("Excel Macro Files (*.xlsm), *.xlsm", 1, "Select completed IC-106 file.")
+    ActiveSheet.Unprotect Password:=pw
+    If tFile = "False" Then
+        Range("D12").Value = "no file selected"
+        Range("Z12").ClearContents
+        ActiveSheet.Protect Password:=pw
+        Exit Sub
+    End If
+    Range("Z12").Value = tFile
+    ttmp = StrReverse(tFile)
+    i = InStr(ttmp, "\")
+    Range("D12").Value = Right(tFile, i - 1)
+    ActiveSheet.Protect Password:=pw
+End Sub
+Sub VerifyVeta()
+    Dim bflag As Boolean, btime As Boolean '2019 no time filter needed with CIR, CCPR, SFDR-I, SFDR-P
+    Dim bIC As Boolean, bPMTP As Boolean, bLowAccuracy As Boolean, hibeg As Boolean, hiend As Boolean
+    Dim i As Integer, j As Integer, vcount As Integer, fcount As Integer 'veta rows, form IC-106 rows
+    Dim row1 As Long 'Last header row in IC-106 sheet
+    Dim dtmp As Double
+    Dim xFile As String, mFile As String, vFile As String
+    Dim th As String, tm As String, tl As String, tmsg As String, ttmp As String 'route, material & lift
+    Dim fgDate As Date, tmDate As Date
+    Dim tHead(1 To 4) As String 'header for output file
+    Dim tname() As String 'all filter group names
+    Dim tMessage() As String 'all filter groups
+    Dim nMessage() As Integer 'number of messages (to calculate row height)
+    Dim mwb As Workbook, xwb As Workbook
+    
+    bIC = False
+    bPMTP = False
+    xFile = Range("Z8").Value
+    mFile = Range("Z12").Value
+    
+    ttmp = ""
+    If xFile = "" Then
+        ttmp = "Veta Export File has not been selected"
+    ElseIf Dir(xFile) = "" Then
+        ttmp = "Veta Export File cannot be found"
+    End If
+    
+    If Len(ttmp) > 0 Then
+        MsgBox (ttmp)
+        Exit Sub
+    End If
+    
+    'Optimize Macro Speed
+    Application.ScreenUpdating = False 'don'T show cell changes
+    Application.DisplayAlerts = False 'don'T show warnings
+    Application.EnableEvents = False 'don'T show file save messages
+    Application.Calculation = xlCalculationManual 'prevent time-consuming recalculations every time your macro changes a value
+    Application.AskToUpdateLinks = False
+
+    Set mwb = ActiveWorkbook
+    
+    Dim dates As Object, vetasta As Object, vetaex As Object, vexused As Object, formex As Object
+    Set dates = CreateObject("Scripting.Dictionary")
+    Set vetasta = CreateObject("Scripting.Dictionary") 'Data lot name & concatenated stations from Veta
+    Set vetaex = CreateObject("Scripting.Dictionary") 'Data lot name & concatenated exclusion stations from Veta export
+    Set vexused = CreateObject("Scripting.Dictionary") 'Exclusion name
+    Set formex = CreateObject("Scripting.Dictionary") 'Data lot name & concatenated exclusion stations from IC-106
+    
+    'New method: use IC & PMTP tabs
+    Dim NIC As Integer, NTP As Integer, n As Integer, NICC As Integer, NTPC As Integer 'number of records
+    Dim VX As Integer, FX As Integer
+    Dim tos As String 'offset text (e.g. 12L-CL)
+    Dim icrh() As Integer, iccrh() As Integer, tprh() As Integer, tpcrh() As Integer 'row height varies depending on length of comments
+    Dim icna() As Integer, icnu() As Integer, tpna() As Integer, tpnu() As Integer, na() As Integer, nu() As Integer 'counts
+    Dim ichead() As String, tphead() As String, head() As String, iccom() As String, tpcom() As String
+    Dim ica() As String, icu() As String, tpa() As String, tpu() As String, a() As String, u() As String 'Acceptable and Unacceptable
+    Dim iccommon() As String, tpcommon() As String 'Common Errors
+    Dim notime(1 To 4) As String 'material types which require no time filter
+    Dim tnum() As String, tnam() As String, tbeg() As String, tend() As String 'data from IC-106
+    Dim fbeg() As String, fend() As String, vbeg() As String, vend() As String 'temporary station arrays for ParseStations and CompareStations functions
+    Dim tdbeg() As String, tdend() As String 'compare stations
+    Dim fdate() As Date
+    
+    Dim col(1 To 16) As Integer, iccol(1 To 16) As Integer, tpcol(1 To 16) As Integer 'Column numbers in Veta export
+    Dim icmacro(1 To 16) As String, tpmacro(1 To 16) As String 'Macro headers which are exact matches for Veta headers
+    Sh6_Headers.Activate
+    For i = 1 To 16
+        iccol(i) = CInt(Right(Cells(i + 1, 2).Formula, Len(Cells(i + 1, 2).Formula) - 2)) - 1
+        icmacro(i) = Cells(i + 1, 2).Value
+        tpcol(i) = CInt(Right(Cells(i + 1, 6).Formula, Len(Cells(i + 1, 6).Formula) - 2)) - 1
+        tpmacro(i) = Cells(i + 1, 6).Value
+    Next i 'iccol & tpcol aren't used yet
+    
+    
+    
+    'Use dictionaries (header, col) to replace the alphabet soup code below
+    
+    
+    
+'    ICX = 0
+'    TPX = 0
+    
+'    ReDim icxc(0 To 0)
+'    ReDim tpxc(0 To 0)
+    
+    notime(1) = "CIR"
+    notime(2) = "CCPR"
+    notime(3) = "SFDR-I"
+    notime(4) = "SFDR-P"
+    
+    Sh4_IC.Activate 'criteria
+    Range("A3").Select
+    NIC = Range(Selection, Selection.End(xlDown)).Rows.Count
+    Selection.End(xlDown).Select 'bottom row of headers
+    Selection.End(xlDown).Select 'first number
+    NICC = Range(Selection, Selection.End(xlDown)).Rows.Count
+    
+    ReDim iccommon(1 To NICC)
+    ReDim iccrh(1 To NICC)
+    For i = 1 To NICC
+        iccrh(i) = Rows(ActiveCell.Row).Height
+        iccommon(i) = ActiveCell.Offset(0, 1).Value
+        ActiveCell.Offset(1, 0).Select
+    Next i
+    Range("A3").Select
+    
+    ReDim icna(1 To NIC)
+    ReDim icnu(1 To NIC)
+    ReDim icrh(1 To NIC)
+    ReDim ichead(1 To NIC)
+    ReDim iccom(1 To NIC)
+    ReDim ica(1 To NIC, 1 To 3)
+    ReDim icu(1 To NIC, 1 To 3)
+    For i = 1 To NIC
+        icna(i) = 0
+        icnu(i) = 0
+        icrh(i) = Rows(i + 2).Height
+        ichead(i) = Cells(i + 2, 1).Value
+        iccom(i) = Cells(i + 2, 8).Value
+        Select Case ichead(i)
+            Case icmacro(3) '"Data Lot Filter Group Name"
+                ica(i, 1) = Cells(i + 2, 2)
+                icna(i) = -1 'use for criteria but not for ICT-101
+            Case icmacro(5) '"Operation Filter Name"
+                ica(i, 1) = Cells(i + 2, 2)
+                icna(i) = -1 'use for criteria but not for ICT-101
+            Case icmacro(6) '"Data lot names"
+                ica(i, 1) = Cells(i + 2, 2)
+                icna(i) = -1
+            Case icmacro(7) '"Time"
+                ica(i, 1) = Cells(i + 2, 2)
+                icna(i) = -1
+            Case Else
+'                If Left(ichead(i), 9) = "Exclusion" Then 'check for multiple entries
+'                    ICX = ICX + 1
+'                    ReDim Preserve icxc(0 To ICX)
+'                    icxc(ICX) = i
+'                End If
+'may need to expand the following to compare LOS/LOAF/LOA/LOL to EXS/EXAF/EXA/EXL
+                                        'col: 9 /10 /11 /12      17 / 18 /19 /20
+        End Select
+        For j = 1 To 3
+            ica(i, j) = Cells(i + 2, j + 1)
+            If ica(i, j) <> "" And Left(ica(i, j), 1) <> "(" Then 'ignore comments
+                icna(i) = icna(i) + 1
+            End If
+            icu(i, j) = Cells(i + 2, j + 4)
+            If icu(i, j) <> "" And Left(icu(i, j), 1) <> "(" Then
+                icnu(i) = icnu(i) + 1
+            End If
+        Next j
+    Next i
+    
+    Sh5_PMTP.Activate 'criteria
+    Range("A3").Select
+    NTP = Range(Selection, Selection.End(xlDown)).Rows.Count
+    Selection.End(xlDown).Select 'bottom row of headers
+    Selection.End(xlDown).Select 'first number
+    NTPC = Range(Selection, Selection.End(xlDown)).Rows.Count
+    
+    ReDim tpcommon(1 To NTPC)
+    ReDim tpcrh(1 To NTPC)
+    For i = 1 To NTPC
+        tpcrh(i) = Rows(ActiveCell.Row).Height
+        tpcommon(i) = ActiveCell.Offset(0, 1).Value
+        ActiveCell.Offset(1, 0).Select
+    Next i
+    Range("A3").Select
+    
+    ReDim tpna(1 To NTP)
+    ReDim tpnu(1 To NTP)
+    ReDim tprh(1 To NTP)
+    ReDim tphead(1 To NTP)
+    ReDim tpcom(1 To NTP)
+    ReDim tpa(1 To NTP, 1 To 3)
+    ReDim tpu(1 To NTP, 1 To 3)
+    'TPDN = 0 'Design Name is not exported from PMTP yet
+    For i = 1 To NTP
+        tpna(i) = 0
+        tpnu(i) = 0
+        tprh(i) = Rows(i + 2).Height
+        tphead(i) = Cells(i + 2, 1).Value
+        tpcom(i) = Cells(i + 2, 8).Value
+        Select Case tphead(i)
+            Case tpmacro(3) ' "Data Lot Filter Group Name"
+                tpa(i, 1) = Cells(i + 2, 2)
+                tpna(i) = -1 'use for criteria but not for ICT-101
+            Case tpmacro(5) ' "Operation Filter Name"
+                tpa(i, 1) = Cells(i + 2, 2)
+                tpna(i) = -1 'use for criteria but not for ICT-101
+            Case tpmacro(6) ' "Data lot names"
+                tpa(i, 1) = Cells(i + 2, 2)
+                tpna(i) = -1
+            Case tpmacro(7) ' "Time"
+                tpa(i, 1) = Cells(i + 2, 2)
+                tpna(i) = -1
+'            Case "Location Alignment File"
+'                TPLOAF = i
+            Case Else
+'                If Left(tphead(i), 9) = "Exclusion" Then 'check for multiple entries
+'                    TPX = TPX + 1
+'                    ReDim Preserve tpxc(0 To TPX)
+'                    tpxc(TPX) = i
+'                End If
+'may need to expand the following to compare LOS/LOAF/LOA/LOL to EXS/EXAF/EXA/EXL
+                                       'col:  8 / 9  /10 /11     17 / 18 /19 /20
+                For j = 1 To 3
+                    tpa(i, j) = Cells(i + 2, j + 1)
+                    If tpa(i, j) <> "" Then
+                        tpna(i) = tpna(i) + 1
+                    End If
+                    tpu(i, j) = Cells(i + 2, j + 4)
+                    If tpu(i, j) <> "" Then
+                        tpnu(i) = tpnu(i) + 1
+                    End If
+                Next j
+        End Select
+'        TPLOAF = 0 'no Alignment File for PMTP in this version
+    Next i
+    Sh0_Main.Activate
+    Workbooks.Open Filename:=xFile
+    Dim hcount As Integer 'header count
+    Range("A1").Select
+    hcount = Range(Selection, Selection.End(xlToRight)).Columns.Count
+    If hcount = NIC Then
+        For i = 1 To 16
+            col(i) = iccol(i)
+        Next i
+        n = NIC
+        ReDim na(1 To n)
+        ReDim nu(1 To n)
+        ReDim head(1 To n)
+        ReDim a(1 To n, 1 To 3)
+        ReDim u(1 To n, 1 To 3)
+        For i = 1 To n
+            If InStr(ichead(i), Mid(Cells(1, i).Value, 2, 10)) = 0 Then
+                MsgBox ("Column headers do not match.")
+                ttmp = ichead(i)
+                ttmp = Mid(Cells(1, i).Value, 2, 10)
+                GoTo ResetSettings
+            End If
+            head(i) = ichead(i)
+            If icna(i) = -1 Then
+                na(i) = 0
+            Else
+                na(i) = icna(i)
+            End If
+            nu(i) = icnu(i)
+            For j = 1 To 3
+                a(i, j) = ica(i, j)
+                u(i, j) = icu(i, j)
+            Next j
+        Next i
+    ElseIf hcount = NTP Then
+        For i = 1 To 16
+            col(i) = tpcol(i)
+        Next i
+        n = NTP
+        ReDim na(1 To n)
+        ReDim nu(1 To n)
+        ReDim head(1 To n)
+        ReDim a(1 To n, 1 To 3)
+        ReDim u(1 To n, 1 To 3)
+        For i = 1 To n
+            If InStr(tphead(i), Mid(Cells(1, i).Value, 2, 10)) = 0 Then
+                MsgBox ("Column headers do not match.")
+                GoTo ResetSettings
+            End If
+            head(i) = tphead(i)
+            If tpna(i) = -1 Then
+                na(i) = 0
+            Else
+                na(i) = tpna(i)
+            End If
+            nu(i) = tpnu(i)
+            For j = 1 To 3
+                a(i, j) = tpa(i, j)
+                u(i, j) = tpu(i, j)
+            Next j
+        Next i
+    Else 'no match
+        MsgBox ("Column headers do not match.")
+        GoTo ResetSettings
+    End If
+    
+    'get Veta data
+    Range("A1").Select
+    If IsEmpty(Range("A2").Value) Then
+        MsgBox ("No data found.")
+        GoTo ResetSettings
+    End If
+    tHead(1) = ActiveWorkbook.Name
+    tHead(2) = Cells(2, col(1)).Value 'Veta Version
+    tHead(3) = Cells(2, col(2)).Value 'File Name
+    tHead(4) = Cells(2, col(4)).Value 'Generator
+    'determine number of records
+    If IsEmpty(ActiveCell.Offset(1, 0).Value) Then
+        MsgBox ("There is no useable data in the Veta export file.")
+        GoTo ResetSettings
+    Else
+        vcount = Range(Selection, Selection.End(xlDown)).Rows.Count - 1 'exclude header
+    End If
+    Range("A1").Select
+    ReDim tname(1 To vcount)
+    ReDim tMessage(1 To vcount)
+    ReDim nMessage(1 To vcount)
+    Dim ExLoc(0 To 3) As String 'error text if source, alignment or line don't agree
+    ExLoc(0) = "Source"
+    ExLoc(1) = "Alignment File"
+    ExLoc(2) = "Alignment"
+    ExLoc(3) = "Line"
+    
+    For i = 1 To vcount
+        tMessage(i) = ""
+        nMessage(i) = 0
+        tname(i) = Cells(i + 1, col(3)).Value
+        If Not CheckFGName(tname(i), tos, th, tm, tl, ttmp, fgDate) Then
+            ttmp = "Row " & CStr(i + 1) & " Data Lot Filter Group Name not recognized."
+            MsgBox (ttmp)
+            GoTo ResetSettings
+        End If
+'       20190820 if Date+FG exists, append new stations
+        ttmp = Right(tname(i), Len(tname(i)) - InStr(tname(i), " ")) 'remove number
+        If vetasta.exists(ttmp) Then
+            vetasta(ttmp) = AppendVetaSta(vetasta(ttmp), Cells(i + 1, col(14)).Value, Cells(i + 1, col(15)).Value) 'append new start and stop stations
+        ElseIf Not IsEmpty(Cells(i + 1, col(14)).Value) Then 'don't add if stations are missing
+            vetasta.Add ttmp, Cells(i + 1, col(14)).Value & "," & Cells(i + 1, col(15)).Value 'start and stop stations
+        End If
+        If Cells(i + 1, col(16)).Value = "Yes" Then 'exclusion used
+            If vexused.exists(ttmp) Then 'Append new value after Chr(10)
+                'append beginning station so the correct value can be identified later
+                vexused(ttmp) = vexused(ttmp) & Chr(10) & Cells(i + 1, col(14)).Value
+            Else
+                vexused.Add ttmp, Cells(i + 1, col(14)).Value
+            End If
+        End If
+        'check to see if time filter is needed
+        btime = True
+        For j = 1 To 4
+            If InStr(tname(i), notime(j)) Then
+                btime = False 'time filter not required
+                Exit For
+            End If
+        Next j
+        If Not CheckFGName(Cells(i + 1, col(5)).Value, tmsg, th, tm, tl, ttmp, fgDate) Then
+            tmsg = "Row " & CStr(i + 1) & " Operation Filter Name not recognized."
+            MsgBox (tmsg)
+            GoTo ResetSettings
+        End If
+        'add date to Dictionary
+        If dates.exists(fgDate) Then
+            'concatenate new tName
+            dates(fgDate) = dates(fgDate) & "," & tname(i)
+        Else
+            dates.Add fgDate, tname(i)
+        End If
+        'test operation filter name
+        If tname(i) <> Cells(i + 1, col(5)).Value Then
+            AddMsg old:=tMessage(i), mnew:="Operation Filter Name does not match FG Name"
+            nMessage(i) = nMessage(i) + 1
+        End If
+        If btime Then
+            'test date
+            If DateOK(tmDate, Cells(i + 1, col(7)).Value, True) Then ' assume all times need to be truncated
+                If tmDate <> fgDate Then
+                    AddMsg old:=tMessage(i), mnew:="Date does not match FG Name"
+                    nMessage(i) = nMessage(i) + 1
+                End If
+            Else
+                AddMsg old:=tMessage(i), mnew:="Time (column " & Number2Letter(CLng(col(7))) & ") is not a valid date"
+                nMessage(i) = nMessage(i) + 1
+            End If
+        End If
+        'test Data lot name
+        If InStr(Cells(i + 1, col(6)).Value, ",") > 0 Then
+            AddMsg old:=tMessage(i), mnew:="Multiple Data lot names selected"
+            nMessage(i) = nMessage(i) + 1
+        End If
+        For j = 1 To n
+            bflag = False
+            Select Case na(j) 'acceptable entries
+                Case 1
+                    If Cells(i + 1, j).Value <> a(j, 1) Then
+                        bflag = True
+                    End If
+                Case 2
+                    If Cells(i + 1, j).Value <> a(j, 1) And Cells(i + 1, j).Value <> a(j, 2) Then
+                        bflag = True
+                    End If
+                Case 3
+                    If Cells(i + 1, j).Value <> a(j, 1) And Cells(i + 1, j).Value <> a(j, 2) And Cells(i + 1, j).Value <> a(j, 3) Then
+                        bflag = True
+                    End If
+            End Select
+            If na(j) = 0 Then
+                Select Case nu(j) 'unacceptable entries
+                    Case 1
+                        If Cells(i + 1, j).Value = u(j, 1) Then
+                            bflag = True
+                        End If
+                    Case 2
+                        If Cells(i + 1, j).Value = u(j, 1) Or Cells(i + 1, j).Value = u(j, 2) Then
+                            bflag = True
+                        End If
+                    Case 3
+                        If Cells(i + 1, j).Value = u(j, 1) Or Cells(i + 1, j).Value = u(j, 2) Or Cells(i + 1, j).Value = u(j, 3) Then
+                            bflag = True
+                        End If
+                End Select
+            End If
+            If bflag Then
+                AddMsg old:=tMessage(i), mnew:=head(j) & " = " & Cells(i + 1, j).Value
+                nMessage(i) = nMessage(i) + 1
+            End If
+        Next j
+        If hcount = NIC Then 'check other conditions for IC
+            If Cells(i + 1, col(8)) = "Use a portion of an alignment" Then
+                If InStr(UCase(Cells(i + 1, col(9)).Value), ".KMZ") = 0 Then
+                    AddMsg old:=tMessage(i), mnew:="Missing kmz file."
+                    nMessage(i) = nMessage(i) + 1
+                End If
+            ElseIf Cells(i + 1, col(8)) = "Offset" Then
+                If InStr(UCase(Cells(i + 1, col(9)).Value), ".XML") = 0 Then
+                    AddMsg old:=tMessage(i), mnew:="Missing xml file."
+                    nMessage(i) = nMessage(i) + 1
+                End If
+            End If
+            If Cells(i + 1, col(12)).Value <> fgData(tos, 1) And Cells(i + 1, col(12)).Value <> fgData(tos, 2) Then 'check both start offsets because they may be reversed
+                AddMsg old:=tMessage(i), mnew:="Start offset does not match Filter Group Name."
+                nMessage(i) = nMessage(i) + 1
+            End If
+            If Cells(i + 1, col(13)).Value <> fgData(tos, 1) And Cells(i + 1, col(13)).Value <> fgData(tos, 2) Then 'check both stop offsets because they may be reversed
+                AddMsg old:=tMessage(i), mnew:="Stop offset does not match Filter Group Name."
+                nMessage(i) = nMessage(i) + 1
+            End If
+'            For j = 0 To 3 'make sure exclusion source, alignment file, alignment & line agree with location
+'                If Cells(i + 1, col(17 + j)).Value <> "None" And Cells(i + 1, col(17 + j)).Value <> "" And _
+'                InStr(Cells(i + 1, col(17 + j)).Value, Cells(i + 1, col(8 + j)).Value) = 0 Then
+'                    AddMsg old:=tMessage(i), mnew:="Exclusion " & ExLoc(j) & " does not match Location " & ExLoc(j) & "."
+'                    nMessage(i) = nMessage(i) + 1
+'                End If
+'            Next j
+        End If
+        If tMessage(i) = "" Then
+            tMessage(i) = "None"
+        End If
+    Next i
+    
+    ActiveWorkbook.Close
+    
+    'IC-106
+    ttmp = Dir(mFile)
+    If mFile = "" Or Dir(mFile) = "" Then
+        i = MsgBox("Veta Export File cannot be found." & vbNewLine & "Do you want to continue the analysis without IC-104?", 4)
+        If i = vbYes Then
+            GoTo compile
+        Else
+            GoTo ResetSettings
+        End If
+    End If
+    Workbooks.Open Filename:=mFile
+    'find the correct sheet
+    Dim b106 As Boolean
+    Dim ws106 As Worksheet
+    b106 = False
+    For Each ws106 In ActiveWorkbook.Worksheets
+        ws106.Activate
+        If Range("B9").Value = "Data Lot Number" And Range("B12").Value = "01" Then
+            b106 = True
+            Exit For
+        End If
+    Next ws106
+    If Not b106 Then
+        MsgBox ("No IC-106 data found.")
+        Exit Sub
+    End If
+    row1 = Range("S2").Value
+    If row1 = 0 Then
+        row1 = 9 'old version of IC-106
+    End If
+    bIC = Range("S3").Value
+    bPMTP = Range("S4").Value
+    If Range("E4").Value = "PMTP" Then
+        bLowAccuracy = Range("F4").Value = "No"
+    Else
+        bLowAccuracy = Range("E4").Value = "No"
+    End If
+
+    Cells(row1 + 1, 4).Select
+    If IsEmpty(ActiveCell.Value) Then
+        MsgBox ("IC-106 has no useable data")
+        GoTo ResetSettings
+    ElseIf IsEmpty(ActiveCell.Offset(1, 0).Value) Then
+        fcount = 1
+    Else
+        fcount = Range(Selection, Selection.End(xlDown)).Count
+    End If
+    
+    ReDim tnum(1 To fcount)
+    ReDim tnam(1 To fcount)
+    ReDim tbeg(1 To fcount)
+    ReDim tend(1 To fcount)
+    ReDim fdate(1 To fcount)
+    For i = 1 To fcount
+        tnum(i) = Cells(i + row1, 2).Value 'data lot number
+        If DateOK(tmDate, Cells(i + row1, 6)) Then
+            fdate(i) = tmDate
+            ttmp = Format(fdate(i), "MMDDYY")
+        Else
+            fdate(i) = 0 'ignore later when filling ICT-103 sheet
+            ttmp = "000000"
+        End If
+        If Range("C9").Value = "Filter Group Name" Then 'new form 11/05/2019
+            tnam(i) = Cells(i + row1, 3).Value 'filter group name already includes date
+        Else
+            tnam(i) = ttmp & " " & Cells(i + row1, 3).Value 'data lot name
+        End If
+        tbeg(i) = Cells(i + row1, 13) 'begin station
+        tend(i) = Cells(i + row1, 14) 'end station
+        If Not IsEmpty(Cells(i + row1, 15).Value) And Not formex.exists(tnam(i)) Then
+            formex.Add tnam(i), Cells(i + row1, 15).Value & "," & Cells(i + row1, 16).Value
+        End If
+    Next i
+    
+    ActiveWorkbook.Close
+       
+compile:
+    'shorten filename
+    vFile = Replace(xFile, "- Data Lot Filter Groups -", "Exported")
+    vFile = Replace(vFile, ".xlsx", " ICT-101-103.xlsx")
+
+TryAgain:
+    vFile = Application.GetSaveAsFilename(InitialFileName:=vFile, filefilter:="Excel Files (*.xlsx), *.xlsx", Title:="Select filename for verify results.")
+    If vFile = "False" Then
+        GoTo ResetSettings
+    ElseIf Dir(vFile) <> "" Then
+        i = MsgBox("That file exists. Do you want to replace it?", vbYesNo)
+        If i = vbNo Then
+            GoTo TryAgain
+        End If
+    End If
+    
+    'copy verification tab & transfer data
+    mwb.Activate
+    ActiveWorkbook.Unprotect Password:=pw
+    Sh1_101.Visible = xlSheetVisible 'all FG
+    Sh2_102.Visible = xlSheetVisible 'boundaries
+    Sh3_103.Visible = xlSheetVisible 'random
+    Sheets(Array(Sh1_101.Name, Sh2_102.Name, Sh3_103.Name)).Copy
+    Sheets(1).Activate 'Sh1_101 all FG
+    ActiveSheet.Unprotect Password:=pw
+    For i = 1 To 4
+        Cells(i + 5, 4).Value = tHead(i)
+    Next i
+    'new workbook name check 20190822
+    Range(Cells(nws1, 4), Cells(nws1, 5)).MergeCells = True
+    Range(Cells(nws1, 4), Cells(nws1, 5)).WrapText = True
+    If CheckFileName(tHead(3), hcount = NIC) Then
+        Cells(nws1, 4).Value = "None"
+    Else
+        Rows(nws1).RowHeight = 45
+        Cells(nws1, 4).Value = "Veta Project name does not follow standardized naming convention of:" _
+        & vbNewLine & "Project Number Route Method Material" _
+        & vbNewLine & "Examples include: SP1234-56 TH78 IC HMA; SP1234-56 TH78 PMTP HMA"
+    End If
+    
+    Range("D10").Value = vcount
+    For i = 1 To vcount
+        Range(Cells(i + nws1, 4), Cells(i + nws1, 5)).MergeCells = True
+        Cells(i + nws1, 1).Value = i
+        Cells(i + nws1, 2).Value = tname(i)
+        Cells(i + nws1, 4).Value = tMessage(i)
+        If nMessage(i) > 1 Then
+            Rows(i + nws1).RowHeight = nMessage(i) * 15
+        End If
+    Next i
+    ActiveSheet.Protect Password:=pw
+    
+    Sheets(2).Activate 'Sh2_102 boundaries
+    ActiveSheet.Unprotect Password:=pw
+    'set criteria
+    If n = NTP And bLowAccuracy Then 'PMTP project with low accuracy
+        Range("M11").Value = 10
+    Else
+        Range("M11").Value = 1
+    End If
+    
+    For i = 1 To fcount 'Form data
+        ReDim fbeg(1 To 1) 'needed for CompareStations
+        ReDim fend(1 To 1)
+        Cells(i + nws2, 1).Value = tnum(i) 'data lot number
+        Cells(i + nws2, 2).Value = Right(tnam(i), Len(tnam(i)) - 7) 'data lot name
+        If fdate(i) > 0 Then
+            Cells(i + nws2, 3).Value = fdate(i) 'leave blank if date is invalid
+        End If
+        Cells(i + nws2, 4).Value = tbeg(i) 'begin station
+        fbeg(1) = tbeg(i) '1-element array needed for CompareStations
+        Cells(i + nws2, 5).Value = tend(i) 'end station
+        fend(1) = tend(i)
+        If vetasta.exists(tnam(i)) Then
+            hibeg = False
+            hiend = False
+            n = ParseStations(vetasta(tnam(i)), vbeg, vend)
+            If n > 1 Then
+                'Calculate distance of different pairs to find out which ones go together
+                ttmp = CompareStations(fbeg, fend, vbeg, vend, tdbeg, tdend)
+                'remove "no data" elements from vbeg & vend
+                If DoubleTest(fbeg(1), dtmp, "+") And DoubleTest(fend(1), dtmp, "+") Then
+                    ReDim Preserve fbeg(1 To 1)
+                    ReDim Preserve fend(1 To 1)
+                    ReDim Preserve vbeg(1 To 1)
+                    ReDim Preserve vend(1 To 1)
+                Else
+                    Do Until n = 1
+                        n = n - 1
+                        For j = 1 To n 'shift everything back 1 index
+                            fbeg(j) = fbeg(j + 1)
+                            fend(j) = fend(j + 1)
+                            vbeg(j) = vbeg(j + 1)
+                            vend(j) = vend(j + 1)
+                        Next j
+                        If DoubleTest(fbeg(1), dtmp, "+") And DoubleTest(fend(1), dtmp, "+") Then
+                            ReDim Preserve fbeg(1 To 1)
+                            ReDim Preserve fend(1 To 1)
+                            ReDim Preserve vbeg(1 To 1)
+                            ReDim Preserve vend(1 To 1)
+                            n = 1
+                        End If
+                    Loop
+                End If
+                'check Exclusion Used
+            End If
+            Cells(i + nws2, 8).Value = vbeg(1)
+            Cells(i + nws2, 9).Value = vend(1)
+            'only remove item if it contains one station pair
+            n = InStr(vetasta(tnam(i)), Chr(10))
+            If n = 0 Then
+                vetasta.Remove tnam(i)
+            Else
+                vetasta(tnam(i)) = RemoveVetaSta(vetasta(tnam(i)), vbeg(1), vend(1))
+            End If
+                
+            If hcount = NIC Or Not bLowAccuracy Then 'compare for all IC and only High-Accuracy PMTP
+                ttmp = CompareStations(fbeg, fend, vbeg, vend, tdbeg, tdend)
+                If ttmp = "" Then
+                    If DoubleTest(tdbeg(1), dtmp) Then
+                        If dtmp > Range("M11").Value Then
+                            hibeg = True 'alert for out of bounds data
+                        End If
+                    Else
+                        hibeg = True 'alert for missing data
+                    End If
+                    If DoubleTest(tdend(1), dtmp) Then
+                        If dtmp > Range("M11").Value Then
+                            hiend = True 'alert for out of bounds data
+                        End If
+                    Else
+                        hiend = True 'alert for missing data
+                    End If
+                    If hibeg Then
+                        Cells(i + nws2, 11).Interior.Color = pink
+                        Cells(i + nws2, 11).Font.Color = maroon
+                    End If
+                    If hiend Then
+                        Cells(i + nws2, 12).Interior.Color = pink
+                        Cells(i + nws2, 12).Font.Color = maroon
+                    End If
+                    Cells(i + nws2, 11).Value = tdbeg(1)
+                    Cells(i + nws2, 12).Value = tdend(1)
+                Else
+                    Range(Cells(i + nws2, 11), Cells(i + nws2, 13)).Interior.Color = pink
+                    Range(Cells(i + nws2, 11), Cells(i + nws2, 13)).Font.Color = maroon
+                    Cells(i + nws2, 13).Value = ttmp
+                End If
+            End If
+        ElseIf Not bLowAccuracy Then 'only flag Low Accuracy if Veta stations exist
+            Cells(i + nws2, 11).HorizontalAlignment = xlGeneral
+            Cells(i + nws2, 11).Value = " No matching data in Veta export file"
+            Range(Cells(i + nws2, 11), Cells(i + nws2, 13)).Interior.Color = pink
+            Range(Cells(i + nws2, 11), Cells(i + nws2, 13)).Font.Color = maroon
+        End If
+        'exclusions
+        FX = 0
+        If vexused.exists(tnam(i)) Then
+            n = InStr(vexused(tnam(i)), Cells(i + nws2, 8).Value) 'beginning veta station(s)
+            If n > 0 Then
+                Cells(i + nws2, 10).Value = "Yes"
+            End If
+        End If
+        If formex.exists(tnam(i)) Then
+            FX = ParseStations(formex(tnam(i)), fbeg, fend, True)
+            Cells(i + nws2, 6).Value = AssembleLines(fbeg) 'rearranged
+            Cells(i + nws2, 7).Value = AssembleLines(fend)
+            formex.Remove tnam(i)
+            If Cells(i + nws2, 10).Value = "Yes" Then
+                Range("AZ14").Copy Cells(i + nws2, 13) 'Checkbox
+                Range("M15").Interior.Color = RGB(255, 255, 255) 'white
+            ElseIf Not bLowAccuracy Then
+                Cells(i + nws2, 13).Interior.Color = pink
+                Cells(i + nws2, 13).Font.Color = maroon
+                Cells(i + nws2, 13).Value = "no data"
+            End If
+        Else 'make sure arrays are empty
+            fbeg(1) = ""
+            fend(1) = ""
+        End If
+    Next i
+    'find orphaned lots
+    Dim key As Variant
+    For Each key In vetasta.keys
+        Cells(i + nws2, 2).Value = Right(key, Len(key) - 7) 'Data lot name
+        Cells(i + nws2, 3).Value = DateSerial(CInt(Mid(key, 5, 2)) + 2000, CInt(Left(key, 2)), CInt(Mid(key, 3, 2)))
+        j = ParseStations(vetasta(key), vbeg, vend)
+        Cells(i + nws2, 8).Value = vbeg(1)
+        Cells(i + nws2, 9).Value = vend(1)
+        If vetaex.exists(key) Then
+            j = ParseStations(vetaex(key), vbeg, vend)
+            Cells(i + nws2, 11).Value = AssembleLines(vbeg)
+            Cells(i + nws2, 12).Value = AssembleLines(vend)
+        End If
+        Cells(i + nws2, 11).HorizontalAlignment = xlGeneral
+        Cells(i + nws2, 11).Value = " No matching data in IC-106/ICT-106"
+        Range(Cells(i + nws2, 11), Cells(i + nws2, 13)).Interior.Color = pink
+        Range(Cells(i + nws2, 11), Cells(i + nws2, 13)).Font.Color = maroon
+        i = i + 1
+    Next key
+    ActiveSheet.Protect Password:=pw
+    
+    Sheets(3).Activate 'Sh3_103 random
+    ActiveSheet.Unprotect Password:=pw
+    'use Dictionary to select 25% random names without selecting duplicates
+    Dim dcalc As Double
+    Dim nrand As Object
+    Set nrand = CreateObject("Scripting.Dictionary")
+    dcalc = 0.25 * CDbl(vcount)
+    n = Int(dcalc)
+    If dcalc > n Then
+        n = n + 1 'round up
+    End If
+    Randomize
+    j = 0
+    Do Until j = n
+        i = Int(vcount * Rnd + 1) 'random number between 1 and vcount
+        If Not nrand.exists(i) Then
+            nrand.Add i, tname(i)
+            j = j + 1
+        End If
+    Loop
+    'sort
+    Set nrand = SortDictionaryByKey(nrand)
+    Range("D10").Value = nrand.Count
+    Dim dct As Integer
+    dct = 0
+    For Each key In nrand.keys
+        dct = dct + 1
+        Cells(dct + nws3, 1).Value = nrand(key) 'name
+        Range(Cells(dct + nws3, 4), Cells(dct + nws3, 5)).Select
+        'unprotect "Comments" column
+        With Selection.Interior
+            .Pattern = xlSolid
+            .PatternColorIndex = xlAutomatic
+            .ThemeColor = xlThemeColorAccent1
+            .TintAndShade = 0.799981688894314
+            .PatternTintAndShade = 0
+        End With
+        Selection.Locked = False
+        Selection.MergeCells = True
+    Next key
+    Cells(nws3 + 1, 4).Select
+    ActiveSheet.Protect Password:=pw
+    
+    Sheets(1).Activate 'all FG
+    
+    'save file
+    ActiveWorkbook.SaveAs vFile, FileFormat:=xlOpenXMLWorkbook
+    Set xwb = ActiveWorkbook
+    
+    mwb.Activate
+    Sheets(Array(Sh1_101.Name, Sh2_102.Name, Sh3_103.Name)).Visible = False
+    ActiveWorkbook.Protect Password:=pw, structure:=True, Windows:=False
+    xwb.Activate
+ResetSettings:
+    'Reset Macro Optimization Settings
+    Application.AskToUpdateLinks = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+End Sub
+Private Sub AddMsg(ByRef old As String, mnew As String)
+    If old <> "" Then
+        old = old & vbNewLine
+    End If
+    old = old & mnew
+End Sub
+
+Attribute VB_Name = "Module2"
+Option Explicit
+Function Number2Letter(n As Long) As String
+'PURPOSE: Convert a given number into it's corresponding Letter Reference
+'SOURCE: www.TheSpreadsheetGuru.com/the-code-vault
+    Number2Letter = Split(Cells(1, n).Address, "$")(1)
+End Function
+Function Letter2Number(t As String) As Long
+'PURPOSE: Convert a given letter into it's corresponding Numeric Reference
+'SOURCE: www.TheSpreadsheetGuru.com/the-code-vault
+    Letter2Number = Range(t & 1).Column
+End Function
+Function DoubleTest(tval As String, ByRef dval As Double, Optional RemoveChar As String = "") As Boolean
+    Dim ttmp As String 'preserve original tval
+    If IsEmpty(tval) Then
+        DoubleTest = False
+        Exit Function
+    End If
+    If RemoveChar <> "" Then
+        ttmp = Replace(tval, RemoveChar, "")
+    Else
+        ttmp = tval
+    End If
+    On Error GoTo eh
+    dval = CDbl(ttmp)
+    DoubleTest = True
+    Exit Function
+eh:
+    DoubleTest = False
+End Function
+Function Dig(s As String) As String 'for route numbers
+    'by paxdiablo at stackoverflow.com
+    Dim retval As String
+    Dim i As Integer
+    retval = ""
+    For i = 1 To Len(s)
+        If Mid(s, i, 1) >= "0" And Mid(s, i, 1) <= "9" Then
+            retval = retval + Mid(s, i, 1)
+        End If
+    Next
+    Dig = retval
+End Function
+Function DigDash(s As String) As String 'for project numbers
+    'by paxdiablo at stackoverflow.com
+    Dim retval As String
+    Dim i As Integer
+    retval = ""
+    For i = 1 To Len(s)
+        If (Mid(s, i, 1) >= "0" And Mid(s, i, 1) <= "9") _
+            Or Mid(s, i, 1) = "-" Then
+            retval = retval + Mid(s, i, 1)
+        End If
+    Next
+    DigDash = retval
+End Function
+Function DateOK(ByRef tdate As Date, inval As Variant, Optional concat As Boolean = False) As Boolean
+    On Error GoTo errorHandler
+    If concat Then 'select a valid date from the left side of the string
+        inval = Left(inval, InStr(inval, ",") + 5) 'Assumes date format is Mon DD, YYYY
+    End If
+    tdate = inval
+errorHandler:
+    If Err = 13 Then        'Type Mismatch
+        DateOK = False
+        Exit Function
+    End If
+    DateOK = True
+End Function
+Function CheckFileName(tname As String, bIC As Boolean) As Boolean
+    'Make sure Veta export filename is in the correct format
+    tname = Replace(tname, ".", "")
+    tname = Replace(tname, " ", "")
+    tname = UCase(tname)
+    Dim bProj As Boolean 'project number
+    Dim bRoute As Boolean 'filenname contains TH or CSAH
+    Dim bType As Boolean 'IC or PMTP
+    Dim bMat As Boolean 'Material
+    Dim i As Integer, n1 As Integer, n2 As Integer
+    n1 = InStr(tname, "SP")
+    If n1 = 0 Then
+        n1 = InStr(tname, "SAP")
+    End If
+    bProj = n1 > 0
+    Dim RT As Variant, MT As Variant
+    RT = Array("TH", "CSAH", "CR", "MS", "MSAH")
+    MT = Array("CCPR", "CIR", "HMA", "LVL", "SFDR-I", "SFDR-P", "SMA", "UTBWC")
+    For i = 0 To UBound(RT)
+        n2 = InStr(n1 + 1, tname, RT(i))
+        If n2 > 0 Then Exit For
+    Next i
+    bRoute = (i < 2)
+    If bIC Then
+        n2 = InStr(n2 + 1, tname, "IC")
+    Else
+        n2 = InStr(n2 + 1, tname, "PMTP")
+    End If
+    bType = n2 > 0
+    For i = 0 To UBound(MT)
+        n1 = InStr(n2 + 1, tname, MT(i))
+        If n1 > 0 Then Exit For
+    Next i
+    bMat = n1 > 0
+    If bRoute And bType And bMat Then
+        CheckFileName = bProj
+    Else 'don't flag non-SAP county projects
+        CheckFileName = Not bProj
+    End If
+End Function
+Function CheckFGName(ByRef tname As String, ByRef tos As String, ByRef th As String, ByRef tmat As String, ByRef tlift As String, _
+                     ByRef tdn As String, ByRef dt As Date, Optional nRow As Long = 0) As Boolean
+    Dim blift As Boolean, bh As Boolean
+    Dim nc1 As Integer, nc2 As Integer
+    Dim t As String
+    tname = Trim(tname)
+    tname = Replace(tname, "  ", " ") 'name sure there are no double spaces
+    nc1 = InStr(tname, " ") 'first space
+    dt = DateSerial(CInt("20" & Mid(tname, nc1 + 5, 2)), CInt(Mid(tname, nc1 + 1, 2)), CInt(Mid(tname, nc1 + 3, 2)))
+    nc1 = InStr(nc1 + 1, tname, " ") 'second space
+    tdn = Mid(tname, nc1 + 1, Len(tname) - nc1) 'design name
+    nc2 = InStr(tname, "-")
+    If nc1 = 0 Or nc2 = 0 Then 'wrong format
+        bh = False
+        GoTo endmsg
+    End If
+    th = Mid(tname, nc1 + 1, nc2 - nc1 - 1)
+    nc1 = nc2
+    nc2 = InStr(nc1 + 1, tname, "-")
+    If Mid(tname, nc2 + 2, 1) = "-" Then
+        nc2 = nc2 + 2 'account for SFDR-I & SFDR-P
+    End If
+    tmat = Mid(tname, nc1 + 1, nc2 - nc1 - 1)
+    tlift = Mid(tname, nc2 + 1, 2)
+    'offset text
+    tos = Right(tname, Len(tname) - nc2 - 3)
+    'check for correct lift notation
+    If Left(tlift, 1) = "L" And Asc(Right(tlift, 1)) > 48 And Asc(Right(tlift, 1)) < 58 Then '1-9
+        blift = True
+    Else
+        blift = False
+    End If
+    'check for correct TH notation
+    t = Left(th, 2)
+    If t = "TH" Or t = "CS" Or t = "CR" Or t = "MS" Then
+        bh = True
+    Else
+        bh = False
+    End If
+    bh = blift And bh 'only true if both lift and th are correct
+endmsg:
+    If Not bh Then
+        If nRow = 0 Then
+            t = "."
+        Else
+            t = " in row " & CStr(nRow)
+        End If
+'The following tMSG has been used ByRef in other contexts
+'        tMsg = "Please check the Filter Group Name" & t & vbNewLine _
+'        & "Name should be in format per requirements of the IC special provision:" & vbNewLine _
+'        & "LOT MMDDYY LOTNAME" & vbNewLine _
+'        & "Examples:" & vbNewLine _
+'        & "01 052016 TH68-HMA-L1-CL-12R" & vbNewLine _
+'        & "06A 061016 TH35E-WMA-L2-12L-CL-SB" & vbNewLine _
+'        & "Make sure there are no additional spaces or dashes."
+    End If
+    CheckFGName = bh
+End Function
+Function SortDictionaryByKey(dict As Object, Optional sortorder As XlSortOrder = xlAscending) As Object
+    'Thanks to Paul Kelly at excelmacromastery.com
+    Dim arrList As Object
+    Set arrList = CreateObject("System.Collections.ArrayList")
+    ' Put keys in an ArrayList
+    Dim key As Variant, coll As New Collection
+    For Each key In dict
+        arrList.Add key
+    Next key
+    ' Sort the keys
+    arrList.Sort
+    ' For descending order, reverse
+    If sortorder = xlDescending Then
+        arrList.Reverse
+    End If
+    ' Create new dictionary
+    Dim dictNew As Object
+    Set dictNew = CreateObject("Scripting.Dictionary")
+    ' Read through the sorted keys and add to new dictionary
+    For Each key In arrList
+        dictNew.Add key, dict(key)
+    Next key
+    ' Clean up
+    Set arrList = Nothing
+    Set dict = Nothing
+    ' Return the new dictionary
+    Set SortDictionaryByKey = dictNew
+End Function
+Function AppendVetaSta(orig As String, sta1 As String, sta2 As String) As String
+    'separate orig at comma, append Chr(10) and new station to each side and reassemble
+    Dim n As Integer
+    Dim t1 As String, t2 As String
+    n = InStr(orig, ",")
+    If n = 0 Then
+        AppendVetaSta = ""
+        Exit Function
+    End If
+    t1 = Left(orig, n - 1)
+    t2 = Right(orig, Len(orig) - n)
+    AppendVetaSta = sta1 & Chr(10) & t1 & "," & sta2 & Chr(10) & t2
+End Function
+Function RemoveVetaSta(orig As String, begsta As String, endsta As String) As String
+    'remove the beginning & ending statinos from the composite string as well as connecting "," and Chr(10)
+    Dim ncomma As Integer, nbeg As Integer
+    Dim obeg As String, oend As String
+    Dim begc As String, endc As String 'Station combined with Chr(10) connector
+    ncomma = InStr(orig, ",")
+    obeg = Left(orig, ncomma - 1)
+    oend = Right(orig, Len(orig) - ncomma)
+    begc = begsta & Chr(10)
+    nbeg = InStr(orig, begc)
+    If nbeg > 0 Then 'stations at beginning or middle of string
+        endc = endsta & Chr(10)
+        obeg = Replace(obeg, begc, "")
+        oend = Replace(oend, endc, "")
+    Else 'station are at end of string
+        begc = Chr(10) & begsta
+        endc = Chr(10) & endsta
+        obeg = Replace(obeg, begc, "")
+        oend = Replace(oend, endc, "")
+    End If
+    RemoveVetaSta = obeg & "," & oend
+End Function
+Function ParseStations(tdata As String, ByRef station1() As String, ByRef station2() As String, _
+                       Optional bTestDbl As Boolean = False) As Integer
+    'station1 & station2 do not need to be dimensioned
+    'bTestDbl: Any line which fails conversion to Double after removing "+" is removed
+    '20190820 added code to parse multiple station pairs per Date+FG
+    
+    
+    
+     'vetaex is now preceded by the beginning station & "~" so multiple values can be put in the correct rows
+     'multiple exclusion sets are separated by "!"
+     'more code needed to address multiple instances of the same Date+FG
+     
+     
+     
+    Dim i As Integer, j As Integer, ncomma As Integer, nlen As Integer, nstations As Integer
+    Dim sts1 As String, sts2 As String
+    ncomma = InStr(tdata, ",")
+    nlen = Len(tdata)
+    If ncomma = 0 Then
+        ParseStations = -1 'wrong format (not split between begin & end stations
+        Exit Function
+    End If
+    sts1 = Left(tdata, ncomma - 1)
+    sts2 = Right(tdata, nlen - ncomma)
+    nstations = ParseLines(sts1, station1(), bTestDbl)
+    If ParseLines(sts2, station2(), bTestDbl) <> nstations Then
+        ParseStations = -2 'unequal number of begin & end stations
+        Exit Function
+    End If
+    ParseStations = nstations
+End Function
+Function ParseLines(t As String, ByRef lines() As String, Optional bTestDbl As Boolean = False) As Long
+    'count the number of lines separated by soft returns Chr(10)
+    'compile the location of each linebreak character in linebreak()
+    'the final linebreak() entry is the position of the final character + 1
+    'linebreak(i) - 1 = location of the last text character in line i
+    'linebreak(i) + 1 = location of the first character in line i + 1
+    'Parse the string into lines()
+    'bTestDbl: Any line which fails conversion to Double after removing "+" is removed
+    Dim i As Long, j As Long, n As Long
+    Dim d As Double
+    Dim linebreak() As Long
+    i = 1
+    n = 0
+    If Len(t) > 0 Then
+        n = 1 'line
+    End If
+    ReDim linebreak(1 To 1)
+    Do While i > 0
+        i = InStr(i, t, Chr(10))
+        If i > 0 Then
+            linebreak(n) = i
+            i = i + 1
+            n = n + 1
+            ReDim Preserve linebreak(1 To n)
+        End If
+    Loop
+    If n > 0 Then
+        linebreak(n) = Len(t) + 1
+        ReDim lines(1 To n)
+        lines(1) = Left(t, linebreak(1) - 1)
+        If bTestDbl Then
+            If Not DoubleTest(lines(1), d, "+") Then
+                lines(1) = ""
+            End If
+        End If
+        For i = 2 To n
+            lines(i) = Mid(t, linebreak(i - 1) + 1, linebreak(i) - linebreak(i - 1) - 1)
+            If bTestDbl Then
+                If Not DoubleTest(lines(i), d, "+") Then
+                    lines(i) = ""
+                End If
+            End If
+        Next i
+'        If bTestDbl Then 'remove bad lines from array
+'            n = RemoveStr(lines)
+'        End If
+    Else
+        ReDim lines(1 To 1)
+        lines(1) = "" 'prevent empty array error
+    End If
+    ParseLines = n
+End Function
+Function RemoveDbl(ByRef dlines() As Double, Optional trigger As Double = -1) As Long
+    'removes lines which equal trigger
+    Dim i As Long, j As Long, n As Long
+    n = UBound(dlines)
+    For i = 1 To n
+        If i > n Then
+            Exit For
+        End If
+        If dlines(i) = trigger Then
+            n = n - 1
+            For j = i To n
+                dlines(j) = dlines(j + 1)
+            Next j
+            i = i - 1
+        End If
+    Next i
+    If n = 0 Then
+        ReDim Preserve dlines(1 To 1)
+    Else
+        ReDim Preserve dlines(1 To n)
+    End If
+    RemoveDbl = n
+End Function
+Function RemoveStr(ByRef tlines() As String, Optional trigger As String = "") As Long
+    'removes lines which equal trigger
+    Dim i As Long, j As Long, n As Long
+    n = UBound(tlines)
+    For i = 1 To n
+        If i > n Then
+            Exit For
+        End If
+        If tlines(i) = trigger Then
+            n = n - 1
+            For j = i To n
+                tlines(j) = tlines(j + 1)
+            Next j
+            i = i - 1
+        End If
+    Next i
+    If n = 0 Then
+        ReDim Preserve tlines(1 To 1)
+    Else
+        ReDim Preserve tlines(1 To n)
+    End If
+    RemoveStr = n
+End Function
+Sub atestrem()
+    Dim n As Long
+    Dim d() As Double
+    ReDim d(1 To 5)
+    d(1) = 1
+    d(2) = 2
+    d(3) = -1
+    d(4) = -1
+    d(5) = 0
+    n = RemoveDbl(d)
+    n = 0
+End Sub
+Function AssembleLines(ByRef lines() As String, Optional omitblank As Boolean = False) As String
+    Dim i As Long, n As Long
+    Dim t As String, newline As String
+    n = UBound(lines)
+    t = lines(1)
+    For i = 2 To n
+        If t = "" And omitblank Then
+            newline = "" 'don't add new line if previous line is empty
+        Else
+            newline = Chr(10)
+        End If
+        If lines(i) <> "" Or Not omitblank Then
+            t = t & newline & lines(i)
+        End If
+    Next i
+    AssembleLines = t
+End Function
+Function CompareStations(ByRef beg1() As String, ByRef end1() As String, _
+                         ByRef beg2() As String, ByRef end2() As String, _
+                         ByRef tdbeg() As String, ByRef tdend() As String) As String
+    'calculate distance between beg1 & beg2
+    'rearrange beg2 to pair the closest stations
+    Dim nround As Integer 'round the difference
+    nround = 3
+    Dim i As Long, j As Long, n As Long, nn As Long, n1 As Long, n2 As Long
+    Dim indx1() As Long, indx2() As Long 'New index values for rearranged arrays
+    Dim indtmp1() As Long, indtmp2() As Long 'test ot see if begin and end stations are reversed
+    Dim dtmp As Double, dtmp1 As Double, dtmp2 As Double
+    Dim db1() As Double, db2() As Double, de1() As Double, de2() As Double, ddif() As Double, dorig() As Double
+    Dim dbtmp1() As Double, dbtmp2() As Double, dorig2() As Double, ddiftmp() As Double 'test to see if begin and end stations are reversed
+    Dim ttmp As String
+    Dim btmp1() As String, etmp1() As String, btmp2() As String, etmp2() As String 'used to rearrange arrays
+    
+    n1 = UBound(beg1)
+    n2 = UBound(beg2)
+    
+    If UBound(end1) <> n1 Then
+        CompareStations = "Unequal number of IC-106 begin & end stations."
+        Exit Function
+    End If
+    
+    If UBound(end2) <> n2 Then
+        CompareStations = "Unequal number of Veta begin & end stations."
+        Exit Function
+    End If
+    
+    ReDim db1(1 To n1)
+    ReDim de1(1 To n1)
+    ReDim db2(1 To n2)
+    ReDim de2(1 To n2)
+    For i = 1 To n1
+        If Not DoubleTest(beg1(i), db1(i), "+") Then
+            beg1(i) = ""
+            db1(i) = 9999999# 'make sure bad data sorts at the end of the list
+        End If
+        If Not DoubleTest(end1(i), de1(i), "+") Then
+            end1(i) = ""
+            de1(i) = 9999999#
+        End If
+    Next i
+
+    For j = 1 To n2
+        If Not DoubleTest(beg2(j), db2(j), "+") Then
+            beg2(j) = ""
+            db2(j) = 9999999#
+        End If
+        If Not DoubleTest(end2(j), de2(j), "+") Then
+            end2(j) = ""
+            de2(j) = 9999999#
+        End If
+    Next j
+    
+'    i = RemoveDbl(db1, -1)
+'    If i <> RemoveStr(beg1, "") Then
+'        CompareStations = "Number error in IC-106 begin station."
+'    End If
+'    n1 = RemoveDbl(de1, -1)
+'    If n1 <> RemoveStr(end1, "") Then
+'        CompareStations = "Number error in IC-106 end station."
+'    End If
+'    j = RemoveDbl(db2, -1)
+'    If j <> RemoveStr(beg2) Then
+'        CompareStations = "Number error in Veta begin station."
+'    End If
+'    n2 = RemoveDbl(de2, -1)
+'    If n2 <> RemoveStr(end2, "") Then
+'        CompareStations = "Number error in Veta end station."
+'    End If
+    
+'    If i <> n1 Then
+'        CompareStations = "Unequal number of IC-106 begin & end stations."
+'        Exit Function
+'    End If
+'
+'    If j <> n2 Then
+'        CompareStations = "Unequal number of Veta begin & end stations."
+'        Exit Function
+'    End If
+    
+    indtmp1 = indx1
+    indtmp2 = indx2
+    dbtmp1 = db1
+    dorig2 = db2 'preserve original order
+    dbtmp2 = de2 'see if stations are reversed
+    
+    n = PairData(indx1, indx2, db1, db2, ddif, nround)
+    nn = PairData(indtmp1, indtmp2, dbtmp1, dbtmp2, ddiftmp, nround)
+    If n <= 0 Then 'errors
+        'try reverse
+        If nn <= 0 Then 'errors in both cases
+            Select Case n
+                Case -10
+                    CompareStations = "No more that 9 exceptions can be analyzed."
+                Case -9
+                    CompareStations = "Sorting error"
+                Case 0
+                    CompareStations = "No usable data."
+            End Select
+            Exit Function
+        Else 'reverse begin & end stations for final calculation
+            indx1 = indtmp1
+            indx2 = indtmp2
+            de2 = dorig2
+            db1 = dbtmp1
+            db2 = dbtmp2
+            ddif = ddiftmp
+        End If
+    Else 'test for lowest error
+        dtmp1 = 0
+        For i = 1 To UBound(ddif)
+            If ddif(i) < 1000000# Then 'don't include "no data" values
+                dtmp1 = dtmp1 + ddif(i)
+            End If
+        Next i
+        dtmp2 = 0
+        For j = 1 To UBound(ddiftmp)
+            If ddiftmp(j) < 1000000# Then
+                dtmp2 = dtmp2 + ddiftmp(j)
+            End If
+        Next j
+        If dtmp2 < dtmp1 Then
+            indx1 = indtmp1
+            indx2 = indtmp2
+            de2 = dorig2
+            db1 = dbtmp1
+            db2 = dbtmp2
+            ddif = ddiftmp
+        End If
+    End If
+    
+    If n > 0 Then 'no errors
+        ReDim btmp1(1 To n)
+        ReDim etmp1(1 To n)
+        ReDim btmp2(1 To n)
+        ReDim etmp2(1 To n)
+        ReDim tdbeg(1 To n)
+        ReDim tdend(1 To n)
+        ReDim Preserve de1(1 To n)
+        For i = 1 To n1
+            btmp1(indx2(i)) = beg1(indx1(i)) 'rearrange using original veta array
+            etmp1(indx2(i)) = end1(indx1(i))
+        Next i
+        For i = n1 + 1 To n
+            btmp1(indx2(i)) = "no data"
+            etmp1(indx2(i)) = "no data"
+            de1(i) = 9999999#
+        Next i
+        ReDim beg1(1 To n)
+        ReDim end1(1 To n)
+        For i = 1 To n
+            beg1(i) = btmp1(i) 'put rearranged data in original array
+            end1(i) = etmp1(i)
+        Next i
+        ReDim Preserve beg2(1 To n)
+        ReDim Preserve end2(1 To n)
+        ReDim Preserve de2(1 To n)
+        For j = 1 To n2
+            If beg2(j) = "" Then beg2(j) = "no data"
+            If end2(j) = "" Then end2(j) = "no data"
+        Next j
+        For j = n2 + 1 To n
+            beg2(j) = "no data"
+            end2(j) = "no data"
+            de2(j) = 9999999#
+        Next j
+        For i = 1 To n
+            If ddif(i) > 1000000# Then
+                tdbeg(indx2(i)) = "no data"
+            Else
+                tdbeg(indx2(i)) = CStr(ddif(i))
+            End If
+            dtmp = Abs(de2(indx2(i)) - de1(indx1(i)))
+            If dtmp > 1000000# Then
+                tdend(indx2(i)) = "no data"
+            Else
+                tdend(indx2(i)) = CStr(Round(dtmp, nround))
+            End If
+        Next i
+        CompareStations = ""
+    Else
+    End If
+End Function
+Function PairData(ByRef ilist1() As Long, ByRef ilist2() As Long, ByRef dlist1() As Double, ByRef dlist2() As Double, ByRef ddif() As Double, Optional nround As Integer = 99) As Long
+'   1. Pair all combination
+'   2. Sort
+'   3. Find closest pairs of unique data
+'   4. Allow for missing data
+'   5. ilist arrays hold new indexes for sorted arrays
+    Dim i As Long, j As Long, k As Long, n As Long
+    Dim e As Long, sz As Long, sz1 As Long, sz2 As Long
+    Dim tret As String
+    Dim darr() As Double 'all differences
+    Dim narr() As String 'index pairs
+    Dim dtmp1() As Double, dtmp2() As Double 'redimensioned input arrays
+    Dim dres1() As Double, dres2() As Double 'final data
+    Dim ires1() As Long, ires2() As Long 'new indexes for sorted data
+    
+    sz1 = UBound(dlist1)
+    sz2 = UBound(dlist2)
+    
+    If sz1 > 9 Or sz2 > 9 Then
+        PairData = -10 'size must be less than 10
+        Exit Function
+    End If
+    If sz2 > sz1 Then
+        sz = sz2
+    Else
+        sz = sz1
+    End If
+    
+    e = sz * sz - 1 'end of long array
+    
+    ReDim darr(0 To e)
+    ReDim narr(0 To e)
+    ReDim ddif(1 To sz)
+    ReDim dtmp1(1 To sz)
+    ReDim dtmp2(1 To sz)
+    ReDim dres1(1 To sz)
+    ReDim dres2(1 To sz)
+    ReDim ires1(1 To sz)
+    ReDim ires2(1 To sz)
+    ReDim ilist1(1 To sz) 'in case input was not dimensioned
+    ReDim ilist2(1 To sz)
+    ReDim ddif(1 To sz) 'decide what to do with unpaired ilist values
+    'transfer data to temporary arrays
+    For i = 1 To sz1
+        dtmp1(i) = dlist1(i)
+    Next i
+    For i = sz1 + 1 To sz
+        dtmp1(i) = -9999999# 'make sure unmatched data sorts at the end of the list
+    Next i
+    For j = 1 To sz2
+        dtmp2(j) = dlist2(j)
+    Next j
+    For j = sz2 + 1 To sz
+        dtmp2(j) = -9999999# 'make sure unmatched data sorts at the end of the list
+    Next j
+    'calculate & concatenate
+    For i = 1 To sz
+        For j = 1 To sz
+            k = (i - 1) * sz + j - 1 'new (0 To sz * sz - 1) index
+            darr(k) = Abs(dtmp2(j) - dtmp1(i))
+            If nround < 99 Then
+                darr(k) = Round(darr(k), nround)
+            End If
+            narr(k) = CStr(i) & CStr(j)
+        Next j
+    Next i
+    If Not BubbleSort2(darr, narr) Then
+        PairData = -9 'uneven sort arrays
+        Exit Function
+    End If
+    'find closest pairs of unique data
+    n = 0
+    For i = 1 To sz
+        For j = n To e
+            If narr(j) <> "" Then
+                ires1(i) = CInt(Left(narr(j), 1))
+                ires2(i) = CInt(Right(narr(j), 1))
+                ddif(i) = darr(j)
+                dres1(i) = dtmp1(ires1(i))
+                dres2(i) = dtmp2(ires2(i))
+                For k = j To e 'remove other items containing ires1(i) or ires2(i)
+                    If narr(k) <> "" Then
+                        If CInt(Left(narr(k), 1)) = ires1(i) Or CInt(Right(narr(k), 1)) = ires2(i) Then
+                            narr(k) = ""
+                        End If
+                    End If
+                Next k
+                n = j + 1
+                Exit For
+            End If
+        Next j
+    Next i
+    'rearrange original arrays
+    ReDim dlist1(1 To sz)
+    ReDim ilist1(1 To sz)
+    ReDim dlist2(1 To sz)
+    ReDim ilist2(1 To sz)
+    For i = 1 To sz
+        dlist1(i) = dres1(i)
+        ilist1(i) = ires1(i)
+    Next i
+    For j = 1 To sz
+        dlist2(j) = dres2(j)
+        ilist2(j) = ires2(j)
+    Next j
+    'PairData = szret
+    PairData = sz
+End Function
+Function BubbleSort2(ByRef dlist() As Double, ByRef nlist() As String) As Boolean
+'   Sorts an array using bubble sort algorithm
+'   https://bettersolutions.com/vba/arrays/sorting-bubble-sort.htm
+'   Bruce Tanquist added code to sort parallel array
+
+    Dim First As Long, Last As Long
+    Dim i As Long, j As Long
+    Dim dtmp As Double
+    Dim ntmp As String, ttmp As String
+    
+    First = LBound(dlist)
+    Last = UBound(dlist)
+    
+    If UBound(nlist) <> Last Then
+        BubbleSort2 = False
+        Exit Function
+    End If
+    
+    For i = First To Last - 1
+        For j = i + 1 To Last
+            If dlist(i) > dlist(j) Then
+                dtmp = dlist(j)
+                dlist(j) = dlist(i)
+                dlist(i) = dtmp
+                ntmp = nlist(j)
+                nlist(j) = nlist(i)
+                nlist(i) = ntmp
+            End If
+        Next j
+    Next i
+    BubbleSort2 = True
+End Function
+Function fgData(fgname As String, startstop As Integer) As Double
+    'startstop: 1 = start, 2 = stop
+    Dim nlen As Integer, ndash As Integer
+    Dim nL As Integer, nR As Integer 'location of first "CL", "L" or "R"
+    Dim dret As Double
+    dret = 999#
+    nlen = Len(fgname)
+    ndash = InStr(fgname, "-")
+    If ndash = 0 Then
+        fgData = dret 'error
+        Exit Function
+    End If
+    'check for direction (divided hwy)
+    If Right(fgname, 1) = "B" Then 'EB, WB, NB, SB
+        nlen = nlen - 3
+        fgname = Left(fgname, nlen)
+    End If
+    Select Case startstop
+        Case 1
+            If Left(fgname, 2) = "CL" Then
+                dret = 0#
+            Else
+                nL = InStr(fgname, "L")
+                nR = InStr(fgname, "R")
+                If nL > 0 And nL < ndash Then
+                    dret = CDbl("-" & Left(fgname, nL - 1))
+                ElseIf nR > 0 And nR < ndash Then
+                    dret = CDbl(Left(fgname, nR - 1))
+                Else
+                    dret = 999#
+                End If
+            End If
+        Case 2
+            If Right(fgname, 2) = "CL" Then
+                dret = 0#
+            ElseIf Right(fgname, 1) = "L" Then
+                dret = CDbl(Mid(fgname, ndash, nlen - ndash)) 'include neg sign
+            ElseIf Right(fgname, 1) = "R" Then
+                dret = CDbl(Mid(fgname, ndash + 1, nlen - ndash - 1))
+            Else
+                dret = 999#
+            End If
+    End Select
+    fgData = dret
+End Function
+Attribute VB_Name = "Sh0_Main"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sh1_101"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sh2_102"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sh3_103"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sh4_IC"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sh5_PMTP"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sh6_Headers"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+'   Make sure calculation has been rest to automatic
+    Application.Calculation = xlCalculationAutomatic
+End Sub
+
+
+INQUEST-PP=macro

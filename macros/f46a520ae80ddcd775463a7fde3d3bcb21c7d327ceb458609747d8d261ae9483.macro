@@ -1,0 +1,388 @@
+Attribute VB_Name = "Module1"
+' Excel Macro to prepare Tab-separated file ReportData.txt for printing
+' written by David Stott
+'
+' Parameters are read from first line of report
+
+' New parameters must be added to function GetParameters
+' for Strings use readValue, for Booleans use readToken
+'-------------------------------------------------------------------------------------------------------------------------------------
+'Revision History
+'Modified By : jhabiulla Phatan
+'Date        : 15/12/2009
+'Reason      : KB93985,Resolve issue Subscript out of range ,when group into separate sheets option is ticked in report output options
+'              This is caused as procedure MakeSheet expects sheet name to be ReportData.
+'--------------------------------------------------------------------------------------------------------------------------------------
+
+Dim ReportTitle As String   'Title      eg My Report
+Dim RepeatCols As String    'FCols      eg 1,2,3
+Dim HorizBars As String     'HBars      eg 5
+Dim ShowPreview As Boolean  'Preview
+Dim Landscape As Boolean    'Landscape
+Dim DisplayCount As String  'DisplayCount
+Dim SplitCol As String      'SplitCol   eg 7,8
+
+' KB94430 Fix - Vijaya Krishna 15/12/2009: RowCount is updated to Long datatype to hold the value more than 65536
+Dim RowCount As Long
+Dim ColCount As Long
+
+Function GetParameters()
+
+Range("1:1").Select
+Dim data As String
+Do While ActiveCell.value <> ""
+  data = ActiveCell.value
+  
+  ReportTitle = readValue(data, "Title", ReportTitle)
+  HorizBars = readValue(data, "HBars", HorizBars)
+  ShowPreview = readToken(data, "Preview", ShowPreview)
+  Landscape = readToken(data, "Landscape", Landscape)
+  RepeatCols = readValue(data, "FCols", RepeatCols)
+  SplitCol = readValue(data, "SplitCol", SplitCol)
+  DisplayCount = readValue(data, "DisplayCount", DisplayCount)
+    
+  ActiveCell.Offset(0, 1).Select
+Loop
+
+RepeatCols = ConvertCol(RepeatCols)
+SplitCol = ConvertCol(SplitCol)
+
+End Function
+
+' Main subroutine of Macro starts here ***********************
+Sub Auto_Open()
+
+On Error GoTo ErrorHandler
+
+Application.Visible = False
+
+ThePath = ThisWorkbook.Path
+' GERAINT 11/8/06: Additional code to enable correct interpretation of dates.
+' We define every column as being a TEXT type column - so we avoid any mis-interpretation
+Dim ColumnArray(1 To 100, 1 To 2) As Integer
+Dim x As Integer
+' Populates the ColumnArray
+For x = 1 To 100
+   ColumnArray(x, 1) = x            ' Set this column to be included
+   ColumnArray(x, 2) = xlTextFormat ' Set its data format to text
+Next x
+' Open the file as a TEXT file - was previously just calling Workbooks.Open
+Workbooks.OpenText Filename:=ThePath + "\ReportData.txt", DataType:=xlDelimited, Tab:=True, FieldInfo:=ColumnArray
+
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'  WORK AROUND TO ALLOW TEXT ABOVE 255 CHARACTERS TO BE USED
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Copy the workbook, and close the source file (having marked it as saved)
+'Set Wbook = ActiveWorkbook
+'ActiveSheet.Copy
+'Wbook.Saved = True
+'Wbook.Close
+
+'--fixup for cell lengths greater than 255
+ActiveWorkbook.ActiveSheet.UsedRange.Copy
+'get handle on origional workbook so can close it later
+Set Wbook = ActiveWorkbook
+Workbooks.Add (xlWBATWorksheet)      'KB93985
+ActiveSheet.Range("A1").PasteSpecial
+Cells.Calculate
+'Clear out the clipboard and select cell A1.
+Application.CutCopyMode = False
+ActiveSheet.Range("A1").Select
+ Wbook.Saved = True
+ Wbook.Close
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Set ReportSheet = ActiveSheet
+
+' Set Default parameters
+RepeatCols = ""
+SplitCol = ""
+ReportTitle = ""
+HorizBars = "5"
+ShowPreview = False
+Landscape = False
+
+' Read parameters from first line of report
+GetParameters
+
+' Delete first line now that its work is done
+Rows("1:1").Select
+Selection.Delete Shift:=xlUp
+
+' Calculate number of rows in report
+RowCount = Range("A1").SpecialCells(xlCellTypeLastCell).Row
+'if not split sheets then take the Column title into account
+If SplitCol = "" Then RowCount = RowCount - 1
+
+ColCount = Range("A1").SpecialCells(xlCellTypeLastCell).Column
+
+'Rule the columns
+RuledColumns
+
+' Delete top line now that its work is done
+Rows("1:1").Select
+Selection.Delete Shift:=xlUp
+
+' Page Settings
+With ReportSheet.PageSetup
+    .LeftFooter = "Page &P of &N"
+    .RightFooter = "&D  &T"
+    .CenterHeader = "&14 " + ReportTitle
+    .PrintTitleRows = "$1:$1"
+    If RepeatCols >= "A" Then .PrintTitleColumns = "$A:$" + RepeatCols
+    If Landscape Then .Orientation = xlLandscape Else .Orientation = xlPortrait
+    If DisplayCount <> "" Then .RightHeader = DisplayCount + " " + Str(RowCount - 2)
+End With
+
+' Excel doesn't autofit address block properly so do a hack
+FixAddressColumn
+
+' Set Automatic column widths
+Cells.Select
+Selection.HorizontalAlignment = xlLeft
+Selection.VerticalAlignment = xlTop
+Selection.Columns.AutoFit
+
+
+' Embolden top line of report (column headings)
+Rows("1:1").Select
+Selection.Font.bold = True
+
+' Add Grid Lines (Horizontal lines are added in "MakeSheets" if separate lists are requested)
+If RepeatCols >= "A" Then VerticalLine (RepeatCols)
+If SplitCol = "" Then HorizontalBars first:=1, cycle:=Val(HorizBars), last:=RowCount
+Range("A1").Select
+
+' Split list up if required
+If SplitCol > "" Then MakeSheets col:=SplitCol
+
+
+' Display Preview
+Application.Visible = True
+
+' Mark the active workbook as saved
+ActiveWorkbook.Saved = True
+
+If ShowPreview Then ActiveWindow.SelectedSheets.PrintPreview
+'close this workbook
+ThisWorkbook.Close
+Exit Sub
+
+' Error-handling routine
+ErrorHandler:
+Application.Visible = True
+MsgBox "Error " & Err.Number & " : " & Err.Description
+
+End Sub
+
+Function readValue(data, name, store)
+
+namelen = Len(name) + 1
+If UCase(Left(data, namelen)) = UCase(name) + "=" Then store = Right(data, Len(data) - namelen)
+readValue = store
+ 
+End Function
+
+Function readToken(data, name, store)
+
+If UCase(data) = UCase(name) Then store = True
+readToken = store
+
+End Function
+
+Sub HorizontalBars(first, cycle, last)
+x = first
+Do While x < last
+  HorizontalLine (x)
+  If cycle <= 0 Then x = last Else x = x + cycle
+Loop
+End Sub
+
+Sub VerticalLine(Idx)
+Columns(Idx + ":" + Idx).Select
+With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .weight = xlMedium
+End With
+End Sub
+
+Function RuledColumns()
+
+Range("1:1").Select
+Dim data As String
+Do While ActiveCell.value <> ""
+  data = ActiveCell.value
+  If Left(data, 1) = "*" Then
+  
+    ActiveCell.EntireColumn.Select
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .weight = xlThin
+    End With
+    End If
+  
+  ActiveCell.Offset(0, 1).Select
+Loop
+
+End Function
+Function FixAddressColumn()
+FSM
+'For KB86152:KB79112 doesnot replace special marker X!$X with new line if Report column caption name
+'does not start with address.
+
+'For KB90375
+
+    Worksheets.Select
+    Cells.Replace What:="X!$X", Replacement:=Chr(10), LookAt:=xlPart, _
+    SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+    ReplaceFormat:=False
+    
+    'KB91527 to resolve issue, menu item Data and filter options are disabled
+    Worksheets(1).Select
+
+End Function
+
+Sub HorizontalLine(Idx)
+i = Trim(Str(Idx))
+Rows(i + ":" + i).Select
+With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .weight = xlThin
+End With
+
+End Sub
+
+Function ConvertCol(Idx)
+  If Idx = "" Then ConvertCol = "" Else ConvertCol = Chr(Idx + 64)
+End Function
+
+Sub MakeSheets(col)
+
+Range(col + "1:" + col + "1").Select
+caption = ActiveCell.value
+ActiveCell.Offset(1, 0).Select
+Dim data As String
+frow = 0
+value = ""
+For r = 2 To RowCount
+  data = ActiveCell.value
+  If data <> value And frow <> 0 Then
+    If value <> "" Then
+      MakeSheet first:=frow, last:=r - 1, caption:=caption, descr:=value, col:=col
+    End If
+    frow = 0
+  End If
+  If frow = 0 Then
+    frow = r
+    value = data
+  End If
+  ActiveCell.Offset(1, 0).Select
+Next r
+  
+Application.DisplayAlerts = False
+ActiveSheet.Delete
+Application.DisplayAlerts = True
+Sheets.Select
+  
+End Sub
+  
+Sub MakeSheet(first, last, caption, descr, col)
+  
+'KB93985 Copy after first sheet
+Sheets(1).Copy After:=Sheets(Sheets.Count)
+SetSheetName (descr)
+Chop first:=last + 1, last:=RowCount
+Chop first:=2, last:=first - 1
+With ActiveSheet.PageSetup
+    .CenterHeader = .CenterHeader + Chr(13) + caption + ": " + descr
+    If DisplayCount <> "" Then .RightHeader = DisplayCount + " " + Str(last - first + 1)
+End With
+
+HorizontalBars first:=1, cycle:=Val(HorizBars), last:=last - first + 3
+
+Range(col + ":" + col).Select
+Selection.Delete Shift:=xlRight
+  
+fstr = Trim(Str(last - first + 3))
+lstr = Trim(Str(RowCount))
+Rows(fstr + ":" + lstr).Select
+Selection.Style = "Normal"
+  
+Columns(col + ":" + ConvertCol(ColCount)).Select
+Selection.Style = "Normal"
+  
+Range("A1").Select
+Sheets(1).Select
+
+End Sub
+
+Sub SetSheetName(value)
+  For x = 1 To Len(value)
+     If InStr("[]?/\'", Mid(value, x, 1)) > 0 Then value = Left(value, x - 1) + "." + Mid(value, x + 1)
+  Next x
+  On Error Resume Next
+  ActiveSheet.name = value
+End Sub
+
+Sub Chop(first, last)
+If last >= first Then
+  fstr = Trim(Str(first))
+  lstr = Trim(Str(last))
+  Rows(fstr + ":" + lstr).Delete
+End If
+End Sub
+Sub FSM()
+'
+' FSM Macro
+'
+
+'
+    Columns("B:B").Select
+    Selection.TextToColumns Destination:=Range("B1"), DataType:=xlDelimited, _
+        TextQualifier:=xlDoubleQuote, ConsecutiveDelimiter:=False, Tab:=True, _
+        Semicolon:=False, Comma:=False, Space:=False, Other:=False, FieldInfo _
+        :=Array(1, 5), TrailingMinusNumbers:=True
+    Selection.NumberFormat = "yyyymmdd"
+    Columns("A:A").Select
+    Selection.Replace What:="-", Replacement:="", LookAt:=xlPart, _
+        SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+        ReplaceFormat:=False
+    Range("A2").Select
+End Sub
+
+
+Attribute VB_Name = "Module10"
+Attribute VB_Name = "Module2"
+Attribute VB_Name = "Module3"
+Attribute VB_Name = "Module4"
+Attribute VB_Name = "Module5"
+Attribute VB_Name = "Module6"
+Attribute VB_Name = "Module7"
+Attribute VB_Name = "Module8"
+Attribute VB_Name = "Module9"
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

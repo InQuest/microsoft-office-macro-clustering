@@ -1,0 +1,348 @@
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "VersionInfo"
+'********************************************************************************************
+'*                                                                                          *
+'*                              VERSION CONTROL INFORMATION                                 *
+'*                                                                                          *
+'********************************************************************************************
+
+
+'   v1.0 - modifications made to roll over dates - C Wood 2019-02-14
+
+
+Attribute VB_Name = "basExport"
+Option Explicit
+
+Public Const lFIRSTPUPILROW As Long = 21
+Public Const lLASTPUPILROW As Long = 170
+Public Const sVALCOL As String = "AB"
+
+Private Type ValidationCheck
+    sLEANo As String
+    sSchoolName As String
+    sSchoolNum As String
+    sURN As String
+    sErrMsg As String
+    iNumberOfPupils As Integer
+End Type
+
+Private Function DataIsInvalid(ByRef vc As ValidationCheck) As Boolean
+Dim bFailsToValidate As Boolean
+    bFailsToValidate = False
+    
+    If vc.iNumberOfPupils = 0 Then
+        vc.sErrMsg = vc.sErrMsg & "You have not entered any pupil details" & vbNewLine
+        bFailsToValidate = True
+    End If
+        
+    If IsCellEmpty("b5", vc.sLEANo) Then
+        vc.sErrMsg = vc.sErrMsg & "You need to enter your Local Authority number" & vbNewLine
+        bFailsToValidate = True
+    End If
+    
+    If IsCellEmpty("b4", vc.sSchoolName) Then
+        vc.sErrMsg = vc.sErrMsg & "You need to enter your School Name" & vbNewLine
+        bFailsToValidate = True
+    End If
+    
+    If IsCellEmpty("b6", vc.sSchoolNum) Then
+        If IsCellEmpty("b7", vc.sURN) Then
+            vc.sErrMsg = vc.sErrMsg & "You need to enter your DfE School Number or Unique Reference Number" & vbNewLine
+            bFailsToValidate = True
+        End If
+    End If
+
+    'Check that no pupil details are missing.
+    If Range(sVALCOL & "11").Value < vc.iNumberOfPupils Then
+        bFailsToValidate = bFailsToValidate Or HasEmptyOrInvalidCells(Range("A" & lFIRSTPUPILROW), "You need to add missing surname", vbNullString, vc.sErrMsg)
+    End If
+
+    'Missing data check - Forename
+    If Range(sVALCOL & "12").Value < vc.iNumberOfPupils Then
+        bFailsToValidate = bFailsToValidate Or HasEmptyOrInvalidCells(Range("B" & lFIRSTPUPILROW), "You need to add missing forename", vbNullString, vc.sErrMsg)
+    End If
+
+    'Missing data check - Gender (note there is a separate validation for gender further on)
+    If Range(sVALCOL & "13").Value < vc.iNumberOfPupils Then
+        bFailsToValidate = bFailsToValidate Or HasEmptyOrInvalidCells(Range("D" & lFIRSTPUPILROW), "You need to add missing gender", vbNullString, vc.sErrMsg)
+    End If
+
+    'Invalid Gender check
+    bFailsToValidate = bFailsToValidate Or HasEmptyOrInvalidCells(Range("D" & lFIRSTPUPILROW), "Valid values are M (for a boy) and F (for a girl) in upper case,", " M F ", vc.sErrMsg)
+
+    'Missing data check - DoB
+    If Range(sVALCOL & "14").Value < vc.iNumberOfPupils Then
+        bFailsToValidate = bFailsToValidate Or HasEmptyOrInvalidCells(Range("E" & lFIRSTPUPILROW), "You need to add missing date of birth", vbNullString, vc.sErrMsg)
+    End If
+
+    'check for missing scores
+    bFailsToValidate = bFailsToValidate Or HasEmptyOrInvalidCells(Range("X" & lFIRSTPUPILROW), "You have missing score(s)", " 0 ", vc.sErrMsg)
+    
+    bFailsToValidate = bFailsToValidate Or HasInvalidUPNs(Range("C" & lFIRSTPUPILROW), vc.sErrMsg)
+    
+    DataIsInvalid = bFailsToValidate
+End Function
+
+Private Sub AttemptCSVOutput(vc As ValidationCheck)
+'Tries to write the file as a CSV to the location of a user's choice.  Does not allow modification of the filename as this is not permitted by the KS1 specification.
+    
+    Dim sFileName As String
+    Dim sDirName As String
+
+    If Len(vc.sURN) <> 0 Then
+        sFileName = "EYFSP_" & vc.sURN & "_19.csv"
+    Else
+        sFileName = "EYFSP_" & vc.sSchoolNum & "_19.csv"
+    End If
+
+    If GetFolder(sDirName) Then
+        ActiveWorkbook.SaveAs sDirName & sFileName, xlCSV
+        MsgBox "This file has been saved as " & sDirName & sFileName
+    Else
+        MsgBox "User cancelled save operation.  You will need to re-run the code in order to export the data."
+    End If
+    ActiveWorkbook.Close (False)
+End Sub
+
+Private Sub ProcessWorksheet(vc As ValidationCheck)
+Dim wbkNew As Excel.Workbook
+Dim wksNew As Excel.Worksheet
+Dim rngEndRow As Excel.Range
+    
+'format date in DOB column
+    Range("E21:E171").NumberFormat = "dd/mm/yyyy;@"
+    Range("A" & (lFIRSTPUPILROW - 2) & ":W" & lLASTPUPILROW).Copy
+
+    Set wbkNew = Workbooks.Add
+    Set wksNew = ActiveSheet
+    wksNew.Range("E1").Select
+    Selection.PasteSpecial xlPasteValuesAndNumberFormats
+    
+    Range("A1").Formula = "Sch Name"
+    Range("B1").Formula = "LEA No"
+    Range("C1").Formula = "Sch No"
+    Range("D1").Formula = "URN"
+    
+    Set rngEndRow = Range("E171").End(xlUp).Offset(0, -1)
+    Range("D2", rngEndRow).Formula = vc.sURN
+    
+    Set rngEndRow = rngEndRow.Offset(0, -1)
+    Range("C2", rngEndRow).Formula = vc.sSchoolNum
+    
+    Set rngEndRow = rngEndRow.Offset(0, -1)
+    Range("B2", rngEndRow).Formula = vc.sLEANo
+    
+    Set rngEndRow = rngEndRow.Offset(0, -1)
+    Range("A2", rngEndRow).Formula = vc.sSchoolName
+End Sub
+
+Public Sub ExportCSV()
+Dim sWarningMsg As String
+Dim vc As ValidationCheck
+    
+    vc.sErrMsg = vbNullString
+    vc.iNumberOfPupils = Range(sVALCOL & "10").Value
+    
+    If Range(sVALCOL & "15").Value < vc.iNumberOfPupils Then
+        sWarningMsg = "You have missing postcode(s).  Home postcodes are used to identify children in the most disadvantaged areas of the country." & vbNewLine & _
+            "If you are able to provide any of the missing codes, please select Cancel and resume data entry. " & _
+            "When you have entered the missing postcodes (or as many as possible), re-try exporting the data." & vbNewLine & _
+            "If you are unable to provide any missing postcodes, click OK to continue with the export."
+        If MsgBox(sWarningMsg, vbOKCancel + vbQuestion + vbDefaultButton2) = vbCancel Then
+            Exit Sub
+        End If
+    End If
+    
+    If DataIsInvalid(vc) Then
+        MsgBox vc.sErrMsg, vbOKOnly + vbExclamation, "Invalid or missing data has been located"
+        Exit Sub
+    End If
+    
+    UnprotectWB
+    ProcessWorksheet vc
+    AttemptCSVOutput vc
+    ProtectWB
+End Sub
+Attribute VB_Name = "basLibrary"
+Option Explicit
+
+Private Const WBPASSWORD As String = "conn0rth"
+
+Public Sub UnprotectWB()
+    ActiveSheet.Unprotect (WBPASSWORD)
+End Sub
+
+Public Sub ProtectWB()
+    ActiveSheet.Protect (WBPASSWORD)
+End Sub
+
+Public Sub Dev()
+    UnprotectWB
+    Range("U1:AQ1").EntireColumn.Hidden = False
+End Sub
+
+Public Sub PFR()
+    ProtectWB
+End Sub
+
+Public Function GetFolder(ByRef sFoldername As String) As Boolean
+'Replaces basSaveFileAs which was an old wrapper for comdlg32.  This wasn't pointer-safe under VBA7
+'and thus failed on 64-bit builds of Office.  Now that the functionality is provided by Office VBA we can
+'get rid of the old module and use this neater code.
+
+Dim objFileD As office.FileDialog
+Dim bRetVal As Boolean
+    bRetVal = False
+    Set objFileD = Application.FileDialog(msoFileDialogFolderPicker)
+    objFileD.Title = "Select directory for output file"
+    objFileD.AllowMultiSelect = False
+    If objFileD.Show Then
+        sFoldername = CStr(objFileD.SelectedItems(1)) & "\"
+        bRetVal = True
+    End If
+    GetFolder = bRetVal
+End Function
+
+Public Function RangeHasText(rngTest As Excel.Range) As Boolean
+Dim bRetVal As Boolean
+Dim vCell As Variant
+    bRetVal = False
+    For Each vCell In rngTest
+        If Len(vCell.Text) <> 0 Then
+            bRetVal = True
+            Exit For
+        End If
+    Next vCell
+    RangeHasText = bRetVal
+End Function
+
+Attribute VB_Name = "basValidation"
+Option Explicit
+
+Private Const CHECKVALUES As String = "ABCDEFGHJKLMNPQRTUVWXYZ"
+Private Const CHECKVALMOD As Long = 23
+
+Public Function TestUPN(sUPN As String) As Boolean
+Dim bRetVal As Boolean
+Dim lChecksum As Long
+Dim n As Long
+
+'Tests UPNs against check digit algorithm.
+'    Application.Volatile
+    
+    If Len(sUPN) = 13 Then
+        If InStr(Left$(CHECKVALUES, 10), Right$(sUPN, 1)) <> 0 Then  'Temporary UPN
+            sUPN = Left$(sUPN, 12) & CStr((InStr(Left$(CHECKVALUES, 10), Right$(sUPN, 1)) - 1))
+'            Debug.Print sUPN
+        End If
+        For n = 2 To 13
+            If Mid$(sUPN, n, 1) >= "0" And Mid$(sUPN, n, 1) <= "9" Then
+                lChecksum = lChecksum + CInt(Mid$(sUPN, n, 1)) * n
+            End If
+        Next n
+'        Debug.Print lChecksum, lChecksum Mod 23, Mid$(CHECKVALUES, (1 + lChecksum Mod CHECKVALMOD), 1)
+        bRetVal = Left$(sUPN, 1) = Mid$(CHECKVALUES, (1 + lChecksum Mod CHECKVALMOD), 1)
+    End If
+    TestUPN = bRetVal
+End Function
+
+Public Function HasInvalidUPNs(rngRef As Excel.Range, ByRef sErrMsg As String) As Boolean
+'Cycles through the UPNs in the workbook, testing them one at a time.  Returns TRUE if validation fails.
+'Ignores empty cells as this matches the behaviour of the original workbook.
+
+Dim bRetVal As Boolean
+Dim bFinished As Boolean
+Dim lRow As Long
+    bRetVal = False
+    bFinished = False
+    While Not bFinished
+        lRow = rngRef.Row
+        If Len(rngRef.Text) <> 0 Then
+            If TestUPN(rngRef.Text) = False Then
+                bFinished = True
+                bRetVal = True
+                sErrMsg = sErrMsg & "Invalid UPN - enter a valid UPN, starting on row " & lRow & vbNewLine
+            End If
+        End If
+        
+        Set rngRef = rngRef.Offset(1, 0)
+        If rngRef.Row > lLASTPUPILROW Then
+            bFinished = True
+        End If
+    Wend
+    HasInvalidUPNs = bRetVal
+End Function
+
+Public Function HasEmptyOrInvalidCells(rngRef As Excel.Range, _
+    sCellError As String, _
+    sCellCriteria As String, _
+    ByRef sErrMsg As String) As Boolean
+'The logic held in the previous workbook was: add the contents of columns 1 through 9 of the workbook together.
+'If any of these cells contained data, all of them should contain data (acceptably validated).
+
+Dim bRetVal As Boolean
+Dim bFinished As Boolean
+Dim lRow As Long
+    bRetVal = False
+    bFinished = False
+    While Not bFinished
+        lRow = rngRef.Row
+        If RangeHasText(Range("A" & lRow & ":W" & lRow)) Then
+            If (Len(sCellCriteria) = 0 And Len(rngRef.Text) = 0) Or _
+                (Len(sCellCriteria) <> 0 And InStr(sCellCriteria, " " & rngRef.Text & " ") = 0) Then  'Empty, or we have a restricted set of values and the value supplied isn't in the list
+                    bFinished = True            'Short-circuit the test as there's been a failure
+                    bRetVal = True
+                    sErrMsg = sErrMsg & sCellError & " starting on row " & lRow & vbNewLine
+            End If
+        End If
+        Set rngRef = rngRef.Offset(1, 0)
+        If rngRef.Row > lLASTPUPILROW Then
+            bFinished = True
+        End If
+    Wend
+    HasEmptyOrInvalidCells = bRetVal
+End Function
+
+Public Function IsCellEmpty(sCellRef As String, ByRef sContainer As String) As Boolean
+'Tests to see whether a cell is empty.  If so returns TRUE.
+'Otherwise, the second parameter is set to the text of the cell concerned.
+
+Dim bRetVal As Boolean
+    bRetVal = False
+    If IsEmpty(Range(sCellRef)) Then
+        bRetVal = True
+    Else
+        sContainer = Range(sCellRef).Value
+    End If
+    IsCellEmpty = bRetVal
+End Function
+
+
+
+' InQuest injected base64 decoded content
+' MEV]
+
+INQUEST-PP=macro

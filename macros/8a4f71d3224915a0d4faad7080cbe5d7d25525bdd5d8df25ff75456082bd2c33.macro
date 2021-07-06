@@ -1,0 +1,677 @@
+Attribute VB_Name = "Actie"
+Public Projecten As Collection
+Public rangeSom As Range
+
+Public Sub PlanningOpmaken()
+    Application.ScreenUpdating = False
+    On Error GoTo FoutAfhandeling
+    
+    With ThisWorkbook.Sheets("Projecten")
+        Dim gebruiker As String
+        gebruiker = UCase(Environ("username"))
+        
+        Dim records As ADODB.Recordset
+        Set records = Query.ProductiePlanningOphalen(gebruiker)
+        
+        Set Projecten = New Collection
+        Dim project As Collection
+        Dim fase As Collection
+        
+        Dim datumStockOpWerven As String
+        datumStockOpWerven = .Cells(1, 15).Value
+        
+        If datumStockOpWerven <> "" Then
+            datumStockOpWerven = CStr(Month(datumStockOpWerven)) + "/" + CStr(Day(datumStockOpWerven)) + "/" + CStr(Year(datumStockOpWerven))
+        Else
+            datumStockOpWerven = CStr(Month(Now)) + "/" + CStr(Day(Now)) + "/" + CStr(Year(Now))
+        End If
+        
+        Dim vorigProject As String
+        Dim rij As Integer: rij = 2
+        Do While Not records.EOF
+            If vorigProject <> records.Fields(0).Value Then
+                If vorigProject <> "" Then
+                    Projecten.Item(Projecten.Count).Add rij - 1
+                End If
+                Set project = New Collection
+                project.Add records.Fields(0).Value
+                Set fase = New Collection
+                fase.Add records.Fields(2).Value
+                project.Add fase
+                project.Add rij
+                Projecten.Add project
+            Else
+                Projecten.Item(Projecten.Count).Item(2).Add records.Fields(2).Value
+            End If
+            
+            .Cells(rij, 1) = records.Fields(0).Value
+            .Cells(rij, 2) = records.Fields(1).Value
+            .Cells(rij, 3) = records.Fields(2).Value
+            If Year(CDate(records.Fields(3).Value)) > 1900 Then
+                .Cells(rij, 4) = records.Fields(3).Value
+            End If
+            .Cells(rij, 5) = Query.StatusToString(records.Fields(4).Value)
+            .Cells(rij, 6) = records.Fields(5).Value
+            
+            vorigProject = records.Fields(0).Value
+            
+            records.MoveNext
+            rij = rij + 1
+        Loop
+        
+        If Projecten.Count > 0 Then
+            Projecten.Item(Projecten.Count).Add rij - 1
+        End If
+        
+        Dim index As Integer
+        For index = 1 To Projecten.Count
+            Range(.Cells(Projecten.Item(index).Item(3), 8), .Cells(Projecten.Item(index).Item(4), 8)).Merge
+            ProjectpostenInladen gebruiker, index, Projecten.Item(index).Item(2), datumStockOpWerven
+            .Cells(Projecten.Item(index).Item(3), 8) = "=" & Projecten.Item(index).Item(1) & "!" & rangeSom.Address
+        Next
+        
+        .Select
+    End With
+    Application.ScreenUpdating = True
+    MsgBox "Ophalen van data voltooid.", vbOKOnly + vbInformation, "Voltooid"
+    Exit Sub
+
+    
+FoutAfhandeling:
+    MsgBox "Er is een fout opgetreden:" & vbNewLine & vbNewLine & Error(Err), vbOKOnly + vbInformation, "Error"
+    Application.ScreenUpdating = True
+    Exit Sub
+End Sub
+
+Public Sub ProjectpostenInladen(gebruiker As String, projectIndex As Integer, projectFasen As Collection, datumStockOpWerven As String)
+    Dim projectNr As String: projectNr = Projecten.Item(projectIndex).Item(1)
+    Dim projetFasen As Collection: Set projetFasen = Projecten.Item(projectIndex).Item(2)
+    Dim fasenString As String: fasenString = fasenToString(projectFasen)
+    Dim projectRij As Integer: projectRij = Projecten.Item(projectIndex).Item(3)
+    
+    ThisWorkbook.Sheets.Add after:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+    With ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+        .Name = projectNr
+        HoofdingAanmaken projectNr
+        
+        Dim records As ADODB.Recordset
+        Set records = Query.ProjectpostenOphalen(projectNr, gebruiker, fasenString, datumStockOpWerven)
+        
+        Dim verantwIo As String
+        Dim verantwLo As String
+        Dim verantwPo As String
+        Dim faseOpDoc As String
+        Dim ioOpDoc As String
+        Dim verantw As String
+        Dim rijGebruik As Boolean
+        Dim rij As Long: rij = 2
+        Do While Not records.EOF
+            rijGebruik = False
+            verantwIo = ""
+            verantwLo = ""
+            verantwPo = ""
+            verantw = ""
+            faseOpDoc = ""
+            ioOpDoc = ""
+            Dim doc As String: doc = records.Fields(3).Value
+            If IsNumeric(doc) And UCase(Left(doc, 4)) <> "IO54" And UCase(Left(doc, 4)) <> "LO52" And UCase(Left(doc, 4)) <> "PO54" And UCase(Left(doc, 4)) <> "TO53" Then
+                ioOpDoc = Query.IoFactuurOpLijn(doc, records.Fields(7).Value)
+                If ioOpDoc <> "" Then
+                    faseOpDoc = FaseVanInkooporder(ioOpDoc)
+                    verantw = VerantwoordelijkeIo(ioOpDoc)
+                    verantwIo = verantw
+                End If
+                
+                ioOpDoc = Query.IoFactuurOpDocument(doc)
+                If ioOpDoc <> "" Then
+                    If faseOpDoc = "" Then
+                        faseOpDoc = FaseVanInkooporder(ioOpDoc)
+                    End If
+                    If verantw = "" Then
+                        verantw = VerantwoordelijkeIo(ioOpDoc)
+                        verantwIo = verantw
+                    End If
+                End If
+                
+                ioOpDoc = Query.IoCreditnotaOpLijn(doc, records.Fields(7).Value)
+                If ioOpDoc <> "" Then
+                    If faseOpDoc = "" Then
+                        faseOpDoc = FaseVanInkooporder(ioOpDoc)
+                    End If
+                    If verantw = "" Then
+                        verantw = VerantwoordelijkeIo(ioOpDoc)
+                        verantwIo = verantw
+                    End If
+                End If
+                
+                ioOpDoc = Query.IoCreditnotaOpDocument(doc)
+                If ioOpDoc <> "" Then
+                    If faseOpDoc = "" Then
+                        faseOpDoc = FaseVanInkooporder(ioOpDoc)
+                    End If
+                    If verantw = "" Then
+                        verantw = VerantwoordelijkeIo(ioOpDoc)
+                        verantwIo = verantw
+                    End If
+                End If
+                
+            ElseIf UCase(Left(doc, 4)) = "IO54" Then
+                verantw = Query.VerantwoordelijkeIo(doc)
+                verantwIo = verantw
+                faseOpDoc = Query.FaseVanInkooporder(doc)
+            ElseIf UCase(Left(doc, 4)) = "LO52" Then
+                verantw = Query.VerantwoordelijkeLo(doc)
+                verantwLo = verantw
+                faseOpDoc = Query.FaseVanLogistiekorder(doc)
+            ElseIf UCase(Left(doc, 4)) = "PO54" Then
+                verantw = Query.VerantwoordelijkePo(doc)
+                verantwPo = verantw
+                faseOpDoc = Query.FaseVanProductieorder(doc)
+            ElseIf UCase(Left(doc, 4)) = "TO53" Then
+                verantw = Query.VerantwoordelijkeTo(doc)
+                verantwLo = verantw
+                faseOpDoc = Query.FaseVanTransportorder(doc)
+            End If
+            
+            If verantw = gebruiker Or verantw = "" Or verantw = "TVB" Or verantw = "MDK" Or verantw = "BDR" Then
+                rijGebruik = True
+                .Cells(rij, 1) = records.Fields(0).Value
+                If Year(CDate(records.Fields(1).Value)) > 1900 Then
+                    .Cells(rij, 2) = records.Fields(1).Value
+                End If
+                .Cells(rij, 3) = Query.EntryTypeToString(records.Fields(2).Value)
+                .Cells(rij, 4) = records.Fields(3).Value
+                .Cells(rij, 5) = verantwIo
+                .Cells(rij, 6) = verantwLo
+                .Cells(rij, 7) = verantwPo
+                .Cells(rij, 8) = records.Fields(4).Value
+                If records.Fields(5).Value = "" And faseOpDoc <> "" Then
+                    .Cells(rij, 9) = faseOpDoc
+                Else
+                    .Cells(rij, 9) = records.Fields(5).Value
+                End If
+                .Cells(rij, 10) = Query.TypeToString(records.Fields(6).Value)
+                .Cells(rij, 11) = records.Fields(7).Value
+                .Cells(rij, 12) = records.Fields(8).Value
+                .Cells(rij, 13) = records.Fields(9).Value
+                .Cells(rij, 14) = Query.GeneralCostTypeToString(records.Fields(10).Value)
+                .Cells(rij, 15) = records.Fields(11).Value
+                .Cells(rij, 16) = records.Fields(12).Value
+                .Cells(rij, 17) = records.Fields(13).Value
+                .Cells(rij, 18) = records.Fields(14).Value
+                .Cells(rij, 19) = records.Fields(15).Value
+                .Cells(rij, 20) = records.Fields(16).Value
+                .Cells(rij, 21) = records.Fields(17).Value
+                .Cells(rij, 22) = records.Fields(18).Value
+                .Cells(rij, 23) = records.Fields(19).Value
+                .Cells(rij, 24) = records.Fields(20).Value
+                .Cells(rij, 25) = records.Fields(21).Value
+                .Cells(rij, 26) = records.Fields(22).Value
+                .Cells(rij, 27) = records.Fields(23).Value
+                .Cells(rij, 28) = records.Fields(24).Value
+                .Cells(rij, 29) = Query.LedgerEntryTypeToString(records.Fields(25).Value)
+                .Cells(rij, 30) = records.Fields(26).Value
+                .Cells(rij, 31) = records.Fields(27).Value
+            End If
+            
+            records.MoveNext
+            If rijGebruik Then
+                rij = rij + 1
+            End If
+        Loop
+        Set rangeSom = .Cells(rij + 5, 21)
+        rangeSom = "=SUM(" & .Cells(2, 21).Address & ":" & .Cells(rij, 21).Address & ")"
+        Rows(rangeSom.Row).Interior.Color = 65535
+        
+        Cells.EntireColumn.AutoFit
+    End With
+    Exit Sub
+End Sub
+
+Private Function fasenToString(projectFasen As Collection) As String
+    fasenToString = "'',"
+    Dim index As Integer
+    For index = 1 To projectFasen.Count
+        fasenToString = fasenToString + "'" + projectFasen.Item(index) + "'"
+        If index < projectFasen.Count Then
+            fasenToString = fasenToString + ","
+        End If
+    Next
+End Function
+
+Private Sub HoofdingAanmaken(blad As String)
+    With Sheets(blad)
+        .Cells(1, 1) = "Volgnummer"
+        .Cells(1, 2) = "Boekingsdatum"
+        .Cells(1, 3) = "Boekingssoort"
+        .Cells(1, 4) = "Documentnr."
+        .Cells(1, 5) = "Verantwoordelijke IO"
+        .Cells(1, 6) = "Verantwoordelijke LO"
+        .Cells(1, 7) = "Verantwoordelijke PO"
+        .Cells(1, 8) = "Projectnr."
+        .Cells(1, 9) = "Fase Code"
+        .Cells(1, 10) = "Soort"
+        .Cells(1, 11) = "Nr."
+        .Cells(1, 12) = "Omschrijving"
+        .Cells(1, 13) = "Kostenplaats Code"
+        .Cells(1, 14) = "Algemeen Kost Type"
+        .Cells(1, 15) = "Vestiging"
+        .Cells(1, 16) = "Werksoort"
+        .Cells(1, 17) = "Eenheidscode"
+        .Cells(1, 18) = "Aantal"
+        .Cells(1, 19) = "Kostprijs"
+        .Cells(1, 20) = "Kostprijs (LV)"
+        .Cells(1, 21) = "Totale kostprijs"
+        .Cells(1, 22) = "Totale kostprijs (LV)"
+        .Cells(1, 23) = "Eenheidsprijs"
+        .Cells(1, 24) = "Regelbedrag"
+        .Cells(1, 25) = "Regelkortingbedrag"
+        .Cells(1, 26) = "Regelkorting %"
+        .Cells(1, 27) = "Afdeling"
+        .Cells(1, 28) = "Bewerkingsplaats"
+        .Cells(1, 29) = "Boekingssoort grootboek"
+        .Cells(1, 30) = "Postnr."
+        .Cells(1, 31) = "Bedrijfsnaam"
+        
+        With Range(.Cells(1, 1), .Cells(1, 31))
+            .Interior.Color = 12566463
+            .Font.Bold = True
+        End With
+    End With
+End Sub
+Attribute VB_Name = "Query"
+'Sub OpmaakQuery()
+'    Dim result As ADODB.Recordset
+'    Dim SQLCommando As String
+'
+'
+'    SQLCommando = "SELECT [kolom1], [kolom2], [kolom3] " & _
+'                  "FROM [" & Company & "Tabel] " & _
+'                  "WHERE ([kolom] = 'voorwaarde') " & _
+'                  "AND ([kolom] = 'voorwaarde')"
+'
+'    Set result = executeQuery(SQLCommando)
+'
+'
+'    Dim rij As Integer: rij = 1
+'
+'    Do While Not result.EOF
+'        Sheets(1).Cells(rij, 1) = result.Fields(0).Value
+'        Sheets(1).Cells(rij, 2) = result.Fields(1).Value
+'        Sheets(1).Cells(rij, 3) = result.Fields(2).Value
+'
+'        result.MoveNext
+'        rij = rij + 1
+'    Loop
+'End Sub
+
+'==================================================================================
+
+Public Function ProductiePlanningOphalen(gebruiker As String) As ADODB.Recordset
+    Dim SQLCommando As String
+    
+    SQLCommando = "SELECT J.[No_], J.[Description], JP.[Phase Code], JP.[Shipment date], JP.[Status], JP.[Production Assistent] " & _
+                  "FROM [Job] J, [Job Phases] JP " & _
+                  "WHERE (J.[No_] = JP.[Job No_]) " & _
+                  "AND (JP.[Production Assistent] = '" & gebruiker & "') " & _
+                  "AND (JP.[Status] IN ('2','3','4','5')) " & _
+                  "AND (JP.[GVU Date] > '01/01/1753') " & _
+                  "AND (JP.[Shipment date] > '01/01/1753') " & _
+                  "AND (J.[Status Beddeleem] = 2) " & _
+                  "ORDER BY J.[No_], JP.[Phase Code]"
+    
+    Set ProductiePlanningOphalen = executeQuery(SQLCommando)
+End Function
+
+Public Function ProjectpostenOphalen(projectNummer As String, gebruiker As String, fasenCollectie As String, datumStockOpWerven As String) As ADODB.Recordset
+    Dim SQLCommando As String
+    
+    SQLCommando = "SELECT JLE.[Entry No_], JLE.[Posting Date], JLE.[Entry Type], JLE.[Document No_], JLE.[Job No_], JLE.[Phase Code], JLE.[Type], JLE.[No_], JLE.[Description], JLE.[Global Dimension 1 Code], JLE.[General Cost Type], JLE.[Location Code], JLE.[Work Type], JLE.[Unit of Measure Code], JLE.[Quantity], JLE.[Unit Cost], JLE.[Unit Cost (LCY)], JLE.[Total Cost], JLE.[Total Cost (LCY)], JLE.[Unit Price], JLE.[Line Amount], JLE.[Line Discount Amount], JLE.[Line Discount _], JLE.[Work Center], JLE.[Machine Center], JLE.[Ledger Entry Type], JLE.[Ledger Entry No_], JLE.[Company Name] " & _
+                  "FROM [" & Company & "Job Ledger Entry] JLE " & _
+                  "WHERE (JLE.[Job No_] = '" & projectNummer & "') " & _
+                  "AND (JLE.[Phase Code] IN (" & fasenCollectie & ")) " & _
+                  "AND (JLE.[Entry Type] = 0) " & _
+                  "AND (JLE.[Global Dimension 1 Code] NOT IN ('TEK','JBP','JBO','ZEROJBO','DIVERSEN','TRANSPORTVERPAKKING','TRANSPORT','TOA','MONTAGE')) " & _
+                  "AND (JLE.[General Cost Type] = 0) " & _
+                  "AND (JLE.[Posting Date] <= '" + datumStockOpWerven + "') " & _
+                  "ORDER BY JLE.[Posting Date] ASC"
+    
+    Set ProjectpostenOphalen = executeQuery(SQLCommando)
+End Function
+
+Public Function VerantwoordelijkeIoFactuur(inkoopfactuur As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT AHA.[User Name], PH.[Created by] " & _
+                  "FROM [" & Company & "Purch_ Inv_ Header] PIH, [" & Company & "Purchase Header] PH, [" & Company & "Approval Header Assignment] AHA " & _
+                  "WHERE (PIH.[Linked to Purchase Header No_] = PH.[No_]) " & _
+                  "AND (PIH.[No_] = AHA.[Document No_]) " & _
+                  "AND (PIH.[No_] = '" & inkoopfactuur & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        If result.Fields(1) <> "" Then
+            VerantwoordelijkeIoFactuur = result.Fields(1).Value
+        Else
+            If result.Fields(0).Value <> "" Then
+                VerantwoordelijkeIoFactuur = result.Fields(0).Value
+            End If
+        End If
+    End If
+End Function
+
+Public Function VerantwoordelijkeIo(inkooporder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Created by] " & _
+                  "FROM [" & Company & "Purchase Header] " & _
+                  "WHERE ([No_] = '" & inkooporder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        VerantwoordelijkeIo = result.Fields(0).Value
+    End If
+End Function
+
+Public Function VerantwoordelijkeLo(logistiekorder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Created by] " & _
+                  "FROM [" & Company & "Logistic Order Header] " & _
+                  "WHERE ([No_] = '" & logistiekorder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        VerantwoordelijkeLo = result.Fields(0).Value
+    End If
+End Function
+
+Public Function VerantwoordelijkePo(productieorder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Created by] " & _
+                  "FROM [" & Company & "Production Order] " & _
+                  "WHERE ([No_] = '" & productieorder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        VerantwoordelijkePo = result.Fields(0).Value
+        If Left(VerantwoordelijkePo, 11) = "BEDDELEEMG3" Then
+            VerantwoordelijkePo = Mid(VerantwoordelijkePo, 13)
+        End If
+    End If
+End Function
+
+Public Function VerantwoordelijkeTo(transportorder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Created by] " & _
+                  "FROM [" & Company & "Transport Order Header] " & _
+                  "WHERE ([No_] = '" & transportorder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        VerantwoordelijkeTo = result.Fields(0).Value
+    End If
+End Function
+'''
+Public Function IoCreditnotaOpLijn(creditnotanummer As String, regelnummer As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+    
+    If Not IsNumeric(creditnotanummer) Then Exit Function
+    If Not IsNumeric(regelnummer) Then Exit Function
+
+    SQLCommando = "SELECT [Purchase Header No_] " & _
+                  "FROM [" & Company & "Purch_ Cr_ Memo Line] " & _
+                  "WHERE ([Document No_] = '" & creditnotanummer & "') " & _
+                  "AND ([Line No_] = '" & regelnummer & "')"
+ 
+    Set result = executeQuery(SQLCommando)
+    
+    If Not result.EOF Then
+        IoCreditnotaOpLijn = result.Fields(0).Value
+    End If
+End Function
+
+Public Function IoCreditnotaOpDocument(creditnotanummer As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Linked to Purchase Header No_] " & _
+                  "FROM [" & Company & "Purch_ Inv_ Header] " & _
+                  "WHERE ([No_] = '" & creditnotanummer & "')"
+ 
+    Set result = executeQuery(SQLCommando)
+    
+    If Not result.EOF Then
+        IoCreditnotaOpDocument = result.Fields(0).Value
+    End If
+End Function
+
+Public Function IoFactuurOpLijn(factuurnummer As String, regelnummer As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+    
+    If Not IsNumeric(factuurnummer) Then Exit Function
+    If Not IsNumeric(regelnummer) Then Exit Function
+
+    SQLCommando = "SELECT [Purchase Header No_] " & _
+                  "FROM [" & Company & "Purch_ Inv_ Line] " & _
+                  "WHERE ([Document No_] = '" & factuurnummer & "') " & _
+                  "AND ([Line No_] = '" & regelnummer & "')"
+ 
+    Set result = executeQuery(SQLCommando)
+    
+    If Not result.EOF Then
+        IoFactuurOpLijn = result.Fields(0).Value
+    End If
+End Function
+
+Public Function IoFactuurOpDocument(factuurnummer As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Linked to Purchase Header No_] " & _
+                  "FROM [" & Company & "Purch_ Cr_ Memo Hdr_] " & _
+                  "WHERE ([No_] = '" & factuurnummer & "')"
+ 
+    Set result = executeQuery(SQLCommando)
+    
+    If Not result.EOF Then
+        IoFactuurOpDocument = result.Fields(0).Value
+    End If
+End Function
+
+Public Function FaseVanInkooporder(inkooporder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Phase] " & _
+                  "FROM [" & Company & "Purchase Header] " & _
+                  "WHERE ([No_] = '" & inkooporder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        FaseVanInkooporder = result.Fields(0).Value
+    End If
+End Function
+
+Public Function FaseVanProductieorder(productieorder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Phase Code] " & _
+                  "FROM [" & Company & "Production Order] " & _
+                  "WHERE ([No_] = '" & productieorder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        FaseVanProductieorder = result.Fields(0).Value
+    End If
+End Function
+
+Public Function FaseVanLogistiekorder(logistiekorder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Phase Code] " & _
+                  "FROM [" & Company & "Logistic Order Header] " & _
+                  "WHERE ([No_] = '" & logistiekorder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        FaseVanLogistiekorder = result.Fields(0).Value
+    End If
+End Function
+
+Public Function FaseVanTransportorder(transportorder As String) As String
+    Dim result As ADODB.Recordset
+    Dim SQLCommando As String
+
+    SQLCommando = "SELECT [Phase Code] " & _
+                  "FROM [" & Company & "Transport Order Header] " & _
+                  "WHERE ([No_] = '" & transportorder & "')"
+
+    Set result = executeQuery(SQLCommando)
+
+    If Not result.EOF Then
+        FaseVanTransportorder = result.Fields(0).Value
+    End If
+End Function
+
+
+'---------------------------------------------------------------------------------------------------------------------
+
+Public Function StatusToString(index As Integer) As String
+    Select Case index
+        Case 0: StatusToString = "ORDER"
+        Case 1: StatusToString = "WOG"
+        Case 2: StatusToString = "HOLD"
+        Case 3: StatusToString = "GVU"
+        Case 4: StatusToString = "GVU+"
+        Case 5: StatusToString = "KLAAR"
+        Case 6: StatusToString = "MON"
+        Case 7: StatusToString = "AF"
+        Case 8: StatusToString = "ANUL"
+    End Select
+End Function
+
+Public Function EntryTypeToString(index As Integer) As String
+    Select Case index
+        Case 0: EntryTypeToString = "Gebruik"
+        Case 1: EntryTypeToString = "Verkoop"
+    End Select
+End Function
+
+Public Function TypeToString(index As Integer) As String
+    Select Case index
+        Case 0: TypeToString = "Resource"
+        Case 1: TypeToString = "Artikel"
+        Case 2: TypeToString = "Grootboekrekening"
+        Case 3: TypeToString = "Post"
+    End Select
+End Function
+
+Public Function GeneralCostTypeToString(index As Integer) As String
+    Select Case index
+        Case 0: GeneralCostTypeToString = "Eigen Werk"
+        Case 1: GeneralCostTypeToString = "Zuivere Onderaanneming"
+        Case 2: GeneralCostTypeToString = "COT"
+    End Select
+End Function
+
+Public Function LedgerEntryTypeToString(index As Integer) As String
+    Select Case index
+        Case 0: LedgerEntryTypeToString = ""
+        Case 1: LedgerEntryTypeToString = "Resource"
+        Case 2: LedgerEntryTypeToString = "Artikel"
+        Case 3: LedgerEntryTypeToString = "Grootboekrekening"
+    End Select
+End Function
+
+
+
+'=====================================================================
+Attribute VB_Name = "SQL_code"
+Option Explicit
+Public isSQLok As Boolean
+Public cnVerbindingNavision As ADODB.Connection
+
+Public Const SqlServer = "NAV01"
+Public Const SqlDb = "NAV2016"
+Public Const SqlUser = "astena"
+Public Const SqlPassword = "anetsa"
+Public Const SqlTable = "NAV Data Exchange"
+Public Const Company = "Beddeleem NV$"
+
+'Public Const Company = "Beddeleem NV$"
+'Public Const SqlDb = "NAV2009" '"TESTCONV2"
+Public Function executeQuery(SQLCommando As String) As ADODB.Recordset
+    Dim DATACONNNAVISION As String
+    Dim rstest As ADODB.Recordset
+
+    Set cnVerbindingNavision = New ADODB.Connection
+    
+    isSQLok = True
+    
+    DATACONNNAVISION = "driver={SQL Server};server=" + SQL_code.SqlServer + ";uid=" + SQL_code.SqlUser + ";pwd=" + SQL_code.SqlPassword + ";database=" & SQL_code.SqlDb & ";persist security info=False;"
+    
+    On Error GoTo NoConn
+    cnVerbindingNavision.CommandTimeout = 5
+    cnVerbindingNavision.ConnectionString = DATACONNNAVISION
+    cnVerbindingNavision.Open
+    
+    Set rstest = cnVerbindingNavision.Execute(SQLCommando)
+   
+    Set executeQuery = rstest
+    Exit Function
+    
+NoConn:
+    If Err.Number = -2147217871 Then
+        MsgBox ("De tabel is geblokkeerd door Navision. Gelieve later opnieuw te proberen.")
+        'zetVlagAf
+        GoTo ScreenUpdatingAanZetten
+    ElseIf Err.Number = -2147217900 Then
+        MsgBox ("Tabelstructuur is gewijzigd in Navision. Gelieve Excel opnieuw te starten." & vbNewLine & vbNewLine & Err.Description)
+        'zetVlagAf
+        GoTo ScreenUpdatingAanZetten
+    Else
+        MsgBox (Err.Description & " Code = " & Err.Number)
+        'zetVlagAf
+        GoTo ScreenUpdatingAanZetten
+    End If
+    isSQLok = False
+    Exit Function
+    
+    
+ScreenUpdatingAanZetten:
+    Application.ScreenUpdating = False
+    End
+End Function
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' zu)u
+
+INQUEST-PP=macro

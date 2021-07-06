@@ -1,0 +1,498 @@
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'
+' This is a part of the MentorGraphics-MGCPCB OLE Automation server samples.
+' Copyright (C) 2004 Mentor Graphics Software, Inc.
+' All rights reserved.
+'
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Option Explicit
+
+
+' global declarations
+Dim WithEvents pcbApp As MGCPCB.Application
+Attribute pcbApp.VB_VarHelpID = -1
+Dim WithEvents pcbDoc As MGCPCB.Document
+Attribute pcbDoc.VB_VarHelpID = -1
+
+Dim WithEvents excelAppEvents As Excel.Application
+Attribute excelAppEvents.VB_VarHelpID = -1
+
+Dim bReportIsBeingUpdated As Boolean
+Dim bSelectionsAreBeingUpdated As Boolean
+
+Dim motionLastX As Double
+Dim motionLastY As Double
+Dim motionTagID As Long
+
+Private Function licenseDoc(docObj As MGCPCB.Document) As Integer
+' =======================================================================
+' Retrieve a licence for the document
+' =======================================================================
+On Error GoTo exit_with_error
+Dim retState As Integer
+
+Dim licenseServer As Object
+Dim key As Long
+Dim licenseToken As Long
+Dim outErrMess As String
+
+If (docObj Is Nothing) Then GoTo end_of_function
+
+' Ask the document for a key
+key = docObj.Validate(0)
+
+' Get license server
+On Error GoTo err_create_serverobj
+Set licenseServer = CreateObject("MGCPCBAutomationLicensing.Application")
+If (licenseServer Is Nothing) Then GoTo err_create_serverobj
+On Error GoTo exit_with_error
+
+
+' Ask the license server for the license token
+licenseToken = licenseServer.GetToken(key)
+
+
+' Validate the document with the license token
+On Error GoTo err_validate
+Dim lRetval As Long
+lRetval = docObj.Validate(licenseToken)
+
+On Error GoTo exit_with_error
+
+retState = 1
+
+end_of_function:
+    ' release licence server
+    Set licenseServer = Nothing
+    licenseDoc = retState
+
+Exit Function
+
+show_error:
+   Dim ioptions As Long
+   ioptions = vbDefaultButton1 + vbApplicationModal + vbCritical + vbOKOnly
+   MsgBox outErrMess, ioptions, "Retrieving license for document"
+   GoTo end_of_function
+
+exit_with_error:
+    outErrMess = "** Error ** " + Error$
+    retState = -1
+    GoTo show_error
+
+err_create_serverobj:
+   outErrMess = "** Error ** Could not create license server object"
+   retState = -2
+   GoTo show_error
+
+err_validate:
+   outErrMess = "** Error ** Failed to validate document object"
+   outErrMess = outErrMess + vbCrLf + "    License token : " + Trim(str(licenseToken))
+   outErrMess = outErrMess + vbCrLf + "    Document key  : " + Trim(str(key))
+   retState = -3
+   GoTo show_error
+
+End Function
+
+' connects to MGCPCB
+Private Sub Connect()
+    Dim retVal As Integer
+
+    On Error GoTo OnErrorGetObject
+    Set pcbApp = GetObject(, "MGCPCB.Application")
+    Set pcbDoc = pcbApp.ActiveDocument
+    
+    ' make sure the doc is licensed
+    retVal = licenseDoc(pcbDoc)
+    
+    If (retVal <> 1) Then Set pcbDoc = Nothing
+    
+Exit Sub
+
+OnErrorGetObject:
+    MsgBox "MGCPCB needs to be running!", , "Automation Demonstration"
+End Sub
+
+Sub motionGraphics_define(pntX As Double, pntY As Double, deltaX As Double, deltaY As Double)
+' =======================================================================
+' Show a rectangle around a point
+' =======================================================================
+On Error GoTo exit_with_error
+
+Dim v As MGCPCB.View
+Dim deltaX2 As Double
+Dim deltaY2 As Double
+Dim tagID As Long
+
+' delete previous graphics
+Call motionGraphics_delete
+
+' doc must exist
+If (pcbDoc Is Nothing) Then Exit Sub
+
+' define the rectangle
+Set v = pcbDoc.ActiveView
+
+With v
+
+' draw the surrounding rectangle
+deltaX2 = deltaX / 2
+deltaY2 = deltaY / 2
+
+motionTagID = .MotionGfxGetTag
+Call .MotionGfxPutRect(pntX - deltaX2, pntY - deltaY2, _
+                       epcbMotionGfxPointStatic, _
+                       pntX + deltaX2, _
+                       pntY + deltaY2, _
+                       epcbMotionGfxPointStatic, motionTagID)
+
+Call .MotionGfxDrawAnyUndrawn
+
+motionLastX = pntX
+motionLastY = pntY
+
+end_of_function:
+   
+
+Exit Sub
+
+
+exit_with_error:
+   GoTo end_of_function
+
+End With
+  
+End Sub
+
+Sub motionGraphics_delete()
+  On Error GoTo exit_with_error
+  If pcbDoc Is Nothing Then Exit Sub
+  If (motionTagID < 0) Then Exit Sub
+  
+  Call pcbDoc.ActiveView.MotionGfxDeleteByTag(motionTagID)
+  
+  motionTagID = -1
+  motionLastX = -1234
+  motionLastY = -999
+  
+  Exit Sub
+  
+exit_with_error:
+  
+End Sub
+
+Private Sub Disconnect()
+    ' disconnects from MGCPCB.
+    
+    Call motionGraphics_delete
+    
+    Set pcbDoc = Nothing
+    Set pcbApp = Nothing ' Disconnect from MGCPCB server
+End Sub
+
+Public Sub RefreshBoardValues()
+' ==========================================================
+' refreshes the BoardOutline values in the Spreadsheet
+' ==========================================================
+    Dim currentRow As Long
+
+    ' empty existing sheet contents
+    Application.ActiveSheet.Range("A1:C1000").Clear
+    
+    ' If the doc is not ok, exit procedure
+    If pcbDoc Is Nothing Then Exit Sub
+
+    currentRow = 1
+    
+    On Error Resume Next
+    
+    ' Lock server (to speed up OLE access)
+    If pcbApp.LockServer = True Then
+        bReportIsBeingUpdated = True
+                
+        ' Output header
+        With Range("A" & currentRow)
+            .FormulaR1C1 = "X"
+            .Font.Bold = True
+            .Font.Italic = True
+            .HorizontalAlignment = xlHAlignCenter
+        End With
+        With Range("B" & currentRow)
+            .FormulaR1C1 = "Y"
+            .Font.Bold = True
+            .Font.Italic = True
+            .HorizontalAlignment = xlHAlignCenter
+        End With
+        With Range("C" & currentRow)
+            .FormulaR1C1 = "Radius"
+            .Font.Bold = True
+            .Font.Italic = True
+            .HorizontalAlignment = xlHAlignCenter
+        End With
+        currentRow = currentRow + 1
+        
+        ' get board outline
+        Dim outline
+        Set outline = pcbDoc.BoardOutline
+        ' get board outline coords
+        Dim pnts
+        pnts = outline.Geometry.PointsArray
+        ' put values in spreadsheet
+        Dim i
+        For i = 0 To UBound(pnts, 2)
+            Range("A" & currentRow).FormulaR1C1 = pnts(0, i)
+            Range("B" & currentRow).FormulaR1C1 = pnts(1, i)
+            Range("C" & currentRow).FormulaR1C1 = pnts(2, i)
+            currentRow = currentRow + 1
+        Next
+        
+        bReportIsBeingUpdated = False
+        
+        ' Unlock server
+        pcbApp.UnlockServer
+    End If
+End Sub
+
+' refreshes values displayed in Sheet1
+Public Sub RefreshValues()
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    RefreshBoardValues
+End Sub
+
+Sub Main()
+    ' ======================================================
+    ' Start up routine
+    ' ======================================================
+    ' clean up previous
+    Call Disconnect
+    
+    motionLastX = -1234
+    motionLastY = -999
+    motionTagID = -1
+    
+    ' define an event handler for the excel application
+    Set excelAppEvents = Application
+    
+    ' clear the grid
+    bReportIsBeingUpdated = True
+    RefreshBoardValues
+    bReportIsBeingUpdated = False
+    
+    ' set up PCB client
+    bReportIsBeingUpdated = True
+    bSelectionsAreBeingUpdated = False
+    Sheets("Sheet1").Select ' Make Sheet1 visible
+    Connect ' Connect to MGCPCB (we use the global pcbApp Object variable)
+    RefreshValues ' Refresh sheet values
+    bReportIsBeingUpdated = False
+    
+End Sub
+
+Private Sub excelAppEvents_WorkbookBeforeClose(ByVal Wb As Workbook, Cancel As Boolean)
+   Call Disconnect
+End Sub
+
+Private Sub pcbApp_OpenDocument()
+    ' ============================================
+    ' called when a document is opened in MGCPCB
+    ' ===========================================
+    Dim retVal As Integer
+    
+    Call motionGraphics_delete
+    
+    Set pcbDoc = pcbApp.ActiveDocument
+    
+    ' make sure the doc is licensed
+    retVal = licenseDoc(pcbDoc)
+    If (retVal <> 1) Then pcbDoc = Nothing
+    
+    
+    bReportIsBeingUpdated = True
+    RefreshBoardValues
+    bReportIsBeingUpdated = False
+End Sub
+
+' called when user quits MGCPCB
+Private Sub pcbApp_Quit()
+    Disconnect
+End Sub
+
+Private Sub pcbDoc_OnChange(ByVal eType As MGCPCB.EPcbOnChangeType)
+    ' expedition document has been changed, update the spreadsheet
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    
+    ' exit if we are updating the worksheet ourselves
+    If bReportIsBeingUpdated = True Then Exit Sub
+    If bSelectionsAreBeingUpdated = True Then Exit Sub
+    
+    ' if a net was changed
+    If eType And epcbOnChangeNet Then
+        bSelectionsAreBeingUpdated = True
+        ' find if any nets were changed
+        If pcbApp.LockServer Then
+            RefreshBoardValues
+            pcbApp.UnlockServer
+        End If
+        bSelectionsAreBeingUpdated = False
+    End If
+End Sub
+
+Private Function pcbDoc_OnPreClose() As Boolean
+  Call motionGraphics_delete
+End Function
+
+' called just before the document closes - gives us a chance to cleanup
+Private Sub pcbDoc_PreClose()
+    Set pcbDoc = Nothing                  ' close document
+    bReportIsBeingUpdated = True
+    Application.ActiveSheet.Range("A1:C1000").Clear ' clear sheet contents
+    bReportIsBeingUpdated = False
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Excel.Range)
+    ' the worksheet has changed - did the user edit one of the board outline coordinate columns?
+    ' Target is a reference to the changed cell.
+    Dim x
+    Dim y
+    Dim r
+    
+    If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    
+    ' exit if we are updating the worksheet ourselves
+    If bReportIsBeingUpdated = True Then Exit Sub
+    If bSelectionsAreBeingUpdated = True Then Exit Sub
+    bSelectionsAreBeingUpdated = True
+    
+    ' handle errors
+    On Error Resume Next
+    
+    ' was one of the coordinate rows modified?
+    If Target.Row > 1 Then
+        x = Range("A" & Target.Row).FormulaLabel
+        
+        
+        If x <> "" Then
+            y = Range("B" & Target.Row).FormulaR1C1
+            If y <> "" Then
+                r = Range("C" & Target.Row).FormulaR1C1
+                If r <> "" Then
+                    ' if we reach here then a non-empty row was modified
+                    MakeBoardOutline
+                End If
+            End If
+        End If
+    End If
+    bSelectionsAreBeingUpdated = False
+End Sub
+
+Private Sub MakeBoardOutline()
+    ' make a board outline from all the coords in the spreadsheet
+    Dim pnts(2, 1000)
+    Dim npnts As Integer
+    Dim i As Integer
+    Dim x
+    Dim y
+    Dim r
+    
+    On Error Resume Next
+    
+    ' extract all the coords from the spreadsheet
+    For i = 2 To 1000
+        x = Range("A" & i).FormulaR1C1
+        y = Range("B" & i).FormulaR1C1
+        r = Range("C" & i).FormulaR1C1
+        If x = "" Or y = "" Or r = "" Then Exit For
+        ' valid row - save coord
+        pnts(0, npnts) = Val(x)
+        pnts(1, npnts) = Val(y)
+        pnts(2, npnts) = Val(r)
+        npnts = npnts + 1
+    Next i
+    
+    On Error Resume Next
+    
+    ' lock server to improve performance
+    pcbApp.LockServer
+    ' start an undoable transaction
+    If pcbDoc.TransactionStart(epcbDRCModeNone) Then
+        ' get old board outline width
+        Dim bo As MGCPCB.BoardOutline
+        Set bo = pcbDoc.BoardOutline
+        Dim width As Double
+        width = bo.Geometry.LineDisplayWidth(epcbUnitCurrent)
+        
+        ' create a new one with same width
+        Dim nbo As MGCPCB.BoardOutline
+        Set nbo = pcbDoc.PutBoardOutline(npnts, pnts, width, epcbUnitCurrent)
+        Dim keep As Boolean
+        keep = True
+        If nbo Is Nothing Then
+            Dim str As String
+            str = "** Error ** Creating the board outline. "
+            If Err.Number Then str = str & Err.Description
+            MsgBox str
+            keep = False
+        End If
+        ' end the transaction
+        pcbDoc.TransactionEnd (keep)
+    End If
+    pcbApp.UnlockServer
+    
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+' ====================================================
+' Place a selection rectangle at a given location
+' ====================================================
+On Error GoTo exit_with_error
+Dim xVar As Variant
+Dim yVar As Variant
+Dim x As Double
+Dim y As Double
+Dim activeRow As Long
+
+If pcbDoc Is Nothing Then Exit Sub ' If we are not connected, exit procedure
+    
+activeRow = Application.ActiveCell.Row
+If (activeRow < 2) Then Exit Sub
+    
+' pick up values in cell
+xVar = Range("A" + Trim(str(activeRow))).FormulaR1C1
+yVar = Range("B" + Trim(str(activeRow))).FormulaR1C1
+If (xVar = "" Or yVar = "") Then Exit Sub
+
+' convert to doubles
+x = CDbl(xVar)
+y = CDbl(yVar)
+       
+' define the motion graphics
+If (x = motionLastX And y = motionLastY) Then Exit Sub
+Call motionGraphics_define(x, y, 40, 40)
+
+Exit Sub
+
+exit_with_error:
+   
+End Sub
+
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' Rwkk	
+
+INQUEST-PP=macro

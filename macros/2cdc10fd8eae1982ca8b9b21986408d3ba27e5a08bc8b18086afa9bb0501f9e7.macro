@@ -1,0 +1,1620 @@
+Attribute VB_Name = "Config"
+Option Explicit
+#Const App = "Microsoft Excel" 'Adjust when using outside of Excel
+
+Function GetDirectoryPath() As String
+    ' Leaving this here for now because we currently don't have #Const App in Utils
+    Dim Path As String
+    #If App = "Microsoft Excel" Then
+        On Error Resume Next 'On Mac, this is called when exiting the Python interpreter
+            Path = ActiveWorkbook.Path
+        On Error GoTo 0
+    #ElseIf App = "Microsoft Word" Then
+        Path = ActiveDocument.Path
+    #ElseIf App = "Microsoft Access" Then
+        Path = CurrentProject.Path ' Won't be transformed for standalone module as ThisProject doesn't exit
+    #ElseIf App = "Microsoft PowerPoint" Then
+        Path = ActivePresentation.Path ' Won't be transformed for standalone module ThisPresentation doesn't exist
+    #Else
+        Exit Function
+    #End If
+    GetDirectoryPath = Path
+End Function
+
+Function GetConfigFilePath() As String
+    #If Mac Then
+        #If MAC_OFFICE_VERSION >= 15 Then
+            ' ~/Library/Containers/com.microsoft.Excel/Data/xlwings.conf
+            GetConfigFilePath = GetMacDir("Home") & "/" & "xlwings.conf"
+        #Else
+            ' True home dir
+            GetConfigFilePath = GetMacDir("Home") & "/" & ".xlwings/xlwings.conf"
+        #End If
+    #Else
+        GetConfigFilePath = Environ("USERPROFILE") & "\.xlwings\" & "xlwings.conf"
+    #End If
+End Function
+
+Function GetDirectoryConfigFilePath() As String
+    Dim pathSeparator As String
+    
+    #If Mac Then ' Application.PathSeparator doesn't seem to exist in Access...
+        pathSeparator = "/"
+    #Else
+        pathSeparator = "\"
+    #End If
+    
+    GetDirectoryConfigFilePath = GetDirectoryPath() & pathSeparator & "xlwings.conf"
+End Function
+
+Function GetConfigFromSheet()
+    Dim lastCell As Range, cell As Range
+    #If Mac Then
+    Dim d As Dictionary
+    Set d = New Dictionary
+    #Else
+    Dim d As Object
+    Set d = CreateObject("Scripting.Dictionary")
+    #End If
+    Dim sht As Worksheet
+    Set sht = ActiveWorkbook.Sheets("xlwings.conf")
+
+    If sht.Range("A2") = "" Then
+        Set lastCell = sht.Range("A1")
+    Else
+        Set lastCell = sht.Range("A1").End(xlDown)
+    End If
+
+    For Each cell In Range(sht.Range("A1"), lastCell)
+        d.Add UCase(cell.Value), cell.Offset(0, 1).Value
+    Next cell
+    Set GetConfigFromSheet = d
+End Function
+
+Function GetConfig(configKey As String, Optional default As String = "") As Variant
+    ' An entry in xlwings.conf sheet overrides the config file/ribbon
+    Dim configValue As String
+    
+    If Application.Name = "Microsoft Excel" Then
+    
+        If SheetExists("xlwings.conf") = True Then
+            GetConfig = GetConfigFromSheet.Item(configKey)
+        End If
+    End If
+
+    ' An entry in the workbook directory's optional xlwings.conf file overrides the config file/ribbon
+    If GetConfig = "" And FileExists(GetDirectoryConfigFilePath()) = True Then
+        If GetConfigFromFile(GetDirectoryConfigFilePath(), configKey, configValue) Then
+            GetConfig = configValue
+        End If
+    End If
+
+    ' Global Config
+    If GetConfig = "" And FileExists(GetConfigFilePath()) = True Then
+        If GetConfigFromFile(GetConfigFilePath(), configKey, configValue) Then
+            GetConfig = configValue
+        End If
+    End If
+
+    ' Defaults
+    If GetConfig = "" Then
+        GetConfig = default
+    End If
+    
+    ' Expand environment variables
+    GetConfig = ExpandEnvironmentStrings(GetConfig)
+End Function
+
+Function SaveConfigToFile(sFileName As String, sName As String, Optional sValue As String) As Boolean
+'Adopted from http://peltiertech.com/save-retrieve-information-text-files/
+
+  Dim iFileNumA As Long, iFileNumB As Long, lErrLast As Long
+  Dim sFile As String, sXFile As String, sVarName As String, sVarValue As String
+    
+  #If Mac Then
+    #If MAC_OFFICE_VERSION < 15 Then
+      sFileName = ToMacPath(sFileName)
+    #End If
+  #End If
+      
+    
+  #If Mac Then
+    If Not FileOrFolderExistsOnMac(ParentFolder(sFileName)) Then
+  #Else
+    If Len(Dir(ParentFolder(sFileName), vbDirectory)) = 0 Then
+  #End If
+     MkDir ParentFolder(sFileName)
+  End If
+
+  ' assume false unless variable is successfully saved
+  SaveConfigToFile = False
+
+  ' temporary file
+  sFile = sFileName
+  sXFile = sFileName & "_temp"
+
+  ' open text file to read settings
+  If FileExists(sFile) Then
+    'replace existing settings file
+    iFileNumA = FreeFile
+    Open sFile For Input As iFileNumA
+    iFileNumB = FreeFile
+    Open sXFile For Output As iFileNumB
+      Do While Not EOF(iFileNumA)
+        Input #iFileNumA, sVarName, sVarValue
+        If sVarName <> sName Then
+          Write #iFileNumB, sVarName, sVarValue
+        End If
+      Loop
+      Write #iFileNumB, sName, sValue
+      SaveConfigToFile = True
+    Close #iFileNumA
+    Close #iFileNumB
+    FileCopy sXFile, sFile
+    Kill sXFile
+  Else
+    ' make new file
+    iFileNumB = FreeFile
+    Open sFile For Output As iFileNumB
+      Write #iFileNumB, sName, sValue
+      SaveConfigToFile = True
+    Close #iFileNumB
+  End If
+
+End Function
+
+Function GetConfigFromFile(sFile As String, sName As String, Optional sValue As String) As Boolean
+'Adopted from http://peltiertech.com/save-retrieve-information-text-files/
+
+  Dim iFileNum As Long, lErrLast As Long
+  Dim sVarName As String, sVarValue As String
+
+  #If Mac Then
+    #If MAC_OFFICE_VERSION < 15 Then
+      sFile = ToMacPath(sFile)
+    #End If
+  #End If
+
+  ' assume false unless variable is found
+  GetConfigFromFile = False
+
+  ' open text file to read settings
+  If FileExists(sFile) Then
+    iFileNum = FreeFile
+    Open sFile For Input As iFileNum
+      Do While Not EOF(iFileNum)
+        Input #iFileNum, sVarName, sVarValue
+        If sVarName = sName Then
+          sValue = sVarValue
+          GetConfigFromFile = True
+          Exit Do
+        End If
+      Loop
+    Close #iFileNum
+  End If
+
+End Function
+Attribute VB_Name = "Dictionary"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Attribute VB_Description = "Drop-in replacement for Scripting.Dictionary on Mac\r\n\r\nDictionary v1.4.0\r\n(c) Tim Hall - https://github.com/timhall/VBA-Dictionary\r\nAuthor: tim.hall.engr@gmail.com\r\nLicense: MIT (http://www.opensource.org/licenses/mit-license.php)\r\n"
+''
+' Dictionary v1.4.1
+' (c) Tim Hall - https://github.com/timhall/VBA-Dictionary
+'
+' Drop-in replacement for Scripting.Dictionary on Mac
+'
+' @author: tim.hall.engr@gmail.com
+' @license: MIT (http://www.opensource.org/licenses/mit-license.php
+'
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' --------------------------------------------- '
+' Constants and Private Variables
+' --------------------------------------------- '
+
+#Const UseScriptingDictionaryIfAvailable = True
+
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+
+' dict_KeyValue 0: FormattedKey, 1: OriginalKey, 2: Value
+Private dict_pKeyValues As Collection
+Private dict_pKeys() As Variant
+Private dict_pItems() As Variant
+Private dict_pObjectKeys As Collection
+Private dict_pCompareMode As CompareMethod
+
+#Else
+
+Private dict_pDictionary As Object
+
+#End If
+
+' --------------------------------------------- '
+' Types
+' --------------------------------------------- '
+
+Public Enum CompareMethod
+    BinaryCompare = VBA.vbBinaryCompare
+    TextCompare = VBA.vbTextCompare
+    DatabaseCompare = VBA.vbDatabaseCompare
+End Enum
+
+' --------------------------------------------- '
+' Properties
+' --------------------------------------------- '
+
+Public Property Get CompareMode() As CompareMethod
+Attribute CompareMode.VB_Description = "Set or get the string comparison method."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    CompareMode = dict_pCompareMode
+#Else
+    CompareMode = dict_pDictionary.CompareMode
+#End If
+End Property
+Public Property Let CompareMode(Value As CompareMethod)
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    If Me.Count > 0 Then
+        ' Can't change CompareMode for Dictionary that contains data
+        ' http://msdn.microsoft.com/en-us/library/office/gg278481(v=office.15).aspx
+        Err.Raise 5 ' Invalid procedure call or argument
+    End If
+
+    dict_pCompareMode = Value
+#Else
+    dict_pDictionary.CompareMode = Value
+#End If
+End Property
+
+Public Property Get Count() As Long
+Attribute Count.VB_Description = "Get the number of items in the dictionary.\n"
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Count = dict_pKeyValues.Count
+#Else
+    Count = dict_pDictionary.Count
+#End If
+End Property
+
+Public Property Get Item(Key As Variant) As Variant
+Attribute Item.VB_Description = "Set or get the item for a given key."
+Attribute Item.VB_UserMemId = 0
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Dim dict_KeyValue As Variant
+    dict_KeyValue = dict_GetKeyValue(Key)
+
+    If Not IsEmpty(dict_KeyValue) Then
+        If VBA.IsObject(dict_KeyValue(2)) Then
+            Set Item = dict_KeyValue(2)
+        Else
+            Item = dict_KeyValue(2)
+        End If
+    Else
+        ' Not found -> Returns Empty
+    End If
+#Else
+    If VBA.IsObject(dict_pDictionary.Item(Key)) Then
+        Set Item = dict_pDictionary.Item(Key)
+    Else
+        Item = dict_pDictionary.Item(Key)
+    End If
+#End If
+End Property
+Public Property Let Item(Key As Variant, Value As Variant)
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    If Me.Exists(Key) Then
+        dict_ReplaceKeyValue dict_GetKeyValue(Key), Key, Value
+    Else
+        dict_AddKeyValue Key, Value
+    End If
+#Else
+    dict_pDictionary.Item(Key) = Value
+#End If
+End Property
+Public Property Set Item(Key As Variant, Value As Variant)
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    If Me.Exists(Key) Then
+        dict_ReplaceKeyValue dict_GetKeyValue(Key), Key, Value
+    Else
+        dict_AddKeyValue Key, Value
+    End If
+#Else
+    Set dict_pDictionary.Item(Key) = Value
+#End If
+End Property
+
+Public Property Let Key(Previous As Variant, Updated As Variant)
+Attribute Key.VB_Description = "Change a key to a different key."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Dim dict_KeyValue As Variant
+    dict_KeyValue = dict_GetKeyValue(Previous)
+
+    If Not VBA.IsEmpty(dict_KeyValue) Then
+        dict_ReplaceKeyValue dict_KeyValue, Updated, dict_KeyValue(2)
+    End If
+#Else
+    dict_pDictionary.Key(Previous) = Updated
+#End If
+End Property
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Add an item with the given key
+'
+' @param {Variant} Key
+' @param {Variant} Item
+' --------------------------------------------- '
+Public Sub Add(Key As Variant, Item As Variant)
+Attribute Add.VB_Description = "Add a new key and item to the dictionary."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    If Not Me.Exists(Key) Then
+        dict_AddKeyValue Key, Item
+    Else
+        ' This key is already associated with an element of this collection
+        Err.Raise 457
+    End If
+#Else
+    dict_pDictionary.Add Key, Item
+#End If
+End Sub
+
+''
+' Check if an item exists for the given key
+'
+' @param {Variant} Key
+' @return {Boolean}
+' --------------------------------------------- '
+Public Function Exists(Key As Variant) As Boolean
+Attribute Exists.VB_Description = "Determine if a given key is in the dictionary."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Exists = Not IsEmpty(dict_GetKeyValue(Key))
+#Else
+    Exists = dict_pDictionary.Exists(Key)
+#End If
+End Function
+
+''
+' Get an array of all items
+'
+' @return {Variant}
+' --------------------------------------------- '
+Public Function Items() As Variant
+Attribute Items.VB_Description = "Get an array containing all items in the dictionary."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    If Me.Count > 0 Then
+        Items = dict_pItems
+    Else
+        ' Split("") creates initialized empty array that matches Dictionary Keys and Items
+        Items = VBA.Split("")
+    End If
+#Else
+    Items = dict_pDictionary.Items
+#End If
+End Function
+
+''
+' Get an array of all keys
+'
+' @return {Variant}
+' --------------------------------------------- '
+Public Function Keys() As Variant
+Attribute Keys.VB_Description = "Get an array containing all keys in the dictionary."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    If Me.Count > 0 Then
+        Keys = dict_pKeys
+    Else
+        ' Split("") creates initialized empty array that matches Dictionary Keys and Items
+        Keys = VBA.Split("")
+    End If
+#Else
+    Keys = dict_pDictionary.Keys
+#End If
+End Function
+
+''
+' Remove an item for the given key
+'
+' @param {Variant} Key
+' --------------------------------------------- '
+Public Sub Remove(Key As Variant)
+Attribute Remove.VB_Description = "Remove a given key from the dictionary."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Dim dict_KeyValue As Variant
+    dict_KeyValue = dict_GetKeyValue(Key)
+
+    If Not VBA.IsEmpty(dict_KeyValue) Then
+        dict_RemoveKeyValue dict_KeyValue
+    Else
+        ' Application-defined or object-defined error
+        Err.Raise 32811
+    End If
+#Else
+    dict_pDictionary.Remove Key
+#End If
+End Sub
+
+''
+' Remove all items
+' --------------------------------------------- '
+Public Sub RemoveAll()
+Attribute RemoveAll.VB_Description = "Remove all information from the dictionary."
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Set dict_pKeyValues = New Collection
+
+    Erase dict_pKeys
+    Erase dict_pItems
+#Else
+    dict_pDictionary.RemoveAll
+#End If
+End Sub
+
+' ============================================= '
+' Private Functions
+' ============================================= '
+
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+
+Private Function dict_GetKeyValue(dict_Key As Variant) As Variant
+    On Error Resume Next
+    dict_GetKeyValue = dict_pKeyValues(dict_GetFormattedKey(dict_Key))
+    Err.Clear
+End Function
+
+Private Sub dict_AddKeyValue(dict_Key As Variant, dict_Value As Variant, Optional dict_Index As Long = -1)
+    If Me.Count = 0 Then
+        ReDim dict_pKeys(0 To 0)
+        ReDim dict_pItems(0 To 0)
+    Else
+        ReDim Preserve dict_pKeys(0 To UBound(dict_pKeys) + 1)
+        ReDim Preserve dict_pItems(0 To UBound(dict_pItems) + 1)
+    End If
+
+    Dim dict_FormattedKey As String
+    dict_FormattedKey = dict_GetFormattedKey(dict_Key)
+
+    If dict_Index >= 0 And dict_Index < dict_pKeyValues.Count Then
+        ' Shift keys/items after + including index into empty last slot
+        Dim dict_i As Long
+        For dict_i = UBound(dict_pKeys) To dict_Index + 1 Step -1
+            dict_pKeys(dict_i) = dict_pKeys(dict_i - 1)
+            If VBA.IsObject(dict_pItems(dict_i - 1)) Then
+                Set dict_pItems(dict_i) = dict_pItems(dict_i - 1)
+            Else
+                dict_pItems(dict_i) = dict_pItems(dict_i - 1)
+            End If
+        Next dict_i
+
+        ' Add key/item at index
+        dict_pKeys(dict_Index) = dict_Key
+        If VBA.IsObject(dict_Value) Then
+            Set dict_pItems(dict_Index) = dict_Value
+        Else
+            dict_pItems(dict_Index) = dict_Value
+        End If
+
+        ' Add key-value at proper index
+        dict_pKeyValues.Add Array(dict_FormattedKey, dict_Key, dict_Value), dict_FormattedKey, Before:=dict_Index + 1
+    Else
+        ' Add key-value as last item
+        If VBA.IsObject(dict_Key) Then
+            Set dict_pKeys(UBound(dict_pKeys)) = dict_Key
+        Else
+            dict_pKeys(UBound(dict_pKeys)) = dict_Key
+        End If
+        If VBA.IsObject(dict_Value) Then
+            Set dict_pItems(UBound(dict_pItems)) = dict_Value
+        Else
+            dict_pItems(UBound(dict_pItems)) = dict_Value
+        End If
+
+        dict_pKeyValues.Add Array(dict_FormattedKey, dict_Key, dict_Value), dict_FormattedKey
+    End If
+End Sub
+
+Private Sub dict_ReplaceKeyValue(dict_KeyValue As Variant, dict_Key As Variant, dict_Value As Variant)
+    Dim dict_Index As Long
+    Dim dict_i As Integer
+
+    dict_Index = dict_GetKeyIndex(dict_KeyValue(1))
+
+    ' Remove existing dict_Value
+    dict_RemoveKeyValue dict_KeyValue, dict_Index
+
+    ' Add new dict_Key dict_Value back
+    dict_AddKeyValue dict_Key, dict_Value, dict_Index
+End Sub
+
+Private Sub dict_RemoveKeyValue(dict_KeyValue As Variant, Optional ByVal dict_Index As Long = -1)
+    Dim dict_i As Long
+    If dict_Index = -1 Then
+        dict_Index = dict_GetKeyIndex(dict_KeyValue(1))
+    End If
+
+    If dict_Index >= 0 And dict_Index <= UBound(dict_pKeys) Then
+        ' Shift keys/items after index down
+        For dict_i = dict_Index To UBound(dict_pKeys) - 1
+            dict_pKeys(dict_i) = dict_pKeys(dict_i + 1)
+
+            If VBA.IsObject(dict_pItems(dict_i + 1)) Then
+                Set dict_pItems(dict_i) = dict_pItems(dict_i + 1)
+            Else
+                dict_pItems(dict_i) = dict_pItems(dict_i + 1)
+            End If
+        Next dict_i
+
+        ' Resize keys/items to remove empty slot
+        If UBound(dict_pKeys) = 0 Then
+            Erase dict_pKeys
+            Erase dict_pItems
+        Else
+            ReDim Preserve dict_pKeys(0 To UBound(dict_pKeys) - 1)
+            ReDim Preserve dict_pItems(0 To UBound(dict_pItems) - 1)
+        End If
+    End If
+
+    dict_pKeyValues.Remove dict_KeyValue(0)
+    dict_RemoveObjectKey dict_KeyValue(1)
+End Sub
+
+Private Function dict_GetFormattedKey(dict_Key As Variant) As String
+    If VBA.IsObject(dict_Key) Then
+        dict_GetFormattedKey = dict_GetObjectKey(dict_Key)
+    ElseIf VarType(dict_Key) = VBA.vbBoolean Then
+        dict_GetFormattedKey = IIf(dict_Key, "-1__-1", "0__0")
+    ElseIf VarType(dict_Key) = VBA.vbString Then
+        dict_GetFormattedKey = dict_Key
+
+        If Me.CompareMode = CompareMethod.BinaryCompare Then
+            ' Collection does not have method of setting key comparison
+            ' So case-sensitive keys aren't supported by default
+            ' -> Approach: Append lowercase characters to original key
+            '    AbC -> AbC___b_, abc -> abc__abc, ABC -> ABC_____
+            Dim dict_Lowercase As String
+            dict_Lowercase = ""
+
+            Dim dict_i As Integer
+            Dim dict_Char As String
+            Dim dict_Ascii As Integer
+            For dict_i = 1 To VBA.Len(dict_GetFormattedKey)
+                dict_Char = VBA.Mid$(dict_GetFormattedKey, dict_i, 1)
+                dict_Ascii = VBA.Asc(dict_Char)
+                If dict_Ascii >= 97 And dict_Ascii <= 122 Then
+                    dict_Lowercase = dict_Lowercase & dict_Char
+                Else
+                    dict_Lowercase = dict_Lowercase & "_"
+                End If
+            Next dict_i
+
+            If dict_Lowercase <> "" Then
+                dict_GetFormattedKey = dict_GetFormattedKey & "__" & dict_Lowercase
+            End If
+        End If
+    Else
+        ' For numbers, add duplicate to distinguish from strings
+        ' ->  123  -> "123__123"
+        '    "123" -> "123"
+        dict_GetFormattedKey = VBA.CStr(dict_Key) & "__" & CStr(dict_Key)
+    End If
+End Function
+
+Private Function dict_GetObjectKey(dict_ObjKey As Variant) As String
+    Dim dict_i As Integer
+    For dict_i = 1 To dict_pObjectKeys.Count
+        If dict_pObjectKeys.Item(dict_i) Is dict_ObjKey Then
+            dict_GetObjectKey = "__object__" & dict_i
+            Exit Function
+        End If
+    Next dict_i
+
+    dict_pObjectKeys.Add dict_ObjKey
+    dict_GetObjectKey = "__object__" & dict_pObjectKeys.Count
+End Function
+
+Private Sub dict_RemoveObjectKey(dict_ObjKey As Variant)
+    Dim dict_i As Integer
+    For dict_i = 1 To dict_pObjectKeys.Count
+        If dict_pObjectKeys.Item(dict_i) Is dict_ObjKey Then
+            dict_pObjectKeys.Remove dict_i
+            Exit Sub
+        End If
+    Next dict_i
+End Sub
+
+Private Function dict_GetKeyIndex(dict_Key As Variant) As Long
+    Dim dict_i As Long
+    For dict_i = 0 To UBound(dict_pKeys)
+        If VBA.IsObject(dict_pKeys(dict_i)) And VBA.IsObject(dict_Key) Then
+            If dict_pKeys(dict_i) Is dict_Key Then
+                dict_GetKeyIndex = dict_i
+                Exit For
+            End If
+        ElseIf VBA.IsObject(dict_pKeys(dict_i)) Or VBA.IsObject(dict_Key) Then
+            ' Both need to be objects to check equality, skip
+        ElseIf dict_pKeys(dict_i) = dict_Key Then
+            dict_GetKeyIndex = dict_i
+            Exit For
+        End If
+    Next dict_i
+End Function
+
+#End If
+
+Private Sub Class_Initialize()
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Set dict_pKeyValues = New Collection
+
+    Erase dict_pKeys
+    Erase dict_pItems
+    Set dict_pObjectKeys = New Collection
+#Else
+    Set dict_pDictionary = CreateObject("Scripting.Dictionary")
+#End If
+End Sub
+
+Private Sub Class_Terminate()
+#If Mac Or Not UseScriptingDictionaryIfAvailable Then
+    Set dict_pKeyValues = Nothing
+    Set dict_pObjectKeys = Nothing
+#Else
+    Set dict_pDictionary = Nothing
+#End If
+End Sub
+Attribute VB_Name = "Extensions"
+Function sql(query, ParamArray tables())
+        If TypeOf Application.Caller Is Range Then On Error GoTo failed
+        ReDim argsArray(1 To UBound(tables) - LBound(tables) + 2)
+        argsArray(1) = query
+        For K = LBound(tables) To UBound(tables)
+        argsArray(2 + K - LBound(tables)) = tables(K)
+        Next K
+        If has_dynamic_array() Then
+            sql = Py.CallUDF("xlwings.ext", "sql_dynamic", argsArray, ActiveWorkbook, Application.Caller)
+        Else
+            sql = Py.CallUDF("xlwings.ext", "sql", argsArray, ActiveWorkbook, Application.Caller)
+        End If
+        Exit Function
+failed:
+        sql = Err.Description
+End Function
+Attribute VB_Name = "License"
+'xlwings is distributed under a BSD 3-clause license.
+'
+'Copyright (C) 2014-2019, Zoomer Analytics LLC.
+'All rights reserved.
+'
+'Redistribution and use in source and binary forms, with or without modification,
+'are permitted provided that the following conditions are met:
+'
+'* Redistributions of source code must retain the above copyright notice, this
+'  list of conditions and the following disclaimer.
+'
+'* Redistributions in binary form must reproduce the above copyright notice, this
+'  list of conditions and the following disclaimer in the documentation and/or
+'  other materials provided with the distribution.
+'
+'* Neither the name of the copyright holder nor the names of its
+'  contributors may be used to endorse or promote products derived from
+'  this software without specific prior written permission.
+'
+'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+'ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+'WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+'DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+'ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+'(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+'LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+'ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+'(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+'SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+Attribute VB_Name = "Main"
+Option Explicit
+
+#If VBA7 Then
+    #If Mac Then
+        Private Declare PtrSafe Function system Lib "libc.dylib" (ByVal Command As String) As Long
+    #End If
+    #If Win64 Then
+        Const XLPyDLLName As String = "xlwings64-0.16.1.dll"
+        Declare PtrSafe Function XLPyDLLActivateAuto Lib "xlwings64-0.16.1.dll" (ByRef result As Variant, Optional ByVal Config As String = "", Optional ByVal mode As Long = 1) As Long
+        Declare PtrSafe Function XLPyDLLNDims Lib "xlwings64-0.16.1.dll" (ByRef src As Variant, ByRef dims As Long, ByRef transpose As Boolean, ByRef dest As Variant) As Long
+        Declare PtrSafe Function XLPyDLLVersion Lib "xlwings64-0.16.1.dll" (tag As String, VERSION As Double, arch As String) As Long
+    #Else
+        Private Const XLPyDLLName As String = "xlwings32-0.16.1.dll"
+        Declare PtrSafe Function XLPyDLLActivateAuto Lib "xlwings32-0.16.1.dll" (ByRef result As Variant, Optional ByVal Config As String = "", Optional ByVal mode As Long = 1) As Long
+        Private Declare PtrSafe Function XLPyDLLNDims Lib "xlwings32-0.16.1.dll" (ByRef src As Variant, ByRef dims As Long, ByRef transpose As Boolean, ByRef dest As Variant) As Long
+        Private Declare PtrSafe Function XLPyDLLVersion Lib "xlwings32-0.16.1.dll" (tag As String, VERSION As Double, arch As String) As Long
+    #End If
+    Private Declare PtrSafe Function LoadLibrary Lib "kernel32" Alias "LoadLibraryA" (ByVal lpLibFileName As String) As Long
+#Else
+    #If Mac Then
+        Private Declare Function system Lib "libc.dylib" (ByVal Command As String) As Long
+    #End If
+    Private Const XLPyDLLName As String = "xlwings32-0.16.1.dll"
+    Private Declare Function XLPyDLLActivateAuto Lib "xlwings32-0.16.1.dll" (ByRef result As Variant, Optional ByVal Config As String = "", Optional ByVal mode As Long = 1) As Long
+    Private Declare Function XLPyDLLNDims Lib "xlwings32-0.16.1.dll" (ByRef src As Variant, ByRef dims As Long, ByRef transpose As Boolean, ByRef dest As Variant) As Long
+    Private Declare Function LoadLibrary Lib "kernel32" Alias "LoadLibraryA" (ByVal lpLibFileName As String) As Long
+    Declare Function XLPyDLLVersion Lib "xlwings32-0.16.1.dll" (tag As String, VERSION As Double, arch As String) As Long
+#End If
+
+Public Const XLWINGS_VERSION As String = "0.16.1"
+
+Public Function RunPython(PythonCommand As String)
+    ' Public API: Runs the Python command, e.g.: to run the function foo() in module bar, call the function like this:
+    ' RunPython ("import bar; bar.foo()")
+
+    Dim INTERPRETER As String, PYTHONPATH As String, LOG_FILE As String
+    Dim OPTIMIZED_CONNECTION As Boolean
+
+    INTERPRETER = GetConfig("INTERPRETER", "python")
+    PYTHONPATH = GetDirectoryPath() & ";" & GetBaseName(ActiveWorkbook.FullName) & ".zip;" & GetConfig("PYTHONPATH")
+    LOG_FILE = GetConfig("LOG FILE")
+    OPTIMIZED_CONNECTION = GetConfig("USE UDF SERVER", False)
+
+
+    ' Call Python platform-dependent
+    #If Mac Then
+            Application.StatusBar = "Running..."  ' Non-blocking way of giving feedback that something is happening
+        #If MAC_OFFICE_VERSION >= 15 Then
+            ExecuteMac PythonCommand, INTERPRETER, LOG_FILE, PYTHONPATH
+        #Else
+            ExcecuteMac2011 PythonCommand, INTERPRETER, LOG_FILE, PYTHONPATH
+        #End If
+    #Else
+        If OPTIMIZED_CONNECTION = True Then
+            Py.SetAttr Py.Module("xlwings._xlwindows"), "BOOK_CALLER", ActiveWorkbook
+            Py.Exec "" & PythonCommand & ""
+        Else
+            ExecuteWindows False, PythonCommand, INTERPRETER, LOG_FILE, PYTHONPATH
+        End If
+    #End If
+End Function
+
+Sub ExcecuteMac2011(PythonCommand As String, PYTHON_MAC As String, LOG_FILE As String, Optional PYTHONPATH As String)
+    #If Mac Then
+    ' Run Python with the "-c" command line switch: add the path of the python file and run the
+    ' Command as first argument, then provide the WORKBOOK_FULLNAME and "from_xl" as 2nd and 3rd arguments.
+    ' Finally, redirect stderr to the LOG_FILE and run as background process.
+
+    Dim PythonInterpreter As String, RunCommand As String, WORKBOOK_FULLNAME As String, Log, Arguments As String
+    Dim CondaCmd As String, CondaBase As String, CondaEnv As String
+    Dim Res As Integer
+
+    If LOG_FILE = "" Then
+        LOG_FILE = "/tmp/xlwings.log"
+    Else
+        LOG_FILE = ToPosixPath(LOG_FILE)
+    End If
+
+    ' Delete Log file just to make sure we don't show an old error
+    On Error Resume Next
+        KillFileOnMac ToMacPath(LOG_FILE)
+    On Error GoTo 0
+
+    ' Transform from MacOS Classic path style (":") and Windows style ("\") to Bash friendly style ("/")
+    PYTHONPATH = ToPosixPath(PYTHONPATH)
+    If PYTHON_MAC <> "" Then
+        If PYTHON_MAC <> "python" And PYTHON_MAC <> "pythonw" Then
+            PythonInterpreter = ToPosixPath(PYTHON_MAC)
+        Else
+            PythonInterpreter = PYTHON_MAC
+        End If
+    Else
+        PythonInterpreter = "python"
+    End If
+    WORKBOOK_FULLNAME = ToPosixPath(ActiveWorkbook.Path & ":" & ActiveWorkbook.Name) 'ActiveWorkbook.FullName doesn't handle unicode on Excel 2011
+
+    ' Build the command (ignore warnings to be in line with Windows where we only show the popup if the ExitCode <> 0
+    ' -u is needed because on PY3 stderr is buffered by default and so wouldn't be available on time for the pop-up to show
+    RunCommand = PythonInterpreter & " -u -B -W ignore -c ""import sys, os; sys.path[0:0]=os.path.normcase(os.path.expandvars(r'" & PYTHONPATH & "')).split(';'); " & PythonCommand & """ "
+
+    ' Send the command to the shell. Courtesy of Robert Knight (http://stackoverflow.com/a/12320294/918626)
+    ' Since Excel blocks AppleScript as long as a VBA macro is running, we have to excecute the call as background call
+    ' so it can do its magic after this Function has terminated. Python calls ClearUp via the atexit handler.
+
+    'Check if .bash_profile is existing and source it
+    Res = system("source ~/.bash_profile")
+    Arguments = " ""--wb=" & WORKBOOK_FULLNAME & """ ""--from_xl=1""" & " ""--app=" & ToPosixPath(Application.Path) & "/" & Application.Name & Chr(34) & "> /dev/null 2>" & Chr(34) & LOG_FILE & Chr(34)
+    If Res = 0 Then
+        Res = system("source ~/.bash_profile;" & RunCommand & Arguments & " &")
+    Else
+        Res = system(RunCommand & Arguments & " &")
+    End If
+
+    ' If there's a log at this point (normally that will be from the shell only, not Python) show it and reset the StatusBar
+    On Error Resume Next
+        Log = ReadFile(LOG_FILE)
+        If Log = "" Then
+            Exit Sub
+        Else
+            ShowError (LOG_FILE)
+            Application.StatusBar = False
+        End If
+    On Error GoTo 0
+    #End If
+End Sub
+
+Sub ExecuteMac(PythonCommand As String, PYTHON_MAC As String, LOG_FILE As String, Optional PYTHONPATH As String)
+    #If Mac Then
+    Dim PythonInterpreter As String, RunCommand As String, WORKBOOK_FULLNAME As String, Log As String
+    Dim ParameterString As String, ExitCode As String, CondaCmd As String, CondaBase As String, CondaEnv As String
+
+    ' Transform paths
+    PYTHONPATH = ToPosixPath(PYTHONPATH)
+
+    If PYTHON_MAC <> "" Then
+        If PYTHON_MAC <> "python" And PYTHON_MAC <> "pythonw" Then
+            PythonInterpreter = ToPosixPath(PYTHON_MAC)
+        Else
+            PythonInterpreter = PYTHON_MAC
+        End If
+    Else
+        PythonInterpreter = "python"
+    End If
+
+    WORKBOOK_FULLNAME = ToPosixPath(ActiveWorkbook.FullName)
+    If LOG_FILE = "" Then
+        ' Sandbox location that requires no file access confirmation
+        LOG_FILE = Environ("HOME") + "/xlwings.log" '/Users/<User>/Library/Containers/com.microsoft.Excel/Data/xlwings_log.txt
+    Else
+        LOG_FILE = ToPosixPath(LOG_FILE)
+    End If
+
+    ' Delete Log file just to make sure we don't show an old error
+    On Error Resume Next
+        Kill LOG_FILE
+    On Error GoTo 0
+
+    ' ParameterSting with all paramters (AppleScriptTask only accepts a single parameter)
+    ParameterString = PYTHONPATH + ";"
+    ParameterString = ParameterString + "|" + PythonInterpreter
+    ParameterString = ParameterString + "|" + PythonCommand
+    ParameterString = ParameterString + "|" + ActiveWorkbook.FullName
+    ParameterString = ParameterString + "|" + Left(Application.Path, Len(Application.Path) - 4)
+    ParameterString = ParameterString + "|" + LOG_FILE
+
+    On Error GoTo AppleScriptErrorHandler
+        ExitCode = AppleScriptTask("xlwings.applescript", "VbaHandler", ParameterString)
+    On Error GoTo 0
+
+    ' If there's a log at this point (normally that will be from the shell only, not Python) show it and reset the StatusBar
+    On Error Resume Next
+        Log = ReadFile(LOG_FILE)
+        If Log = "" Then
+            Exit Sub
+        Else
+            ShowError (LOG_FILE)
+            Application.StatusBar = False
+        End If
+        Exit Sub
+    On Error GoTo 0
+
+AppleScriptErrorHandler:
+    MsgBox "To enable RunPython, please run 'xlwings runpython install' in a terminal once and try again.", vbCritical
+    #End If
+End Sub
+
+Sub ExecuteWindows(IsFrozen As Boolean, PythonCommand As String, PYTHON_WIN As String, LOG_FILE As String, _
+                   Optional PYTHONPATH As String, Optional FrozenArgs As String)
+    ' Call a command window and change to the directory of the Python installation or frozen executable
+    ' Note: If Python is called from a different directory with the fully qualified path, pywintypesXX.dll won't be found.
+    ' This seems to be a general issue with pywin32, see http://stackoverflow.com/q/7238403/918626
+
+    Dim Wsh As Object
+    Dim WaitOnReturn As Boolean: WaitOnReturn = True
+    Dim WindowStyle As Integer: WindowStyle = 0
+    Set Wsh = CreateObject("WScript.Shell")
+    Dim DriveCommand As String, RunCommand As String, WORKBOOK_FULLNAME As String
+    Dim PythonInterpreter As String, PythonDir As String, CondaCmd As String, CondaBase As String, CondaEnv As String
+    Dim ExitCode As Integer
+
+    If LOG_FILE = "" Then
+        LOG_FILE = Environ("APPDATA") + "\xlwings.log"
+    End If
+
+    If Not IsFrozen And (PYTHON_WIN <> "python" And PYTHON_WIN <> "pythonw") Then
+        If FileExists(PYTHON_WIN) Then
+            PythonDir = ParentFolder(PYTHON_WIN)
+        Else
+            MsgBox "Could not find Interpreter!", vbCritical
+            Exit Sub
+        End If
+    Else
+        PythonDir = ""  ' TODO: hack
+    End If
+
+    If Left$(PYTHON_WIN, 2) Like "[A-Za-z]:" Then
+        ' If Python is installed on a mapped or local drive, change to drive, then cd to path
+        DriveCommand = Left$(PYTHON_WIN, 2) & " & cd """ & PythonDir & """ & "
+    ElseIf Left$(PYTHON_WIN, 2) = "\\" Then
+        ' If Python is installed on a UNC path, temporarily mount and activate a drive letter with pushd
+        DriveCommand = "pushd """ & PythonDir & """ & "
+    End If
+
+    ' Run Python with the "-c" command line switch: add the path of the python file and run the
+    ' Command as first argument, then provide the WORKBOOK_FULLNAME and "from_xl" as 2nd and 3rd arguments.
+    ' Then redirect stderr to the LOG_FILE and wait for the call to return.
+    WORKBOOK_FULLNAME = ActiveWorkbook.FullName
+
+    If PYTHON_WIN <> "python" And PYTHON_WIN <> "pythonw" Then
+        PythonInterpreter = Chr(34) & PYTHON_WIN & Chr(34)
+    Else
+        PythonInterpreter = "python"
+    End If
+
+    CondaBase = GetConfig("CONDA BASE")
+    CondaEnv = GetConfig("CONDA ENV")
+    
+    ' Handle spaces in path (for UDFs, this is handled via nested quotes instead, see XLPyCommand)
+    CondaBase = Replace(CondaBase, " ", "^ ")
+    
+    If CondaBase <> "" And CondaEnv <> "" Then
+        CondaCmd = CondaBase & "\condabin\conda activate " & CondaEnv & " && "
+    Else
+        CondaCmd = ""
+    End If
+
+    If IsFrozen = False Then
+        RunCommand = CondaCmd & PythonInterpreter & " -B -c ""import sys, os; sys.path[0:0]=os.path.normcase(os.path.expandvars(r'" & PYTHONPATH & "')).split(';'); " & PythonCommand & """ "
+    ElseIf IsFrozen = True Then
+        RunCommand = Chr(34) & PythonCommand & Chr(34) & " " & FrozenArgs & " "
+    End If
+
+    ExitCode = Wsh.Run("cmd.exe /C " & DriveCommand & _
+                   RunCommand & _
+                   " --wb=" & """" & WORKBOOK_FULLNAME & """ --from_xl=1" & " --app=" & Chr(34) & _
+                   Application.Path & "\" & Application.Name & Chr(34) & " --hwnd=" & Chr(34) & Application.Hwnd & Chr(34) & _
+                   " 2> """ & LOG_FILE & """ ", _
+                   WindowStyle, WaitOnReturn)
+
+    'If ExitCode <> 0 then there's something wrong
+    If ExitCode <> 0 Then
+        Call ShowError(LOG_FILE)
+    End If
+
+    ' Delete file after the error message has been shown
+    On Error Resume Next
+        'Kill LOG_FILE
+    On Error GoTo 0
+
+    ' Clean up
+    Set Wsh = Nothing
+End Sub
+
+Public Function RunFrozenPython(Executable As String, Optional Args As String)
+    ' Runs a Python executable that has been frozen by PyInstaller and the like. Call the function like this:
+    ' RunFrozenPython "C:\path\to\frozen_executable.exe", "arg1 arg2". Currently not implemented for Mac.
+
+    Dim LOG_FILE As String
+
+    LOG_FILE = GetConfig("LOG FILE")
+
+    ' Call Python
+    #If Mac Then
+        MsgBox "This functionality is not yet supported on Mac." & vbNewLine & _
+               "Please run your scripts directly in Python!", vbCritical + vbOKOnly, "Unsupported Feature"
+    #Else
+        ExecuteWindows True, Executable, ParentFolder(Executable), LOG_FILE, , Args
+    #End If
+End Function
+
+Function GetUdfModules() As String
+    Dim UDF_MODULES As String
+
+    UDF_MODULES = GetConfig("UDF MODULES")
+
+    If UDF_MODULES = "" Then
+        GetUdfModules = Left$(ActiveWorkbook.Name, Len(ActiveWorkbook.Name) - 5) ' assume that it ends in .xlsm
+    Else
+        GetUdfModules = UDF_MODULES
+    End If
+End Function
+
+Private Sub CleanUp()
+    'On Mac only, this function is being called after Python is done (using Python's atexit handler)
+    Dim LOG_FILE As String
+
+    LOG_FILE = GetConfig("LOG FILE")
+
+    If LOG_FILE = "" Then
+        #If MAC_OFFICE_VERSION >= 15 Then
+            LOG_FILE = Environ("HOME") + "/xlwings.log" '~/Library/Containers/com.microsoft.Excel/Data/xlwings_log.txt
+        #Else
+            LOG_FILE = "/tmp/xlwings.log"
+        #End If
+    Else
+        LOG_FILE = ToPosixPath(LOG_FILE)
+    End If
+
+    'Show the LOG_FILE as MsgBox if not empty
+    On Error Resume Next
+    If ReadFile(LOG_FILE) <> "" Then
+        Call ShowError(LOG_FILE)
+    End If
+    On Error GoTo 0
+
+    'Clean up
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    On Error Resume Next
+        #If MAC_OFFICE_VERSION >= 15 Then
+            Kill LOG_FILE
+        #Else
+            KillFileOnMac ToMacPath(ToPosixPath(LOG_FILE))
+        #End If
+    On Error GoTo 0
+End Sub
+
+Function XLPyCommand()
+    Dim PYTHON_WIN As String, PYTHONPATH As String, LOG_FILE As String, tail As String
+    Dim CondaCmd As String, CondaBase As String, CondaEnv As String
+    Dim DEBUG_UDFS As Boolean
+
+    If GetDirectoryPath() <> "" Then
+        PYTHONPATH = GetDirectoryPath() & ";" & GetBaseName(ActiveWorkbook.FullName) & ".zip;" & GetConfig("PYTHONPATH")
+    Else
+        PYTHONPATH = GetConfig("PYTHONPATH")
+    End If
+
+
+    PYTHON_WIN = GetConfig("INTERPRETER", "pythonw")
+    DEBUG_UDFS = GetConfig("DEBUG UDFS", False)
+
+
+    CondaBase = GetConfig("CONDA BASE")
+    CondaEnv = GetConfig("CONDA ENV")
+
+    If (PYTHON_WIN = "python" Or PYTHON_WIN = "pythonw") And (CondaBase <> "" And CondaEnv <> "") Then
+        CondaCmd = Chr(34) & Chr(34) & CondaBase & "\condabin\conda" & Chr(34) & " activate " & CondaEnv & " && "
+        PYTHON_WIN = "cmd.exe /K " & CondaCmd & PYTHON_WIN
+    End If
+
+    If DEBUG_UDFS = True Then
+        XLPyCommand = "{506e67c3-55b5-48c3-a035-eed5deea7d6d}"
+    Else
+        tail = " -B -c ""import sys, os;sys.path[0:0]=os.path.normcase(os.path.expandvars(r'" & PYTHONPATH & "')).split(';');import xlwings.server; xlwings.server.serve('$(CLSID)')"""
+        XLPyCommand = PYTHON_WIN & tail
+    End If
+End Function
+
+Private Sub XLPyLoadDLL()
+    Dim PYTHON_WIN As String, CondaCmd As String, CondaBase As String, CondaEnv As String
+
+    PYTHON_WIN = GetConfig("INTERPRETER", "pythonw")
+    CondaBase = GetConfig("CONDA BASE")
+    CondaEnv = GetConfig("CONDA ENV")
+
+    If (PYTHON_WIN = "python" Or PYTHON_WIN = "pythonw") And (CondaBase <> "" And CondaEnv <> "") Then
+        ' This only works if the envs are in their default location
+        ' Otherwise you'll have to add the full path for the interpreter in addition to the conda infos
+        If CondaEnv = "base" Then
+            PYTHON_WIN = CondaBase & "\" & PYTHON_WIN
+        Else
+            PYTHON_WIN = CondaBase & "\envs\" & CondaEnv & "\" & PYTHON_WIN
+        End If
+    End If
+
+    If (PYTHON_WIN <> "python" And PYTHON_WIN <> "pythonw") Or (CondaBase <> "" And CondaEnv <> "") Then
+        If LoadLibrary(ParentFolder(PYTHON_WIN) + "\" + XLPyDLLName) = 0 Then  ' Standard installation
+            If LoadLibrary(ParentFolder(ParentFolder(PYTHON_WIN)) + "\" + XLPyDLLName) = 0 Then  ' Virtualenv
+                Err.Raise 1, Description:= _
+                    "Could not load " + XLPyDLLName + " from either of the following folders: " _
+                    + vbCrLf + ParentFolder(PYTHON_WIN) _
+                    + vbCrLf + ", " + ParentFolder(ParentFolder(PYTHON_WIN))
+            End If
+        End If
+    End If
+End Sub
+
+Function NDims(ByRef src As Variant, dims As Long, Optional transpose As Boolean = False)
+    XLPyLoadDLL
+    If 0 <> XLPyDLLNDims(src, dims, transpose, NDims) Then Err.Raise 1001, Description:=NDims
+End Function
+
+Function Py()
+    XLPyLoadDLL
+    If 0 <> XLPyDLLActivateAuto(Py, XLPyCommand, 1) Then Err.Raise 1000, Description:=Py
+End Function
+
+Sub KillPy()
+    XLPyLoadDLL
+    Dim unused
+    If 0 <> XLPyDLLActivateAuto(unused, XLPyCommand, -1) Then Err.Raise 1000, Description:=unused
+End Sub
+
+Sub ImportPythonUDFs()
+    Dim tempPath As String, errorMsg As String
+    On Error GoTo ImportError
+        tempPath = Py.Str(Py.Call(Py.Module("xlwings"), "import_udfs", Py.Tuple(GetUdfModules, ActiveWorkbook)))
+    Exit Sub
+ImportError:
+    errorMsg = Err.Description & " " & Err.Number
+    MsgBox errorMsg, vbCritical, "Error"
+End Sub
+
+Private Sub GetDLLVersion()
+    ' Currently only for testing
+    Dim tag As String, arch As String
+    Dim ver As Double
+    XLPyDLLVersion tag, ver, arch
+    Debug.Print tag
+    Debug.Print ver
+    Debug.Print arch
+End Sub
+
+
+
+
+
+Attribute VB_Name = "RibbonXlwings"
+Option Explicit
+' Ribbon docs: https://msdn.microsoft.com/en-us/library/dd910855(v=office.12).aspx
+' Custom UI Editor: http://openxmldeveloper.org/blog/b/openxmldeveloper/archive/2006/05/26/customuieditor.aspx
+Sub RunMain(control As IRibbonControl)
+    Dim wb As Workbook
+    Dim mymodule As String
+    Set wb = ActiveWorkbook
+    
+    mymodule = Left(wb.Name, (InStrRev(wb.Name, ".", -1, vbTextCompare) - 1))
+    
+    If GetConfig("USE UDF SERVER", False) = False Then
+        RunPython ("import " & mymodule & ";" & mymodule & ".main()")
+    Else
+        #If Mac Then
+        #Else
+        Py.CallUDF mymodule, "main", Array(), wb, Application.Caller
+        #End If
+    End If
+End Sub
+
+
+Sub ImportFunctions(control As IRibbonControl)
+    #If Mac Then
+    #Else
+    Dim wb As Workbook
+    Set wb = ActiveWorkbook
+
+    If LCase$(Right$(wb.Name, 5)) <> ".xlsm" And LCase$(Right$(wb.Name, 5)) <> ".xlsb" Then
+        MsgBox "Please save this workbook (""" + wb.Name + """) as a macro-enabled workbook first."
+        Exit Sub
+    End If
+    KillPy
+    ImportPythonUDFs
+    Set wb = Nothing
+    #End If
+End Sub
+
+Sub GetVisible(control As IRibbonControl, ByRef returnedVal)
+    #If Mac Then
+        returnedVal = False
+    #Else
+        returnedVal = True
+    #End If
+End Sub
+
+Sub GetVersion(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "Version: " & XLWINGS_VERSION
+End Sub
+
+Sub SetInterpreter(control As IRibbonControl, text As String)
+    Dim tf As Boolean
+    tf = SaveConfigToFile(GetConfigFilePath, "INTERPRETER", text)
+End Sub
+
+Sub GetInterpreter(control As IRibbonControl, ByRef returnedVal)
+    Dim setting As String
+    If GetConfigFromFile(GetConfigFilePath(), "INTERPRETER", setting) Then
+        returnedVal = setting
+    Else
+        returnedVal = ""
+    End If
+End Sub
+
+Sub SetPythonpath(control As IRibbonControl, text As String)
+    Dim tf As Boolean
+    tf = SaveConfigToFile(GetConfigFilePath, "PYTHONPATH", text)
+End Sub
+
+Sub GetPythonpath(control As IRibbonControl, ByRef returnedVal)
+    Dim setting As String
+    If GetConfigFromFile(GetConfigFilePath, "PYTHONPATH", setting) Then
+        returnedVal = setting
+    Else
+        returnedVal = ""
+    End If
+End Sub
+
+Sub SetCondaBase(control As IRibbonControl, text As String)
+    Dim tf As Boolean
+    tf = SaveConfigToFile(GetConfigFilePath, "CONDA BASE", text)
+End Sub
+
+Sub GetCondaBase(control As IRibbonControl, ByRef returnedVal)
+    Dim setting As String
+    If GetConfigFromFile(GetConfigFilePath, "CONDA BASE", setting) Then
+        returnedVal = setting
+    Else
+        returnedVal = ""
+    End If
+End Sub
+
+Sub SetCondaEnv(control As IRibbonControl, text As String)
+    Dim tf As Boolean
+    tf = SaveConfigToFile(GetConfigFilePath, "CONDA ENV", text)
+End Sub
+
+Sub GetCondaEnv(control As IRibbonControl, ByRef returnedVal)
+    Dim setting As String
+    If GetConfigFromFile(GetConfigFilePath, "CONDA ENV", setting) Then
+        returnedVal = setting
+    Else
+        returnedVal = ""
+    End If
+End Sub
+
+Sub SetLogfile(control As IRibbonControl, text As String)
+    Dim tf As Boolean
+    tf = SaveConfigToFile(GetConfigFilePath, "LOG FILE", text)
+End Sub
+
+Sub GetLogfile(control As IRibbonControl, ByRef returnedVal)
+    Dim setting As String
+    If GetConfigFromFile(GetConfigFilePath, "LOG FILE", setting) Then
+        returnedVal = setting
+    Else
+        returnedVal = ""
+    End If
+End Sub
+
+Sub SetUdfModules(control As IRibbonControl, text As String)
+    #If Mac Then
+    #Else
+        Dim tf As Boolean
+        tf = SaveConfigToFile(GetConfigFilePath, "UDF MODULES", text)
+    #End If
+End Sub
+
+Sub GetUdfModules(control As IRibbonControl, ByRef returnedVal)
+    #If Mac Then
+    #Else
+        Dim setting As String
+        If GetConfigFromFile(GetConfigFilePath, "UDF MODULES", setting) Then
+            returnedVal = setting
+        Else
+            returnedVal = ""
+        End If
+    #End If
+End Sub
+
+Sub ChangeUdfDebug(control As IRibbonControl, pressed As Boolean)
+    #If Mac Then
+    #Else
+    Dim tf As Boolean
+    tf = SaveConfigToFile(GetConfigFilePath, "DEBUG UDFS", CStr(pressed))
+    #End If
+End Sub
+
+Sub GetPressedUdfDebug(control As IRibbonControl, ByRef pressed)
+    #If Mac Then
+    #Else
+    Dim setting As String
+    If GetConfigFromFile(GetConfigFilePath, "DEBUG UDFS", setting) Then
+        If setting = "True" Then
+            pressed = True
+        Else
+            pressed = False
+        End If
+    Else
+        pressed = False
+    End If
+    #End If
+End Sub
+
+Sub ChangeUdfServer(control As IRibbonControl, pressed As Boolean)
+    #If Mac Then
+    #Else
+    Dim tf As Boolean
+    tf = SaveConfigToFile(GetConfigFilePath, "USE UDF SERVER", CStr(pressed))
+    #End If
+End Sub
+
+Sub GetPressedUdfServer(control As IRibbonControl, ByRef pressed)
+    #If Mac Then
+    #Else
+    Dim setting As String
+    If GetConfigFromFile(GetConfigFilePath, "USE UDF SERVER", setting) Then
+        If setting = "True" Then
+            pressed = True
+        Else
+            pressed = False
+        End If
+    Else
+        pressed = False
+    End If
+    #End If
+End Sub
+
+Sub RestartPython(control As IRibbonControl)
+    #If Mac Then
+    #Else
+    KillPy
+    Py.Exec ""
+    #End If
+End Sub
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Utils"
+Option Explicit
+
+Function IsFullName(sFile As String) As Boolean
+  ' if sFile includes path, it contains path separator "\" or "/"
+  IsFullName = InStr(sFile, "\") + InStr(sFile, "/") > 0
+End Function
+
+Function FileExists(ByVal FileSpec As String) As Boolean
+    #If Mac Then
+        FileExists = FileOrFolderExistsOnMac(FileSpec)
+    #Else
+        FileExists = FileExistsOnWindows(FileSpec)
+    #End If
+End Function
+
+Function FileExistsOnWindows(ByVal FileSpec As String) As Boolean
+   ' by Karl Peterson MS MVP VB
+   Dim Attr As Long
+   ' Guard against bad FileSpec by ignoring errors
+   ' retrieving its attributes.
+   On Error Resume Next
+   Attr = GetAttr(FileSpec)
+   If Err.Number = 0 Then
+      ' No error, so something was found.
+      ' If Directory attribute set, then not a file.
+      FileExistsOnWindows = Not ((Attr And vbDirectory) = vbDirectory)
+   End If
+End Function
+
+
+Function FileOrFolderExistsOnMac(FileOrFolderstr As String) As Boolean
+'Ron de Bruin : 26-June-2015
+'Function to test whether a file or folder exist on a Mac in office 2011 and up
+'Uses AppleScript to avoid the problem with long names in Office 2011,
+'limit is max 32 characters including the extension in 2011.
+    Dim ScriptToCheckFileFolder As String
+    Dim TestStr As String
+    
+    #If Mac Then
+    If Val(Application.VERSION) < 15 Then
+        ScriptToCheckFileFolder = "tell application " & Chr(34) & "System Events" & Chr(34) & _
+         "to return exists disk item (" & Chr(34) & FileOrFolderstr & Chr(34) & " as string)"
+        FileOrFolderExistsOnMac = MacScript(ScriptToCheckFileFolder)
+    Else
+        On Error Resume Next
+        TestStr = Dir(FileOrFolderstr, vbDirectory)
+        On Error GoTo 0
+        If Not TestStr = vbNullString Then FileOrFolderExistsOnMac = True
+    End If
+    #End If
+End Function
+
+Function ParentFolder(ByVal Folder)
+  #If Mac Then
+      ParentFolder = Left$(Folder, InStrRev(Folder, "/") - 1)
+  #Else
+      ParentFolder = Left$(Folder, InStrRev(Folder, "\") - 1)
+  #End If
+End Function
+
+Function GetDirectory(Path)
+    #If Mac Then
+    GetDirectory = Left(Path, InStrRev(Path, "/"))
+    #Else
+    GetDirectory = Left(Path, InStrRev(Path, "\"))
+    #End If
+End Function
+
+Function KillFileOnMac(Filestr As String)
+    'Ron de Bruin
+    '30-July-2012
+    'Delete files from a Mac.
+    'Uses AppleScript to avoid the problem with long file names (on 2011 only)
+
+    Dim ScriptToKillFile As String
+    
+    #If Mac Then
+    ScriptToKillFile = "tell application " & Chr(34) & "Finder" & Chr(34) & Chr(13)
+    ScriptToKillFile = ScriptToKillFile & "do shell script ""rm "" & quoted form of posix path of " & Chr(34) & Filestr & Chr(34) & Chr(13)
+    ScriptToKillFile = ScriptToKillFile & "end tell"
+
+    On Error Resume Next
+        MacScript (ScriptToKillFile)
+    On Error GoTo 0
+    #End If
+End Function
+
+Function ToMacPath(PosixPath As String) As String
+    ' This function transforms a Posix Path into a MacOS Path
+    ' E.g. "/Users/<User>" --> "MacintoshHD:Users:<User>"
+    #If Mac Then
+    ToMacPath = MacScript("set mac_path to POSIX file " & Chr(34) & PosixPath & Chr(34) & " as string")
+    #End If
+End Function
+
+Function GetMacDir(dirName As String) As String
+    ' Get Mac special folders. Protetcted so they don't exectue on Windows.
+
+    Dim Path As String
+
+    #If Mac Then
+        Select Case dirName
+            Case "Home"
+                Path = MacScript("return (path to home folder) as string")
+             Case "Desktop"
+                Path = MacScript("return (path to desktop folder) as string")
+            Case "Applications"
+                Path = MacScript("return (path to applications folder) as string")
+            Case "Documents"
+                Path = MacScript("return (path to documents folder) as string")
+        End Select
+            GetMacDir = Left$(Path, Len(Path) - 1) ' get rid of trailing "/"
+            GetMacDir = ToPosixPath(GetMacDir)
+    #Else
+        GetMacDir = ""
+    #End If
+End Function
+
+Function ToPosixPath(ByVal MacPath As String) As String
+    'This function accepts relative paths with backward and forward slashes: ActiveWorkbook & "\test"
+    ' E.g. "MacintoshHD:Users:<User>" --> "/Users/<User>"
+
+    Dim s As String
+    Dim LeadingSlash As Boolean
+    
+    #If Mac Then
+    If MacPath = "" Then
+        ToPosixPath = ""
+    Else
+        #If MAC_OFFICE_VERSION < 15 Then
+            If Left$(MacPath, 1) = "/" Then
+                LeadingSlash = True
+            End If
+            MacPath = Replace(MacPath, "\", ":")
+            MacPath = Replace(MacPath, "/", ":")
+            s = "tell application " & Chr(34) & "Finder" & Chr(34) & Chr(13)
+            s = s & "POSIX path of " & Chr(34) & MacPath & Chr(34) & Chr(13)
+            s = s & "end tell" & Chr(13)
+            If LeadingSlash = True Then
+                ToPosixPath = "/" + MacScript(s)
+            Else
+                ToPosixPath = MacScript(s)
+            End If
+            If Left$(ToPosixPath, 2) = "/$" Then
+                ' If it starts with an env variables, it's otherwise not correctly returned
+                ToPosixPath = Right$(ToPosixPath, Len(ToPosixPath) - 1)
+            End If
+
+        #Else
+            ToPosixPath = Replace(MacPath, "\", "/")
+            ToPosixPath = MacScript("return POSIX path of (" & Chr(34) & MacPath & Chr(34) & ") as string")
+        #End If
+    End If
+    #End If
+End Function
+
+Sub ShowError(FileName As String)
+    ' Shows a MsgBox with the content of a text file
+
+    Dim Content As String
+    Dim objShell
+
+    Const OK_BUTTON_ERROR = 16
+    Const AUTO_DISMISS = 0
+
+    Content = ReadFile(FileName)
+    #If Mac Then
+        MsgBox Content, vbCritical, "Error"
+    #Else
+        Content = Content & vbCrLf
+        Content = Content & "Press Ctrl+C to copy this message to the clipboard."
+
+        Set objShell = CreateObject("Wscript.Shell")
+        objShell.Popup Content, AUTO_DISMISS, "Error", OK_BUTTON_ERROR
+    #End If
+
+End Sub
+
+Function ExpandEnvironmentStrings(ByVal s As String)
+    ' Expand environment variables under Windows
+    #If Mac Then
+        ExpandEnvironmentStrings = s
+    #Else
+        Dim objShell As Object
+        Set objShell = CreateObject("WScript.Shell")
+        ExpandEnvironmentStrings = objShell.ExpandEnvironmentStrings(s)
+        Set objShell = Nothing
+    #End If
+End Function
+
+Function ReadFile(ByVal FileName As String)
+    ' Read a text file
+
+    Dim Content As String
+    Dim Token As String
+    Dim FileNum As Integer
+    Dim objShell As Object
+
+    #If Mac Then
+        FileName = ToMacPath(FileName)
+    #Else
+        FileName = ExpandEnvironmentStrings(FileName)
+    #End If
+
+    FileNum = FreeFile
+    Content = ""
+
+    ' Read Text File
+    Open FileName For Input As #FileNum
+        Do While Not EOF(FileNum)
+            Line Input #FileNum, Token
+            Content = Content & Token & vbCrLf
+        Loop
+    Close #FileNum
+
+    ReadFile = Content
+End Function
+
+Function SheetExists(sheetName As String) As Boolean
+    Dim sht As Worksheet
+    On Error Resume Next
+        Set sht = ActiveWorkbook.Sheets(sheetName)
+    On Error GoTo 0
+    SheetExists = Not sht Is Nothing
+End Function
+
+Function GetBaseName(wb As String) As String
+    Dim extension As String
+    extension = LCase$(Right$(wb, 4))
+    If extension = ".xls" Or extension = ".xla" Or extension = ".xlt" Then
+        GetBaseName = Left$(wb, Len(wb) - 4)
+    Else
+        GetBaseName = Left$(wb, Len(wb) - 5)
+    End If
+End Function
+
+Function has_dynamic_array() As Boolean
+    has_dynamic_array = False
+    On Error GoTo ErrHandler
+        Application.WorksheetFunction.Unique ("dummy")
+        has_dynamic_array = True
+    Exit Function
+ErrHandler:
+    has_dynamic_array = False
+End Function
+
+' InQuest injected base64 decoded content
+' ey'+
+' xZ%u
+
+INQUEST-PP=macro

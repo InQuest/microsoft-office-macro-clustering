@@ -1,0 +1,3407 @@
+Attribute VB_Name = "AddinPage"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "BSConsts"
+Option Explicit
+Option Private Module
+
+Global Const DDX_PID As String = "29707791-56E7-4930-8118-AAF18BE861EB"
+
+'doc/sheet
+Global Const ZEDOC_ID As String = "ZE.doc.id"
+Global Const PROP_SHEET_ID As String = "ZE.sheet.id"
+Global Const PROP_SHEET_TYPE As String = "ZE.sheet.type"
+Global Const PROP_SHEET_VERSION As String = "ZE.sheet.ver"
+'
+Global Const ZEDOC_VER As String = "ZE.doc.ver"
+Global Const ZEDOC_NAME As String = "ZE.doc.nm"
+'Global Const ZESHEET_NIL As String = vbNullString
+
+Public Enum eZEProfile
+    eProfName = 1
+    eUsrName
+    eProfGrp
+    eTmplName
+    eSrtDate
+    eEndDate
+    eFcstDate
+    eShftEffDate
+    eHdr
+End Enum
+Attribute VB_Name = "CController"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Event OnLogout(sender As Object)
+
+Private WithEvents m_login As CDDXLogin
+Attribute m_login.VB_VarHelpID = -1
+Private m_info As New Collection
+Private WithEvents m_app As Application
+Attribute m_app.VB_VarHelpID = -1
+'
+Private m_target As Range
+Private m_target_value As String
+
+Private Sub Class_Initialize()
+    On Local Error Resume Next
+    
+    Set m_app = Application
+    Set m_login = CDDXLogin
+
+    On Local Error GoTo 0
+End Sub
+
+Public Property Let TargetDisp(value As String)
+    If InStr(value, "[") <= 1 Then Exit Property
+    m_target_value = value
+End Property
+
+Private Sub m_app_SheetSelectionChange(ByVal Sh As Object, ByVal Target As Range)
+    On Error GoTo OOPS
+
+    Call SetTargetFormula(Target)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError(Err.Description, "m_app_SheetSelectionChange")
+    End If
+
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Public Sub Init()
+    Exit Sub
+End Sub
+
+Private Sub m_app_WorkbookActivate(ByVal Wb As Workbook)
+    Call SetTargetFormula(Application.ActiveCell)
+End Sub
+
+Private Sub m_app_WorkbookBeforeSave(ByVal Wb As Workbook, ByVal SaveAsUI As Boolean, Cancel As Boolean)
+    On Error GoTo OOPS
+    
+    If Len(CSheet.DOCVersion(Wb)) = 0 Then Exit Sub
+    
+    With Application
+        If .Calculation <> xlCalculationManual Then Exit Sub
+        .CalculateBeforeSave = False
+    End With
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError(Err.Description, "m_app_WorkbookBeforeSave")
+    End If
+    
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Sub m_app_WorkbookOpen(ByVal Wb As Workbook)
+    On Error GoTo OOPS
+
+    If Wb.IsAddin Then Exit Sub
+
+    Call SetTargetFormula(Application.ActiveCell)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError("R/T Error #" & Err.Number & " - " & Err.Description, "m_app_WorkbookOpen")
+    End If
+
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Public Sub GetDimensions(ByVal dimInfo As String, rowCount As Long, colCount As Long)
+Dim txt As String
+Dim p As Long
+Dim p2 As Long
+
+    rowCount = -1
+    colCount = -1
+
+    For p2 = 1 To 2
+        txt = IIf(p2 = 1, dimInfo, m_target_value)
+        If txt <> vbNullString Then
+            p = InStr(txt, "[")
+            If p > 0 Then Exit For
+        End If
+    Next
+    If p <= 0 Then Exit Sub
+  
+    p2 = InStr(txt, "]")
+    If p2 <= p + 2 Then Exit Sub
+    txt = Mid(txt, p + 1, p2 - p - 1)
+    
+    p = InStr(txt, ",")
+    If p <= 0 Then Exit Sub
+    
+    rowCount = Val(Left(txt, p - 1))
+    colCount = Val(Mid(txt, p + 1))
+End Sub
+
+Public Sub DeleteTaskID(ByVal taskID As String)
+ Dim idx As Long
+ 
+    idx = GetPositionByTaskID(taskID)
+    If idx <= 0 Then Exit Sub
+    
+    Call m_info.Remove(idx)
+End Sub
+
+Public Function IsTaskIDValid(ByVal taskID As String) As Boolean
+    IsTaskIDValid = IIf(GetPositionByTaskID(taskID) > 0, True, False)
+End Function
+
+Public Function GetRangeByTaskID(ByVal taskID As String) As Range
+ Dim idx As Long
+ 
+    idx = GetPositionByTaskID(taskID)
+    If idx <= 0 Then Exit Function
+    
+    Set GetRangeByTaskID = m_info.Item(idx).FRange
+End Function
+
+Private Function IsRangeValid(rgn) As Boolean
+    On Local Error GoTo OOPS
+    IsRangeValid = IIf(StrComp(TypeName(rgn), "range", vbTextCompare) = 0, True, False)
+    
+OOPS:
+    On Local Error GoTo -1
+    Exit Function
+End Function
+
+Private Function GetPositionByTaskID(ByVal taskID As String) As Long
+ Dim k As Long
+ 
+    For k = m_info.count To 1 Step -1
+        With m_info(k)
+            If IsRangeValid(.FRange) Then
+                If StrComp(.FTaskID, taskID) = 0 Then
+                    GetPositionByTaskID = k
+                    Exit Function
+                End If
+            Else
+                Call m_info.Remove(k)
+            End If
+        End With
+    Next
+End Function
+
+Public Sub Add(ByVal taskID As String)
+ Dim k As Long
+ Dim info As CFormula
+ Dim rgn As Range
+ 
+    Call RemoveInvalidRanges
+    
+    Set rgn = WRPThisCell()
+
+    For k = m_info.count To 1 Step -1
+        With m_info(k)
+            If IsRangeValid(.FRange) Then
+                If ObjPtr(.FRange.Parent) = ObjPtr(rgn.Parent) Then
+                    If StrComp(rgn.Address, .FRange.Address) = 0 Then
+                        .FFormulaName = GetFormulaByRange(rgn)
+                        .FTaskID = taskID
+                        Exit Sub
+                    End If
+                End If
+                
+            Else
+                Call m_info.Remove(k)
+            End If
+        End With
+    Next
+
+    Set info = New CFormula
+    
+    With info
+        Set .FRange = rgn
+        .FFormulaName = GetFormulaByRange(rgn)
+        .FTaskID = taskID
+    End With
+    
+    m_info.Add info
+End Sub
+
+Private Sub RestoreFormulas()
+ Dim k As Long
+ 
+    If m_info Is Nothing Then Exit Sub
+    
+    For k = m_info.count To 1 Step -1
+        Call m_info.Remove(k)
+    Next
+End Sub
+
+Private Sub m_login_OnAfterLogin(sender As Object)
+    Call RefreshRibbon
+End Sub
+
+Private Sub m_login_OnAfterLogout(sender As Object)
+    Call RestoreFormulas
+    Call RefreshRibbon
+    RaiseEvent OnLogout(Me)
+End Sub
+
+Public Sub CalcFormula(rgn As Range, ByVal switchtoActiveSht As Boolean)
+ Dim sht As Object
+ Dim activecl As Range
+ Dim us As Boolean
+ 
+    If switchtoActiveSht Then
+        If Application.Calculation <> xlCalculationManual Then
+            If ObjPtr(ActiveCell.Parent) <> ObjPtr(rgn.Parent) Then
+                us = Application.ScreenUpdating
+                If us Then
+                    Application.ScreenUpdating = False
+                    
+                    Set sht = ActiveCell.Parent
+                    Set activecl = ActiveCell
+                    rgn.Parent.Activate
+                    rgn.Select
+                End If
+            End If
+        End If
+    End If
+    
+    If Application.Calculation <> xlCalculationManual Then
+        Call rgn.Dirty
+    End If
+    Call rgn.Calculate
+    
+    If switchtoActiveSht Then
+        If Not sht Is Nothing Then
+            sht.Activate
+            activecl.Select
+
+            Application.ScreenUpdating = True
+        End If
+    End If
+End Sub
+
+Private Function GetIncellValue(ByVal value As String, result As String, precision As Long, ByRef dtaType As Long) As Boolean
+ Dim size As Long
+ Dim itms() As String
+
+    size = Len(value)
+    If size = 0 Then Exit Function
+    If Left(value, 1) <> "#" Then Exit Function
+
+    itms = Split(value, ":")
+    If UBound(itms) <> 2 Then Exit Function
+    
+    result = itms(2)
+    precision = Val(itms(0))
+    dtaType = Int(Val(itms(1)))
+    
+    GetIncellValue = True
+End Function
+
+Public Function Dimensions(rowCount As Long, colCount As Long) As String
+     Dimensions = " [" + CStr(rowCount) + "," + CStr(colCount) + "] "
+End Function
+
+Public Sub NotifyOfFinal(ByVal taskID As String, ByVal value As String, ByVal notiFlgs As Long, ByVal rowCount As Long, ByVal colCount As Long)
+ Dim k As Long
+ Dim fm As String
+ Dim result As String
+ Dim precision As Long
+ Dim fmt As String
+ Dim isstr As Boolean
+ Dim dt As Long
+ 
+    For k = m_info.count To 1 Step -1
+        With m_info(k)
+            If StrComp(.FTaskID, taskID) = 0 Then
+                If IsRangeValid(.FRange) Then
+                    isstr = True
+                    fm = GetFormulaByRange(.FRange)
+                    
+                    If StrComp(fm, .FFormulaName, vbTextCompare) = 0 Then
+                        If CDDXHelper.IsFlag(notiFlgs, &H1) Then
+                            result = IIf(Len(value) > 0, value, "? " + fm + "()") + " " + IIf(CDDXHelper.IsFlag(notiFlgs, &H2), Dimensions(rowCount, colCount), Dimensions(colCount, rowCount))
+                        Else
+                            If GetIncellValue(value, result, precision, dt) Then
+                                If dt = CURVE_OBSERVATION_DATE Then
+                                    fmt = CDDXCurve.GetContractDateFormat(CURVE_GRANULARITY_DAILY)
+                                    
+                                ElseIf dt = CURVE_OBSERVATION_TIMESTAMP Then
+                                    fmt = CDDXCurve.GetContractDateFormat(CURVE_GRANULARITY_MINUTELY) + ":ss"
+                                    
+                                Else
+                                    If precision > 0 Then
+                                        fmt = "0." + String(precision, "0")
+                                    Else
+                                        fmt = "0"
+                                    End If
+                                End If
+                                isstr = False
+                            Else
+                                result = value
+                                fmt = "General"
+                            End If
+                            
+                            .FRange.NumberFormat = fmt
+                            
+                            If CSheet.DOCVersion(.FRange.Parent.Parent) = vbNullString Then
+                                Call CDDXHelper.MarkZEDoc(DDX_PID, .FRange.Parent.Parent)
+                                Call CDDXHelper.MarkZESheet(DDX_PID, .FRange.Parent, ZESHEET_ENTITY)
+                            End If
+                        End If
+                        
+                        Call WRPSetMessage(result, True, isstr)
+                        
+                        If Not ActiveCell Is Nothing Then
+                            If StrComp(ActiveCell.Address, .FRange.Address) = 0 Then
+                                If StrComp(ActiveCell.Parent.Name, .FRange.Parent.Name, vbTextCompare) = 0 Then
+                                    If StrComp(ActiveCell.Parent.Parent.Name, .FRange.Parent.Parent.Name, vbTextCompare) = 0 Then
+                                        Set m_target = ActiveCell
+                                        m_target_value = result
+                                    End If
+                                End If
+                            End If
+                        End If
+                        Call CalcFormula(.FRange, True)
+                    End If
+                End If
+                
+                Call m_info.Remove(k)
+                Call FormulaEntity.DeleteZombieEntities(m_info)
+                Exit For
+            End If
+        End With
+    Next
+End Sub
+
+Public Function GetFormulaByRange(rgn As Range) As String
+ Dim fm As String
+ Dim p As Long
+ 
+    On Local Error GoTo OOPS
+    
+    If rgn.Parent Is Nothing Then Exit Function
+
+    fm = UCase(rgn.Cells(1, 1).formula)
+        
+    If InStr(fm, "=ZE_") = 1 Then
+        p = InStr(fm, "(")
+        If p > 4 Then GetFormulaByRange = Mid(fm, 2, p - 2)
+    End If
+
+OOPS:
+    On Local Error GoTo 0
+    Exit Function
+End Function
+
+Private Sub RemoveInvalidRanges()
+ Dim k As Long
+
+    For k = m_info.count To 1 Step -1
+        If Not IsRangeValid(m_info.Item(k).FRange) Then
+            Call m_info.Remove(k)
+        ElseIf GetFormulaByRange(m_info(k).FRange) = vbNullString Then
+            Call m_info.Remove(k)
+        End If
+    Next
+End Sub
+
+Private Sub SetTargetFormula(frgn As Range)
+    If frgn Is Nothing Then Exit Sub
+    
+    If frgn.Cells(1, 1).HasFormula Then
+        Set m_target = frgn.Cells(1, 1)
+        m_target_value = m_target.Text
+    Else
+        Set m_target = Nothing
+        m_target_value = vbNullString
+    End If
+End Sub
+Attribute VB_Name = "CFormula"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public FRange As Range
+Public FFormulaName As String
+Public FTaskID As String
+
+Attribute VB_Name = "CNumFormat"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Dim m_dic As Scripting.Dictionary
+
+Public Sub ReadNumFormats(file As Object)
+ Dim fmts As Variant
+ 
+    Call m_dic.RemoveAll
+    
+    Do
+        If CDDXFile.IsEOF(file) Then Exit Do
+        
+        fmts = CDDXFile.ReadLine(file)
+        If fmts = vbNullString Then Exit Do
+        fmts = Split(fmts, vbTab)
+        
+        If UBound(fmts) >= 1 Then
+            Call m_dic.Add(fmts(0), fmts(1))
+        End If
+    Loop
+End Sub
+
+Public Property Get NumFormat(ByVal fmtIdx As String) As String
+'    If m_dic.Exists(fmtIdx) Then
+        NumFormat = m_dic(fmtIdx)
+'    End If
+End Property
+
+Public Property Get NumFormatDaily() As String
+    NumFormatDaily = m_dic("d")
+End Property
+
+Public Property Get NumFormatText() As String
+    NumFormatText = "@"
+End Property
+
+Public Property Get NumFormatDouble() As String
+    NumFormatDouble = m_dic("v")
+End Property
+
+Private Sub Class_Initialize()
+    Set m_dic = New Scripting.Dictionary
+End Sub
+
+Private Sub Class_Terminate()
+    Set m_dic = Nothing
+End Sub
+Attribute VB_Name = "CSheet"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Function GetPropertyWK(wrk As Workbook, ByVal aPropName As String) As DocumentProperty
+ Dim f As Variant
+          
+    For Each f In wrk.CustomDocumentProperties
+        If StrComp(f.Name, aPropName) = 0 Then
+            Set GetPropertyWK = f
+            Exit Function
+        End If
+    Next
+End Function
+
+Public Function DOCGetProp(wrk As Workbook, ByVal aPropName As String) As String
+ Dim prop As DocumentProperty
+       
+    Set prop = GetPropertyWK(wrk, aPropName)
+    If prop Is Nothing Then
+        DOCGetProp = vbNullString
+    Else
+        DOCGetProp = prop.value
+    End If
+End Function
+
+Public Sub DOCSetProp(wrk As Workbook, ByVal aPropName As String, ByVal aValue As String)
+ Dim prop As DocumentProperty
+
+    Set prop = GetPropertyWK(wrk, aPropName)
+    If prop Is Nothing Then
+        Call wrk.CustomDocumentProperties.Add(Name:=aPropName, LinkToContent:=False, Type:=msoPropertyTypeString, value:=aValue)
+    Else
+        prop.value = aValue
+    End If
+End Sub
+
+Public Property Get DOCVersion(wrk As Workbook) As String
+    DOCVersion = DOCGetProp(wrk, ZEDOC_VER)
+End Property
+
+Public Property Let ZEDocID(Wb As Workbook, ByVal value As String)
+    Call DOCSetProp(Wb, ZEDOC_ID, value)
+End Property
+
+Public Property Get ZEDocID(Wb As Workbook) As String
+    ZEDocID = DOCGetProp(Wb, ZEDOC_ID)
+End Property
+
+Private Function GetProperty(sheet As Worksheet, ByVal aProp As String) As CustomProperty
+ Dim f As Variant
+
+    For Each f In sheet.CustomProperties
+        If StrComp(f.Name, aProp) = 0 Then
+            Set GetProperty = f
+            Exit Function
+        End If
+    Next
+End Function
+
+Public Function WSGetProp(sheet As Worksheet, ByVal aProp As String) As String
+ Dim prop As CustomProperty
+
+    Set prop = GetProperty(sheet, aProp)
+    If prop Is Nothing Then
+        WSGetProp = ZESHEET_NIL
+    Else
+        WSGetProp = Trim(prop.value)
+    End If
+End Function
+
+Public Sub WSSetProp(sheet As Worksheet, ByVal aProp As String, ByVal aValue As String)
+ Dim prop As CustomProperty
+
+    Set prop = GetProperty(sheet, aProp)
+    aValue = IIf(aValue = vbNullString, " ", aValue)
+    If prop Is Nothing Then
+        Call sheet.CustomProperties.Add(aProp, aValue)
+    Else
+        prop.value = aValue
+    End If
+End Sub
+
+Public Property Let ZESheetID(Sh As Worksheet, aID As String)
+    Call WSSetProp(Sh, PROP_SHEET_ID, aID)
+End Property
+
+Public Property Get ZESheetID(Sh As Worksheet) As String
+    ZESheetID = WSGetProp(Sh, PROP_SHEET_ID)
+End Property
+
+Attribute VB_Name = "FormulaEntity"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private WithEvents m_controller As CController
+Attribute m_controller.VB_VarHelpID = -1
+
+Private m_Entities As New Collection
+Private WithEvents m_BaseEntity As CDDXEntity
+Attribute m_BaseEntity.VB_VarHelpID = -1
+Private WithEvents m_helper As CDDXHelper
+Attribute m_helper.VB_VarHelpID = -1
+
+Private Function FindEntityPosition(taskID As String) As Long
+ Dim k As Long
+ 
+    For k = m_Entities.count To 1 Step -1
+        If StrComp(m_Entities.Item(k).taskID, taskID) = 0 Then
+            FindEntityPosition = k
+            Exit For
+        End If
+    Next
+End Function
+
+Private Sub DeleteEntity(entity As ZEWSProxy.DataDirectEntity)
+ Dim sht As Worksheet
+ Dim idx As Long
+ 
+    Set sht = TargetSheet(entity)
+    If Not sht Is Nothing Then
+        On Local Error Resume Next
+        sht.Parent.Names(entity.ExcelRangeName).Delete
+        On Local Error GoTo -1
+    End If
+    
+    idx = FindEntityPosition(entity.taskID)
+    If idx <= 0 Then Exit Sub
+    
+    Call CController.DeleteTaskID(entity.taskID)
+    Call m_Entities.Remove(idx)
+End Sub
+
+Private Sub Class_Initialize()
+    Set m_BaseEntity = CDDXEntity
+    Set m_helper = CDDXHelper
+    Set m_controller = CController
+End Sub
+
+Private Property Get TargetSheet(entity As ZEWSProxy.DataDirectEntity) As Worksheet
+ Dim rgn As Range
+ Dim Wb
+ Dim sht As Worksheet
+ Dim count As Long
+ Dim k As Long
+ 
+    For Each Wb In Workbooks
+        If Not Wb.IsAddin Then
+            For Each sht In Wb.Worksheets
+                If CSheet.ZESheetID(sht) = entity.EntityObject.sheetID Then
+                    Set TargetSheet = sht
+                    Exit Property
+                End If
+            Next
+        End If
+    Next
+
+End Property
+
+Private Function GetRange(entity As ZEWSProxy.DataDirectEntity) As Range
+ Dim wk As Workbook
+ Dim ws As Worksheet
+ Dim sht As Worksheet
+ Dim rc As Long
+ Dim cc As Long
+ 
+    With entity.EntityObject
+        For Each wk In Workbooks
+            For Each ws In wk.Worksheets
+                If CSheet.ZESheetID(ws) = .sheetID Then
+                    Set sht = ws
+                    Exit For
+                End If
+            Next
+            If Not sht Is Nothing Then Exit For
+        Next
+        
+        If Not sht Is Nothing Then
+            rc = .ExecuteResult.DataRowsCount + .ExecuteResult.HeaderRowsCount + .ExecuteResult.CaptionRowsCount
+            cc = .ExecuteResult.ColumnsCount
+            If cc <= 0 Or rc <= 0 Then Exit Function
+            Set GetRange = sht.Cells(.RangeTop, .RangeLeft).Resize(rc, cc)
+        End If
+    End With
+
+End Function
+
+Private Function GetAllCurveDateFormats(colori As String, dtfmts As String, ByVal isVertical As Boolean)
+ Dim v
+ Dim k As Long
+ Dim cnt As Long
+    
+    cnt = Len(dtfmts) \ 2
+    If cnt = 1 Then
+        GetAllCurveDateFormats = colori + CNumFormat.NumFormat(Left(dtfmts, 1))
+        Exit Function
+    End If
+    
+    If isVertical Then
+        ReDim v(0 To cnt - 1, 0 To 0)
+        
+        For k = 0 To cnt - 1
+            v(k, 0) = colori + CNumFormat.NumFormat(Mid(dtfmts, 2 * k + 1, 1))
+        Next
+    Else
+        ReDim v(0 To 0, 0 To cnt - 1)
+        
+        For k = 0 To cnt - 1
+            v(0, k) = colori + CNumFormat.NumFormat(Mid(dtfmts, 2 * k + 1, 1))
+        Next
+    End If
+    
+    GetAllCurveDateFormats = v
+End Function
+
+Private Sub OnCurveDataEntity(entity As ZEWSProxy.CurveDataEntity)
+ Dim rgn As Range
+ Dim sht As Worksheet
+ Dim k As Long
+ Dim j As Long
+ Dim file As Object
+ Dim fname As String
+ Dim dtfmts As String
+ Dim tmp As String
+ Dim buff
+ Dim t As Long
+ Const colori As String = "[Color11]"
+ 
+    On Error GoTo OOPS
+    
+    Set sht = TargetSheet(entity)
+    If sht Is Nothing Then Exit Sub
+    
+    Set rgn = GetRange(entity) 'sht.Parent.Names(entity.EntityObject.ExcelRangeName).RefersToRange
+    If rgn Is Nothing Then Exit Sub
+    rgn.Clear
+    
+    fname = CDDXLib.DefaultZEWSproxy(DDX_PID).HelperResultsetFileName(entity.EntityObject.taskID, Asc("h"))
+    If Len(Dir(fname)) = 0 Then Exit Sub
+    
+    Set file = CDDXFile.OpenFile(fname)
+    Call CNumFormat.ReadNumFormats(file)
+
+    rgn.NumberFormat = CNumFormat.NumFormatDouble
+    
+'    If CDDXHelper.IsFlag(entity.flagValues, CURVE_FLG_PIVOT) Then
+'        k = IIf(CDDXHelper.IsFlag(entity.flagValues, CURVE_FLG_TIMESERIES), 1, 2)
+'
+'        Dim startc As Long
+'        Dim cc As Long
+'
+'        startc = 0
+'        Do
+'            If CDDXFile.IsEOF(file) Then Exit Do
+'
+'            dtfmts = CDDXFile.ReadLine(file)
+'            cc = Len(dtfmts) \ 2
+'
+'            'date columns
+'            For j = 1 To cc
+'                t = Int(Val(Mid(dtfmts, 2 * j, 1)))
+'                If t = CURVE_OBSERVATION_DATE Or t = CURVE_OBSERVATION_TIMESTAMP Then
+'                    rgn.Offset(, startc + k + j - 1).Resize(, 1).NumberFormat = IIf(t = CURVE_OBSERVATION_DATE, CNumFormat.NumFormatDaily, CNumFormat.NumFormat("n"))
+'                End If
+'            Next
+'
+'            'all numbers first
+'            rgn.Offset(, startc + k).Resize(1, cc).NumberFormat = GetAllCurveDateFormats(colori, dtfmts, False)
+'
+'            startc = startc + cc
+'        Loop
+'
+'        '
+'        rgn.Resize(, 1).NumberFormat = CNumFormat.NumFormatText
+'
+'        If Not CDDXHelper.IsFlag(entity.flagValues, CURVE_FLG_TIMESERIES) Then
+'            rgn.Offset(, 1).Resize(, 1).NumberFormat = colori + CNumFormat.NumFormatDaily 'CDDXDates.SystemDateFormat
+'        End If
+'
+'    Else
+        rgn.Resize(1).NumberFormat = CNumFormat.NumFormatText
+        k = IIf(CDDXHelper.IsFlag(entity.flagValues, CURVE_FLG_TIMESERIES), 0, 1)
+        
+        If k > 0 Then
+            rgn.Offset(1).Resize(1).NumberFormat = colori + CNumFormat.NumFormatDaily
+        End If
+        
+        k = k + 1
+        Set rgn = rgn.Offset(k).Resize(rgn.Rows.count - k)
+        
+        Dim startr As Long
+        Dim rc As Long
+        
+        startr = 0
+        Do
+            If CDDXFile.IsEOF(file) Then Exit Do
+            
+            dtfmts = CDDXFile.ReadLine(file)
+            rc = Len(dtfmts) \ 2
+            
+            'date rows
+            For k = 1 To rc
+                t = Int(Val(Mid(dtfmts, 2 * k, 1)))
+                If t = CURVE_OBSERVATION_DATE Or t = CURVE_OBSERVATION_TIMESTAMP Then
+                    rgn.Offset(startr + k - 1).Resize(1).NumberFormat = IIf(t = CURVE_OBSERVATION_DATE, CNumFormat.NumFormatDaily, CNumFormat.NumFormat("n"))
+                End If
+            Next
+            
+            'first column dates
+            rgn.Offset(startr).Resize(rc, 1).NumberFormat = GetAllCurveDateFormats(colori, dtfmts, True)
+            
+            startr = startr + rc
+        Loop
+        
+        'then all strings if mo
+        If CDDXHelper.IsFlag(entity.flagValues, CURVE_FLG_MULTIOBS) Then
+            rgn.Offset(, 1).Resize(, 1 + IIf(Not CDDXHelper.IsFlag(entity.flagValues, CURVE_FLG_TIMESERIES), 1, 0)).NumberFormat = CNumFormat.NumFormatText
+        End If
+'    End If
+
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    
+    Call CDDXFile.CloseFile(file, fname, tmp)
+    Exit Sub
+End Sub
+
+Private Sub OnReportDataEntity(entity As ZEWSProxy.ReportDataEntity)
+ Dim rgn As Range
+ Dim sht As Worksheet
+ Dim count As Long
+ Dim k As Long
+ Dim clr As String
+ 
+    On Local Error GoTo OOPS
+    
+    If StrComp(entity.EntityObject.formulaName, "ZE_FuturesMatrix", vbTextCompare) <> 0 Then Exit Sub
+    
+    Set sht = TargetSheet(entity)
+    If sht Is Nothing Then Exit Sub
+
+    Set rgn = sht.Parent.Names(entity.EntityObject.ExcelRangeName).RefersToRange
+    
+    If Not rgn Is Nothing Then
+        rgn.Columns(1).NumberFormat = "[$-409]mmm-yy;@"
+        'Call rgn.Columns(1).AutoFit
+        rgn.Columns(1).UseStandardWidth = True
+        rgn.Rows(1).HorizontalAlignment = xlCenter
+        
+    End If
+    
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    On Local Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Sub AdjustColWidths(entity As Object)
+ Dim rgn As Range
+ Dim sht As Worksheet
+ Dim count As Long
+ Dim k As Long
+ 
+    On Local Error GoTo OOPS
+    
+    If Not entity.IsFromFormula Then Exit Sub
+    
+    Set sht = TargetSheet(entity)
+    If sht Is Nothing Then Exit Sub
+
+    Set rgn = sht.Parent.Names(entity.EntityObject.ExcelRangeName).RefersToRange
+    
+    If Not rgn Is Nothing Then
+        With rgn
+            For k = 1 To .Columns.count
+                Call .Parent.Columns(.Column + k - 1).AutoFit
+            Next
+        End With
+        
+    End If
+    
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    On Local Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Function GetEntity(entityTaskId As String) As Object
+ Dim idx As Long
+ 
+    If Len(entityTaskId) = 0 Then Exit Function
+    idx = FindEntityPosition(entityTaskId)
+    If idx <= 0 Then Exit Function
+    If Not CController.IsTaskIDValid(entityTaskId) Then Exit Function
+    
+    Set GetEntity = m_Entities.Item(idx)
+End Function
+
+Private Sub m_BaseEntity_OnAfterAddOrUpdateEntity(entityTaskId As String)
+ Dim entity As Object
+ 
+    On Error GoTo OOPS
+    
+    Set entity = GetEntity(entityTaskId)
+    If entity Is Nothing Then Exit Sub
+        
+    Call WipeOutEverythingOld(entity)
+    
+    If TypeName(entity) = "ReportDataEntity" Then
+        Call OnReportDataEntity(entity)
+    End If
+
+    Call AdjustColWidths(entity)
+    
+    With entity.EntityObject.ExecuteResult
+       Call CController.NotifyOfFinal(entityTaskId, vbNullString, &H1 Or IIf(entity.EntityObject.isVertical, &H2, &H0), .CaptionRowsCount + .HeaderRowsCount + .DataRowsCount, .ColumnsCount)
+    End With
+    Call DeleteEntity(entity)
+
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError(Err.Description, "m_BaseEntity_OnAfterAddOrUpdateEntity")
+    End If
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Sub m_BaseEntity_OnBeforeAddOrUpdateEntity(entityTaskId As String)
+ Dim entity As Object
+
+    On Error GoTo OOPS
+    
+    Set entity = GetEntity(entityTaskId)
+    If entity Is Nothing Then Exit Sub
+
+    Call WipeOutOldStyles(entity)
+    
+    If StrComp(TypeName(entity), "CurveDataEntity") = 0 Then
+        Call OnCurveDataEntity(entity)
+        
+    ElseIf StrComp(TypeName(entity), "CurveValidationSummaryEntity") = 0 Then
+        Call OnCurveValidationSummaryEntity(entity)
+        
+    End If
+
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError(Err.Description, "m_BaseEntity_OnBeforeAddOrUpdateEntity")
+    End If
+    
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Sub ClearRange(rgn As Range, clrItems As Long)
+    With rgn
+        If (clrItems And &H1) <> 0 Then
+            .ClearFormats
+            .ClearComments
+        End If
+        
+        If (clrItems And &H2) <> 0 Then
+            .Clear
+            '.ClearContents
+        End If
+        .Font.ColorIndex = xlColorIndexAutomatic
+    End With
+End Sub
+
+Private Sub GetNewDimension(entity As ZEWSProxy.DataDirectEntity, nrows As Long, ncols As Long)
+     With entity
+        If .isVertical Then
+            nrows = .ExecuteResult.CaptionAndHeaderRowsCount + .ExecuteResult.DataRowsCount
+            ncols = .ExecuteResult.ColumnsCount
+        Else
+            nrows = .ExecuteResult.CaptionRowsCount + .ExecuteResult.ColumnsCount
+            ncols = .ExecuteResult.HeaderRowsCount + .ExecuteResult.DataRowsCount
+        End If
+    End With
+End Sub
+
+Private Sub WipeOutOldStyles(entity As ZEWSProxy.DataDirectEntity)
+ Dim rgn As Range
+ Dim nrows As Long
+ Dim ncols As Long
+ 
+    On Local Error GoTo OOPS
+
+    With entity
+        Set rgn = CController.GetRangeByTaskID(.taskID)
+        If rgn Is Nothing Then Exit Sub
+        
+        Call GetNewDimension(entity, nrows, ncols)
+        
+        If nrows < .RangeRows Then nrows = .RangeRows
+        If ncols < .RangeCols Then ncols = .RangeCols
+        
+        Call ClearRange(rgn.Offset(1).Resize(nrows, ncols), &H1)
+    End With
+
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.DebugMessage = Err.Description
+    End If
+    Exit Sub
+End Sub
+
+Private Sub WipeOutEverythingOld(entity As ZEWSProxy.DataDirectEntity)
+ Dim fr As Range
+ Dim orows As Long
+ Dim ocols As Long
+ Dim nrows As Long
+ Dim ncols As Long
+ Dim flgs As Long
+ Dim su As Boolean
+ Dim ee As Boolean
+ 
+    On Local Error GoTo OOPS
+    
+    With entity
+        If .RangeTop <= 0 Then Exit Sub
+        If .RangeLeft <= 0 Then Exit Sub
+        
+        orows = .RangeRows
+        ocols = .RangeCols
+        
+        Call GetNewDimension(entity, nrows, ncols)
+            
+        If nrows >= orows And ncols >= ocols Then Exit Sub
+        
+        Set fr = CController.GetRangeByTaskID(.taskID)
+        If fr Is Nothing Then Exit Sub
+        Set fr = fr.Offset(1)
+        
+        flgs = &H1
+        
+        su = Application.ScreenUpdating
+        If su <> False Then Application.ScreenUpdating = False
+        ee = Application.EnableEvents
+        If ee <> False Then Application.EnableEvents = False
+        
+        If orows > nrows Then
+            Call ClearRange(fr.Cells(nrows + 1, 1).Resize(orows - nrows, ocols), &H1 Or &H2)
+        End If
+        
+        If ocols > ncols Then
+            Call ClearRange(fr.Cells(1, ncols + 1).Resize(orows, ocols - ncols), &H1 Or &H2)
+        End If
+        
+        If orows > nrows And ocols > ncols Then
+            Call ClearRange(fr.Cells(nrows + 1, ncols + 1).Resize(orows - nrows, ocols - ncols), &H1 Or &H2)
+        End If
+    End With
+        
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.DebugMessage = Err.Description
+    End If
+    On Error GoTo 0
+    
+    If flgs = &H1 Then
+        If su <> Application.ScreenUpdating Then Application.ScreenUpdating = su
+        If ee <> Application.EnableEvents Then Application.EnableEvents = ee
+    End If
+    Exit Sub
+End Sub
+
+Private Sub m_BaseEntity_OnEntityError(taskID As String, errMessage As String)
+ Dim entity As Object
+ Dim rgn As Range
+ 
+    On Error GoTo OOPS
+    
+    Set entity = GetEntity(taskID)
+    If entity Is Nothing Then Exit Sub
+    Set rgn = CController.GetRangeByTaskID(taskID)
+    
+    If Not rgn Is Nothing Then
+        entity.RangeTop = rgn.Row + 1
+        entity.RangeLeft = rgn.Column
+'        Call WipeOutData(entity, rgn.Offset(1, 0))
+        
+        Call CController.NotifyOfFinal(taskID, ERR_PREFIX + errMessage, &H1 Or IIf(entity.EntityObject.isVertical, &H2, &H0), entity.RangeRows, entity.RangeCols)
+    End If
+    
+    Call DeleteEntity(entity)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError(Err.Description, "m_BaseEntity_OnEntityError")
+    End If
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Sub m_BaseEntity_OnGetEntityByTaskId(sender As Object, taskID As String, entity As Object, formulaRgn As Object)
+ Dim idx As Long
+
+    On Error GoTo OOPS
+    
+    Set entity = Nothing
+    Set formulaRgn = Nothing
+    
+    If Len(taskID) = 0 Then Exit Sub
+    
+    idx = FindEntityPosition(taskID)
+    If idx <= 0 Then Exit Sub
+    
+    Set formulaRgn = CController.GetRangeByTaskID(taskID)
+    If formulaRgn Is Nothing Then
+        Call m_Entities.Remove(idx)
+        Exit Sub
+    End If
+    
+    Set formulaRgn = formulaRgn.Offset(1)
+    Set entity = m_Entities.Item(idx)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError(Err.Description, "m_BaseEntity_OnGetEntityByTaskId")
+        Set entity = Nothing
+    End If
+    
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Sub m_BaseEntity_OnValueReady(sender As Object, ByVal taskID As String, value As Variant)
+    On Error GoTo OOPS
+    Call CController.NotifyOfFinal(taskID, value, &H0, 0, 0)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call CDDXHelper.LogError(Err.Description, "m_BaseEntity_OnValueReady")
+    End If
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+Private Sub m_controller_OnLogout(sender As Object)
+ Dim k As Long
+ 
+    For k = m_Entities.count To 1 Step -1
+        Call m_Entities.Remove(k)
+    Next
+End Sub
+
+Private Function SetSheetId(sheet As Worksheet, entity As ZEWSProxy.DataDirectEntity) As Boolean
+    If (Len(CDDXHelper.ZESheetID(BSConsts.DDX_PID, sheet)) > 0) Then
+        entity.sheetID = CDDXHelper.ZESheetID(BSConsts.DDX_PID, sheet)
+    Else
+        entity.sheetID = CDDXHelper.NewGUID()
+        CSheet.ZESheetID(sheet) = entity.sheetID
+    End If
+End Function
+
+Private Function IsThisActive(fr As Range) As Boolean
+    If Application.ActiveCell Is Nothing Then Exit Function
+    
+    With Application.ActiveCell
+        If StrComp(.Address, fr.Address) <> 0 Then Exit Function
+        If StrComp(.Parent.Name, fr.Parent.Name) <> 0 Then Exit Function
+        If StrComp(.Parent.Parent.Name, fr.Parent.Parent.Name) <> 0 Then Exit Function
+    End With
+    IsThisActive = True
+End Function
+
+Public Function NewEntity(ByVal formulaName As String, defaultEntity As ZEWSProxy.DataDirectEntity, caption As String, Optional options As Variant) As ZEWSProxy.DataDirectEntity
+ Dim result As ZEWSProxy.DataDirectEntity
+ Dim rc As Long
+ Dim cc As Long
+ Dim fr As Range
+ 
+    If defaultEntity Is Nothing Then Exit Function
+          
+    Set result = defaultEntity
+    Set fr = WRPThisCell()
+    
+    result.formulaName = CController.GetFormulaByRange(fr) 'formulaName
+    result.Root = "formula"
+    result.IsFromFormula = True
+    result.RangeTop = fr.Offset(1, 0).Row
+    result.RangeLeft = fr.Offset(1, 0).Column
+    
+    Call CController.GetDimensions(IIf(IsThisActive(fr), vbNullString, fr.Text), rc, cc)
+    
+    result.RangeRows = rc
+    result.RangeCols = cc
+    'CDDXApp.DebugMessage = CStr(result.RangeRows) + " , " + CStr(result.RangeCols)
+    
+    If modOptsParse.IsShowHeader(IIf(IsMissing(options), vbNullString, CStr(options))) Then
+        result.EntityObject.caption = caption
+    Else
+        result.EntityObject.caption = vbNullString
+    End If
+'    Call setupFormulaOptions(result)
+    Call SetSheetId(fr.Worksheet, result)
+    
+    Set NewEntity = result
+End Function
+
+'Private Sub setupFormulaOptions(entity As ZEWSProxy.DataDirectEntity)
+'    If entity Is Nothing Then Exit Sub
+'    If entity.EntityOption Is Nothing Then Exit Sub
+'
+'    With entity.EntityOption
+'        .InputDateOrder = DateOrder_Default
+'        .DateInputOption = DateInputOption_Default
+'
+'        .headeroption = HeaderOption_SingleRow
+'        .IsTrimEmptyHeaderRows = True
+'        .HasProfileEntityTitle = True
+'        .HasProfileSeriesName = True
+'        .HasProfileSeriesCaption = True
+'        .HasProfileDataSource = True
+'        .HasProfileDataReport = True
+'        .HasProfileObservation = True
+'        .HasProfileAttributes = True
+'        .HasReportEntityTitle = True
+'        .HasReportSeriesName = True
+'        .HasReportDataSource = True
+'        .HasReportDataReport = True
+'        .HasReportObservation = True
+'        .HasReportAttributes = True
+'
+'        .IsRefreshOnOpen = False
+'        .IsRefreshPeriodically = False
+'
+'        .VerticalDelete = VerticalDelete_EntireRow
+'        .VerticalInsert = VerticalInsert_EntireRow
+'        .HorizontalDelete = HorizontalDelete_EntireColumn
+'        .HorizontalInsert = HorizontalInsert_EntireColumn
+'        .ResultType = ResultType_QueryTable
+'        .IsAdjustWidth = True
+'        .IsFillFormulas = False
+'        .IsPreserveFormat = True
+'        .IsOneTimeRequest = False
+'
+'        .IsFillCaption = False
+'        .IsFillHeader = False
+'        .IsFillDataRow = False
+'        .IsFillByRow = False
+'    End With
+'End Sub
+
+Public Sub LoadForumlaEntity(entity As ZEWSProxy.DataDirectEntity)
+ Dim oflgs As Long
+ Dim msg As String
+ Dim eno As Long
+ 
+    On Error GoTo OOPS
+    
+    If Not CDDXUtility.SetupEntity(BSConsts.DDX_PID, entity) Then
+        Err.Raise vbObjectError + 1, , "Failed to set up the entity"
+        Exit Sub
+    End If
+    
+'    entity.IsFromFormula = True
+    Call m_Entities.Add(entity)
+    oflgs = &H1
+    Call CDDXEntity.LoadEntityAsync(DDX_PID, entity, WRPThisCell.Parent.Parent.Name)
+    oflgs = oflgs Or &H2
+    
+OOPS:
+    eno = Err.Number
+    If eno <> 0 Then
+        msg = Err.Description
+        If (oflgs And &H1) <> 0 Then Call m_Entities.Remove(m_Entities.count)
+    End If
+    On Error GoTo 0
+    
+    If msg <> vbNullString Then Err.Raise eno, , msg
+    Exit Sub
+End Sub
+
+Private Sub m_helper_OnEvent(sender As Object, ByVal eventID As Long, wParam As Variant, lParam As Variant)
+    If eventID = HELPER_EVENT_FINGERPINT Then
+        Call sender.AddFingerprint(DDX_PID, CDDXApp.DDXCodeRevision(ThisWorkbook) + " (" + ThisWorkbook.Name + ")")
+    End If
+End Sub
+
+Private Sub OnCurveValidationSummaryEntity(entity As ZEWSProxy.CurveValidationSummaryEntity)
+ Dim rgn As Range
+ Dim sht As Worksheet
+ Dim k As Long
+ Dim i As Long
+ Dim rc As Long
+ Dim start As Long
+ Dim file As Object
+ Dim fname As String
+ Dim fmts As Variant
+ Dim tmp As String
+ 
+    On Error GoTo OOPS
+    
+    fname = CDDXLib.DefaultZEWSproxy(DDX_PID).HelperResultsetFileName(entity.EntityObject.taskID, Asc("h"))
+    If Len(Dir(fname)) = 0 Then Exit Sub
+    
+    Set sht = TargetSheet(entity)
+    If sht Is Nothing Then Exit Sub
+    
+    Set rgn = GetRange(entity) 'sht.Parent.Names(entity.EntityObject.ExcelRangeName).RefersToRange
+    If rgn Is Nothing Then Exit Sub
+
+    Set file = CDDXFile.OpenFile(fname)
+    Call CNumFormat.ReadNumFormats(file)
+    
+    rgn.Clear
+    rgn.NumberFormat = CNumFormat.NumFormatText
+    
+    start = 0
+    For k = 1 To 2
+        rc = Int(Val(CDDXFile.ReadLine(file)))
+        fmts = Split(CDDXFile.ReadLine(file), vbTab)
+        
+        If rc > 0 Then
+            With rgn.Offset(start).Resize(rc)
+                .Resize(1).Characters.Font.Bold = True
+                For i = LBound(fmts) To UBound(fmts) Step 2
+                    .Offset(1, Int(Val(fmts(i))) - 1).Resize(rc - 1, 1).NumberFormat = CNumFormat.NumFormat(fmts(i + 1))
+                Next
+            End With
+            
+            If k = 2 Then 'timeseries
+                Do
+                    If CDDXFile.IsEOF(file) Then Exit Do
+                    fmts = Split(CDDXFile.ReadLine(file), vbTab)
+                    If UBound(fmts) >= 3 Then
+                        rgn.Offset(start + Int(Val(fmts(1))), Int(Val(fmts(0))) - 1).Resize(Int(Val(fmts(2))), 1).NumberFormat = CNumFormat.NumFormat(fmts(3))
+                    End If
+                Loop
+            End If
+            
+            start = start + 1
+        End If
+        
+        start = start + rc
+    Next
+    
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    
+    Call CDDXFile.CloseFile(file, fname, tmp)
+    Exit Sub
+End Sub
+
+Public Function DeleteZombieEntities(info As Collection) As Long
+ Dim k As Long
+ Dim i As Long
+ Dim t As String
+ Dim cnt As Long
+    
+    cnt = info.count
+    For k = m_Entities.count To 1 Step -1
+        t = m_Entities.Item(k).taskID
+        For i = cnt To 1 Step -1
+            If StrComp(info(i).FTaskID, t) = 0 Then Exit For
+        Next
+        If i = 0 Then Call m_Entities.Remove(k)
+    Next
+End Function
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "VWCommon"
+Option Explicit
+Option Private Module
+
+Public Sub Auto_Open()
+    Call Application.RegisterXLL(GetXll())
+    Call WRPSetMessage(vbNullString)
+    
+    With CController
+        Call .Init
+    End With
+    
+    With FormulaEntity
+    End With
+End Sub
+
+'Public Sub Auto_Close()
+    'Call Application.ExecuteExcel4Macro("UNREGISTER(""" + GetXll() & """)")
+'End Sub
+
+Public Function GetXll() As String
+    GetXll = CDDXApp.GetDLLPath(False, False, ".xll")
+End Function
+
+Public Function GetHelp() As String
+    GetHelp = CDDXApp.GetDLLPath(False, True, ".chm")
+End Function
+
+Public Function IsFormulaLicensed() As Boolean
+    With CDDXLogin
+        IsFormulaLicensed = .Loggedin And .PermProfile
+    End With
+End Function
+Attribute VB_Name = "ZEFormulas"
+Option Explicit
+Option Private Module
+
+Private Function IsArrayEmpty(Arr As Variant) As Boolean
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' IsArrayEmpty
+' This function tests whether the array is empty (unallocated). Returns TRUE or FALSE.
+'
+' The VBA IsArray function indicates whether a variable is an array, but it does not
+' distinguish between allocated and unallocated arrays. It will return TRUE for both
+' allocated and unallocated arrays. This function tests whether the array has actually
+' been allocated.
+'
+' This function is really the reverse of IsArrayAllocated.
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    Dim LB As Long
+    Dim ub As Long
+
+    Err.Clear
+    On Error Resume Next
+    If IsArray(Arr) = False Then
+        ' we weren't passed an array, return True
+        IsArrayEmpty = True
+    End If
+
+    ' Attempt to get the UBound of the array. If the array is
+    ' unallocated, an error will occur.
+    ub = UBound(Arr, 1)
+    If (Err.Number <> 0) Then
+        IsArrayEmpty = True
+    Else
+        ''''''''''''''''''''''''''''''''''''''''''
+        ' On rare occassion, under circumstances I
+        ' cannot reliably replictate, Err.Number ''''''''
+        ' will be 0 for an unallocated, empty array.
+        ' On these occassions, LBound is 0 and
+        ' UBound is -1.
+        ' To accomodate the weird behavior, test to
+        ' see if LB > UB. If so, the array is not
+        ' allocated.
+        ''''''''''''''''''''''''''''''''''''''''''
+        Err.Clear
+        LB = LBound(Arr)
+        If LB > ub Then
+            IsArrayEmpty = True
+        Else
+            IsArrayEmpty = False
+        End If
+    End If
+
+End Function
+
+Private Function formatAggregation(aggregation As String) As String
+    formatAggregation = aggregation
+    If Len(aggregation) > 0 Then
+        If StrComp(aggregation, "Average", vbTextCompare) = 0 Or StrComp(aggregation, "a", vbTextCompare) = 0 Then
+            formatAggregation = "Average"
+        ElseIf StrComp(aggregation, "Sum", vbTextCompare) = 0 Or StrComp(aggregation, "s", vbTextCompare) = 0 Then
+            formatAggregation = "Sum"
+        ElseIf StrComp(aggregation, "Count", vbTextCompare) = 0 Or StrComp(aggregation, "c", vbTextCompare) = 0 Then
+            formatAggregation = "Count"
+        ElseIf StrComp(aggregation, "Max", vbTextCompare) = 0 Or StrComp(aggregation, "mx", vbTextCompare) = 0 Then
+            formatAggregation = "Max"
+        ElseIf StrComp(aggregation, "Min", vbTextCompare) = 0 Or StrComp(aggregation, "mn", vbTextCompare) = 0 Then
+            formatAggregation = "Min"
+        ElseIf StrComp(aggregation, "Distinct Count", vbTextCompare) = 0 Or StrComp(aggregation, "dc", vbTextCompare) = 0 Then
+            formatAggregation = "Distinct Count"
+        ElseIf StrComp(aggregation, "Std Deviation", vbTextCompare) = 0 Or StrComp(aggregation, "sd", vbTextCompare) = 0 Then
+            formatAggregation = "Std Deviation"
+        ElseIf StrComp(aggregation, "Variance", vbTextCompare) = 0 Or StrComp(aggregation, "v", vbTextCompare) = 0 Then
+            formatAggregation = "Variance"
+        ElseIf StrComp(aggregation, "Group", vbTextCompare) = 0 Or StrComp(aggregation, "g", vbTextCompare) = 0 Then
+            formatAggregation = "Group"
+        End If
+    End If
+End Function
+
+Private Function FormatInterval(interStr As String) As String
+    FormatInterval = interStr
+    If Len(interStr) > 0 Then
+        If StrComp(interStr, "minute", vbTextCompare) = 0 Or StrComp(interStr, "minutely", vbTextCompare) = 0 Or StrComp(interStr, "1min", vbTextCompare) = 0 Then
+            FormatInterval = "minute"
+        ElseIf StrComp(interStr, "5-minutes", vbTextCompare) = 0 Or StrComp(interStr, "Five_minutes", vbTextCompare) = 0 Or StrComp(interStr, "5min", vbTextCompare) = 0 Then
+            FormatInterval = "5-minutes"
+        ElseIf StrComp(interStr, "10-minutes", vbTextCompare) = 0 Or StrComp(interStr, "Ten_minutes", vbTextCompare) = 0 Or StrComp(interStr, "10min", vbTextCompare) = 0 Then
+            FormatInterval = "10-minutes"
+        ElseIf StrComp(interStr, "15-minutes", vbTextCompare) = 0 Or StrComp(interStr, "Fifteen_minutes", vbTextCompare) = 0 Or StrComp(interStr, "15min", vbTextCompare) = 0 Then
+            FormatInterval = "15-minutes"
+        ElseIf StrComp(interStr, "30-minutes", vbTextCompare) = 0 Or StrComp(interStr, "Thirty_minutes", vbTextCompare) = 0 Or StrComp(interStr, "30min", vbTextCompare) = 0 Then
+            FormatInterval = "30-minutes"
+        ElseIf StrComp(interStr, "hourly", vbTextCompare) = 0 Or StrComp(interStr, "h", vbTextCompare) = 0 Then
+            FormatInterval = "hourly"
+        ElseIf StrComp(interStr, "daily", vbTextCompare) = 0 Or StrComp(interStr, "d", vbTextCompare) = 0 Then
+            FormatInterval = "daily"
+        ElseIf StrComp(interStr, "weekly", vbTextCompare) = 0 Or StrComp(interStr, "w", vbTextCompare) = 0 Then
+            FormatInterval = "weekly"
+        ElseIf StrComp(interStr, "monthly", vbTextCompare) = 0 Or StrComp(interStr, "m", vbTextCompare) = 0 Then
+            FormatInterval = "monthly"
+        ElseIf StrComp(interStr, "quarterly", vbTextCompare) = 0 Or StrComp(interStr, "q", vbTextCompare) = 0 Then
+            FormatInterval = "quarterly"
+        ElseIf StrComp(interStr, "annual", vbTextCompare) = 0 Or StrComp(interStr, "a", vbTextCompare) = 0 Then
+            FormatInterval = "annual"
+        End If
+    End If
+End Function
+
+Public Function GetUser(ByVal value As String) As String
+    GetUser = IIf(value = vbNullString, CDDXLogin.EffectiveUser, value)
+End Function
+
+Public Function GetGroup(ByVal value As String) As String
+    GetGroup = IIf(value = vbNullString, "NOGROUP", value)
+End Function
+
+Public Function udf_ListDataSources() As String
+ Dim entity As ZEWSProxy.DataSourceEntity
+
+    On Error GoTo OOPS
+    f_taskid = vbNullString
+    'udf_ListDataSources = "Data Sources"
+
+    Set entity = New ZEWSProxy.DataSourceEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListDataSources", entity, "DataSource Name")
+    
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListDataSources = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListReports(ByVal dataSource As String) As String
+ Dim entity As ZEWSProxy.DataReportEntity
+ 
+    On Error GoTo OOPS
+    f_taskid = vbNullString
+    'udf_ListReports = "Reports: " + dataSource
+
+    Set entity = New ZEWSProxy.DataReportEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListReports", entity, "Report Name")
+
+    entity.dataSourceLabel = dataSource
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListReports = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListObservations(ByVal dataSource As String, ByVal report As String) As String
+ Dim entity As ZEWSProxy.ObservationEntity
+ 
+    On Error GoTo OOPS
+    f_taskid = vbNullString
+    'udf_ListObservations = "Observations: " + dataSource + "-" + report
+
+    Set entity = New ZEWSProxy.ObservationEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListObservations", entity, "Observation Name")
+
+    entity.dataSourceLabel = dataSource
+    entity.dataReportLabel = report
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListObservations = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListAttributes(ByVal dataSource As String, ByVal report As String) As String
+ Dim entity As ZEWSProxy.ReportAttributeEntity
+ 
+    On Error GoTo OOPS
+    f_taskid = vbNullString
+    ' udf_ListAttributes = "Attributes: " + dataSource + "-" + report
+    
+    Set entity = New ZEWSProxy.ReportAttributeEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListAttributes", entity, "Attribute Names")
+
+    entity.dataSourceLabel = dataSource
+    entity.dataReportLabel = report
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListAttributes = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListAttributeValues(ByVal dataSource As String, ByVal report As String, observations() As String) As String   'ByVal dataSource As String, ByVal report As String, Optional observations As Variant
+ Dim entity As ZEWSProxy.ReportAttributeValuesEntity
+ 
+    On Error GoTo OOPS
+    f_taskid = vbNullString
+    'udf_ListAttributeValues = "Attribute Values: " + dataSource + "-" + report
+
+    Set entity = New ZEWSProxy.ReportAttributeValuesEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListAttributeValues", entity, "Report Attribute Values")
+ 
+    entity.dataSourceLabel = dataSource
+    entity.dataReportLabel = report
+    If Len(Join(observations)) > 0 Then
+        Call entity.SetObservationLabels(observations)
+    End If
+    
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListAttributeValues = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_FuturesMatrix(ByVal dataSource As String, ByVal report As String, observations() As String, tickerValues() As String, ricCodes() As String, ByVal oprDate As Date, ByVal tickerName As String) As String                                   'Optional from ricCodes As Variant
+    On Error GoTo OOPS
+
+    Call RetrieveReportData("ZE_FuturesMatrix", dataSource, report, observations, False, , , tickerName, tickerValues, ricCodes, oprDate, oprDate)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_FuturesMatrix = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_Report(ByVal dataSource As String, ByVal report As String, observations() As String, ByVal attributeName As String, _
+                           attributeValueMatrix As Variant, ByVal startDate As Date, ByVal endDate As Date, _
+                           ByVal aggregation As String, ByVal interval As String, ByVal Header As String) As String 'Optional from attributeValues
+10        On Error GoTo OOPS
+          Dim multipleAttributeValues() As String
+          Dim attributeValueLabels() As String
+
+20         udf_Report = "Report: " + dataSource + "-" + report + "(" & Join(observations, ",") + ")"
+           
+30        If (attributeName <> vbNullString) Then
+40            attributeValueLabels = attributeValueMatrix
+50        Else
+             If Not IsEmpty(attributeValueMatrix) Then
+60             multipleAttributeValues = attributeValueMatrix
+             End If
+70        End If
+          
+80        Call RetrieveReportData("ZE_Report", dataSource, report, observations, False, attributeName, attributeValueLabels, attributeName, , , startDate, endDate, aggregation, interval, Header, multipleAttributeValues)
+          
+OOPS:
+90        If Err.Number <> 0 Then
+100           udf_Report = Err.Description
+110           Call SetErr(Err.Description)
+120        End If
+           
+130        On Error GoTo 0
+140       Exit Function
+End Function
+
+Public Function udf_DataSheet(ByVal dataSource As String, ByVal report As String, observations() As String, ByVal attributeName As String, _
+                            attributeValueMatrix As Variant, ByVal startDate As Date, ByVal endDate As Date, _
+                            ByVal aggregation As String, ByVal interval As String, ByVal Header As String) As String 'Optional from ByVal startDate As Date
+    On Error GoTo OOPS
+    
+     Dim multipleAttributeValues() As String
+     Dim attributeValueLabels() As String
+     
+30        If (attributeName <> vbNullString) Then
+40            attributeValueLabels = attributeValueMatrix
+50        Else
+            If Not IsEmpty(attributeValueMatrix) Then
+60             multipleAttributeValues = attributeValueMatrix
+            End If
+70        End If
+    
+    Call RetrieveReportData("ZE_DataSheet", dataSource, report, observations, True, attributeName, attributeValueLabels, attributeName, , , startDate, endDate, aggregation, interval, Header, multipleAttributeValues)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_DataSheet = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Private Function RetrieveReportData(formulaName As String, dataSourceLabel As String, dataReportLabel As String, observationLabels() As String, isDataSheet As Boolean, _
+            Optional attributeNameLabel As String, Optional attributeValues As Variant, Optional tickerName As Variant, Optional tickerValues As Variant, Optional ricCodes As Variant, _
+            Optional fromDate As Date, Optional toDate As Date, Optional aggregation As Variant, Optional interval As Variant, Optional Header As Variant, Optional multipleAttributeValues As Variant) As String
+    Dim attributeValueLabels() As String, tickNameLabels() As String, ricCodeLabels() As String
+    Dim tickernm As String
+    Dim i As Variant
+    Dim sms As Boolean
+    
+    f_taskid = vbNullString
+    
+    If IsMissing(attributeValues) = False Then
+        attributeValueLabels = attributeValues
+    End If
+    If IsMissing(tickerValues) = False Then
+        tickNameLabels = tickerValues
+    End If
+    If IsMissing(tickerName) = False Then
+        tickernm = tickerName
+    End If
+    If IsMissing(ricCodes) = False Then
+        ricCodeLabels = ricCodes
+    End If
+    
+    Dim entity As ZEWSProxy.ReportDataEntity
+    Set entity = New ZEWSProxy.ReportDataEntity
+    Set entity = FormulaEntity.NewEntity(formulaName, entity, "Report Data", Header)
+      
+      f_taskid = entity.EntityObject.taskID
+      entity.dataSourceLabel = dataSourceLabel
+      entity.dataReportLabel = dataReportLabel
+      entity.IsSimple = isDataSheet
+      Call entity.SetObservationLabels(observationLabels)
+      entity.EntityObject.aggregation = formatAggregation(CStr(aggregation))
+      entity.EntityObject.interval = FormatInterval(CStr(interval))
+      
+      Call modOptsParse.SetHeaderOptions(entity, Header, sms)
+      entity.SeriesFilterSet = sms
+    
+      With entity.EntityObject.EntityOption
+       .SelectedQuickDate = "Last Whole Week (Mo. - Su.)" 'do not break other applications
+       .DateInputOption = DateInputOption_DirectInput
+       .InputStartDate = fromDate
+       .InputEndDate = toDate
+      End With
+
+      If IsArrayEmpty(multipleAttributeValues) Then
+        Call entity.buildAdditionalReports(entity, attributeNameLabel, attributeValueLabels, tickernm, tickNameLabels, ricCodeLabels)
+      Else
+        Call entity.AddReportAttributesAndFilter(multipleAttributeValues)
+      End If
+      
+      Call FormulaEntity.LoadForumlaEntity(entity)
+End Function
+
+Public Function udf_ListUsers() As String
+ Dim entity As ZEWSProxy.UserEntity
+
+    On Error GoTo OOPS
+    
+    f_taskid = vbNullString
+    'udf_ListUsers = "Users"
+    
+    Set entity = New ZEWSProxy.UserEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListUsers", entity, "User Name")
+    
+'    entity.currentUserName = CDDXLogin.EffectiveUser
+    entity.WithProfiles = False
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListUsers = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListProfileGroups(Optional ByVal user As String) As String
+    On Error GoTo OOPS
+    
+    Call ProfileTemplateGroups(user, True)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListProfileGroups = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListTemplateGroups(ByVal user As String) As String   'Optional ByVal user As String
+    On Error GoTo OOPS
+    
+    Call ProfileTemplateGroups(user, False)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListTemplateGroups = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Private Sub ProfileTemplateGroups(ByVal user As String, ByVal IsAnalytic As Boolean)
+ Dim entity As ZEWSProxy.GroupEntity
+    
+    f_taskid = vbNullString
+    'ProfileTemplateGroups = IIf(IsAnalytic, "Profile", "Template") + " Groups (" + user + ")"
+
+    Set entity = New ZEWSProxy.GroupEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ProfileTemplateGroups", entity, IIf(IsAnalytic, "Profile", "Template") + " Group Name")
+ 
+    entity.OwnerUserName = user
+    entity.LoginUserName = CDDXLogin.EffectiveUser
+    entity.IsAnalytic = IsAnalytic
+    Call entity.SetUserProfileObject(Nothing)
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+End Sub
+
+Public Function udf_ListProfiles(ByVal user As String, ByVal group As String) As String 'ByVal user As String, optional ByVal group As String
+    On Error GoTo OOPS
+
+    Call ProfileTemplates("ZE_ListProfiles", user, True, group)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListProfiles = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListTemplates(ByVal user As String, ByVal group As String) As String 'ByVal user As String, optional ByVal group As String
+    On Error GoTo OOPS
+
+    Call ProfileTemplates("ZE_ListTemplates", user, False, group)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListTemplates = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Private Sub ProfileTemplates(ByVal formulaName As String, ByVal user As String, ByVal IsAnalytic As Boolean, ByVal group As String)
+ Dim entity As ZEWSProxy.AnalyticTemplateEntity
+ 
+    f_taskid = vbNullString
+    'ProfileTemplates = IIf(IsAnalytic, "Profiles", "Templates") + " (" + user + ")"
+
+    Set entity = New ZEWSProxy.AnalyticTemplateEntity
+    Set entity = FormulaEntity.NewEntity(formulaName, entity, IIf(IsAnalytic, "Analytic", "Template") + " Name")
+
+    entity.OwnerUserName = user
+    entity.LoginUserName = CDDXLogin.EffectiveUser
+    entity.IsAnalytic = IsAnalytic
+    entity.groupName = IIf(group = vbNullString, "NOGROUP", group)
+    Call entity.SetUserProfileObject(Nothing)
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+End Sub
+
+Public Function udf_ListConfigs(ByVal template As String, ByVal user As String, ByVal group As String) As String     'Optional from ByVal user As String
+ Dim entity As ZEWSProxy.LinkedAnalyticEntity
+ 
+    On Error GoTo OOPS
+    
+    f_taskid = vbNullString
+    'udf_ListConfigs = "Configs"
+
+    Set entity = New ZEWSProxy.LinkedAnalyticEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListConfigs", entity, "Config Name")
+
+    entity.OwnerUserName = user
+    entity.LoginUserName = CDDXLogin.EffectiveUser
+    entity.groupName = group
+    entity.templateName = template
+    Call entity.SetUserProfileObject(Nothing)
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListConfigs = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Private Sub ValidateSeriesNums(series() As String)
+    Dim f As Variant
+    Dim k As Long
+    Dim count As Long
+    Dim c As Integer
+ 
+    If Len(Join(series)) = 0 Then Exit Sub
+    For Each f In series
+        count = Len(f)
+        If count >= 4 Then
+            Err.Raise vbObjectError + 2, , "Too big a series number! (" + f + ")"
+        End If
+            
+        For k = 1 To count
+            c = Asc(LCase(Mid(f, k, 1)))
+            If c < Asc("a") Or c > Asc("z") Then
+                Err.Raise vbObjectError + 2, , "Invalid character in series number! (" + f + ")"
+            End If
+        Next
+    Next
+End Sub
+
+Public Function udf_Profile(ByVal profile As String, ByVal userName As String, ByVal profileGroup As String, ByVal template As String, _
+    Optional ByVal startDate As Variant, Optional ByVal endDate As Variant, Optional ByVal forecastDate As Variant, _
+        Optional ByVal shiftEffectDate As Variant, Optional ByVal Header As String)
+
+    On Error GoTo OOPS
+
+    Call RetrieveProfile("ZE_Profile", profile, userName, profileGroup, template, vbNullString, startDate, endDate, forecastDate, shiftEffectDate, Header)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_Profile = Err.Description
+        Call SetErr(Err.Description)
+    End If
+
+    On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ProfileSeries(ByVal profile As String, ByVal userName As String, ByVal profileGroup As String, ByVal template As String, seriesNo As String, _
+    Optional ByVal startDate As Variant, Optional ByVal endDate As Variant, Optional ByVal forecastDate As Variant, Optional ByVal effectiveDate As Variant, _
+        Optional ByVal Header As String) As String
+
+    On Error GoTo OOPS
+
+    Call RetrieveProfile("ZE_ProfileSeries", profile, userName, profileGroup, template, seriesNo, startDate, endDate, forecastDate, effectiveDate, Header)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ProfileSeries = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+    On Error GoTo 0
+    Exit Function
+End Function
+
+Private Sub RetrieveProfile(ByVal formulaName As String, ByVal analyticOrLinkdAnalytic As String, ByVal user As String, ByVal group As String, template As String, _
+    Optional seriesNo As Variant, _
+        Optional ByVal startDate As Variant, Optional ByVal endDate As Variant, _
+            Optional ByVal forecastDate As Variant, Optional ByVal shEffectDate As Variant, _
+                Optional ByVal Header As String)
+
+
+    ' shift effective date format
+    Const EFFECT_DT_FMT As String = "mm\/dd\/yyyy"
+
+'    Dim seriesIds() As Long
+    Dim i As Long
+    Dim fromDate As Date, toDate As Date, custForecastDate As Date
+    Dim ary() As String
+    Dim idx As Long
+    Dim nullsuppression As Long
+    Dim entity As ZEWSProxy.ProfileDataEntity
+    Dim sms As Boolean
+    
+    f_taskid = vbNullString
+
+    ' specify dates based on parameters passed...
+    If startDate = vbNullString Then fromDate = Date Else fromDate = CDate(startDate)
+    If endDate = vbNullString Then toDate = Date Else toDate = CDate(endDate)
+    If forecastDate = vbNullString Then custForecastDate = Date Else custForecastDate = CDate(forecastDate)
+    If shEffectDate <> vbNullString Then shEffectDate = CDate(shEffectDate)
+
+    ' raise error if start date is > end date
+    If DateSerial(Year(fromDate), Month(fromDate), Day(fromDate)) > DateSerial(Year(toDate), Month(toDate), Day(toDate)) Then
+        Call Err.Raise(vbObjectError + 1, "[" & formulaName & "]ZEFormulas.RetrieveProfile()", _
+            "Invalid date range: Start date cannot be > end date.")
+        Exit Sub
+    End If
+
+    Set entity = New ZEWSProxy.ProfileDataEntity
+    Set entity = FormulaEntity.NewEntity(formulaName, entity, "hasProfileHeader", IIf(IsMissing(Header), vbNullString, Header))
+
+    entity.OwnerUserName = user
+    entity.groupName = group
+
+    If Len(template) = 0 Then
+        entity.profileName = analyticOrLinkdAnalytic
+        entity.templateName = vbNullString
+    Else
+        entity.profileName = template
+        entity.templateName = analyticOrLinkdAnalytic
+    End If
+    If forecastDate <> vbNullString Then
+        entity.IsForecastDateSelected = True
+        entity.forecastDate = custForecastDate
+    Else
+        entity.IsForecastDateSelected = False
+    End If
+
+    If IsDate(shEffectDate) Then
+        entity.shiftEffectiveDate = Format$(shEffectDate, EFFECT_DT_FMT)
+    End If
+
+    Call modOptsParse.SetHeaderOptions(entity, Header, sms)
+
+    With entity.EntityObject.EntityOption
+        .DateInputOption = DateInputOption_DirectInput
+        Call .ClearInputDates
+        If Not IsMissing(startDate) Then
+            .InputStartDate = fromDate
+        End If
+        If Not IsMissing(endDate) Then
+            .InputEndDate = toDate
+        End If
+        If startDate = vbNullString And endDate = vbNullString Then
+            .DateInputOption = DateInputOption_Default
+        End If
+    End With
+
+    entity.SeriesIdFilter = CStr(seriesNo)
+    
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+
+End Sub
+
+Public Function udf_ListCurves(ByVal ExternalOnly As Boolean, ByVal IncludeReadOnly As Boolean, ByVal Granularity As String, ByVal isTimeSeries As Boolean) As String       'Optional ByVal ExternalOnly As Boolean, Optional ByVal IncludeReadOnly As Boolean, Optional ByVal Granularity As String
+    On Error GoTo OOPS
+
+    Call modCurve.FindCurves("Curves ", ExternalOnly, IncludeReadOnly, Granularity, False, isTimeSeries)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListCurves = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListMyCurves(ByVal ExternalOnly As Boolean, ByVal Granularity As String, ByVal isTimeSeries As Boolean) As String     'Optional ByVal ExternalOnly As Boolean
+    On Error GoTo OOPS
+      
+    Call modCurve.FindCurves("My Curves", ExternalOnly, True, Granularity, True, isTimeSeries)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListMyCurves = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_Curve(ByVal curveName As String, ByVal contractDate As Date, ByVal effectiveDate As Date, ByVal curveType As String, ByVal granularityVal As String) As String   'Optional ByVal effectiveDate As Date
+ Dim tid As String
+    
+    On Error GoTo OOPS
+    
+    f_taskid = vbNullString
+    tid = CDDXLib.DefaultZEWSproxy(BSConsts.DDX_PID).NewGUID()
+    
+    Call modCurve.GetCurve(curveName, tid, contractDate, effectiveDate, curveType, granularityVal)
+    f_taskid = tid
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_Curve = Err.Description
+        Call SetErr(Err.Description)
+    End If
+    
+    On Error GoTo -1
+    Exit Function
+End Function
+
+Private Sub GetFuture(ByVal taskID As String, ByVal ds As String, ByVal rpt As String, ob() As String, ByVal opr As Date, ByVal tickerName As String, Ticker() As String, ric() As String, attributeValues() As String)
+' Dim entity As ZEWSProxy.ReportDataEntity
+    
+    f_taskid = vbNullString
+    
+'    Set entity = New ZEWSProxy.ReportDataEntity
+'    entity.EntityObject.formulaName = "ZE_Future"
+'    entity.dataSourceLabel = ds
+'    entity.dataReportLabel = rpt
+'    entity.EntityObject.taskID = taskID
+'    Call entity.SetObservationLabels(ob)
+'    With entity.EntityObject.EntityOption
+'        .InputStartDate = opr
+'        .InputEndDate = opr
+'        .DateInputOption = DateInputOption_DirectInput
+'    End With
+'    Call entity.buildAdditionalReports(entity, vbNullString, attributeValues, tickerName, Ticker, ric)
+'    Call CDDXUtility.SetupEntity(BSConsts.DDX_PID, entity)
+
+    'Call CDDXLib.DefaultZEWSproxy(BSConsts.DDX_PID).FMFutureValue(False, taskID, entity)
+    Call CDDXLib.DefaultZEWSproxy(DDX_PID).FMFutureValue(WRPThisCell.Parent.Parent.Name, CDDXLogin.sid, False, taskID, ds, rpt, ob, Int(CDbl(opr)), attributeValues, tickerName, Ticker, ric)
+End Sub
+
+Function udf_Future(ByVal dataSource As String, ByVal report As String, ByVal observation As String, ByVal TickerValue As String, ByVal ricCode As String, ByVal opr_date As Date, ByVal tickerName As String) As String
+    Dim ob() As String, Tickers() As String, ric() As String, attributeValues() As String
+    Dim tid As String
+    
+    On Error GoTo OOPS
+
+    f_taskid = vbNullString
+    
+    ReDim ob(0)
+    ReDim Tickers(0)
+    ReDim ric(0)
+    ReDim attributeValues(0)
+ 
+    ob(0) = observation
+    Tickers(0) = TickerValue
+    ric(0) = ricCode
+      
+    tid = CDDXLib.DefaultZEWSproxy(BSConsts.DDX_PID).NewGUID()
+    
+    Call GetFuture(tid, dataSource, report, ob, opr_date, tickerName, Tickers, ric, attributeValues)
+    f_taskid = tid
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_Future = Err.Description
+        Call SetErr(Err.Description)
+    End If
+    
+    On Error GoTo -1
+    Exit Function
+End Function
+
+Public Function udf_CurveMatrix(curveNames() As String, contractDates() As String, effectiveDates() As String, Optional ByVal transposed As String) As String           'curveNames() As String, Optional contractDates As Variant, Optional effectiveDates As Variant, Optional ByVal transposed As Boolean
+    On Error GoTo OOPS
+
+    f_taskid = vbNullString
+    Call modCurve.GetCurveEx(curveNames, contractDates, effectiveDates, transposed)
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_CurveMatrix = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListHolidayGroup() As String
+ Dim entity As ZEWSProxy.HolidayGroupEntity
+ 
+    On Error GoTo OOPS
+    
+    f_taskid = vbNullString
+    'udf_ListHolidayGroup = "Holiday Groups"
+
+    Set entity = New ZEWSProxy.HolidayGroupEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListHolidayGroup", entity, "HolidayGroup Name")
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListHolidayGroup = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListHolidays(ByVal HolidayGroup As String, ByVal startDate As Date, ByVal endDate As Date) As String     'Optional from startDate As Date
+ Dim entity As ZEWSProxy.HolidayEntity
+
+    On Error GoTo OOPS
+
+    f_taskid = vbNullString
+    'udf_ListHolidays = "Holidays"
+
+    Set entity = New ZEWSProxy.HolidayEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListHolidays", entity, "Holiday Dates")
+ 
+    entity.HolidayGroup = HolidayGroup
+    With entity.EntityObject
+        .startDate = startDate
+        .endDate = endDate
+        .EntityOption.DateInputOption = DateInputOption_DirectInput
+    End With
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListHolidays = Err.Description
+        Call SetErr(Err.Description)
+     End If
+
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ListBusinessDays(ByVal startDate As Date, ByVal endDate As Date, ByVal excludeHolidayGroup As String, ByVal includeWeekend As Boolean) As String         'Optional ByVal startDate As Date
+ Dim entity As ZEWSProxy.BusinessDayEntity
+ 
+    On Error GoTo OOPS
+    f_taskid = vbNullString
+    'udf_ListBusinessDays = "Business Days"
+
+    Set entity = New ZEWSProxy.BusinessDayEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ListBusinessDays", entity, "Business Day Dates")
+
+    entity.excludeHolidayGroup = excludeHolidayGroup
+    entity.excludeWeekend = Not includeWeekend
+    With entity.EntityObject
+        .startDate = startDate
+        .endDate = endDate
+        .EntityOption.DateInputOption = DateInputOption_DirectInput
+    End With
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ListBusinessDays = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_CountBusinessDays(ByVal startDate As Date, ByVal endDate As Date, ByVal Granularity As String, ByVal HolidayGroup As String, ByVal includeWeekend As Boolean) As String
+ Dim entity As ZEWSProxy.BusinessDayCountEntity
+ 
+    On Error GoTo OOPS
+    
+    f_taskid = vbNullString
+    'udf_CountBusinessDays = "Business Days Count"
+
+'    gran = LCase(IIf(IsMissing(Granularity), vbNullString, Granularity)) 'Granularity, "d,m,w,a")
+
+    Set entity = New ZEWSProxy.BusinessDayCountEntity
+    Set entity = FormulaEntity.NewEntity("ZE_CountBusinessDays", entity, "BusinessDay Count", "")
+
+    entity.excludeHolidayGroup = HolidayGroup
+    entity.includeWeekend = includeWeekend
+    entity.Granularities = Granularity2Code(Granularity)
+    
+    With entity.EntityObject
+        .startDate = startDate
+        .endDate = endDate
+        .EntityOption.DateInputOption = DateInputOption_DirectInput
+    End With
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+    
+OOPS:
+    If Err.Number <> 0 Then
+        udf_CountBusinessDays = Err.Description
+        Call SetErr(Err.Description)
+     End If
+     
+     On Error GoTo 0
+    Exit Function
+End Function
+
+Public Function udf_ValidationSummary(curveNames() As String, ByVal oprDate As Date, vrStatus() As String, ByVal optionVals As String) As String
+ Dim entity As ZEWSProxy.CurveValidationSummaryEntity
+    
+    On Error GoTo OOPS
+    
+    f_taskid = vbNullString
+
+    Set entity = New ZEWSProxy.CurveValidationSummaryEntity
+    Set entity = FormulaEntity.NewEntity("ZE_ValidationSummary", entity, vbNullString)
+ 
+    Call entity.SetCurves(curveNames)
+    entity.oprDate = Int(CDbl(oprDate))
+    Call entity.SetStatus(vrStatus)
+
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+
+OOPS:
+    If Err.Number <> 0 Then
+        udf_ValidationSummary = Err.Description
+        Call SetErr(Err.Description)
+    End If
+    
+    On Error GoTo -1
+    Exit Function
+End Function
+Attribute VB_Name = "modCurve"
+Option Explicit
+Option Private Module
+
+Private m_sid As String
+'
+
+Private Sub CheckCurveAccessPermission()
+    m_sid = CDDXLogin.sid
+End Sub
+
+Public Sub GetCurve(ByVal curveName As String, ByVal taskID As String, ByVal contractDate As Date, ByVal effectiveDate As Date, ByVal curveType As String, ByVal granularityVal As String)
+ Dim curtype As String
+ 
+    curtype = vbNullString
+    Call CDDXLib.DefaultZEWSproxy(BSConsts.DDX_PID).FMCurveValue(WRPThisCell.Parent.Parent.Name, CDDXLogin.sid, False, taskID, curveName, CDbl(effectiveDate), CDbl(contractDate), Granularity2Code(granularityVal), curveType)
+
+End Sub
+ 
+Public Function Granularity2Code(ByVal value As String) As Long
+    value = Switch(StrComp(value, "Monthly", vbTextCompare) = 0, "M", _
+                   StrComp(value, "Daily", vbTextCompare) = 0, "D", _
+                   StrComp(value, "Hourly", vbTextCompare) = 0, "H", _
+                   StrComp(value, "Weekly", vbTextCompare) = 0, "W", _
+                   StrComp(value, "Quarterly", vbTextCompare) = 0, "Q", _
+                   StrComp(value, "Annual", vbTextCompare) = 0, "Y", _
+                   StrComp(value, "Minutely", vbTextCompare) = 0, "N", _
+                   True = True, value)
+
+    Granularity2Code = Switch(StrComp(value, "M", vbTextCompare) = 0, CURVE_GRANULARITY_MONTHLY, _
+                   StrComp(value, "D", vbTextCompare) = 0, CURVE_GRANULARITY_DAILY, _
+                   StrComp(value, "H", vbTextCompare) = 0, CURVE_GRANULARITY_HOURLY, _
+                   StrComp(value, "W", vbTextCompare) = 0, CURVE_GRANULARITY_WEEKLY, _
+                   StrComp(value, "Q", vbTextCompare) = 0, CURVE_GRANULARITY_QUARTERLY, _
+                   StrComp(value, "Y", vbTextCompare) = 0, CURVE_GRANULARITY_YEARLY, _
+                   StrComp(value, "WEEKDAY", vbTextCompare) = 0, CURVE_GRANULARITY_WEEKDAY, _
+                   StrComp(value, "WEEKEND", vbTextCompare) = 0, CURVE_GRANULARITY_WEEKEND, _
+                   StrComp(value, "MON2SUN", vbTextCompare) = 0, CURVE_GRANULARITY_WEEKLY_MON2SUN, _
+                   StrComp(value, "SUN2SAT", vbTextCompare) = 0, CURVE_GRANULARITY_WEEKLY_SUN2SAT, _
+                   StrComp(value, "N", vbTextCompare) = 0, CURVE_GRANULARITY_MINUTELY, _
+                   StrComp(value, "1MIN", vbTextCompare) = 0, CURVE_GRANULARITY_MIN1, _
+                   StrComp(value, "5MIN", vbTextCompare) = 0, CURVE_GRANULARITY_MIN5, _
+                   StrComp(value, "10MIN", vbTextCompare) = 0, CURVE_GRANULARITY_MIN10, _
+                   StrComp(value, "15MIN", vbTextCompare) = 0, CURVE_GRANULARITY_MIN15, _
+                   StrComp(value, "30MIN", vbTextCompare) = 0, CURVE_GRANULARITY_MIN30, _
+                   True = True, CURVE_GRANULARITY_NONE)
+End Function
+
+Private Function Granularity2Code2(ByVal value As String) As Long
+ Dim all() As String
+ Dim g As Long
+ Dim k As Long
+ 
+    value = Trim(value)
+    If Len(value) = 0 Then Exit Function
+    
+    all = Split(value, ",")
+    For k = LBound(all) To UBound(all)
+        g = g Or Granularity2Code(Trim(all(k)))
+    Next
+    Granularity2Code2 = g
+End Function
+
+Public Sub FindCurves(ByVal functionName As String, ByVal ExternalOnly As Boolean, ByVal IncludeReadOnly As Boolean, ByVal Granularity As String, ByVal CurentUserOnly As Boolean, ByVal isTimeSeries As Boolean)
+ Dim message As String
+ Dim entity As ZEWSProxy.CurveNameEntity
+ 
+    Call CheckCurveAccessPermission
+
+    If ExternalOnly Then
+        message = "External"
+    End If
+          
+    If IncludeReadOnly Then
+        message = IIf(Len(message) > 0, message + ", ", "") + "Read Only Included"
+    End If
+
+    Set entity = New ZEWSProxy.CurveNameEntity
+    Set entity = FormulaEntity.NewEntity("ze_listcurves", entity, "Curve Name")
+
+    entity.Granularities = Granularity2Code2(Granularity)
+    entity.FindFlags = IIf(IncludeReadOnly, CURVE_FIND_INCLUDE_RDONLY, 0) Or _
+                        IIf(ExternalOnly, CURVE_FIND_EXTERNAL_ONLY, 0) Or _
+                        IIf(isTimeSeries, CURVE_FIND_TIMESERIES, 0) Or _
+                        IIf(CurentUserOnly, CURVE_FIND_CURRENT_USER, 0)
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+End Sub
+
+Private Function ConcatDates(values() As Date) As String
+ Dim k As Long
+ 
+    For k = LBound(values) To UBound(values)
+        ConcatDates = ConcatDates + IIf(k > LBound(values), " ", vbNullString) + CStr(CDbl(values(k)))
+    Next
+End Function
+
+Private Function GetCurveDates(values() As String) As Double()
+ Dim dtes() As Double
+ Dim k As Long
+ 
+    If Len(Join(values)) = 0 Then Exit Function
+   
+    ReDim dtes(LBound(values) To UBound(values))
+    For k = LBound(values) To UBound(values)
+        dtes(k) = Val(values(k))
+    Next
+     
+    GetCurveDates = dtes
+End Function
+
+Private Function GetTransposed(ByVal transposed As String) As Long
+ Dim v As Long
+ 
+    v = Int(Val(transposed))
+    If v >= 0 And v <= 3 Then GetTransposed = v
+End Function
+
+Public Sub GetCurveEx(curveNames() As String, contractDates() As String, effectiveDates() As String, Optional ByVal transposed As String)
+ Dim entity As ZEWSProxy.CurveDataEntity
+ 
+    Call CheckCurveAccessPermission
+    
+    Set entity = New ZEWSProxy.CurveDataEntity
+    Set entity = FormulaEntity.NewEntity("ze_curvematrix", entity, vbNullString, "0")
+    
+    Call entity.SetCurves(curveNames)
+    If Not IsMissing(contractDates) Then Call entity.SetContractDates(GetCurveDates(contractDates))
+    If Not IsMissing(effectiveDates) Then Call entity.SetEffectiveDates(GetCurveDates(effectiveDates))
+    entity.flagValues = GetTransposed(transposed) 'IIf(transposed, CURVE_FLG_PIVOT, 0)
+    
+    Call FormulaEntity.LoadForumlaEntity(entity)
+    f_taskid = entity.EntityObject.taskID
+
+End Sub
+Attribute VB_Name = "modFE"
+Option Explicit
+Option Private Module
+
+Public Sub FE_CountBusinessDays(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_CountBusinessDays(WRPToDate(startDate), WRPToDate(endDate), Granularity, GetGroup(HolidayGroup), WRPToBool(includeWeekend))
+    Call udf_CountBusinessDays(WRPDate(1), WRPDate(2), WRPStr(3), GetGroup(WRPStr(4)), WRPBool(5))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListReports(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListReports(dataSource)
+    Call udf_ListReports(WRPStr(1))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListDataSources(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    Call udf_ListDataSources
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListHolidayGroup(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    Call udf_ListHolidayGroup
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListUsers(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    Call udf_ListUsers
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_CurveMatrix(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_CurveMatrix(WRPToArray(curveNames), contractDates, effectiveDates, WRPToBool(transposed))
+    Call udf_CurveMatrix(WRPArray(1), WRPArray(2), WRPArray(3), WRPStr(4))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListCurves(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListCurves(WRPToBool(ExternalOnly), WRPToBool(IncludeReadOnly), Granularity, WRPToBool(isTimeSeries))
+    Call udf_ListCurves(WRPBool(1), WRPBool(2), WRPStr(3), WRPBool(4))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListAttributes(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListAttributes(dataSource, report)
+    Call udf_ListAttributes(WRPStr(1), WRPStr(2))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListAttributeValues(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListAttributeValues(dataSource, report, WRPToArray(observations))
+    Call udf_ListAttributeValues(WRPStr(1), WRPStr(2), WRPArray(3))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_FuturesMatrix(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_FuturesMatrix(dataSource, report, WRPToArray(observations), WRPToArray(tickerValues), WRPToArray(ricCodes), WRPToDate(oprDate), tickerName)
+    Call udf_FuturesMatrix(WRPStr(1), WRPStr(2), WRPArray(3), WRPArray(4), WRPArray(5), WRPDate(6), WRPStr(7))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListBusinessDays(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListBusinessDays(WRPToDate(startDate), WRPToDate(endDate), excludeHolidayGroup, WRPToBool(includeWeekend))
+    Call udf_ListBusinessDays(WRPDate(1), WRPDate(2), WRPStr(3), WRPBool(4))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListConfigs(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListConfigs(template, GetUser(user), GetGroup(group))
+    Call udf_ListConfigs(WRPStr(1), GetUser(WRPStr(2)), GetGroup(WRPStr(3)))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListHolidays(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListHolidays(HolidayGroup, WRPToDate(startDate), WRPToDate(endDate))
+    Call udf_ListHolidays(WRPStr(1), WRPDate(2), WRPDate(3))
+    Call WRPShowInCellMessage
+
+End Sub
+
+Public Sub FE_ListMyCurves(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListMyCurves(WRPToBool(ExternalOnly), Granularity, WRPToBool(isTimeSeries))
+    Call udf_ListMyCurves(WRPBool(1), WRPStr(2), WRPBool(3))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListObservations(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListObservations(dataSource, report)
+    Call udf_ListObservations(WRPStr(1), WRPStr(2))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListProfileGroups(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListProfileGroups(GetUser(user))
+    Call udf_ListProfileGroups(GetUser(WRPStr(1)))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListProfiles(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListProfiles(GetUser(user), GetGroup(group))
+    Call udf_ListProfiles(GetUser(WRPStr(1)), GetGroup(WRPStr(2)))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListTemplateGroups(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListTemplateGroups(GetUser(user))
+    Call udf_ListTemplateGroups(GetUser(WRPStr(1)))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ListTemplates(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_ListTemplates(GetUser(user), GetGroup(group))
+    Call udf_ListTemplates(GetUser(WRPStr(1)), GetGroup(WRPStr(2)))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_Profile(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    Call udf_Profile(WRPStr(eProfName), GetUser(WRPStr(eUsrName)), WRPStr(eProfGrp), WRPStr(eTmplName), _
+        WRPStr(eSrtDate), WRPStr(eEndDate), WRPStr(eFcstDate), WRPStr(eShftEffDate), WRPStr(eHdr))
+
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ProfileSeries(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    Call udf_ProfileSeries(WRPStr(eProfName), GetUser(WRPStr(eUsrName)), GetGroup(WRPStr(eProfGrp)), WRPStr(eTmplName), _
+        WRPStr(5), WRPStr(eSrtDate + 1), WRPStr(eEndDate + 1), WRPStr(eFcstDate + 1), WRPStr(eShftEffDate + 1), WRPStr(eHdr + 1))
+
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_Report(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+ 
+' First row is holds the Headers and rest hold the associated values.
+' WRPMatrix
+ Dim attribname As String
+ 
+    attribname = WRPStr(4)
+    'If (attributeName <> vbNullString) Then
+    If (attribname <> vbNullString) Then
+        'Call WRPSetMessage(udf_Report(dataSource, report, WRPToArray(observations), attributeName, WRPToArray(attributeValueMatrix), WRPToDate(startDate), WRPToDate(endDate), aggregation, interval, Header))
+        Call udf_Report(WRPStr(1), WRPStr(2), WRPArray(3), attribname, WRPArray(5), WRPDate(6), WRPDate(7), WRPStr(8), WRPStr(9), WRPStr(10))
+    Else
+        'Call WRPSetMessage(udf_Report(dataSource, report, WRPToArray(observations), attributeName, WRPToMatrix(attributeValueMatrix), WRPToDate(startDate), WRPToDate(endDate), aggregation, interval, Header))
+        Call udf_Report(WRPStr(1), WRPStr(2), WRPArray(3), attribname, WRPMatrix(5), WRPDate(6), WRPDate(7), WRPStr(8), WRPStr(9), WRPStr(10))
+    End If
+    
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_DataSheet(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+    
+' First row is holds the Headers and rest hold the associated values.
+' WRPMatrix
+ Dim attribname As String
+ 
+    attribname = WRPStr(4)
+    'If (attributeName <> vbNullString) Then
+    If (attribname <> vbNullString) Then
+        'Call WRPSetMessage(udf_DataSheet(dataSource, report, WRPToArray(observations), attributeName, WRPToArray(attributeValueMatrix), WRPToDate(startDate), WRPToDate(endDate), aggregation, interval, Header))
+        Call udf_DataSheet(WRPStr(1), WRPStr(2), WRPArray(3), attribname, WRPArray(5), WRPDate(6), WRPDate(7), WRPStr(8), WRPStr(9), WRPStr(10))
+    Else
+        'Call WRPSetMessage(udf_DataSheet(dataSource, report, WRPToArray(observations), attributeName, WRPToMatrix(attributeValueMatrix), WRPToDate(startDate), WRPToDate(endDate), aggregation, interval, Header))
+        Call udf_DataSheet(WRPStr(1), WRPStr(2), WRPArray(3), attribname, WRPMatrix(5), WRPDate(6), WRPDate(7), WRPStr(8), WRPStr(9), WRPStr(10))
+    End If
+    Call WRPShowInCellMessage
+End Sub
+                      
+Public Sub FE_Curve(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+    
+    'Call udf_Curve(curveName, WRPToDate(contractDate), WRPToDate(effectiveDate))
+    Call udf_Curve(WRPStr(1), WRPDate(2), WRPDate(3), WRPStr(4), WRPStr(5))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_Future(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+
+    'Call udf_Future(dataSource, report, observation, TickerValue, ricCode, WRPToDate(oprDate), tickerName)
+    Call udf_Future(WRPStr(1), WRPStr(2), WRPStr(3), WRPStr(4), WRPStr(5), WRPDate(6), WRPStr(7))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_ValidationSummary(pid As String)
+    If Not WRPCheckPermission(pid) Then Exit Sub
+ 
+    Call udf_ValidationSummary(WRPArray(1), WRPDate(2), WRPArray(3), WRPStr(4))
+    Call WRPShowInCellMessage
+End Sub
+
+Public Sub FE_Err(pid As String)
+    'If Not WRPCheckPermission(pid) Then Exit Sub
+    
+ Dim args() As String
+
+    args = Split(pid, vbTab)
+    If UBound(args) <> 1 Then Exit Sub
+
+    Call WRPSetMessage(WRPStr(1) + GetThisDimension(args(1)))
+End Sub
+
+'Sub Test()
+'   ' Call FE_FuturesMatrix("29707791-56E7-4930-8118-AAF18BE861EB", "NYMEX", "Future Settlement", "1,1|Settle", "1,1|NG", "1,1|F14", 41306#, "Ticker")
+'    'Call FE_DataSheet("29707791-56E7-4930-8118-AAF18BE861EB", "NYMEX", "Future Settlements", "1,1|Settle", "2,3|Contract Year|Ticker|Contract Month|2014|NG|Jan", 41276#, 41276#, "", "", "1")
+'    'Call FE_ListUsers("29707791-56E7-4930-8118-AAF18BE861EB")
+'    Call FE_DataSheet("29707791-56E7-4930-8118-AAF18BE861EB", "NYMEX", "Future Settlements", "Settle", "1,1|Ticker", "1,1|NG.F15", 41645#, 41655#, "", "", "1")
+'End Sub
+Attribute VB_Name = "modFEHelp"
+Option Explicit
+Option Private Module
+
+Public Const ERR_PREFIX As String = "#! "
+
+Private Const C_ZE_FINAL_RESULT As Long = &H2000
+Private Const C_ZE_TYPE_STR  As Long = &H4
+Private Const C_PROCESSING As String = "Processing ..."
+
+Private Const C_SEPERATOR  As String = vbLf
+
+#If Win64 Then
+Private Declare PtrSafe Sub ZESetResult Lib "ZEDDXCalc64.xll" Alias "#2" (ByVal typValue As Long, ByVal retVal As LongPtr)
+Private Declare PtrSafe Function ZEGetResult Lib "ZEDDXCalc64.xll" Alias "#1" (ByVal paramPos As Long) As LongPtr
+Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal Destination As LongPtr, ByVal Source As LongPtr, ByVal Length As Long)
+#ElseIf VBA7 Then
+Private Declare PtrSafe Sub ZESetResult Lib "ZEDDXCalc.xll" Alias "#2" (ByVal typValue As Long, ByVal retVal As LongPtr)
+Private Declare PtrSafe Function ZEGetResult Lib "ZEDDXCalc.xll" Alias "#1" (ByVal paramPos As Long) As LongPtr
+Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal Destination As LongPtr, ByVal Source As LongPtr, ByVal Length As Long)
+#Else
+Private Declare Sub ZESetResult Lib "ZEDDXCalc.xll" Alias "#2" (ByVal typValue As Long, ByVal retVal As Long)
+Private Declare Function ZEGetResult Lib "ZEDDXCalc.xll" Alias "#1" (ByVal paramPos As Long) As Long
+Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal Destination As Long, ByVal Source As Long, ByVal Length As Long)
+#End If
+
+Private m_this_cell_wb As String
+Private m_this_cell_ws As String
+Private m_this_cell_address As String
+
+Private m_err As String
+Public f_taskid As String
+
+Public Function GetThisDimension(ByVal dimInfo As String) As String
+ Dim rs As Long
+ Dim cs As Long
+ 
+    Call CController.GetDimensions(dimInfo, rs, cs)
+    If rs <= 0 Or cs <= 0 Then Exit Function
+    
+    GetThisDimension = CController.Dimensions(rs, cs)
+End Function
+
+Public Sub SetErr(ByVal msg As String)
+    On Error GoTo OOPS
+    
+    If msg = vbNullString Then
+        m_err = vbNullString
+    Else
+        m_err = ERR_PREFIX + msg + GetThisDimension(vbNullString)
+    End If
+    
+OOPS:
+    Exit Sub
+End Sub
+
+Public Sub WRPSetMessage(retVal As String, Optional finalResult As Boolean = False, Optional isMessage As Boolean = True)
+    On Error GoTo OOPS
+    Call ZESetResult(IIf(isMessage, C_ZE_TYPE_STR, 0) Or IIf(finalResult, C_ZE_FINAL_RESULT, 0), StrPtr(retVal))
+    
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    Exit Sub
+End Sub
+
+Public Function WRPStr(ByVal paramPos As Long) As String
+#If Win64 Or VBA7 Then
+ Dim ptr As LongPtr
+#Else
+ Dim ptr As Long
+#End If
+
+    On Error GoTo OOPS
+    ptr = ZEGetResult(paramPos)
+    If ptr = 0 Then Exit Function
+    
+    Call CopyMemory(VarPtr(WRPStr), VarPtr(ptr), Len(ptr))
+    
+    'CDDXApp.DebugMessage = CStr(paramPos) + "=" + WRPStr
+    
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    Exit Function
+End Function
+
+Public Function WRPDate(ByVal paramPos As Long) As Date
+ Dim value As String
+ 
+    value = WRPStr(paramPos)
+    WRPDate = CDate(Val(value))
+End Function
+
+Public Function WRPBool(ByVal paramPos As Long) As Boolean
+ Dim value As String
+ 
+    value = WRPStr(paramPos)
+    WRPBool = IIf(Val(value) = 0, False, True)
+End Function
+
+Private Sub GetDimensions(firstEle As String, rowNum As Long, colNum As Long)
+ Dim tokens() As String
+ 
+    tokens = Split(firstEle, ",")
+    
+    rowNum = Val(tokens(LBound(tokens)))
+    colNum = Val(tokens(LBound(tokens) + 1))
+End Sub
+
+Public Function WRPArray(ByVal paramPos As Long) As String()
+ Dim p As Long
+ Dim value As String
+ 
+    value = WRPStr(paramPos)
+    If Len(value) = 0 Then Exit Function
+    
+    p = InStr(value, C_SEPERATOR)
+    WRPArray = Split(Mid(value, p + 1), C_SEPERATOR)
+End Function
+
+Public Function WRPMatrix(ByVal paramPos As Long) As Variant
+ Dim tmp() As String
+ Dim c As Long
+ Dim r As Long
+ Dim clp As Long
+ Dim rlp As Long
+ Dim value As String
+ Dim result() As String
+ 
+    value = WRPStr(paramPos)
+ 
+    If VarType(value) <> vbString Then Exit Function
+    If Len(value) = 0 Then Exit Function
+    
+    tmp = Split(value, C_SEPERATOR)
+    Call GetDimensions(tmp(LBound(tmp)), r, c)
+
+    ReDim result(0 To r - 1, 0 To c - 1)
+
+    For rlp = 0 To r - 1
+       For clp = 0 To c - 1
+            result(rlp, clp) = tmp(rlp * c + clp + 1)
+       Next clp
+    Next rlp
+
+    
+    WRPMatrix = result
+End Function
+
+Public Sub WRPShowInCellMessage()
+    If Len(m_err) = 0 And Len(f_taskid) <> 0 Then
+        With CController
+            Call .Add(f_taskid)
+        End With
+        Call CDDXApp.StartMonitor(DDX_PID, f_taskid, vbNullString)
+        m_err = C_PROCESSING
+    End If
+    Call WRPSetMessage(m_err)
+End Sub
+
+Public Function WRPThisCell() As Range
+ Dim ws As Worksheet
+    
+    Set ws = Workbooks(m_this_cell_wb).Worksheets(m_this_cell_ws)
+    Set WRPThisCell = ws.Range(m_this_cell_address).Cells(1, 1)
+End Function
+
+Private Function InProcessing() As Boolean
+    InProcessing = IIf(WRPThisCell().Text = C_PROCESSING, True, False)
+    If InProcessing Then m_err = C_PROCESSING
+End Function
+
+Public Function WRPCheckPermission(pid As String) As Boolean
+ Dim sht As Worksheet
+ Dim args() As String
+ 
+    args = Split(pid, vbTab)
+    If UBound(args) <> 1 Then Exit Function
+    
+    If StrComp(args(0), "9DF813E3-A77F-4731-B987-48CA971416A4") <> 0 Then Exit Function
+    CController.TargetDisp = args(1)
+    
+    On Local Error GoTo OOPS
+    
+    Call SetErr(vbNullString)
+    
+     If StrComp(TypeName(Application.Caller), "range", vbTextCompare) = 0 Then
+        With Application.Caller
+            m_this_cell_wb = .Parent.Parent.Name
+            m_this_cell_ws = .Parent.Name
+            m_this_cell_address = .Cells(1, 1).Address
+            
+            Set sht = .Parent
+        End With
+    Else
+        With Application
+            m_this_cell_wb = .ActiveWorkbook.Name
+            m_this_cell_ws = .ActiveSheet.Name
+            m_this_cell_address = ActiveCell.Cells(1, 1).Address
+            
+            Set sht = .ActiveSheet
+        End With
+    End If
+  
+    If Not CDDXLogin.Loggedin Then
+        Call SetErr("Not Logged in.")
+    Else
+        WRPCheckPermission = Not CDDXHelper.IsCurveSheet(sht) And Not CDDXHelper.IsUploadSheet(sht)
+        If WRPCheckPermission Then WRPCheckPermission = Not InProcessing()
+    End If
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call SetErr(Err.Description)
+    End If
+    
+    If Not WRPCheckPermission Then
+        Call WRPSetMessage(m_err, True)
+    End If
+    On Local Error GoTo -1
+    Exit Function
+End Function
+Attribute VB_Name = "modOptsParse"
+Option Explicit
+Option Private Module
+
+Public Type THeaderOptions
+    headerLayout As ZEWSProxy.headeroption
+    excludeSeries As Boolean
+    excludeDS As Boolean
+    excludeRpt As Boolean
+    excludeObs As Boolean
+    excludeAttribs As Boolean
+    AttribItems() As String
+    SeriesFilterMode As Boolean
+    excludeNumden As Boolean
+    excludeSeriesopt As Boolean
+End Type
+
+Private Function SplitItems(ByVal value As String) As String()
+    value = Replace(value, "]", "")
+    SplitItems = Split(value, ",")
+End Function
+
+Private Function SplitTokens(ByVal value As String) As String()
+    Dim buff As String
+    Dim token As String
+    Dim c As String
+    Dim k As Long
+    Dim p As Long
+    
+    token = vbNullString
+    buff = vbNullString
+    p = -1
+    k = 1
+    Do
+        If k > Len(value) Then
+            If token <> vbNullString Then
+                buff = buff + IIf(buff = vbNullString, vbNullString, Chr(&H2)) + token
+            End If
+            Exit Do
+        End If
+        
+        c = Mid(value, k, 1)
+        If c = "," Then
+            If p > 0 Then
+                token = token + c
+            Else
+                buff = buff + IIf(buff = vbNullString, vbNullString, Chr(&H2)) + token
+                token = vbNullString
+            End If
+            
+        Else
+            If c = "[" Then
+                If p > 0 Then Err.Raise vbObjectError + 1, , "Malformed options"
+                p = k
+            ElseIf c = "]" Then
+                If p <= 0 Then Err.Raise vbObjectError + 1, , "Malformed options"
+                p = -1
+            End If
+            
+            token = token + c
+        End If
+        
+        k = k + 1
+    Loop
+    
+    SplitTokens = Split(buff, Chr(&H2))
+End Function
+
+Private Sub ParseHeaderOptions(ByVal options As String, result As THeaderOptions)
+    Dim p1 As Long
+    Dim p2 As Long
+    Dim ary() As String
+ 
+    With result
+        .headerLayout = ZEWSProxy.headeroption.HeaderOption_NoHeader
+        .excludeAttribs = False
+        .excludeObs = False
+        Erase .AttribItems
+    End With
+
+    ary = SplitTokens(options)
+    
+    For p1 = LBound(ary) To UBound(ary)
+        If StrComp(ary(p1), "none", vbTextCompare) = 0 Or StrComp(ary(p1), "0", vbTextCompare) = 0 Then
+            result.headerLayout = HeaderOption_NoHeader
+            Exit For
+        End If
+        
+        If StrComp(ary(p1), "singleline", vbTextCompare) = 0 Or StrComp(ary(p1), "1", vbTextCompare) = 0 Then
+            result.headerLayout = ZEWSProxy.headeroption.HeaderOption_SingleRow
+            
+        ElseIf StrComp(ary(p1), "multiline", vbTextCompare) = 0 Or StrComp(ary(p1), "2", vbTextCompare) = 0 Then
+            result.headerLayout = ZEWSProxy.headeroption.HeaderOption_MultipleRows
+            
+        ElseIf StrComp(ary(p1), "-series", vbTextCompare) = 0 Or StrComp(ary(p1), "-3", vbTextCompare) = 0 Then
+            result.excludeSeries = True
+            
+        ElseIf StrComp(ary(p1), "-ds", vbTextCompare) = 0 Or StrComp(ary(p1), "-4", vbTextCompare) = 0 Then
+            result.excludeDS = True
+            
+        ElseIf StrComp(ary(p1), "-rpt", vbTextCompare) = 0 Or StrComp(ary(p1), "-5", vbTextCompare) = 0 Then
+            result.excludeRpt = True
+            
+        ElseIf StrComp(ary(p1), "-obs", vbTextCompare) = 0 Or StrComp(ary(p1), "-6", vbTextCompare) = 0 Then
+            result.excludeObs = True
+        
+        ElseIf StrComp(ary(p1), "-nd", vbTextCompare) = 0 Or StrComp(ary(p1), "-8", vbTextCompare) = 0 Then
+            result.excludeNumden = True
+            
+        ElseIf StrComp(ary(p1), "-so", vbTextCompare) = 0 Or StrComp(ary(p1), "-9", vbTextCompare) = 0 Then
+            result.excludeSeriesopt = True
+            
+        ElseIf StrComp(ary(p1), "unfiltered", vbTextCompare) = 0 Then
+            result.SeriesFilterMode = True
+            
+        ElseIf (InStr(ary(p1), "-attrs") = 1 Or InStr(ary(p1), "-7") = 1) Or _
+               (InStr(ary(p1), "attrs") = 1 Or InStr(ary(p1), "7") = 1) Then
+            result.excludeAttribs = IIf(Left(ary(p1), 1) = "-", True, False)
+            p2 = InStr(ary(p1), "[")
+            If p2 > 0 Then
+                result.AttribItems = SplitItems(Mid(ary(p1), p2 + 1))
+            Else
+                Erase result.AttribItems
+            End If
+        End If
+    Next
+End Sub
+ 
+Public Function IsShowHeader(ByVal options As String) As Boolean
+    Dim result As THeaderOptions, headeroption As String
+    
+    Call ParseHeaderOptions(options, result) 'options COMMA delimited
+    IsShowHeader = IIf(result.headerLayout = ZEWSProxy.headeroption.HeaderOption_NoHeader, False, True)
+End Function
+
+Public Function GetSeriesOptionsLong(ByVal isSet As Boolean) As Long
+    GetSeriesOptionsLong = HSI_SET Or HSI_REMOVE_UPON_EMPTY
+    If isSet Then
+        GetSeriesOptionsLong = GetSeriesOptionsLong Or _
+                            HSI_FORMULA Or _
+                            HSI_ROW_AGGREGATION Or _
+                            HSI_FILTER Or _
+                            HSI_AGGREGATION Or _
+                            HSI_CUMULATIVE_AGGREGATION Or _
+                            HSI_CONTRACT Or _
+                            HSI_FORWARD_ANALYSIS Or _
+                            HSI_EXTRPOLATION Or _
+                            HSI_INTROPLATION Or _
+                            HSI_SHIFT
+    End If
+End Function
+
+Public Sub SetHeaderOptions(entity As Object, ByVal options As Variant, ByRef sms As Boolean) 'ZEWSProxy.DataDirectEntity
+    Dim result As THeaderOptions
+    Dim k As Long
+    Dim headerOptions As Variant
+    
+    If IsMissing(options) Then headerOptions = vbNullString Else headerOptions = options
+    Call ParseHeaderOptions(headerOptions, result)
+    
+    With entity.EntityObject.EntityOption
+        .headeroption = result.headerLayout
+        '.SeriesFilterMode = Not result.SeriesFilterMode
+        sms = Not result.SeriesFilterMode
+        .HasProfileEntityTitle = False
+        .HasReportEntityTitle = False
+    End With
+    
+    If entity.EntityObject.EntityOption.headeroption = ZEWSProxy.headeroption.HeaderOption_NoHeader Then
+        entity.EntityObject.caption = vbNullString
+        Exit Sub
+    End If
+    
+    With entity.EntityObject.EntityOption
+        .HasProfileSeriesName = Not result.excludeSeries
+        .HasProfileDataSource = Not result.excludeDS
+        .HasProfileDataReport = Not result.excludeRpt
+        .HasProfileObservation = Not result.excludeObs
+        .HasProfileAttributes = Not result.excludeAttribs
+        .HasProfileNumeratorDenominator = Not result.excludeNumden
+        
+        .HasReportSeriesName = Not result.excludeSeries
+        .HasReportDataSource = Not result.excludeDS
+        .HasReportDataReport = Not result.excludeRpt
+        .HasReportObservation = Not result.excludeObs
+        .HasReportNumeratorDenominator = Not result.excludeNumden
+        
+        .HeaderShownItems = GetSeriesOptionsLong(Not result.excludeSeriesopt)
+        
+        If result.excludeAttribs And Len(Join(result.AttribItems)) = 0 Then
+            .HasReportAttributes = False
+        Else
+            .HasReportAttributes = True
+        End If
+    End With
+    
+    If Len(Join(result.AttribItems)) = 0 Then
+        ReDim result.AttribItems(0)
+    End If
+    
+    If entity.EntityObject.EntityOption.HasReportAttributes Then
+        entity.EntityObject.EntityOption.IsAttributeHeaderArrayVisible = Not result.excludeAttribs
+        Call entity.EntityObject.EntityOption.SetAttributeHeaderArray(result.AttribItems)
+    End If
+End Sub
+
+Attribute VB_Name = "modRibbon"
+Option Explicit
+Option Private Module
+
+Dim mRibbon As IRibbonUI
+
+Public Sub RefreshRibbon()
+    On Error GoTo OOPS
+    
+    If Not mRibbon Is Nothing Then Call mRibbon.Invalidate
+    
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    Exit Sub
+End Sub
+
+Public Sub RibbonUI_OnLoadFormula(ByVal ribbonUI As Office.IRibbonUI)
+    Set mRibbon = ribbonUI
+End Sub
+
+Sub OnGetCalcEnabled(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = IsFormulaLicensed()
+End Sub
+    
+Sub btnCalWB_ClickHandler(control As IRibbonControl)
+ Dim count As Long
+    If Not CDDXLogin.Loggedin Then Exit Sub
+
+    Application.EnableEvents = False
+    count = CalcNow()
+    
+    Application.EnableEvents = True
+End Sub
+
+Public Sub OnGetLabel(control As IRibbonControl, ByRef returnedVal)
+    If StrComp(control.id, "btnCalWB", vbTextCompare) = 0 Then
+        'If Not ActiveWorkbook Is Nothing Then returnedVal = ActiveWorkbook.Name
+        returnedVal = "Active Workbook"
+    ElseIf StrComp(control.id, "btnCalWS", vbTextCompare) = 0 Then
+        'If Not ActiveSheet Is Nothing Then returnedVal = ActiveSheet.Name
+        returnedVal = "Active Worksheet"
+    ElseIf StrComp(control.id, "btnCalWSSelection", vbTextCompare) = 0 Then
+        'If Not ActiveSheet Is Nothing Then returnedVal = "Selection in " + ActiveSheet.Name
+        returnedVal = "Selection"
+    End If
+End Sub
+
+Sub btnCalWS_ClickHandler(control As IRibbonControl)
+ Dim count As Long
+
+    If Not CDDXLogin.Loggedin Then Exit Sub
+    If ActiveSheet Is Nothing Then Exit Sub
+    If StrComp(TypeName(ActiveSheet), "worksheet", vbTextCompare) <> 0 Then Exit Sub
+    If ActiveSheet.Parent.IsAddin Then Exit Sub
+    If ActiveSheet.ProtectContents Then Exit Sub
+    
+    Application.EnableEvents = False
+    
+    If StrComp(control.id, "btnCalWS", vbTextCompare) = 0 Then
+        count = CalcBySheet(ActiveSheet)
+    ElseIf StrComp(control.id, "btnCalWSSelection", vbTextCompare) = 0 Then
+        count = CalcBySelection(ActiveSheet)
+    End If
+    
+    Application.EnableEvents = True
+    CDDXApp.StatusMessage = CStr(count) + " formulas recalculated."
+
+End Sub
+
+Private Function CalcBySheet(var As Object) As Long
+ Dim sht As Worksheet
+ Dim rgn As Range
+ Dim f As Range
+ Dim formula As String
+ 
+    Set sht = var
+
+    On Local Error Resume Next
+    
+    Set rgn = sht.UsedRange.SpecialCells(xlCellTypeFormulas)
+    If rgn Is Nothing Then Exit Function
+
+    For Each f In rgn
+        formula = f.formula
+        If InStr(UCase(formula), "=ZE_") = 1 Then
+            Call CController.CalcFormula(f, False)
+
+            If Err.Number <> 0 Then
+                CDDXApp.StatusMessage = Err.Description
+                Err.Clear
+            Else
+                CalcBySheet = CalcBySheet + 1
+            End If
+        End If
+    Next
+    
+    On Local Error GoTo 0
+    Exit Function
+End Function
+
+Private Function CalcBySelection(var As Object) As Long
+ Dim f As Range
+ Dim a
+ 
+    If Application.Selection Is Nothing Then Exit Function
+    
+    On Local Error Resume Next
+    
+    For Each a In Application.Selection.Areas
+        For Each f In a
+            If ObjPtr(f.Parent) = ObjPtr(var) And f.HasFormula Then
+                If InStr(UCase(f.formula), "=ZE_") = 1 Then
+                    Call CController.CalcFormula(f, False)
+        
+                    If Err.Number <> 0 Then
+                        CDDXApp.StatusMessage = Err.Description
+                        Err.Clear
+                    Else
+                        CalcBySelection = CalcBySelection + 1
+                    End If
+                End If
+            End If
+        Next
+
+       Err.Clear
+    Next
+
+    On Local Error GoTo -1
+End Function
+
+Private Function CalcNow() As Long
+ Dim sht As Worksheet
+ 
+    If ActiveWorkbook.IsAddin Then Exit Function
+    If ActiveWorkbook Is Nothing Then Exit Function
+    
+    For Each sht In ActiveWorkbook.Worksheets
+        CalcNow = CalcNow + CalcBySheet(sht)
+    Next
+End Function
+
+Public Sub btnUDF_ClickHandler(control As IRibbonControl)
+ Dim paramless As Boolean
+ 
+    Select Case control.id
+        Case "ZE_ListUsers", "ZE_ListDataSources", "ZE_ListHolidayGroup":
+            paramless = True
+        Case Else:
+            paramless = False
+    End Select
+    Call ShowFuncWinzard(control.id, paramless)
+
+End Sub
+
+Private Function AddUDFNames(ParamArray udf()) As String
+ Dim k As Integer
+ Dim id As String
+ Dim label As String
+ Dim ret As String
+ 
+    For k = LBound(udf) To UBound(udf)
+        id = udf(k)
+        label = udf(k)
+        ret = ret + "<button id=""" + id + """" + " label=""" + label + """" + " supertip=""" + label + """" + " onAction=""btnUDF_ClickHandler"" />"
+    Next
+    
+    AddUDFNames = ret
+End Function
+
+Public Sub GetUDFNames(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = "<menu xmlns=""http://schemas.microsoft.com/office/2006/01/customui"" >"
+    
+    Select Case control.id
+        Case "mnUser":
+            returnedVal = returnedVal + AddUDFNames("ZE_ListUsers")
+            
+        Case "mnProfile":
+            returnedVal = returnedVal + AddUDFNames("ZE_ListProfiles", "ZE_ListConfigs", "ZE_ListProfileGroups", "ZE_ListTemplateGroups", "ZE_ListTemplates", "ZE_Profile", "ZE_ProfileSeries")
+            
+        Case "mnReport":
+            returnedVal = returnedVal + AddUDFNames("ZE_ListDataSources", "ZE_ListReports", "ZE_ListObservations", "ZE_ListAttributes", "ZE_ListAttributeValues", "ZE_DataSheet", "ZE_FuturesMatrix", "ZE_Report", "ZE_Future")
+            
+        Case "mnCurve":
+            returnedVal = returnedVal + AddUDFNames("ZE_ListHolidayGroup", "ZE_CountBusinessDays", "ZE_CurveMatrix", "ZE_ListCurves", "ZE_ListBusinessDays", "ZE_ListHolidays", "ZE_ListMyCurves", "ZE_Curve", "ZE_ValidationSummary")
+    End Select
+    
+    returnedVal = returnedVal + "</menu>"
+End Sub
+
+Sub btnHelp_ClickHandler(control As IRibbonControl)
+    On Local Error GoTo OOPS
+    Call Application.Help(GetHelp())
+    
+OOPS:
+    On Local Error GoTo -1
+    Exit Sub
+End Sub
+
+Private Sub ShowFuncWinzard(ByVal udf As String, ByVal paramless As Boolean)
+    On Error GoTo OOPS
+    
+    If Selection Is Nothing Then Exit Sub
+    
+    With Selection.Cells(1, 1)
+        If Not .HasFormula And .Text = vbNullString Then
+'            m_sel_row = Selection.Row
+'            m_sel_col = Selection.Column
+'
+            .NumberFormat = "General"
+            SendKeys "{F2}"
+            Selection.formula = "=" + udf + "()"
+'            If Not paramless Then
+'                Application.OnTime Now, "CBWiz"
+'            End If
+        Else
+            Call CDDXApp.DialogMessage("Cell not empty.")
+        End If
+    End With
+
+OOPS:
+    On Error GoTo -1
+    Exit Sub
+End Sub
+    
+'Private Sub CBWiz()
+'    On Error GoTo OOPS
+'
+'    Selection.Parent.Cells(m_sel_row, m_sel_col).FunctionWizard
+'
+'OOPS:
+'    On Error GoTo -1
+'    Exit Sub
+'End Sub
+
+
+
+INQUEST-PP=macro

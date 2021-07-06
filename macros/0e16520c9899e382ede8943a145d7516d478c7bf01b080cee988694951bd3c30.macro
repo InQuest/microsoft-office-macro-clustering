@@ -1,0 +1,3872 @@
+Attribute VB_Name = "ModContentControlMerge"
+Option Explicit
+Dim xlApp As Object
+Dim xlbook As Object
+'Dim MergeData As Variant
+Dim MergeFields As Variant
+Dim numflds As Long
+Dim dSource As String
+Dim qryStr As String
+Dim mfCode As Range
+Dim i As Long, j As Long, k As Long, m As Long, n As Long, p As Long
+Dim myForm As frmCCMForm
+Dim KeyField As Long
+Dim strKey As String
+Dim strResult As String
+Dim strDestination As String
+Dim rngEmpty As Range
+Dim Email As Long
+Dim strEmail As String
+Dim strSubject As String
+Dim strMessage As String
+Dim strAttach As String
+Dim bStarted As Boolean
+Dim oOutlookApp As Object
+Dim oItem As Object
+Dim objDoc As Object
+Dim strID As String
+Dim blnHeaderRow As Boolean
+Dim blnTotalRow As Boolean
+Dim myWS As Object
+Dim RegKey As String
+Dim Key As String
+Dim Ver As Variant
+Dim Excelwasnotrunning As Boolean
+Dim MainDoc As String
+Dim tblGroup As Table
+Dim arow As Row
+Dim rngcellNew As Range, rngcellOld As Range
+Dim afield As Field
+Dim fname As Long
+Dim intwait As Long
+Dim arrRecipients As Variant
+Dim dsourceType As String
+Dim dsName As String
+Dim dsTable As String
+Dim appAccess As Object
+Dim rs As Object
+Dim strFields As String
+Dim temp As Variant
+Dim strDear As String
+Dim strBeforeSubject As String
+Dim strAfterSubject As String
+Dim Signature As String
+Dim boolSignature As Boolean
+
+
+'Created by Doug Robbins - dkr@mvps.org
+Sub CCMerge()
+On Error GoTo ErrMsg
+With ActiveDocument
+    If .Saved = False Then
+        MsgBox "Please save the mail merge main document before proceeding.", vbCritical
+        Exit Sub
+    End If
+    MainDoc = .FullName
+    With .MailMerge
+        If .MainDocumentType <> wdFormLetters Then
+            MsgBox "This application is only designed to be run with a Letters type mail merge main document", _
+            vbCritical, "Not the correct type of mail merge document."
+            Exit Sub
+        End If
+        With .DataSource
+            dsName = .Name
+            If Len(.Name) = 0 Then
+                MsgBox "Attach the data source and re-run this macro", _
+                vbCritical, "No Data Source!"
+                Exit Sub
+            End If
+            dsourceType = Mid(.Name, InStrRev(.Name, ".") + 1)
+        End With
+    End With
+End With
+Select Case dsourceType
+    Case "xls", "xlsx"
+        Set xlApp = CreateObject("Excel.Application")
+        With xlApp
+            Set xlbook = .Workbooks.Open(dsName)
+            numflds = xlbook.Worksheets(1).Range("A1").CurrentRegion.Columns.Count
+            'Populate an array with the data from the worksheet
+            MergeData = xlbook.Worksheets(1).Range("A1").CurrentRegion.Value
+            'Populate an array with the data (the field names) from the first row of the worksheet
+            MergeFields = xlbook.Worksheets(1).Range("A1").CurrentRegion.Rows(1)
+'            ReDim temp(1 To UBound(MergeData, 1) - 1, 1 To UBound(MergeData, 2))
+'            For i = 2 To UBound(MergeData, 1)
+'                For j = 1 To UBound(MergeData, 2)
+'                    temp(i - 1, j) = MergeData(i, j)
+'                Next j
+'            Next i
+'            MergeData = temp
+            xlbook.Close SaveChanges:=False
+            Set xlbook = Nothing
+        End With
+        xlApp.Quit
+        Set xlApp = Nothing
+    Case "accdb"
+        With ActiveDocument.MailMerge.DataSource
+            dsTable = Replace(Mid(.QueryString, 16), "`", "")
+        End With
+        Set appAccess = CreateObject("Access.Application")
+        Call appAccess.OpenCurrentDatabase(dsName)
+        Set rs = appAccess.CurrentProject.Connection.Execute("Select * from " & dsTable)
+        strFields = ""
+        For i = 0 To rs.Fields.Count - 1
+            strFields = strFields & "|" & rs.Fields(i).Name
+        Next i
+        strFields = Mid(strFields, 2)
+        MergeFields = Split(strFields, "|")
+        ReDim temp(1, 1 To UBound(MergeFields) + 1)
+        For i = LBound(MergeFields) To UBound(MergeFields)
+            temp(1, i + 1) = MergeFields(i)
+        Next i
+        MergeFields = temp
+        With rs
+            .Movelast
+            .moveFirst
+            MergeData = .GetRows(.RecordCount)
+        End With
+        ReDim temp(1 To UBound(MergeData, 2) + 1, 1 To UBound(MergeData, 1) + 1)
+        For i = LBound(MergeData, 2) To UBound(MergeData, 2)
+            For j = LBound(MergeData, 1) To UBound(MergeData, 1)
+                If IsNull(MergeData(j, i)) Then
+                    temp(i + 1, j + 1) = ""
+                Else
+                    temp(i + 1, j + 1) = MergeData(j, i)
+                End If
+            Next j
+        Next i
+        MergeData = temp
+        appAccess.Quit
+        Set appAccess = Nothing
+    Case Else
+        MsgBox "This utility will only work when the data source is an Excel workbook or an Access DataBase", , "Incorrect Data Source"
+        Exit Sub
+End Select
+Set myForm = New frmCCMForm
+With myForm
+    With .cmbFileName
+        For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+            MergeFields(1, i) = Replace(MergeFields(1, i), " ", "_")
+            .AddItem
+            .List(i - 1, 0) = i
+            .List(i - 1, 1) = MergeFields(1, i)
+        Next i
+    End With
+    With .cmbDestination
+        .AddItem "Merge to Individual Word Files"
+        .AddItem "Merge to Email as Word Attachment"
+    End With
+    With .cmbDear
+        .AddItem ""
+        .AddItem "Dear"
+        .AddItem "Hi"
+        .AddItem "Cher"
+        .AddItem "Hallo"
+        .AddItem "Hola"
+        .AddItem "K|fffd|re"
+        .AddItem "Lieber"
+        .AddItem "Querido"
+        .AddItem "querida"
+        .AddItem "Salut"
+    End With
+    .cmbEmail.List = .cmbFileName.List
+    .cmbCC.List = .cmbFileName.List
+    .cmbSubject.List = .cmbFileName.List
+    .cmbSalutation.List = .cmbFileName.List
+    .cmdContinue.Enabled = False
+    .lblEmailAddress.Visible = False
+    .cmbEmail.Visible = False
+    .lblCCAddress.Visible = False
+    .cmbCC.Visible = False
+    .lblBeforeSubject.Visible = False
+    .lblAfterSubject.Visible = False
+    .lblSelectSubject.Visible = False
+    .txtAfterSubject.Visible = False
+    .cmbSubject.Visible = False
+    .txtBeforeSubject.Visible = False
+    .lblMsgText.Visible = False
+    .txtEmailMessage.Visible = False
+    .cmbSalutation.Visible = False
+    .chkSalutation.Visible = False
+    .chkSubjectField.Value = False
+    .chkSubjectField.Visible = False
+    .cmbSubject.Visible = False
+    .lblBeforeSubject.Caption = "Text for Subject of Email Message"
+    .txtBeforeSubject.Width = 288
+    .chkSignature.Visible = False
+    .Show vbModal
+    Email = Val(.txtEmailIndex)
+    CCIndex = Val(.txtCCIndex)
+    SubjectIndex = Val(.txtSubjectIndex)
+    fname = Val(.txtFileNameIndex)
+    Salutation = Val(.txtSalutationIndex)
+    strDear = myForm.cmbDear.Value & " "
+    strBeforeSubject = myForm.txtBeforeSubject.Text
+    strAfterSubject = myForm.txtAfterSubject.Text
+    Select Case .cmbDestination.Value
+        Case "Merge to Individual Word Files"
+            strDestination = "Files"
+            ModMergeChart.GetFolder
+        Case "Merge to Email as Word Attachment"
+            strDestination = "EmailWordAttachment"
+            ModMergeChart.GetFolder
+            strMessage = myForm.txtEmailMessage
+            On Error Resume Next
+            Set oOutlookApp = GetObject(, "Outlook.Application")
+            If Err <> 0 Then
+                Set oOutlookApp = CreateObject("Outlook.Application")
+                bStarted = True
+            End If
+            On Error GoTo ErrMsg
+    End Select
+    If .chkSignature.Value = True Then
+        boolSignature = True
+    End If
+End With
+Unload myForm
+Set myForm = Nothing
+If boolNext = True Then
+    With ActiveDocument
+        .MailMerge.MainDocumentType = wdNotAMergeDocument
+        'Convert the MERGEFIELDS to DOCVARIABLE fields
+        For i = 1 To .Fields.Count
+            If .Fields(i).Type = wdFieldMergeField Then
+                Set mfCode = .Fields(i).Code
+                mfCode = Replace(mfCode, "MERGEFIELD", "DOCVARIABLE")
+            End If
+        Next i
+        For k = 1 To .Shapes.Count
+            With .Shapes(k)
+                If .Type = 17 Then
+                    With .TextFrame.TextRange
+                        For i = 1 To .Fields.Count
+                            If .Fields(i).Type = wdFieldMergeField Then
+                                Set mfCode = .Fields(i).Code
+                                mfCode = Replace(mfCode, "MERGEFIELD", "DOCVARIABLE")
+                            End If
+                        Next i
+                    End With
+                End If
+            End With
+        Next k
+        For k = 1 To .Sections.Count
+            With .Sections(k)
+                For n = 1 To .Headers.Count
+                    With .Headers(n).Range
+                        For i = 1 To .Fields.Count
+                            If .Fields(i).Type = wdFieldMergeField Then
+                                Set mfCode = .Fields(i).Code
+                                mfCode = Replace(mfCode, "MERGEFIELD", "DOCVARIABLE")
+                            End If
+                        Next i
+                    End With
+                Next n
+                For n = 1 To .Footers.Count
+                    With .Headers(n).Range
+                        For i = 1 To .Fields.Count
+                            If .Fields(i).Type = wdFieldMergeField Then
+                                Set mfCode = .Fields(i).Code
+                                mfCode = Replace(mfCode, "MERGEFIELD", "DOCVARIABLE")
+                            End If
+                        Next i
+                    End With
+                Next n
+            End With
+        Next k
+    End With
+    For k = LBound(MergeData, 1) + 1 To UBound(MergeData, 1)
+            'Create variables in the document with the names and values of the fields in each record
+        With ActiveDocument
+            For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+                If MergeData(k, i) <> "" Then
+                    .Variables(MergeFields(1, i)).Value = Replace(MergeData(k, i), Chr$(10), Chr$(13))
+                Else
+                    .Variables(MergeFields(1, i)).Value = " "
+                End If
+            Next i
+            .Range.Fields.Update
+            For j = 1 To .Shapes.Count
+                With .Shapes(j)
+                    If .Type = 17 Then
+                        With .TextFrame.TextRange
+                            For i = 1 To .Fields.Count
+                                .Fields(i).Update
+                            Next i
+                        End With
+                    End If
+                End With
+            Next j
+            For i = 1 To .Sections.Count
+                With .Sections(i)
+                    For n = 1 To .Headers.Count
+                        .Headers(n).Range.Fields.Update
+                    Next n
+                    For n = 1 To .Footers.Count
+                        .Footers(n).Range.Fields.Update
+                    Next n
+                End With
+            Next i
+            .Range.Fields.Update
+            .Range.Select
+            Selection.Range.ContentControls.Add (wdContentControlGroup)
+            Select Case strDestination
+                Case "Files"
+                    .SaveAs strFolder & MergeData(k, fname), FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+                Case "EmailWordAttachment"
+                    .SaveAs strFolder & MergeData(k, fname), FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+                    strAttach = ActiveDocument.FullName
+                    If boolSignature = True Then
+                        Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                        With oItem
+                            .BodyFormat = 1    'olFormatPlain
+                            .Display
+                            Signature = .Body
+                            .Delete
+                            boolSignature = False
+                        End With
+                        Set oItem = Nothing
+                    End If
+                    Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                    With oItem
+                        .Recipients.Add MergeData(k, Email)
+                        If SubjectIndex > 0 Then
+                            .Subject = strBeforeSubject & " " & MergeData(k, SubjectIndex) & " " & strAfterSubject
+                        Else
+                            .Subject = strBeforeSubject
+                        End If
+                        '.BodyFormat = 1 'olFormatPlain
+                        If boolCC = True Then
+                            .CC = MergeData(k, CCIndex)
+                        End If
+                        If boolSalutation = True Then
+                            .Body = strDear & MergeData(k, Salutation) & "," & vbCr & vbCr & strMessage & vbCr & Signature
+                        Else
+                            .Body = strMessage & vbCr & Signature
+                        End If
+                        .Attachments.Add strAttach
+                        .Send
+                    End With
+                    Set oItem = Nothing
+            End Select
+            On Error GoTo ErrMsg
+        End With
+    Next k
+    ActiveDocument.Close wdDoNotSaveChanges
+Else
+    ActiveDocument.Close wdDoNotSaveChanges
+    Documents.Open MainDoc
+End If
+    
+Set oItem = Nothing
+Set objDoc = Nothing
+Set oOutlookApp = Nothing
+    '  Close Outlook if it was started by this macro.
+If bStarted Then
+    oOutlookApp.Quit
+End If
+ErrMsg:
+    If Err.Number <> 0 And Err.Number <> 91 Then
+        MsgBox Err.Number & vbCr & Err.Description
+    End If
+End Sub
+
+
+Attribute VB_Name = "ModManytoOneEmail"
+Option Explicit
+Dim xlApp As Object
+Dim xlbook As Object
+'Dim MergeData As Variant
+Dim MergeFields As Variant
+Dim numflds As Long
+Dim dSource As String
+Dim qryStr As String
+Dim mfCode As Range
+Dim i As Long, j As Long, k As Long, m As Long, n As Long, p As Long
+Dim myForm As frmMFForm
+Dim KeyField As Long
+Dim strKey As String
+Dim strResult As String
+Dim strDestination As String
+Dim rngEmpty As Range
+Dim Email As Long
+Dim strEmail As String
+Dim strSubject As String
+Dim strMessage As String
+Dim strAttach As String
+Dim bStarted As Boolean
+Dim oOutlookApp As Object
+Dim oItem As Object
+Dim objDoc As Object
+Dim strID As String
+Public boolNext As Boolean
+Public bCancel As Boolean
+Dim blnHeaderRow As Boolean
+Dim blnTotalRow As Boolean
+Dim myWS As Object
+Dim RegKey As String
+Dim Key As String
+Dim Ver As Variant
+Dim Excelwasnotrunning As Boolean
+Dim MainDoc As String
+Dim tblGroup As Table
+Dim arow As Row
+Dim rngcellNew As Range, rngcellOld As Range
+Dim afield As Field
+Public fd As FileDialog
+Public strFolder As String
+Dim fname As Long
+Dim intwait As Long
+Dim arrRecipients As Variant
+Dim dsourceType As String
+Dim dsName As String
+Dim dsTable As String
+Dim appAccess As Object
+Dim rs As Object
+Dim strFields As String
+Dim temp As Variant
+Dim strDear As String
+Dim strBeforeSubject As String
+Dim strAfterSubject As String
+Dim Signature As String
+Dim boolSignature As Boolean
+Dim mystoryrange As Range
+
+
+'Created by Doug Robbins - dkr@mvps.org
+Sub ManyToOne()
+boolCC = False
+boolBCC = False
+boolSalutation = False
+boolSubject = False
+boolSignature = False
+On Error GoTo ErrMsg
+With ActiveDocument
+    If .Saved = False Then
+        MsgBox "Please save the mail merge main document before proceeding.", vbCritical
+        Exit Sub
+    End If
+    MainDoc = .FullName
+    With .MailMerge
+        If .MainDocumentType <> wdFormLetters Then
+            MsgBox "This application is only designed to be run with a Letters type mail merge main document", _
+            vbCritical, "Not the correct type of mail merge document."
+            Exit Sub
+        End If
+        With .DataSource
+            dsName = .Name
+            If Len(.Name) = 0 Then
+                MsgBox "Attach the data source and re-run this macro", _
+                vbCritical, "No Data Source!"
+                Exit Sub
+            End If
+            dsourceType = Mid(.Name, InStrRev(.Name, ".") + 1)
+        End With
+    End With
+End With
+Select Case dsourceType
+    Case "xls", "xlsx"
+        Set xlApp = CreateObject("Excel.Application")
+        With xlApp
+            Set xlbook = .Workbooks.Open(dsName)
+            numflds = xlbook.Worksheets(1).Range("A1").CurrentRegion.Columns.Count
+            'Populate an array with the data from the worksheet
+            MergeData = xlbook.Worksheets(1).Range("A1").CurrentRegion.Value
+            'Populate an array with the data (the field names) from the first row of the worksheet
+            MergeFields = xlbook.Worksheets(1).Range("A1").CurrentRegion.Rows(1)
+            ReDim temp(1 To UBound(MergeData, 1) - 1, 1 To UBound(MergeData, 2))
+            For i = 2 To UBound(MergeData, 1)
+                For j = 1 To UBound(MergeData, 2)
+                    temp(i - 1, j) = MergeData(i, j)
+                Next j
+            Next i
+            MergeData = temp
+            xlbook.Close SaveChanges:=False
+            Set xlbook = Nothing
+        End With
+        xlApp.Quit
+        Set xlApp = Nothing
+    Case "accdb", "mdb"
+        With ActiveDocument.MailMerge.DataSource
+            dsTable = Replace(Mid(.QueryString, 16), "`", "")
+        End With
+        Set appAccess = CreateObject("Access.Application")
+        Call appAccess.OpenCurrentDatabase(dsName)
+        Set rs = appAccess.CurrentProject.Connection.Execute("Select * from [" & dsTable & "]")
+        strFields = ""
+        For i = 0 To rs.Fields.Count - 1
+            strFields = strFields & "|" & rs.Fields(i).Name
+        Next i
+        strFields = Mid(strFields, 2)
+        MergeFields = Split(strFields, "|")
+        ReDim temp(1, 1 To UBound(MergeFields) + 1)
+        For i = LBound(MergeFields) To UBound(MergeFields)
+            temp(1, i + 1) = MergeFields(i)
+        Next i
+        MergeFields = temp
+        With rs
+            .Movelast
+            .moveFirst
+            MergeData = .GetRows(.RecordCount)
+        End With
+        ReDim temp(1 To UBound(MergeData, 2) + 1, 1 To UBound(MergeData, 1) + 1)
+        For i = LBound(MergeData, 2) To UBound(MergeData, 2)
+            For j = LBound(MergeData, 1) To UBound(MergeData, 1)
+                If IsNull(MergeData(j, i)) Then
+                    temp(i + 1, j + 1) = ""
+                Else
+                    temp(i + 1, j + 1) = MergeData(j, i)
+                End If
+            Next j
+        Next i
+        MergeData = temp
+        appAccess.Quit
+        Set appAccess = Nothing
+    Case Else
+        MsgBox "This utility will only work when the data source is an Excel workbook or an Access DataBase", , "Incorrect Data Source"
+        Exit Sub
+End Select
+    Set myForm = New frmMFForm
+    With myForm
+        With .cmbKeyField
+            For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+                MergeFields(1, i) = Replace(MergeFields(1, i), " ", "_")
+                .AddItem
+                .List(i - 1, 0) = i
+                .List(i - 1, 1) = MergeFields(1, i)
+            Next i
+        End With
+        With .cmbDestination
+            .AddItem "Merge to Individual Word Files"
+            .AddItem "Merge to Individual PDF Files"
+            .AddItem "Merge to Printer"
+            .AddItem "Merge to Email Message"
+            .AddItem "Merge to Email as Word Attachment"
+            .AddItem "Merge to Email as PDF Attachment"
+        End With
+        With .cmbDear
+            .AddItem ""
+            .AddItem "Dear"
+            .AddItem "Hi"
+            .AddItem "Cher"
+            .AddItem "Hallo"
+            .AddItem "Hola"
+            .AddItem "K|fffd|re"
+            .AddItem "Lieber"
+            .AddItem "Querido"
+            .AddItem "querida"
+            .AddItem "Salut"
+        End With
+        .cmbEmail.List = .cmbKeyField.List
+        .cmbCC.List = .cmbKeyField.List
+        .cmbSubject.List = .cmbKeyField.List
+        .cmbSalutation.List = .cmbKeyField.List
+        .cmbFileName.List = .cmbKeyField.List
+        .cmdContinue.Enabled = False
+        .lblEmailAddress.Visible = False
+        .cmbEmail.Visible = False
+        .lblCCAddress.Visible = False
+        .cmbCC.Visible = False
+        .lblBeforeSubject.Visible = False
+        .lblAfterSubject.Visible = False
+        .lblSelectSubject.Visible = False
+        .txtAfterSubject.Visible = False
+        .cmbSubject.Visible = False
+        .txtBeforeSubject.Visible = False
+        .lblMsgText.Visible = False
+        .txtEmailMessage.Visible = False
+        .cmbSalutation.Visible = False
+        .chkSalutation.Visible = False
+        .chkSubjectField.Value = False
+        .chkSubjectField.Visible = False
+        .cmbSubject.Visible = False
+        .lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        .txtBeforeSubject.Width = 288
+        .chkSignature.Visible = False
+        .Show vbModal
+        KeyField = Val(.txtKeyIndex)
+        Email = Val(.txtEmailIndex)
+        CCIndex = Val(.txtCCIndex)
+        SubjectIndex = Val(.txtSubjectIndex)
+        fname = Val(.txtFileNameIndex)
+        Salutation = Val(.txtSalutationIndex)
+        strDear = myForm.cmbDear.Value & " "
+        strBeforeSubject = myForm.txtBeforeSubject.Text
+        strAfterSubject = myForm.txtAfterSubject.Text
+        blnHeaderRow = .chkHeader.Value
+        blnTotalRow = .chkTotal.Value
+        Select Case .cmbDestination.Value
+            Case "Merge to Individual Word Files"
+                strDestination = "Files"
+                ModMergeChart.GetFolder
+            Case "Merge to Individual PDF Files"
+                strDestination = "PDF"
+                ModMergeChart.GetFolder
+            Case "Merge to Printer"
+                strDestination = "Print"
+            Case "Merge to Email Message"
+                strDestination = "EmailMessage"
+                On Error Resume Next
+                Set oOutlookApp = GetObject(, "Outlook.Application")
+                If Err <> 0 Then
+                    Set oOutlookApp = CreateObject("Outlook.Application")
+                    bStarted = True
+                End If
+                On Error GoTo ErrMsg
+            Case "Merge to Email as Word Attachment"
+                strDestination = "EmailWordAttachment"
+                ModMergeChart.GetFolder
+                strMessage = myForm.txtEmailMessage
+                On Error Resume Next
+                Set oOutlookApp = GetObject(, "Outlook.Application")
+                If Err <> 0 Then
+                    Set oOutlookApp = CreateObject("Outlook.Application")
+                    bStarted = True
+                End If
+            Case "Merge to Email as PDF Attachment"
+                strDestination = "EmailPDFAttachment"
+                ModMergeChart.GetFolder
+                strMessage = myForm.txtEmailMessage
+                On Error Resume Next
+                Set oOutlookApp = GetObject(, "Outlook.Application")
+                If Err <> 0 Then
+                    Set oOutlookApp = CreateObject("Outlook.Application")
+                    bStarted = True
+                End If
+                On Error GoTo ErrMsg
+        End Select
+        If .chkSignature.Value = True Then
+            boolSignature = True
+        End If
+    End With
+    Unload myForm
+    Set myForm = Nothing
+    If boolNext = True Then
+        With ActiveDocument
+            .MailMerge.MainDocumentType = wdNotAMergeDocument
+            'Convert the MERGEFIELDS to DOCVARIABLE fields
+            For Each mystoryrange In .StoryRanges
+                With mystoryrange
+                    For i = 1 To .Fields.Count
+                        If .Fields(i).Type = wdFieldMergeField Then
+                            Set mfCode = .Fields(i).Code
+                            mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                        End If
+                    Next i
+                End With
+                Do While Not (mystoryrange.NextStoryRange Is Nothing)
+                    Set mystoryrange = mystoryrange.NextStoryRange
+                    With mystoryrange
+                        For i = 1 To .Fields.Count
+                            If .Fields(i).Type = wdFieldMergeField Then
+                                Set mfCode = .Fields(i).Code
+                                mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                            End If
+                        Next i
+                    End With
+                Loop
+            Next mystoryrange
+        End With
+        For k = LBound(MergeData, 1) To UBound(MergeData, 1)
+            strKey = MergeData(k, KeyField)
+            'Create variables in the document with the names and values of the fields in each record
+            With ActiveDocument
+                Set tblGroup = .Bookmarks("Group").Range.Tables(1)
+                For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+                    If MergeData(k, i) <> "" Then
+                        .Variables(MergeFields(1, i)).Value = Replace(MergeData(k, i), Chr$(10), Chr$(13))
+                    Else
+                        .Variables(MergeFields(1, i)).Value = " "
+                    End If
+                Next i
+                .Range.Fields.Update
+                tblGroup.Range.Fields.Update
+                For j = 1 To .Shapes.Count
+                    With .Shapes(j)
+                        If .Type = 17 Then
+                            With .TextFrame.TextRange
+                                For i = 1 To .Fields.Count
+                                    .Fields(i).Update
+                                Next i
+                            End With
+                        End If
+                    End With
+                Next j
+                For i = 1 To .Sections.Count
+                    With .Sections(i)
+                        For n = 1 To .Headers.Count
+                            .Headers(n).Range.Fields.Update
+                        Next n
+                        For n = 1 To .Footers.Count
+                            .Footers(n).Range.Fields.Update
+                        Next n
+                    End With
+                Next i
+Repeat:
+                If k + 1 <= UBound(MergeData, 1) Then
+                    If MergeData(k + 1, KeyField) = strKey Then
+                        k = k + 1
+                        m = tblGroup.Rows.Count
+                        If blnTotalRow = True Then
+                            Set arow = tblGroup.Rows.Add(BeforeRow:=tblGroup.Rows(m - 1))
+                            For n = 1 To tblGroup.Columns.Count
+                                Set rngcellNew = arow.Cells(n).Range
+                                rngcellNew.End = rngcellNew.End - 1
+                                Set rngcellOld = tblGroup.Cell(m, n).Range
+                                rngcellOld.End = rngcellOld.End - 1
+                                rngcellNew.FormattedText = rngcellOld.FormattedText
+                                With tblGroup.Cell(m - 1, n).Range
+                                    If .Fields.Count > 0 Then
+                                        For p = .Fields.Count To 1 Step -1
+                                            If .Fields(p).Type = wdFieldDocVariable Then
+                                                .Fields(p).Unlink
+                                            End If
+                                        Next p
+                                    End If
+                                End With
+                            Next n
+                        Else
+                            Set arow = tblGroup.Rows.Add
+                            For n = 1 To tblGroup.Columns.Count
+                                Set rngcellNew = arow.Cells(n).Range
+                                rngcellNew.End = rngcellNew.End - 1
+                                Set rngcellOld = tblGroup.Cell(m, n).Range
+                                rngcellOld.End = rngcellOld.End - 1
+                                rngcellNew.FormattedText = rngcellOld.FormattedText
+                                With tblGroup.Cell(m, n).Range
+                                    If .Fields.Count > 0 Then
+                                        For p = .Fields.Count To 1 Step -1
+                                            If .Fields(p).Type = wdFieldDocVariable Then
+                                                .Fields(p).Unlink
+                                            End If
+                                        Next p
+                                    End If
+                                End With
+                            Next n
+                        End If
+                        For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+                            If MergeData(k, i) <> "" Then
+                                .Variables(MergeFields(1, i)).Value = Replace(MergeData(k, i), Chr$(10), Chr$(13))
+                            Else
+                                .Variables(MergeFields(1, i)).Value = " "
+                            End If
+                        Next i
+                        .Range.Fields.Update
+                        ActiveDocument.UndoClear
+                        GoTo Repeat
+                    Else
+                    End If
+                End If
+                For Each mystoryrange In .StoryRanges
+                    mystoryrange.Fields.Update
+                Next mystoryrange
+                Select Case strDestination
+                    Case "Files"
+                        .SaveAs strFolder & MergeData(k, fname), FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+                    Case "PDF"
+                        .ExportAsFixedFormat strFolder & MergeData(k, fname) & ".pdf", wdExportFormatPDF, False, wdExportOptimizeForPrint
+                    Case "Print"
+                        .PrintOut Background:=False
+                    Case "EmailWordAttachment"
+                        .SaveAs strFolder & MergeData(k, fname), FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+                        strAttach = ActiveDocument.FullName
+                        If boolSignature = True Then
+                            Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                            With oItem
+                                .BodyFormat = 1 'olFormatPlain
+                                .Display
+                                Signature = .Body
+                                .Delete
+                                boolSignature = False
+                            End With
+                            Set oItem = Nothing
+                        End If
+                        Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                        With oItem
+                            If InStr(MergeData(k, Email), ";") > 0 Then
+                                arrRecipients = Split(MergeData(k, Email), ";")
+                                For j = LBound(arrRecipients) To UBound(arrRecipients)
+                                    .Recipients.Add arrRecipients(j)
+                                Next j
+                            Else
+                                .Recipients.Add MergeData(k, Email)
+                            End If
+                            If SubjectIndex > 0 Then
+                                .Subject = strBeforeSubject & " " & MergeData(k, SubjectIndex) & " " & strAfterSubject
+                            Else
+                                .Subject = strBeforeSubject
+                            End If
+                            .BodyFormat = 2 'olFormatHTML
+                            If boolCC = True Then
+                                .CC = MergeData(k, CCIndex)
+                            End If
+                            If boolSalutation = True Then
+                                .Body = strDear & MergeData(k, Salutation) & "," & vbCr & vbCr & strMessage & vbCr & Signature
+                            Else
+                                .Body = strMessage & vbCr & Signature
+                            End If
+                            .Attachments.Add strAttach
+                            .Send
+                        End With
+                        Set oItem = Nothing
+                    Case "EmailPDFAttachment"
+                        .ExportAsFixedFormat strFolder & MergeData(k, fname) & ".pdf", wdExportFormatPDF, False, wdExportOptimizeForPrint
+                        strAttach = strFolder & MergeData(k, fname) & ".pdf"
+                        If boolSignature = True Then
+                            Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                            With oItem
+                                .BodyFormat = 1 'olFormatPlain
+                                .Display
+                                Signature = .Body
+                                .Delete
+                                boolSignature = False
+                            End With
+                            Set oItem = Nothing
+                        End If
+                        Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                        With oItem
+                            If InStr(MergeData(k, Email), ";") > 0 Then
+                                arrRecipients = Split(MergeData(k, Email), ";")
+                                For j = LBound(arrRecipients) To UBound(arrRecipients)
+                                    .Recipients.Add arrRecipients(j)
+                                Next j
+                            Else
+                                .Recipients.Add MergeData(k, Email)
+                            End If
+                            If boolCC = True Then
+                                .CC = MergeData(k, CCIndex)
+                            End If
+                            If SubjectIndex > 0 Then
+                                .Subject = strBeforeSubject & " " & MergeData(k, SubjectIndex) & " " & strAfterSubject
+                            Else
+                                .Subject = strBeforeSubject
+                            End If
+                            .BodyFormat = 2 'olFormatHTML
+                            If boolSalutation = True Then
+                                .Body = strDear & MergeData(k, Salutation) & "," & vbCr & vbCr & strMessage & vbCr & Signature
+                            Else
+                                .Body = strMessage & vbCr & Signature
+                            End If
+                            .Attachments.Add strAttach
+                            .Send
+                        End With
+                        Set oItem = Nothing
+                    Case "EmailMessage"
+                        On Error Resume Next
+TryAgain:
+                        With .MailEnvelope.Item
+                            Do While Err.Number <> 0
+                                For intwait = 1 To 100
+                                    DoEvents
+                                Next
+                                Err.Clear
+                                GoTo TryAgain
+                            Loop
+                            For j = .Recipients.Count To 1 Step -1
+                                .Recipients(j).Delete
+                            Next j
+                            If InStr(MergeData(k, Email), ";") > 0 Then
+                                arrRecipients = Split(MergeData(k, Email), ";")
+                                For j = LBound(arrRecipients) To UBound(arrRecipients)
+                                    .Recipients.Add arrRecipients(j)
+                                Next j
+                            Else
+                                .Recipients.Add MergeData(k, Email)
+                            End If
+                            If boolCC = True Then
+                                .CC = MergeData(k, CCIndex)
+                            End If
+                            If SubjectIndex > 0 Then
+                                .Subject = strBeforeSubject & " " & MergeData(k, SubjectIndex) & " " & strAfterSubject
+                            Else
+                                .Subject = strBeforeSubject
+                            End If
+                            .Send
+                        End With
+                End Select
+                On Error GoTo ErrMsg
+                With tblGroup
+                    If blnTotalRow = True And .Rows.Count > 3 Then
+                        For m = .Rows.Count - 2 To 2 Step -1
+                            .Rows(m).Delete
+                        Next m
+                    End If
+                    If blnTotalRow = False And .Rows.Count > 2 Then
+                        For m = .Rows.Count - 1 To 2 Step -1
+                            .Rows(m).Delete
+                        Next m
+                    End If
+                    If blnHeaderRow = False And .Rows.Count > 2 Then
+                        .Rows(1).Delete
+                    End If
+                    ActiveDocument.Bookmarks.Add "Group", .Rows(1).Range
+                End With
+            End With
+            ActiveDocument.UndoClear
+        Next k
+        ActiveDocument.Close wdDoNotSaveChanges
+    Else
+        ActiveDocument.Close wdDoNotSaveChanges
+        Documents.Open MainDoc
+    End If
+    
+    Set oItem = Nothing
+    Set objDoc = Nothing
+    Set oOutlookApp = Nothing
+    '  Close Outlook if it was started by this macro.
+    If bStarted Then
+        oOutlookApp.Quit
+    End If
+ErrMsg:
+    If Err.Number <> 0 And Err.Number <> 91 Then
+        MsgBox Err.Number & vbCr & Err.Description
+    End If
+End Sub
+
+Attribute VB_Name = "ModMergeChart"
+Option Explicit
+Dim MainDoc As Document
+Dim MainDocName As String
+Dim i As Long
+Dim j As Long
+Dim k As Long, n As Long, s As Long
+Dim strDataSource As String
+Dim xlApp As Object 'Excel.Application
+Dim xlbook As Object 'Excel.Workbook
+Dim xlsheet As Object 'Excel.Worksheet
+Dim xlDataSheet As Object
+Dim xlchart As Object 'Excel.ChartObject
+Dim bstartApp As Boolean
+Global Datarray As Variant
+Dim DataFields As Variant
+Dim numrecs As Long
+Dim numflds As Long
+Dim mfCode As Range
+Dim Excelwasnotrunning As Boolean
+Dim myForm As frmCMForm
+Dim KeyField As Long
+Dim strChildFields As String
+Dim ChildFields As Variant
+Dim strKey As String
+Dim strResult As String
+Dim strDestination As String
+Dim rngEmpty As Range
+Dim Email As Long
+Dim strEmail As String
+Dim strSubject As String
+Dim strMessage As String
+Dim strAttach As String
+Dim bStarted As Boolean
+Dim oOutlookApp As Object
+Dim oItem As Object
+Dim objDoc As Object
+Dim strID As String
+Dim MergeFields As Variant
+Dim fname As Long
+Dim intwait As Long
+Dim strDear As String
+Dim strBeforeSubject As String
+Dim strAfterSubject As String
+Dim arrRecipients As Variant
+Dim Signature As String
+Dim boolSignature As Boolean
+Dim mystoryrange As Range
+Public blnMergeChart As Boolean
+
+
+
+'Created by Doug Robbins - dkr@mvps.org
+Sub ChartMerge()
+blnMergeChart = True
+boolCC = False
+boolBCC = False
+boolSalutation = False
+boolSubject = False
+boolSignature = False
+Start:
+With ActiveDocument.MailMerge
+    If .MainDocumentType <> wdFormLetters Then
+        MsgBox "This application is only designed to be run with a Letters type mail merge main document", _
+        vbCritical, "Not the correct type of mail merge document."
+        Exit Sub
+    End If
+    If Len(.DataSource.Name) = 0 Then
+        Dialogs(wdDialogMailMergeOpenDataSource).Show
+        GoTo Start
+    End If
+    If Right(.DataSource.Name, 4) <> "xlsx" And Right(.DataSource.Name, 4) <> "xlsm" Then
+        MsgBox "The data source must be an Excel Spreadsheet.", _
+        vbCritical, "Incorrect Data Source Format!"
+        Exit Sub
+    End If
+End With
+On Error GoTo ErrMsg
+Set MainDoc = ActiveDocument
+MainDocName = MainDoc.FullName
+'Get the details of the datasource
+With MainDoc.MailMerge
+    strDataSource = .DataSource.Name
+    .MainDocumentType = wdNotAMergeDocument
+End With
+On Error Resume Next
+Set xlApp = GetObject(, "Excel.Application")
+If Err Then
+    bstartApp = True
+    Set xlApp = CreateObject("Excel.Application")
+End If
+On Error GoTo ErrMsg
+With xlApp
+'    .Visible = True
+'    .WindowState = -4140
+    Set xlbook = .Workbooks.Open(strDataSource)
+    Set xlsheet = xlbook.Worksheets("Chart")
+    xlsheet.Activate
+    Set xlchart = xlsheet.ChartObjects(1)
+    Datarray = xlbook.Worksheets("Data").Range("A1").CurrentRegion.Value
+End With
+lngFirst = LBound(Datarray, 1) ' + 1
+lngLast = UBound(Datarray, 1) - 1
+Set myFormSelect = New frmSelect
+'With myFormSelect
+'    With .lstAllRecords
+'        ReDim temp(UBound(Datarray, 1), 2)
+'        For i = LBound(Datarray, 1) To UBound(Datarray, 1)
+'            temp(i, 1) = i
+'            strTemp = ""
+'            For j = LBound(Datarray, 2) To UBound(Datarray, 2)
+'                strTemp = strTemp & " " & Datarray(i, j)
+'            Next j
+'            strTemp = Mid(strTemp, 2)
+'            temp(i, 2) = strTemp
+'            .AddItem
+'            .List(i - 1, 0) = i
+ '           .List(i - 1, 1) = strTemp
+ '       Next i
+'        .RemoveItem (0)
+'    End With
+'End With
+Set myForm = New frmCMForm
+With myForm
+    With .cmbDestination
+        .AddItem "Merge to Individual Word Files"
+        .AddItem "Merge to Individual PDF Files"
+        .AddItem "Merge to Printer"
+        .AddItem "Merge to Email as Word Attachment"
+        .AddItem "Merge to Email as PDF Attachment"
+        .AddItem "Merge to Email Message"
+    End With
+    With .cmbDear
+            .AddItem ""
+            .AddItem "Dear"
+            .AddItem "Hi"
+            .AddItem "Cher"
+            .AddItem "Hallo"
+            .AddItem "Hola"
+            .AddItem "K|fffd|re"
+            .AddItem "Lieber"
+            .AddItem "Querido"
+            .AddItem "querida"
+            .AddItem "Salut"
+    End With
+    With .cmbEmail
+        For i = 1 To UBound(Datarray, 2)
+            .AddItem
+            .List(i - 1, 0) = i
+            .List(i - 1, 1) = Datarray(1, i)
+        Next i
+    End With
+    .cmbCC.List = .cmbEmail.List
+    .cmbSubject.List = .cmbEmail.List
+    .cmbSalutation.List = .cmbEmail.List
+    .cmbFileName.List = .cmbEmail.List
+    .cmdContinue.Enabled = False
+    .lblEmailAddress.Visible = False
+    .lblCCAddress.Visible = False
+    .cmbEmail.Visible = False
+    .cmbCC.Visible = False
+    .lblBeforeSubject.Visible = False
+    .lblAfterSubject.Visible = False
+    .lblSelectSubject.Visible = False
+    .txtAfterSubject.Visible = False
+    .cmbSubject.Visible = False
+    .txtBeforeSubject.Visible = False
+    .lblMsgText.Visible = False
+    .txtEmailMessage.Visible = False
+    .cmbSalutation.Visible = False
+    .chkSalutation.Visible = False
+    .chkSubjectField.Value = False
+    .chkSubjectField.Visible = False
+    .cmbSubject.Visible = False
+    .chkSignature.Visible = False
+    .lblBeforeSubject.Caption = "Text for Subject of Email Message"
+    .txtBeforeSubject.Width = 288
+    .Show vbModal
+    Email = Val(.txtEmailIndex)
+    fname = Val(.txtFileNameIndex)
+    CCIndex = Val(.txtCCIndex)
+    SubjectIndex = Val(.txtSubjectIndex)
+    Salutation = Val(.txtSalutationIndex)
+    strDear = myForm.cmbDear.Value & " "
+    strBeforeSubject = myForm.txtBeforeSubject.Text
+    strAfterSubject = myForm.txtAfterSubject.Text
+    If .chkSignature.Value = True Then
+        boolSignature = True
+    End If
+    myFormSelect.cmbFieldList.List = .cmbEmail.List
+End With
+Select Case myForm.cmbDestination.Value
+    Case "Merge to Individual Word Files"
+        strDestination = "Files"
+        GetFolder
+    Case "Merge to Individual PDF Files"
+        strDestination = "PDF"
+        GetFolder
+    Case "Merge to Printer"
+        strDestination = "Print"
+    Case "Merge to Email as Word Attachment"
+        GetFolder
+        strDestination = "EmailWordAttachment"
+        strMessage = myForm.txtEmailMessage
+        On Error Resume Next
+        Set oOutlookApp = GetObject(, "Outlook.Application")
+        If Err <> 0 Then
+            Set oOutlookApp = CreateObject("Outlook.Application")
+            bStarted = True
+        End If
+    Case "Merge to Email as PDF Attachment"
+        GetFolder
+        strDestination = "EmailPDFAttachment"
+        strMessage = myForm.txtEmailMessage
+        On Error Resume Next
+        Set oOutlookApp = GetObject(, "Outlook.Application")
+        If Err <> 0 Then
+            Set oOutlookApp = CreateObject("Outlook.Application")
+            bStarted = True
+        End If
+    Case "Merge to Email Message"
+        strDestination = "EmailMessage"
+        On Error Resume Next
+        Set oOutlookApp = GetObject(, "Outlook.Application")
+        If Err <> 0 Then
+            Set oOutlookApp = CreateObject("Outlook.Application")
+            bStarted = True
+        End If
+        On Error GoTo ErrMsg
+End Select
+If boolNext = False Then
+    Unload myForm
+    Set myForm = Nothing
+    MainDoc.Close wdDoNotSaveChanges
+    Documents.Open MainDocName
+    xlbook.Close SaveChanges:=False
+    Set xlbook = Nothing
+    xlApp.Quit
+    Set xlApp = Nothing
+    Exit Sub
+Else
+    Unload myForm
+    Set myForm = Nothing
+    Set frmrecs = New frmRecords
+    With frmrecs
+        .txtFrom.Text = lngFirst
+        .txtTo.Text = lngLast
+        .Show
+    End With
+    Unload frmrecs
+    Set frmrecs = Nothing
+    xlsheet.Activate
+    With MainDoc
+        'Convert MergeFields to DocVariable fields
+        For Each mystoryrange In .StoryRanges
+            With mystoryrange
+                For i = 1 To .Fields.Count
+                    If .Fields(i).Type = wdFieldMergeField Then
+                        Set mfCode = .Fields(i).Code
+                        mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                    End If
+                Next i
+            End With
+            Do While Not (mystoryrange.NextStoryRange Is Nothing)
+                Set mystoryrange = mystoryrange.NextStoryRange
+                With mystoryrange
+                    For i = 1 To .Fields.Count
+                        If .Fields(i).Type = wdFieldMergeField Then
+                            Set mfCode = .Fields(i).Code
+                            mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                        End If
+                    Next i
+                End With
+            Loop
+        Next mystoryrange
+        .AttachedTemplate = "Normal.dotm"
+    End With
+    With xlApp
+        For s = LBound(arrRecords) To UBound(arrRecords)
+            j = arrRecords(s)
+'        For j = 2 To UBound(Datarray, 1)
+            For i = 1 To UBound(Datarray, 2)
+                If Datarray(j, i) = "" Then
+                    MainDoc.Variables(Replace(Datarray(1, i), " ", "_")).Value = " "
+                Else
+                    MainDoc.Variables(Replace(Datarray(1, i), " ", "_")).Value = Datarray(j, i)
+                End If
+            Next i
+            xlbook.Names("XLDataRow").RefersToRange.Value = j - 1
+            With MainDoc
+                For Each mystoryrange In .StoryRanges
+                    mystoryrange.Fields.Update
+                Next mystoryrange
+            End With
+CopyChart:
+            DoEvents
+            xlchart.CopyPicture
+            On Error GoTo PasteFail
+            .cutcopymode = False
+            With MainDoc
+                .Bookmarks("Chart").Range.Paste
+                Select Case strDestination
+                    Case "Files"
+                        On Error GoTo ErrMsg
+                        .SaveAs strFolder & Datarray(j, fname), FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+                    Case "PDF"
+                        On Error GoTo ErrMsg
+                        .ExportAsFixedFormat strFolder & Datarray(j, fname) & ".pdf", wdExportFormatPDF, False, wdExportOptimizeForPrint
+                    Case "Print"
+                        On Error GoTo ErrMsg
+                        .PrintOut Background:=False
+                    Case "EmailWordAttachment"
+                        On Error GoTo ErrMsg
+                        .SaveAs strFolder & Datarray(j, fname), FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+                        strAttach = MainDoc.FullName
+                        If boolSignature = True Then
+                            Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                            With oItem
+                                .BodyFormat = 1 'olFormatPlain
+                                .Display
+                                Signature = .Body
+                                .Delete
+                                boolSignature = False
+                            End With
+                            Set oItem = Nothing
+                        End If
+                        Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                        With oItem
+                            If InStr(Datarray(j, Email), ";") > 0 Then
+                                arrRecipients = Split(Datarray(j, Email), ";")
+                                For k = LBound(arrRecipients) To UBound(arrRecipients)
+                                    .Recipients.Add arrRecipients(k)
+                                Next k
+                            Else
+                                .Recipients.Add Datarray(j, Email)
+                            End If
+                            If SubjectIndex > 0 Then
+                                .Subject = strBeforeSubject & " " & Datarray(j, SubjectIndex) & " " & strAfterSubject
+                            Else
+                                .Subject = strBeforeSubject
+                            End If
+                            .BodyFormat = 2 'olFormatHTML
+                            If boolCC = True Then
+                                .CC = Datarray(j, CCIndex)
+                            End If
+                            If boolSalutation = True Then
+                                .Body = strDear & Datarray(j, Salutation) & "," & vbCr & vbCr & strMessage & vbCr & Signature
+                            Else
+                                .Body = strMessage & vbCr & Signature
+                            End If
+                            .Attachments.Add strAttach
+                            .Send
+                        End With
+                        Set oItem = Nothing
+                    Case "EmailPDFAttachment"
+                        On Error GoTo ErrMsg
+                        .ExportAsFixedFormat strFolder & Datarray(j, fname) & ".pdf", wdExportFormatPDF, False, wdExportOptimizeForPrint
+                        If boolSignature = True Then
+                            Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                            With oItem
+                                .BodyFormat = 1 'olFormatPlain
+                                .Display
+                                Signature = .Body
+                                .Delete
+                                boolSignature = False
+                            End With
+                            Set oItem = Nothing
+                        End If
+                        Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                        With oItem
+                            If InStr(Datarray(j, Email), ";") > 0 Then
+                                arrRecipients = Split(Datarray(j, Email), ";")
+                                For k = LBound(arrRecipients) To UBound(arrRecipients)
+                                    .Recipients.Add arrRecipients(k)
+                                Next k
+                            Else
+                                .Recipients.Add Datarray(j, Email)
+                            End If
+                            If boolCC = True Then
+                                .CC = Datarray(j, CCIndex)
+                            End If
+                            If SubjectIndex > 0 Then
+                                .Subject = strBeforeSubject & " " & Datarray(j, SubjectIndex) & " " & strAfterSubject
+                            Else
+                                .Subject = strBeforeSubject
+                            End If
+                            .BodyFormat = 2 'olFormatPlain
+                            If boolSalutation = True Then
+                                .Body = strDear & Datarray(j, Salutation) & "," & vbCr & vbCr & strMessage & vbCr & Signature
+                            Else
+                                .Body = strMessage & vbCr & Signature
+                            End If
+                            .Attachments.Add strFolder & Datarray(j, fname) & ".pdf"
+                            .Send
+                        End With
+                        Set oItem = Nothing
+                    Case "EmailMessage"
+                        On Error Resume Next
+TryAgain:
+                        With .MailEnvelope.Item
+                            Do While Err.Number <> 0
+                                For intwait = 1 To 100
+                                    DoEvents
+                                Next
+                                Err.Clear
+                                GoTo TryAgain
+                            Loop
+                            For k = .Recipients.Count To 1 Step -1
+                                .Recipients(k).Delete
+                            Next k
+                            If InStr(Datarray(j, Email), ";") > 0 Then
+                                arrRecipients = Split(Datarray(j, Email), ";")
+                                For k = LBound(arrRecipients) To UBound(arrRecipients)
+                                    .Recipients.Add arrRecipients(k)
+                                Next k
+                            Else
+                                .Recipients.Add Datarray(j, Email)
+                            End If
+                            If boolCC = True Then
+                                .CC = Datarray(j, CCIndex)
+                            End If
+                            If SubjectIndex > 0 Then
+                                .Subject = strBeforeSubject & " " & Datarray(j, SubjectIndex) & " " & strAfterSubject
+                            Else
+                                .Subject = strBeforeSubject
+                            End If
+                            .Send
+                        End With
+                        Set oItem = Nothing
+                End Select
+                .UndoClear
+            End With
+        Next s
+        xlbook.Close SaveChanges:=False
+        Set xlbook = Nothing
+        Set xlchart = Nothing
+        Set xlsheet = Nothing
+    End With
+    MainDoc.Close wdDoNotSaveChanges
+    Exit Sub
+End If
+'  Close Outlook if it was started by this macro.
+If bStarted Then
+    oOutlookApp.Quit
+End If
+If bstartApp = True Then
+    xlApp.Quit
+End If
+Set xlApp = Nothing
+Set oItem = Nothing
+Set objDoc = Nothing
+Set oOutlookApp = Nothing
+PasteFail:
+    If Err.Number = 4605 Then
+        DoEvents
+        Resume CopyChart
+    Else
+        GoTo ErrMsg
+    End If
+ErrMsg:
+    MsgBox Err.Number & vbCr & Err.Description
+    Exit Sub
+End Sub
+Sub GetFolder()
+Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+With fd
+    .Title = "Select the folder into which the documents will be saved."
+    If .Show = -1 Then
+        strFolder = .SelectedItems(1) & "\"
+    Else
+        MsgBox "The documents will be saved in the default document file location."
+        strFolder = ""
+    End If
+End With
+End Sub
+
+
+
+Attribute VB_Name = "ModMergeDuplex"
+Option Explicit
+'Created by Doug Robbins - dkr@mvps.org
+Sub MergeDuplex()
+Dim xlApp As Object
+Dim xlbook As Object
+Dim xlDup As Object
+Dim xlsheet As Object
+Dim myarray As Variant
+Dim i As Long, j As Long, r As Long, m As Long, n As Long, c As Long
+Dim strDataSource As String
+Dim strConnection As String
+Dim MainDoc As Document
+Dim MainDocName As String
+Dim bstartApp As Boolean
+Start:
+With ActiveDocument.MailMerge
+    If .MainDocumentType <> wdMailingLabels Then
+        MsgBox "This application is only designed to be run with a Label type mail merge main document", _
+        vbCritical, "Not the correct type of mail merge document."
+        Exit Sub
+    End If
+    If Len(.DataSource.Name) = 0 Then
+        Dialogs(wdDialogMailMergeOpenDataSource).Show
+        GoTo Start
+    End If
+    If Right(.DataSource.Name, 4) <> "xlsx" And Right(.DataSource.Name, 3) <> "xls" Then
+        MsgBox "The data source must be an Excel Spreadsheet.", _
+        vbCritical, "Incorrect Data Source Format!"
+        Exit Sub
+    End If
+End With
+On Error GoTo ErrMsg
+Set MainDoc = ActiveDocument
+MainDocName = MainDoc.FullName
+'Get the details of the datasource
+strDataSource = MainDoc.MailMerge.DataSource.Name
+c = InputBox("Enter the number of Columns. (1 or 2)", , 2)
+r = InputBox("Enter the number of rows.")
+On Error Resume Next
+Set xlApp = GetObject(, "Excel.Application")
+If Err Then
+    bstartApp = True
+    Set xlApp = CreateObject("Excel.Application")
+End If
+On Error GoTo 0
+'xlApp.Visible = True
+Set xlbook = xlApp.Workbooks.Open(strDataSource, , True)
+Set xlsheet = xlbook.Worksheets(1)
+xlsheet.Copy
+xlbook.Close
+Set xlDup = xlApp.ActiveWorkbook
+With xlDup.Worksheets(1)
+'With Sheets(1)
+    n = .Range("a1").CurrentRegion.Rows.Count - 1
+    If c = 1 Then
+        j = n Mod r
+        If j > 0 Then
+            m = r - j ' + 1
+        Else
+            m = 0
+        End If
+        For i = .Range("a1").CurrentRegion.Rows.Count + m - (r - 1) To 2 Step -r
+            For j = 1 To r
+                .Cells(i, 1).EntireRow.Insert
+            Next j
+        Next i
+        For i = 2 To 2 * n Step 2 * r
+            For j = 0 To r - 1 'r To 1 Step -1
+                With .Range("a1")
+                    For m = 0 To .CurrentRegion.Columns.Count - 1
+                        .Offset(i + j - 1, m).Value = .Offset(i + r + j - 1, m).Value
+                    Next m
+                End With
+            Next j
+        Next i
+    Else
+        j = n Mod (2 * r)
+        If j > 0 Then
+            m = 2 * r - j ' + 1
+        Else
+            m = 0
+        End If
+        For i = .Range("a1").CurrentRegion.Rows.Count + m - (r * c - 1) To 1 + c * r Step -r * c
+            For j = 1 To r * c
+                .Cells(i, 1).EntireRow.Insert
+            Next j
+        Next i
+        For i = 1 To 2 * n Step 2 * r * c
+            For j = 0 To r * c - 1 Step 2
+                With .Range("a1")
+                    For m = 0 To .CurrentRegion.Columns.Count - 1
+                        .Offset(i + r * c + j, m).Value = .Offset(i + j + 1, m).Value
+                        .Offset(i + r * c + j + 1, m).Value = .Offset(i + j, m).Value
+                    Next m
+                End With
+            Next j
+        Next i
+    End If
+End With
+xlApp.DisplayAlerts = False
+xlDup.SaveAs Left(strDataSource, InStrRev(strDataSource, ".") - 1) & " - Duplex" & Mid(strDataSource, InStrRev(strDataSource, "."))
+strDataSource = xlDup.FullName
+With MainDoc.MailMerge
+    .OpenDataSource Name:=strDataSource, Connection:="Provider=Microsoft.ACE.OLEDB.12.0;User ID=Admin;Data Source=" & strDataSource, SQLStatement:="SELECT * FROM `Sheet1$`"
+    .Destination = wdSendToNewDocument
+    .Execute
+End With
+MainDoc.Close wdDoNotSaveChanges
+Application.DisplayAlerts = wdAlertsNone
+Documents.Open MainDocName
+Application.DisplayAlerts = wdAlertsAll
+xlDup.Close
+Set xlsheet = Nothing
+Set xlbook = Nothing
+If bstartApp = True Then
+    xlApp.Quit
+End If
+xlApp.DisplayAlerts = True
+Set xlApp = Nothing
+ErrMsg:
+    If Err.Number > 0 Then
+        MsgBox Err.Number & vbCr & Err.Description
+        Exit Sub
+    End If
+End Sub
+Attribute VB_Name = "ModMergeForm"
+Option Explicit
+Dim xlApp As Object
+Dim xlbook As Object
+'Dim MergeData As Variant
+Dim MergeFields As Variant
+Dim numrecs As Long, numflds As Long
+Dim dSource As String
+Dim qryStr As String
+Dim mfCode As Range
+Dim i As Long, j As Long, iCount As Long
+Dim Excelwasnotrunning As Boolean
+Dim DocDir As String
+Dim sPassword As String
+Dim fDialog As FileDialog
+'Created by Doug Robbins - dkr@mvps.org
+Sub MailMergeExcelwithFormFields()
+With ActiveDocument
+     With .MailMerge
+          'Check that document is a Letter Type Mail Merge Main Document
+          If .MainDocumentType <> wdFormLetters Then
+               MsgBox "This application is only designed to be run " & _
+               "with a Letters type mail merge main document", _
+               vbCritical, "Not the correct type of mail merge document."
+               Exit Sub
+          End If
+          'Check that document has a datasource attached to it
+          If Len(.DataSource.Name) = 0 Then
+               MsgBox "Attach the data source and re-run this macro", _
+               vbCritical, "No Data Source!"
+               Exit Sub
+          End If
+          'Check that data source is an Excel spreadsheet
+          If Right(.DataSource.Name, 4) <> "xlsx" And Right(.DataSource.Name, 3) <> "xls" Then
+               MsgBox "The data source must be an Excel Spreadsheet.", _
+               vbCritical, "Incorrect Data Source Format!"
+               Exit Sub
+          End If
+          'Get the details of the datasource
+          With .DataSource
+               dSource = .Name
+               qryStr = .QueryString
+               qryStr = Mid(qryStr, InStr(qryStr, "`") + 1)
+               qryStr = Left(qryStr, Len(qryStr) - 2)
+               numrecs = .RecordCount
+               numflds = .FieldNames.Count
+          End With
+          'Change document to a non-mail merge document
+          .MainDocumentType = wdNotAMergeDocument
+     End With
+     'Select the folder into which the merged documents are to be stored
+     Set fDialog = Application.FileDialog(msoFileDialogFolderPicker)
+     With fDialog
+          .Title = "Select Folder to store the documents and click OK"
+          .AllowMultiSelect = False
+          .InitialView = msoFileDialogViewList
+          If .Show <> -1 Then
+               MsgBox "Cancelled By User"
+               Exit Sub
+          End If
+          DocDir = fDialog.SelectedItems.Item(1)
+          If Right(DocDir, 1) <> "\" Then DocDir = DocDir + "\"
+     End With
+     'Unprotect the document
+     sPassword = ""
+     If ActiveDocument.ProtectionType <> wdNoProtection Then
+          On Error Resume Next
+          iCount = 0
+OpenPass:
+          ActiveDocument.Unprotect Password:=sPassword
+          If Err.Number = 5485 Then
+               sPassword = InputBox("Enter the password to edit the Form.", _
+               "Unprotect Document")
+               iCount = iCount + 1
+
+               'Break out of the loop after two incorrect password attempts
+               If iCount = 2 Then GoTo NoPass
+               GoTo OpenPass
+          End If
+     End If
+
+     'Convert the MERGEFIELDS to DOCVARIABLE fields
+     For i = 1 To .Fields.Count
+          If .Fields(i).Type = wdFieldMergeField Then
+               Set mfCode = .Fields(i).Code
+               mfCode = Replace(mfCode, "MERGEFIELD", "DOCVARIABLE")
+          End If
+     Next i
+SavePass:
+     If sPassword = "" Then
+           sPassword = InputBox("To password protect the forms, enter a password" _
+           & vbCr & "or leave blank for no password.", "Protect Documents")
+           If sPassword <> "" Then
+                If InputBox("Confirm the password.", "Confirm Password") <> sPassword Then
+                     MsgBox "The passwords do not match.", vbCritical + vbOKOnly
+                     GoTo SavePass
+                End If
+           End If
+     End If
+     'Protect the forms
+     .Protect Type:=wdAllowOnlyFormFields, NoReset:=True, Password:=sPassword
+
+     'Access the data source and create an array containing the field names and
+     'an array containing all of the data
+     On Error Resume Next
+     Set xlApp = GetObject(, "Excel.Application")
+     If Err Then
+          Excelwasnotrunning = True
+          Set xlApp = CreateObject("Excel.Application")
+     End If
+     On Error GoTo ErrMsg
+     With xlApp
+          Set xlbook = .Workbooks.Open(dSource)
+          MergeData = xlbook.Worksheets(qryStr).Range(.Cells(2, 1), .Cells(1 + numrecs, numflds))
+          MergeFields = xlbook.Worksheets(qryStr).Range(.Cells(1, 1), .Cells(1, numflds))
+          xlbook.Close SaveChanges:=False
+          Set xlbook = Nothing
+     End With
+     If Excelwasnotrunning Then xlApp.Quit
+     Set xlApp = Nothing
+     'Iterate through the records in the datasource
+     For j = 1 To numrecs
+          'Create variables in the document with the names and values of the fields in each record
+          For i = 1 To numflds
+               If MergeData(j, i) <> "" Then
+                    ActiveDocument.Variables(MergeFields(1, i)).Value = MergeData(j, i)
+               Else
+                    ActiveDocument.Variables(MergeFields(1, i)).Value = " "
+               End If
+          Next i
+         'Update the fields in the document
+         .Fields.Update
+         'Save the document
+         .SaveAs DocDir & "MwithFF" & j, AddToRecentFiles:=False
+     Next j
+     .Close wdDoNotSaveChanges
+End With
+'Error Handler
+ErrMsg:
+If Err.Number > 0 Then
+     MsgBox Err.Number & vbCr & Err.Description
+     Exit Sub
+End If
+Exit Sub
+NoPass:
+MsgBox "The password is incorrect. Unable to complete the process", _
+vbCritical, "Wrong password!"
+End Sub
+Sub Protect()
+ActiveDocument.Protect wdAllowOnlyFormFields
+End Sub
+
+
+
+Attribute VB_Name = "ModMergeIndividual"
+Dim xlApp As Object
+Dim xlbook As Object
+Public MergeData As Variant
+Dim MergeFields As Variant
+Dim FileNameFields As Variant
+Dim numrecs As Long, numflds As Long
+Dim dSource As String
+Dim i As Long, j As Long, k As Long, s As Long
+Dim myForm As frmMIForm
+Global myFormSelect As frmSelect
+Global arrRecords As Variant
+Dim strDestination As String
+Dim MainDoc As String
+Dim fname As Long
+Dim strfname As String
+Dim strFileText As String
+Dim dsourceType As String
+Dim dsName As String
+Dim dsTable As String
+Dim appAccess As Object
+Dim rs As Object
+Dim strFields As String
+Dim temp As Variant
+Public strTemp As String
+Dim storyrange As Range
+Public lngFirst As Long
+Public lngLast As Long
+Public blnAll As Boolean
+Public blnSelect As Boolean
+Public frmrecs As frmRecords
+Public strRecords As String
+Dim mystoryrange As Range
+
+'Created by Doug Robbins - dkr@mvps.org
+Sub MergeIndividual()
+blnMergeChart = False
+On Error GoTo ErrMsg
+With ActiveDocument
+    If .Saved = False Then
+        MsgBox "Please save the mail merge main document before proceeding.", vbCritical
+        Exit Sub
+    End If
+    MainDoc = .FullName
+    With .MailMerge
+        If .MainDocumentType <> wdFormLetters Then
+            MsgBox "This application is only designed to be run with a Letters type mail merge main document", _
+            vbCritical, "Not the correct type of mail merge document."
+            Exit Sub
+        End If
+        With .DataSource
+            dsName = .Name
+            If Len(.Name) = 0 Then
+                MsgBox "Attach the data source and re-run this macro", _
+                vbCritical, "No Data Source!"
+                Exit Sub
+            End If
+            dsourceType = Mid(.Name, InStrRev(.Name, ".") + 1)
+        End With
+    End With
+End With
+Select Case dsourceType
+    Case "xls", "xlsx", "csv"
+        Set xlApp = CreateObject("Excel.Application")
+        With xlApp
+            Set xlbook = .Workbooks.Open(dsName)
+            numflds = xlbook.Worksheets(1).Range("A1").CurrentRegion.Columns.Count
+            'Populate an array with the data from the worksheet
+            MergeData = xlbook.Worksheets(1).Range("A1").CurrentRegion.Value
+            'Populate an array with the data (the field names) from the first row of the worksheet
+            MergeFields = xlbook.Worksheets(1).Range("A1").CurrentRegion.Rows(1)
+            ReDim temp(1 To UBound(MergeData, 1) - 1, 1 To UBound(MergeData, 2))
+            For i = 2 To UBound(MergeData, 1)
+                For j = 1 To UBound(MergeData, 2)
+                    temp(i - 1, j) = MergeData(i, j)
+                Next j
+            Next i
+            MergeData = temp
+            xlbook.Close SaveChanges:=False
+            Set xlbook = Nothing
+        End With
+        xlApp.Quit
+        Set xlApp = Nothing
+    Case "accdb", "mdb"
+        With ActiveDocument.MailMerge.DataSource
+'            dsTable = Replace(Mid(.QueryString, 16), "`", "")
+            dsTable = Mid(.QueryString, 16, Len(.QueryString) - 16)
+        End With
+        Set appAccess = CreateObject("Access.Application")
+        Call appAccess.OpenCurrentDatabase(dsName)
+        Set rs = appAccess.CurrentProject.Connection.Execute("Select * from [" & dsTable & "]")
+        numflds = rs.Fields.Count
+        strFields = ""
+        For i = 0 To rs.Fields.Count - 1
+            strFields = strFields & "|" & rs.Fields(i).Name
+        Next i
+        strFields = Mid(strFields, 2)
+        MergeFields = Split(strFields, "|")
+        ReDim temp(1, 1 To UBound(MergeFields) + 1)
+        For i = LBound(MergeFields) To UBound(MergeFields)
+            temp(1, i + 1) = MergeFields(i)
+        Next i
+        MergeFields = temp
+        With rs
+            .Movelast
+            .moveFirst
+            MergeData = .GetRows(.RecordCount)
+        End With
+        ReDim temp(1 To UBound(MergeData, 2) + 1, 1 To UBound(MergeData, 1) + 1)
+        For i = LBound(MergeData, 2) To UBound(MergeData, 2)
+            For j = LBound(MergeData, 1) To UBound(MergeData, 1)
+                If IsNull(MergeData(j, i)) Then
+                    temp(i + 1, j + 1) = ""
+                Else
+                    temp(i + 1, j + 1) = MergeData(j, i)
+                End If
+            Next j
+        Next i
+        MergeData = temp
+        appAccess.Quit
+        Set appAccess = Nothing
+    Case Else
+        MsgBox "This utility will only work when the data source is an Excel workbook or an Access DataBase", , "Incorrect Data Source"
+        Exit Sub
+End Select
+Datarray = MergeData
+lngFirst = LBound(MergeData, 1)
+lngLast = UBound(MergeData, 1)
+Set myFormSelect = New frmSelect
+'With myFormSelect
+'    With .lstAllRecords
+'        ReDim temp(UBound(MergeData, 1), 2)
+'        For i = LBound(MergeData, 1) To UBound(MergeData, 1)
+'            temp(i, 1) = i
+'            strTemp = ""
+'            For j = LBound(MergeData, 2) To UBound(MergeData, 2)
+'                strTemp = strTemp & " " & MergeData(i, j)
+'            Next j
+'            strTemp = Mid(strTemp, 2)
+'            temp(i, 2) = strTemp
+'            .AddItem
+'            .List(i - 1, 0) = i
+'            .List(i - 1, 1) = strTemp
+ '       Next i
+'    End With
+'End With
+Set myForm = New frmMIForm
+With myForm
+    With .lstfilemergefields
+        For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+                'Replace any spaces in the fields names with underscores (as Word will have done automatically)
+            MergeFields(1, i) = Replace(MergeFields(1, i), " ", "_")
+            .AddItem
+            .List(i - 1, 0) = i
+            .List(i - 1, 1) = MergeFields(1, i)
+        Next i
+    End With
+    With .cmbDestination
+        .AddItem "Word Documents"
+        .AddItem "PDF Documents"
+        .AddItem "Text File"
+    End With
+    .cmdContinue.Enabled = False
+    .txtDate.Text = Format(Date, "yyyymmdd")
+    .chkDate.Value = True
+    .Show vbModal
+    myFormSelect.cmbFieldList.List = .lstfilemergefields.List
+End With
+Select Case myForm.cmbDestination.Value
+    Case "Word Documents"
+        strDestination = "WordDocuments"
+    Case "PDF Documents"
+        strDestination = "PDFDocuments"
+    Case "Text File"
+        strDestination = "TextFile"
+End Select
+Unload myForm
+With myForm
+    FileNameFields = myForm.lstFileNameFields.List
+    strFileText = ""
+    If .chkDate.Value = True Then
+        strFileText = Format(Date, "yyyymmdd") & " - "
+    End If
+    If .txtFileText <> "" Then
+        strFileText = strFileText & .txtFileText & " - "
+    End If
+End With
+Set myForm = Nothing
+If boolNext = True Then
+    Set frmrecs = New frmRecords
+    With frmrecs
+        .txtFrom.Text = lngFirst
+        .txtTo.Text = lngLast
+        .Show
+    End With
+    Unload frmrecs
+    Set frmrecs = Nothing
+Else
+    ActiveDocument.Close wdDoNotSaveChanges
+    If MsgBox("Do you want to re-open the mail merge main document?", vbYesNo + vbQuestion, "Merge to Individual Documents") = vbYes Then
+        Documents.Open MainDoc
+    End If
+    Exit Sub
+End If
+If boolNext = False Then
+    ActiveDocument.Close wdDoNotSaveChanges
+    If MsgBox("Do you want to re-open the mail merge main document?", vbYesNo + vbQuestion, "Merge to Individual Documents") = vbYes Then
+        Documents.Open MainDoc
+    End If
+    Exit Sub
+End If
+ModMergeChart.GetFolder
+With ActiveDocument
+    .MailMerge.MainDocumentType = wdNotAMergeDocument
+    For Each mystoryrange In .StoryRanges
+        With mystoryrange
+            For i = 1 To .Fields.Count
+                If .Fields(i).Type = wdFieldMergeField Then
+                    Set mfCode = .Fields(i).Code
+                    mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                End If
+            Next i
+        End With
+        Do While Not (mystoryrange.NextStoryRange Is Nothing)
+            Set mystoryrange = mystoryrange.NextStoryRange
+            With mystoryrange
+                For i = 1 To .Fields.Count
+                    If .Fields(i).Type = wdFieldMergeField Then
+                        Set mfCode = .Fields(i).Code
+                        mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                    End If
+                Next i
+            End With
+        Loop
+    Next mystoryrange
+    For s = LBound(arrRecords) To UBound(arrRecords)
+        k = arrRecords(s)
+'    For k = lngFirst To lngLast
+'    For k = LBound(MergeData, 1) To UBound(MergeData, 1)
+        For i = 1 To numflds
+            If MergeData(k, i) <> "" Then
+                .Variables(Left(MergeFields(1, i), 40)).Value = Replace(MergeData(k, i), Chr$(10), Chr$(13))
+            Else
+                .Variables(Left(MergeFields(1, i), 40)).Value = " "
+            End If
+        Next i
+        For Each mystoryrange In .StoryRanges
+            mystoryrange.Fields.Update
+        Next mystoryrange
+
+        strfname = ""
+        For j = LBound(FileNameFields) To UBound(FileNameFields)
+            strfname = strfname & MergeData(k, FileNameFields(j, 0)) & " - "
+        Next j
+        strfname = strFileText & Left(strfname, Len(strfname) - 3)
+        Select Case strDestination
+            Case "WordDocuments"
+                .SaveAs strFolder & strfname, FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+            Case "PDFDocuments"
+                .ExportAsFixedFormat strFolder & strfname & ".pdf", wdExportFormatPDF, False, wdExportOptimizeForPrint
+            Case "TextFile"
+                .SaveAs strFolder & strfname & ".txt", FileFormat:=wdFormatTextLineBreaks, AddToRecentFiles:=False
+        End Select
+    Next s
+    .Close wdDoNotSaveChanges
+End With
+Exit Sub
+ErrMsg:
+    If Err.Number > 0 Then
+        MsgBox Err.Number & vbCr & Err.Description
+    End If
+End Sub
+Attribute VB_Name = "ModMergePrintStaple"
+'Created by Doug Robbins - dkr@mvps.org
+Sub MergePrintStaple()
+'MsgBox "This utility will execute your merge to a new document and then send each of the letters in that document to the printer as an individual print job so that the stapling function of the printer can be used."
+Dim i As Long, j As Long
+Dim MainDoc As Document
+Set MainDoc = ActiveDocument
+With MainDoc
+    i = .Sections.Count
+    With .MailMerge
+        If .MainDocumentType = wdFormLetters And .DataSource.Name <> "" And .Fields.Count > 0 Then
+            .Destination = wdSendToNewDocument
+            .Execute
+            With ActiveDocument
+                For j = 1 To .Sections.Count - 1 Step i
+                    .PrintOut Range:=wdPrintFromTo, From:="s" & j, To:="s" & j + i - 1
+                Next j
+                .Close wdDoNotSaveChanges
+            End With
+        Else
+            MsgBox "The Active Document is not set up correctly." & vbCr & _
+            "It must be a letter type main document" & vbCr & _
+            "with a data source attached to it" & vbCr & _
+            "and at least one merge field."
+        End If
+    End With
+End With
+        
+End Sub
+Attribute VB_Name = "ModMergewithAttachments"
+Option Explicit
+Dim xlApp As Object
+Dim xlbook As Object
+'Public MergeData As Variant
+Dim MergeFields As Variant
+Dim AttachmentFields As Variant
+Dim AttachmentFiles As Variant
+Dim FileNameFields As Variant
+Dim numrecs As Long, numflds As Long
+Dim dSource As String
+Dim qryStr As String
+Dim mfCode As Range
+Dim i As Long, j As Long, k As Long, s As Long
+Dim myForm As frmMAForm
+Dim strKey As String
+Dim strResult As String
+Dim strDestination As String
+Dim rngEmpty As Range
+Dim EmailIndex As Long
+Public CCIndex As Long
+Public BCCIndex As Long
+Public SubjectIndex As Long
+Public Salutation As Long
+Dim strEmail As String
+Dim strBeforeSubject As String
+Dim strAfterSubject As String
+Dim strDear As String
+Dim strMessage As String
+Dim strAttach As String
+Dim bStarted As Boolean
+Dim oOutlookApp As Object 'Outlook.Application
+Dim oItem As Object
+Dim objDoc As Object 'Outlook.MailItem
+Dim objDoc1 As Object 'Outlook.MailItem
+Dim strID As String
+Global boolSalutation As Boolean
+Global boolCC As Boolean
+Global boolBCC As Boolean
+Global boolSubject As Boolean
+Dim myWS As Object
+Dim RegKey As String
+Dim Key As String
+Dim Ver As Variant
+Dim Excelwasnotrunning As Boolean
+Dim MainDoc As String
+Dim flagfields As Boolean
+Dim flagfiles As Boolean
+Dim blnDate As Boolean
+Dim fname As Long
+Public strfname As String
+Dim strFileText As String
+Dim intwait As Long
+Dim arrRecipients As Variant
+Dim subind As Long
+Dim dsourceType As String
+Dim dsName As String
+Dim dsTable As String
+Dim appAccess As Object
+Dim rs As Object
+Dim strFields As String
+Dim temp As Variant
+Dim Signature As String
+Dim boolSignature As Boolean
+Dim intnumber As Long
+Dim mystoryrange As Range
+
+'Created by Doug Robbins - dkr@mvps.org
+Sub MergeAttachments()
+blnMergeChart = False
+boolCC = False
+boolBCC = False
+boolSalutation = False
+boolSubject = False
+boolSignature = False
+With ActiveDocument
+    If .Saved = False Then
+        MsgBox "Please save the mail merge main document before proceeding.", vbCritical
+        Exit Sub
+    End If
+    MainDoc = .FullName
+    With .MailMerge
+        If .MainDocumentType <> wdFormLetters Then
+            MsgBox "This application is only designed to be run with a Letters type mail merge main document", _
+            vbCritical, "Not the correct type of mail merge document."
+            Exit Sub
+        End If
+        With .DataSource
+            dsName = .Name
+            If Len(.Name) = 0 Then
+                MsgBox "Attach the data source and re-run this macro", _
+                vbCritical, "No Data Source!"
+                Exit Sub
+            End If
+            dsourceType = Mid(.Name, InStrRev(.Name, ".") + 1)
+        End With
+    End With
+End With
+Select Case dsourceType
+    Case "xls", "xlsx", "csv"
+        Set xlApp = CreateObject("Excel.Application")
+        With xlApp
+            Set xlbook = .Workbooks.Open(dsName)
+            numflds = xlbook.Worksheets(1).Range("A1").CurrentRegion.Columns.Count
+            'Populate an array with the data from the worksheet
+            MergeData = xlbook.Worksheets(1).Range("A1").CurrentRegion.Value
+            'Populate an array with the data (the field names) from the first row of the worksheet
+            MergeFields = xlbook.Worksheets(1).Range("A1").CurrentRegion.Rows(1)
+            ReDim temp(1 To UBound(MergeData, 1) - 1, 1 To UBound(MergeData, 2))
+            For i = 2 To UBound(MergeData, 1)
+                For j = 1 To UBound(MergeData, 2)
+                    temp(i - 1, j) = MergeData(i, j)
+                Next j
+            Next i
+            MergeData = temp
+            xlbook.Close SaveChanges:=False
+            Set xlbook = Nothing
+        End With
+        xlApp.Quit
+        Set xlApp = Nothing
+    Case "accdb", "mdb"
+        With ActiveDocument.MailMerge.DataSource
+'            dsTable = Replace(Mid(.QueryString, 16), "`", "")
+            dsTable = Mid(.QueryString, 16, Len(.QueryString) - 16)
+        End With
+        Set appAccess = CreateObject("Access.Application")
+        Call appAccess.OpenCurrentDatabase(dsName)
+        Set rs = appAccess.CurrentProject.Connection.Execute("Select * from [" & dsTable & "]")
+        strFields = ""
+        For i = 0 To rs.Fields.Count - 1
+            strFields = strFields & "|" & rs.Fields(i).Name
+        Next i
+        strFields = Mid(strFields, 2)
+        MergeFields = Split(strFields, "|")
+        ReDim temp(1, 1 To UBound(MergeFields) + 1)
+        For i = LBound(MergeFields) To UBound(MergeFields)
+            temp(1, i + 1) = MergeFields(i)
+        Next i
+        MergeFields = temp
+        With rs
+            .Movelast
+            .moveFirst
+            MergeData = .GetRows(.RecordCount)
+        End With
+        ReDim temp(1 To UBound(MergeData, 2) + 1, 1 To UBound(MergeData, 1) + 1)
+        For i = LBound(MergeData, 2) To UBound(MergeData, 2)
+            For j = LBound(MergeData, 1) To UBound(MergeData, 1)
+                If IsNull(MergeData(j, i)) Then
+                    temp(i + 1, j + 1) = ""
+                Else
+                    temp(i + 1, j + 1) = MergeData(j, i)
+                End If
+            Next j
+        Next i
+        MergeData = temp
+        appAccess.Quit
+        Set appAccess = Nothing
+    Case Else
+        MsgBox "This utility will only work when the data source is an Excel workbook or an Access DataBase", , "Incorrect Data Source"
+        Exit Sub
+End Select
+Datarray = MergeData
+lngFirst = LBound(MergeData, 1)
+lngLast = UBound(MergeData, 1)
+Set myFormSelect = New frmSelect
+'With myFormSelect
+'    With .lstAllRecords
+'        ReDim temp(UBound(MergeData, 1), 2)
+'        For i = LBound(MergeData, 1) To UBound(MergeData, 1)
+'            temp(i, 1) = i
+'            strTemp = ""
+'            For j = LBound(MergeData, 2) To UBound(MergeData, 2)
+'                strTemp = strTemp & " " & MergeData(i, j)
+'            Next j
+'            strTemp = Mid(strTemp, 2)
+'            temp(i, 2) = strTemp
+'            .AddItem
+'            .List(i - 1, 0) = i
+'            .List(i - 1, 1) = strTemp
+'        Next i
+'    End With
+'End With
+Set myForm = New frmMAForm
+With myForm
+    With .lstMergeFields
+        For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+            MergeFields(1, i) = Replace(MergeFields(1, i), " ", "_")
+            .AddItem
+            .List(i - 1, 0) = i
+            .List(i - 1, 1) = MergeFields(1, i)
+        Next i
+    End With
+    With .cmbDestination
+        .AddItem "Merge to Email Message"
+        .AddItem "Merge to Email as Word Attachment"
+        .AddItem "Merge to Email as PDF Attachment"
+    End With
+    With .cmbDear
+        .AddItem ""
+        .AddItem "Dear"
+        .AddItem "Hi"
+        .AddItem "Cher"
+        .AddItem "Hallo"
+        .AddItem "Hola"
+        .AddItem "K|fffd|re"
+        .AddItem "Lieber"
+        .AddItem "Querido"
+        .AddItem "querida"
+        .AddItem "Salut"
+    End With
+    .cmbEmail.List = .lstMergeFields.List
+    .cmbCC.List = .lstMergeFields.List
+    .cmbBCC.List = .lstMergeFields.List
+    .cmbSubject.List = .lstMergeFields.List
+    .cmbSalutation.List = .lstMergeFields.List
+    .lstfilemergefields.List = .lstMergeFields.List
+    .cmdContinue.Enabled = False
+    .lblEmailAddress.Visible = False
+    .cmbEmail.Visible = False
+    .lblCCAddress.Visible = False
+    .cmbCC.Visible = False
+    .lblBCCAddress.Visible = False
+    .cmbBCC.Visible = False
+    .lblBeforeSubject.Visible = False
+    .lblAfterSubject.Visible = False
+    .lblSelectSubject.Visible = False
+    .txtAfterSubject.Visible = False
+    .cmbSubject.Visible = False
+    .txtBeforeSubject.Visible = False
+    .lblMsgText.Visible = False
+    .txtEmailMessage.Visible = False
+    .txtDate.Text = Format(Date, "yyyymmdd")
+    .chkDate.Value = True
+    .Show vbModal
+    .cmbSalutation.Visible = False
+    .chkSalutation.Visible = False
+    .chkSubjectField.Value = False
+    .chkSubjectField.Visible = False
+    .cmbSubject.Visible = False
+    .lblBeforeSubject.Visible = True
+    .lblAfterSubject.Visible = False
+    .lblBeforeSubject.Caption = "Text for Subject of Email Message"
+    .txtBeforeSubject.Width = 292
+    .txtAfterSubject.Visible = False
+    .chkSignature.Visible = False
+    myFormSelect.cmbFieldList.List = .cmbEmail.List
+End With
+EmailIndex = Val(myForm.txtEmailIndex)
+CCIndex = Val(myForm.txtCCIndex)
+BCCIndex = Val(myForm.txtBCCIndex)
+fname = Val(myForm.txtFileNameIndex)
+Salutation = Val(myForm.txtSalutationIndex)
+strDear = myForm.cmbDear.Value & " "
+strBeforeSubject = myForm.txtBeforeSubject.Text
+strAfterSubject = myForm.txtAfterSubject.Text
+Select Case myForm.cmbDestination.Value
+    Case "Merge to Email Message"
+        strDestination = "EmailMessage"
+        On Error Resume Next
+        Set oOutlookApp = GetObject(, "Outlook.Application")
+        If Err <> 0 Then
+            Set oOutlookApp = CreateObject("Outlook.Application")
+            bStarted = True
+        End If
+        On Error GoTo ErrMsg
+    Case "Merge to Email as Word Attachment"
+        strDestination = "EmailWordAttachment"
+        strMessage = myForm.txtEmailMessage
+        On Error Resume Next
+        Set oOutlookApp = GetObject(, "Outlook.Application")
+        If Err <> 0 Then
+            Set oOutlookApp = CreateObject("Outlook.Application")
+            bStarted = True
+        End If
+        On Error GoTo ErrMsg
+    Case "Merge to Email as PDF Attachment"
+        strDestination = "EmailPDFAttachment"
+        strMessage = myForm.txtEmailMessage
+        On Error Resume Next
+        Set oOutlookApp = GetObject(, "Outlook.Application")
+        If Err <> 0 Then
+            Set oOutlookApp = CreateObject("Outlook.Application")
+            bStarted = True
+        End If
+        On Error GoTo ErrMsg
+End Select
+With myForm
+    If .lstAttachmentFields.ListCount > 0 Then
+        flagfields = True
+        AttachmentFields = myForm.lstAttachmentFields.List
+    Else
+        flagfields = False
+    End If
+    If .lstAttachments.ListCount > 0 Then
+        flagfiles = True
+        AttachmentFiles = myForm.lstAttachments.List
+    Else
+        flagfiles = False
+    End If
+    FileNameFields = myForm.lstFileNameFields.List
+    strFileText = ""
+    If .chkDate.Value = True Then
+        strFileText = Format(Date, "yyyymmdd") & " - "
+    End If
+    If .txtFileText <> "" Then
+        strFileText = strFileText & .txtFileText & " - "
+    End If
+    If .chkSignature.Value = True Then
+        boolSignature = True
+    End If
+End With
+Unload myForm
+Set myForm = Nothing
+If boolNext = True Then
+    Set frmrecs = New frmRecords
+    With frmrecs
+        .txtFrom.Text = lngFirst
+        .txtTo.Text = lngLast
+        .Show
+    End With
+    Unload frmrecs
+    Set frmrecs = Nothing
+Else
+    ActiveDocument.Close wdDoNotSaveChanges
+    If MsgBox("Do you want to re-open the mail merge main document?", vbYesNo + vbQuestion, "Merge with Attachments") = vbYes Then
+        Documents.Open MainDoc
+    End If
+    Exit Sub
+End If
+If boolNext = False Then
+    ActiveDocument.Close wdDoNotSaveChanges
+    If MsgBox("Do you want to re-open the mail merge main document?", vbYesNo + vbQuestion, "Merge with Attachments") = vbYes Then
+        Documents.Open MainDoc
+    End If
+    Exit Sub
+End If
+If strDestination = "EmailWordAttachment" Or strDestination = "EmailPDFAttachment" Then
+    ModMergeChart.GetFolder
+End If
+With ActiveDocument
+    For Each mystoryrange In .StoryRanges
+        With mystoryrange
+            For i = 1 To .Fields.Count
+                If .Fields(i).Type = wdFieldMergeField Then
+                    Set mfCode = .Fields(i).Code
+                    mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                End If
+            Next i
+        End With
+        Do While Not (mystoryrange.NextStoryRange Is Nothing)
+            Set mystoryrange = mystoryrange.NextStoryRange
+            With mystoryrange
+                For i = 1 To .Fields.Count
+                    If .Fields(i).Type = wdFieldMergeField Then
+                        Set mfCode = .Fields(i).Code
+                        mfCode.Text = Replace(mfCode.Text, "MERGEFIELD", "DOCVARIABLE")
+                    End If
+                Next i
+            End With
+        Loop
+    Next mystoryrange
+'Convert the Mail Merge Main document to a normal Word document
+    .MailMerge.MainDocumentType = wdNotAMergeDocument
+    If blnAll = True Then
+        lngFirst = LBound(MergeData, 1)
+        lngLast = UBound(MergeData, 1)
+    End If
+    For s = LBound(arrRecords) To UBound(arrRecords)
+    k = arrRecords(s)
+'Create variables in the document with the names and values of the fields in each record
+        For i = LBound(MergeFields, 2) To UBound(MergeFields, 2)
+            If MergeData(k, i) <> "" Then
+                .Variables(Left(MergeFields(1, i), 40)).Value = Replace(MergeData(k, i), Chr$(10), Chr$(13))
+            Else
+                .Variables(Left(MergeFields(1, i), 40)).Value = " "
+            End If
+        Next i
+        For Each mystoryrange In .StoryRanges
+            mystoryrange.Fields.Update
+        Next mystoryrange
+        .UndoClear
+        Select Case strDestination
+            Case "EmailMessage"
+                On Error Resume Next
+TryAgain:
+                With .MailEnvelope.Item
+                    Do While Err.Number <> 0
+                        For intwait = 1 To 100
+                            DoEvents
+                        Next
+                        Err.Clear
+                        GoTo TryAgain
+                    Loop
+                    On Error GoTo ErrMsg
+                    For j = .Recipients.Count To 1 Step -1
+                        .Recipients(j).Delete
+                    Next j
+                    If InStr(MergeData(k, EmailIndex), ";") > 0 Then
+                        arrRecipients = Split(MergeData(k, EmailIndex), ";")
+                        For j = LBound(arrRecipients) To UBound(arrRecipients)
+                            .Recipients.Add arrRecipients(j)
+                        Next j
+                    Else
+                        .Recipients.Add MergeData(k, EmailIndex)
+                    End If
+                    If boolCC = True Then
+                        .CC = MergeData(k, CCIndex)
+                    End If
+                    If boolBCC = True Then
+                        .BCC = MergeData(k, BCCIndex)
+                    End If
+                    If SubjectIndex > 0 Then
+                        .Subject = strBeforeSubject & " " & MergeData(k, SubjectIndex) & " " & strAfterSubject
+                    Else
+                        .Subject = strBeforeSubject
+                    End If
+                    For j = .Attachments.Count To 1 Step -1
+                        .Attachments(j).Delete
+                    Next j
+                    If flagfields = True Then
+                        For j = 0 To UBound(AttachmentFields)
+                            If Trim(MergeData(k, AttachmentFields(j, 0))) <> "" Then
+                                .Attachments.Add MergeData(k, AttachmentFields(j, 0))
+                            End If
+                        Next j
+                    End If
+                    If flagfiles = True Then
+                        For j = 0 To UBound(AttachmentFiles)
+                            .Attachments.Add AttachmentFiles(j, 0)
+                        Next j
+                    End If
+                    .Send
+                End With
+            Case "EmailWordAttachment"
+                strfname = ""
+                For j = 0 To UBound(FileNameFields)
+                    strfname = strfname & MergeData(k, FileNameFields(j, 0)) & " - "
+                Next j
+                strfname = strFileText & Left(strfname, Len(strfname) - 3)
+                .SaveAs strFolder & strfname, FileFormat:=wdFormatDocumentDefault, AddToRecentFiles:=False
+                strAttach = ActiveDocument.FullName
+                If boolSignature = True Then
+                    Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                    With oItem
+                        .BodyFormat = 1 'olFormatPlain
+                        .Display
+                        Signature = .Body
+                        .Delete
+                        boolSignature = False
+                    End With
+                    Set oItem = Nothing
+                End If
+                Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                With oItem
+                    If InStr(MergeData(k, EmailIndex), ";") > 0 Then
+                        arrRecipients = Split(MergeData(k, EmailIndex), ";")
+                        For j = LBound(arrRecipients) To UBound(arrRecipients)
+                            .Recipients.Add arrRecipients(j)
+                        Next j
+                    Else
+                        .Recipients.Add MergeData(k, EmailIndex)
+                    End If
+                    If SubjectIndex > 0 Then
+                        .Subject = strBeforeSubject & " " & MergeData(k, SubjectIndex) & " " & strAfterSubject
+                    Else
+                        .Subject = strBeforeSubject
+                    End If
+                    .BodyFormat = 2 'olFormatHTML
+                    If boolCC = True Then
+                        .CC = MergeData(k, CCIndex)
+                    End If
+                    If boolBCC = True Then
+                        .BCC = MergeData(k, BCCIndex)
+                    End If
+                    If boolSalutation = True Then
+                        .HTMLBody = strDear & MergeData(k, Salutation) & "," & vbCr & vbCr & strMessage & vbCr & Signature
+                    Else
+                        .HTMLBody = strMessage & vbCr & Signature
+                    End If
+                    .Attachments.Add strAttach
+                    If flagfields = True Then
+                        For j = 0 To UBound(AttachmentFields)
+                            If Trim(MergeData(k, AttachmentFields(j, 0))) <> "" Then
+                                .Attachments.Add MergeData(k, AttachmentFields(j, 0))
+                            End If
+                        Next j
+                    End If
+                    If flagfiles = True Then
+                        For j = 0 To UBound(AttachmentFiles)
+                            .Attachments.Add AttachmentFiles(j, 0)
+                        Next j
+                    End If
+                    .Send
+                End With
+                Set oItem = Nothing
+            Case "EmailPDFAttachment"
+                strfname = ""
+                For j = 0 To UBound(FileNameFields)
+                    strfname = strfname & MergeData(k, FileNameFields(j, 0)) & " - "
+                Next j
+                strfname = strFileText & Left(strfname, Len(strfname) - 3)
+                .ExportAsFixedFormat strFolder & strfname & ".pdf", wdExportFormatPDF, False, wdExportOptimizeForPrint
+                strAttach = strFolder & strfname & ".pdf"
+                If boolSignature = True Then
+                    Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                    With oItem
+                        .BodyFormat = 1 'olFormatPlain
+                        .Display
+                        Signature = .Body
+                        .Delete
+                        boolSignature = False
+                    End With
+                    Set oItem = Nothing
+                End If
+                Set oItem = oOutlookApp.CreateItem(0) 'olMailItem
+                With oItem
+                    If InStr(MergeData(k, EmailIndex), ";") > 0 Then
+                        arrRecipients = Split(MergeData(k, EmailIndex), ";")
+                        For j = LBound(arrRecipients) To UBound(arrRecipients)
+                            .Recipients.Add arrRecipients(j)
+                        Next j
+                    Else
+                        .Recipients.Add MergeData(k, EmailIndex)
+                    End If
+                    If boolCC = True Then
+                        .CC = MergeData(k, CCIndex)
+                    End If
+                    If boolBCC = True Then
+                        .BCC = MergeData(k, BCCIndex)
+                    End If
+                    If SubjectIndex > 0 Then
+                        .Subject = strBeforeSubject & " " & MergeData(k, SubjectIndex) & " " & strAfterSubject
+                    Else
+                        .Subject = strBeforeSubject
+                    End If
+                    .BodyFormat = 2 'olFormatHTML
+                    If boolSalutation = True Then
+                        .Body = strDear & MergeData(k, Salutation) & "," & vbCr & vbCr & strMessage & vbCr & Signature
+                    Else
+                        .Body = strMessage & vbCr & Signature
+                    End If
+                    .Attachments.Add strAttach
+                    If flagfields = True Then
+                        For j = 0 To UBound(AttachmentFields)
+                            If Trim(MergeData(k, AttachmentFields(j, 0))) <> "" Then
+                                .Attachments.Add MergeData(k, AttachmentFields(j, 0))
+                            End If
+                            Next j
+                    End If
+                    If flagfiles = True Then
+                        For j = 0 To UBound(AttachmentFiles)
+                            .Attachments.Add AttachmentFiles(j, 0)
+                        Next j
+                    End If
+                    .Send
+                End With
+                Set oItem = Nothing
+        End Select
+                'Do While .Undo = True
+                '    .Undo
+                'Loop
+    Next s
+    .Close wdDoNotSaveChanges
+End With
+Set oItem = Nothing
+Set objDoc = Nothing
+Set oOutlookApp = Nothing
+'  Close Outlook if it was started by this macro.
+If bStarted Then
+    oOutlookApp.Quit
+End If
+Exit Sub
+ErrMsg:
+    MsgBox Err.Number & vbCr & Err.Description
+End Sub
+
+
+Attribute VB_Name = "RibbonButtons"
+Option Explicit
+Dim myForm As frmDonation
+Dim blnSaved As Boolean
+Dim mmdoc As Document
+'Created by Doug Robbins - dkr@mvps.org
+Sub ManyToOneBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655576"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModManytoOneEmail.ManyToOne
+End Select
+End Sub
+
+Sub MergeChartBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655577"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModMergeChart.ChartMerge
+End Select
+End Sub
+Sub MergeDuplexBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655578"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModMergeDuplex.MergeDuplex
+End Select
+End Sub
+Sub MergeAttachmentsBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655580"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModMergewithAttachments.MergeAttachments
+End Select
+End Sub
+Sub MergeIndividualBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655581"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModMergeIndividual.MergeIndividual
+End Select
+End Sub
+Sub MergePrintStapleBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655582"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModMergePrintStaple.MergePrintStaple
+End Select
+End Sub
+Sub ShowFormagain(control As IRibbonControl)
+End Sub
+Sub ProtectFormBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655583"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModMergeForm.Protect
+End Select
+End Sub
+Sub MergeFormBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655579"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModMergeForm.MailMergeExcelwithFormFields
+End Select
+End Sub
+'Callback for Custombutton163655584 onAction
+Sub ContentControlMergeBtn(control As IRibbonControl)
+Select Case control.ID
+  Case "Custombutton163655584"
+    Set mmdoc = ActiveDocument
+    If mmdoc.Saved = True Then
+        blnSaved = True
+    End If
+    Set myForm = New frmDonation
+    myForm.Show
+    Set myForm = Nothing
+    If blnSaved = True Then
+        mmdoc.Saved = True
+    End If
+    ModContentControlMerge.CCMerge
+End Select
+End Sub
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "frmCCMForm"
+Attribute VB_Base = "0{1C096DA2-6A60-4722-AA14-D50FFF98BCC9}{F9425880-BEA3-42AE-BCFF-E60940042D98}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+'Created by Doug Robbins - dkr@mvps.org
+
+Private Sub chkSalutation_Click()
+If chkSalutation.Value = True Then
+    cmbSalutation.Visible = True
+    cmbDear.Visible = True
+    boolSalutation = True
+Else
+    cmbSalutation.Visible = False
+    cmbDear.Visible = False
+    boolSalutation = False
+End If
+End Sub
+
+Private Sub chkSubjectField_Click()
+If chkSubjectField.Value = True Then
+    cmbSubject.Visible = True
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = True
+    lblBeforeSubject.Caption = "Text before Subject Field"
+    txtBeforeSubject.Visible = True
+    txtBeforeSubject.Width = 145
+    boolSubject = True
+    txtAfterSubject.Visible = True
+    lblSelectSubject.Visible = True
+Else
+    cmbSubject.Visible = False
+    cmbSubject.ListIndex = -1
+    txtSubjectIndex.Text = 0
+    boolSubject = False
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = False
+    lblBeforeSubject.Caption = "Text for Subject of Email Message"
+    txtBeforeSubject.Width = 288
+    txtAfterSubject.Visible = False
+    lblSelectSubject.Visible = False
+End If
+End Sub
+
+Private Sub cmbCC_Change()
+With Me.cmbCC
+    If .ListIndex > -1 Then
+        Me.txtCCIndex.Text = .List(.ListIndex, 0)
+        boolCC = True
+    Else
+        boolCC = False
+    End If
+End With
+End Sub
+
+Private Sub cmbDestination_Change()
+With Me.cmbDestination
+    If .Value = "Merge to Email as Word Attachment" Then
+        lblEmailAddress.Visible = True
+        cmbEmail.Visible = True
+        lblCCAddress.Visible = True
+        cmbCC.Visible = True
+        chkSubjectField.Visible = True
+        lblBeforeSubject.Visible = True
+        lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        txtBeforeSubject.Width = 288
+        txtBeforeSubject.Visible = True
+        lblMsgText.Visible = True
+        txtEmailMessage.Visible = True
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = True
+        cmbFileName.Visible = True
+        chkSalutation.Visible = True
+        cmbSalutation.Visible = False
+        chkSignature.Visible = True
+    ElseIf .Value = "Merge to Individual Word Files" Then
+        lblEmailAddress.Visible = False
+        cmbEmail.Visible = False
+        lblCCAddress.Visible = False
+        cmbCC.Visible = False
+        chkSubjectField.Visible = False
+        lblBeforeSubject.Visible = False
+        txtBeforeSubject.Visible = False
+        lblMsgText.Visible = False
+        txtEmailMessage.Visible = False
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = True
+        cmbFileName.Visible = True
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        chkSignature.Visible = False
+    End If
+End With
+boolSubject = False
+boolSalutation = False
+End Sub
+Private Sub cmbEmail_Change()
+With Me.cmbEmail
+    If .ListIndex > -1 Then
+        Me.txtEmailIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+If Me.cmbFileName.ListIndex > -1 Then
+    Me.cmdContinue.Enabled = True
+End If
+End Sub
+
+Private Sub cmbFileName_Change()
+With Me.cmbFileName
+    If .ListIndex > -1 Then
+        Me.txtFileNameIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+If cmbDestination.ListIndex > -1 Then
+    Me.cmdContinue.Enabled = True
+End If
+End Sub
+Private Sub cmbSalutation_Change()
+With Me.cmbSalutation
+    If .ListIndex > -1 Then
+        Me.txtSalutationIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+
+Private Sub cmbSubject_Change()
+With Me.cmbSubject
+    If .ListIndex > -1 Then
+        Me.txtSubjectIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+
+Private Sub cmdCancel_Click()
+boolNext = False
+Me.Hide
+End Sub
+
+Private Sub cmdContinue_Click()
+boolNext = True
+Me.Hide
+End Sub
+
+Attribute VB_Name = "frmCMForm"
+Attribute VB_Base = "0{79A3BD1C-2BCE-4690-BAB4-071FA20D2B4F}{D92F150F-78A9-4EA6-93B5-2AA4A59B4ED0}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'Created by Doug Robbins - dkr@mvps.org
+Private Sub chkSalutation_Click()
+If chkSalutation.Value = True Then
+    cmbSalutation.Visible = True
+    cmbDear.Visible = True
+    boolSalutation = True
+Else
+    cmbSalutation.Visible = False
+    cmbDear.Visible = False
+    boolSalutation = False
+End If
+End Sub
+
+Private Sub chkSubjectField_Click()
+If chkSubjectField.Value = True Then
+    cmbSubject.Visible = True
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = True
+    lblBeforeSubject.Caption = "Text before Subject Field"
+    txtBeforeSubject.Visible = True
+    txtBeforeSubject.Width = 145
+    boolSubject = True
+    txtAfterSubject.Visible = True
+    lblSelectSubject.Visible = True
+Else
+    cmbSubject.Visible = False
+    cmbSubject.ListIndex = -1
+    txtSubjectIndex.Text = 0
+    boolSubject = False
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = False
+    lblBeforeSubject.Caption = "Text for Subject of Email Message"
+    txtBeforeSubject.Width = 288
+    txtAfterSubject.Visible = False
+    lblSelectSubject.Visible = False
+End If
+End Sub
+Private Sub cmbCC_Change()
+With Me.cmbCC
+    If .ListIndex > -1 Then
+        Me.txtCCIndex.Text = .List(.ListIndex, 0)
+        boolCC = True
+    Else
+        boolCC = False
+    End If
+End With
+End Sub
+
+
+
+Private Sub cmbDestination_Change()
+Me.cmbEmail.ListIndex = -1
+Me.cmbFileName.ListIndex = -1
+With Me.cmbDestination
+    If .Value = "Merge to Email Message" Then
+        lblEmailAddress.Visible = True
+        cmbEmail.Visible = True
+        lblCCAddress.Visible = True
+        cmbCC.Visible = True
+        chkSubjectField.Visible = True
+        lblBeforeSubject.Visible = True
+        lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        txtBeforeSubject.Width = 288
+        txtBeforeSubject.Visible = True
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = False
+        cmbFileName.Visible = False
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        txtEmailMessage.Visible = False
+        lblMsgText.Visible = False
+        chkSignature.Visible = False
+    ElseIf .Value = "Merge to Email as Word Attachment" Or .Value = "Merge to Email as PDF Attachment" Then
+        lblEmailAddress.Visible = True
+        cmbEmail.Visible = True
+        lblCCAddress.Visible = True
+        cmbCC.Visible = True
+        chkSubjectField.Visible = True
+        lblBeforeSubject.Visible = True
+        lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        txtBeforeSubject.Width = 288
+        txtBeforeSubject.Visible = True
+        lblMsgText.Visible = True
+        txtEmailMessage.Visible = True
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = True
+        cmbFileName.Visible = True
+        chkSalutation.Visible = True
+        cmbSalutation.Visible = False
+        chkSignature.Visible = True
+    ElseIf .Value = "Merge to Individual Word Files" Or .Value = "Merge to Individual PDF Files" Then
+        lblEmailAddress.Visible = False
+        cmbEmail.Visible = False
+        lblCCAddress.Visible = False
+        cmbCC.Visible = False
+        chkSubjectField.Visible = False
+        lblBeforeSubject.Visible = False
+        txtBeforeSubject.Visible = False
+        lblMsgText.Visible = False
+        txtEmailMessage.Visible = False
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = True
+        cmbFileName.Visible = True
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        chkSignature.Visible = False
+    Else
+        lblEmailAddress.Visible = False
+        cmbEmail.Visible = False
+        lblCCAddress.Visible = False
+        cmbCC.Visible = False
+        chkSubjectField.Visible = False
+        lblBeforeSubject.Visible = False
+        txtBeforeSubject.Visible = False
+        lblMsgText.Visible = False
+        txtEmailMessage.Visible = False
+        Me.cmdContinue.Enabled = True
+        lblFileName.Visible = False
+        cmbFileName.Visible = False
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        chkSignature.Visible = False
+    End If
+End With
+boolSubject = False
+boolSalutation = False
+End Sub
+Private Sub cmbEmail_Change()
+With Me.cmbEmail
+    If .ListIndex > -1 Then
+        Me.txtEmailIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+If Me.cmbFileName.ListIndex > -1 Or Me.cmbDestination.Value = "Merge to Email Message" Then
+    Me.cmdContinue.Enabled = True
+End If
+End Sub
+Private Sub cmbFileName_Change()
+With Me.cmbFileName
+    If .ListIndex > -1 Then
+        Me.txtFileNameIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+If Me.cmbDestination.Value <> "Merge to Email as Word Attachment" Or Me.cmbDestination.Value <> "Merge to Email as PDF Attachment" Then
+    Me.cmdContinue.Enabled = True
+ElseIf Me.cmbEmail.ListIndex > -1 Then
+    Me.cmdContinue.Enabled = True
+End If
+End Sub
+Private Sub cmbSalutation_Change()
+With Me.cmbSalutation
+    If .ListIndex > -1 Then
+        Me.txtSalutationIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+Private Sub cmbSubject_Change()
+With Me.cmbSubject
+    If .ListIndex > -1 Then
+        Me.txtSubjectIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+Private Sub cmdCancel_Click()
+boolNext = False
+Me.Hide
+End Sub
+Private Sub cmdContinue_Click()
+boolNext = True
+Me.Hide
+End Sub
+
+Attribute VB_Name = "frmDonation"
+Attribute VB_Base = "0{E16E088F-57C3-4A86-9D8B-0F347BA39E5A}{1D4CE92B-6B53-4662-B4DF-66117C14E732}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub cmdContinue_Click()
+Dim doc As Document
+Dim i As Long
+Dim blnSaved As Boolean
+If ActiveDocument.Saved = True Then
+    blnSaved = True
+End If
+Set doc = Documents.Add
+With doc
+    With .Range
+        .Text = Me.lblDonation.Caption
+        .InsertAfter vbCr & "Minimise this document to continue."
+        For i = 1 To .Paragraphs.Count
+            .Paragraphs(i).Alignment = wdAlignParagraphCenter
+        Next i
+    End With
+    On Error Resume Next
+    .ExportAsFixedFormat "Donation Text.pdf", wdExportFormatPDF, True
+    .Close wdDoNotSave
+End With
+Me.Hide
+End Sub
+Attribute VB_Name = "frmEmail"
+Attribute VB_Base = "0{AE62BE00-DEE3-445B-BCE8-EB9D8F2F3344}{86F0F1E3-A3B7-493E-92EE-1CBEDD033416}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private sOutlook As String
+'Created by Doug Robbins - dkr@mvps.org
+Private Sub cbCancel_Click()
+bCancel = True
+Unload Me
+End Sub
+
+Private Sub cbOK_Click()
+bCancel = False
+Unload Me
+End Sub
+
+Private Sub UserForm_Initialize()
+If Application.Version = 14 Then
+    sOutlook = "File > Options > Mail."
+Else
+    sOutlook = "Tools > Options."
+End If
+Me.lblWarning.Caption = "The add-in has detected that you have the option selected in Outlook, to spell check messages before sending. When merging to the body of an e-mail message, this may result in a requirement for user interaction between every message, which, with a large data source, can be very tedious." & vbCr & vbCr & _
+"To avoid that situation, the option to merge to that destination will not be available until the option to spell check is de-selected in Outlook's " & sOutlook & vbCr & vbCr & _
+"Either continue and choose a destination other than merging to the body of e-mail messages or select Cancel to quit the macro then change the spell check setting before running the macro again."
+End Sub
+
+
+
+Attribute VB_Name = "frmMAForm"
+Attribute VB_Base = "0{5D2A8703-04AF-46B0-8B7A-CDE636023860}{E292499F-97BD-42EF-B9C3-721D07427326}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+'Created by Doug Robbins - dkr@mvps.org
+Dim i As Long
+
+
+
+Private Sub chkSalutation_Change()
+If chkSalutation.Value = True Then
+    cmbSalutation.Visible = True
+    cmbDear.Visible = True
+    boolSalutation = True
+Else
+    cmbSalutation.Visible = False
+    cmbDear.Visible = False
+    boolSalutation = False
+End If
+
+End Sub
+
+
+Private Sub chkSubjectField_Click()
+If chkSubjectField.Value = True Then
+    cmbSubject.Visible = True
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = True
+    lblBeforeSubject.Caption = "Text before Subject Field"
+    txtBeforeSubject.Visible = True
+    txtBeforeSubject.Width = 165
+    boolSubject = True
+    txtAfterSubject.Visible = True
+    lblSelectSubject.Visible = True
+Else
+    cmbSubject.Visible = False
+    cmbSubject.ListIndex = -1
+    txtSubjectIndex.Text = 0
+    boolSubject = False
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = False
+    lblBeforeSubject.Caption = "Text for Subject of Email Message"
+    txtBeforeSubject.Width = 337
+    txtAfterSubject.Visible = False
+    lblSelectSubject.Visible = False
+End If
+End Sub
+
+Private Sub cmbDestination_Change()
+boolSubject = False
+With Me.cmbDestination
+    If .Value = "Merge to Email Message" Then
+        lblEmailAddress.Visible = True
+        cmbEmail.Visible = True
+        lblCCAddress.Visible = True
+        cmbCC.Visible = True
+        lblBCCAddress.Visible = True
+        cmbBCC.Visible = True
+        chkSubjectField.Visible = True
+        lblBeforeSubject.Visible = True
+        lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        txtBeforeSubject.Width = 336
+        txtBeforeSubject.Visible = True
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = False
+        cmbFileName.Visible = False
+        lstfilemergefields.Visible = False
+        lstFileNameFields.Visible = False
+        cmdAddFileNameField.Visible = False
+        cmdRemoveFileNameField.Visible = False
+        txtDate.Visible = False
+        chkDate.Visible = False
+        txtFileText.Visible = False
+        lblFileText.Visible = False
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        txtEmailMessage.Visible = False
+        lblMsgText.Visible = False
+        chkSignature.Visible = False
+    ElseIf .Value = "Merge to Email as Word Attachment" Or .Value = "Merge to Email as PDF Attachment" Then
+        lblEmailAddress.Visible = True
+        cmbEmail.Visible = True
+        lblCCAddress.Visible = True
+        cmbCC.Visible = True
+        lblBCCAddress.Visible = True
+        cmbBCC.Visible = True
+        chkSubjectField.Visible = True
+        lblBeforeSubject.Visible = True
+        lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        txtBeforeSubject.Width = 336
+        txtBeforeSubject.Visible = True
+        lblMsgText.Visible = True
+        txtEmailMessage.Visible = True
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = True
+        lstfilemergefields.Visible = True
+        lstfilemergefields.Height = 40
+        lstFileNameFields.Visible = True
+        cmdAddFileNameField.Visible = True
+        cmdRemoveFileNameField.Visible = True
+        txtDate.Visible = True
+        chkDate.Visible = True
+        txtFileText.Visible = True
+        lblFileText.Visible = True
+        chkSalutation.Visible = True
+        chkSignature.Visible = True
+    End If
+End With
+boolSalutation = False
+End Sub
+
+Private Sub cmbEmail_Change()
+With Me.cmbEmail
+    If .ListIndex > -1 Then
+        Me.txtEmailIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+If Me.cmbEmail.ListIndex > -1 And Me.lstFileNameFields.ListCount > 0 Then
+    Me.cmdContinue.Enabled = True
+ElseIf Me.cmbDestination.Value = "Merge to Email Message" Then
+    Me.cmdContinue.Enabled = True
+End If
+End Sub
+Private Sub cmbCC_Change()
+boolCC = False
+With Me.cmbCC
+    If .ListIndex > -1 Then
+        Me.txtCCIndex.Text = .List(.ListIndex, 0)
+        boolCC = True
+    Else
+        boolCC = False
+    End If
+End With
+End Sub
+Private Sub cmbBCC_Change()
+boolBCC = False
+With Me.cmbBCC
+    If .ListIndex > -1 Then
+        Me.txtBCCIndex.Text = .List(.ListIndex, 0)
+        boolBCC = True
+        If Me.lstFileNameFields.ListCount > 0 Then
+            Me.cmdContinue.Enabled = True
+        ElseIf Me.cmbDestination.Value = "Merge to Email Message" Then
+            Me.cmdContinue.Enabled = True
+        End If
+    Else
+        boolBCC = False
+    End If
+End With
+End Sub
+Private Sub cmbSubject_Change()
+With Me.cmbSubject
+    If .ListIndex > -1 Then
+        Me.txtSubjectIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+Private Sub cmbSalutation_Change()
+With Me.cmbSalutation
+    If .ListIndex > -1 Then
+        Me.txtSalutationIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+
+Private Sub cmbFileName_Change()
+With Me.cmbFileName
+    If .ListIndex > -1 Then
+        Me.txtFileNameIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+If Me.cmbEmail.ListIndex > -1 And Me.cmbFileName.ListIndex > -1 Then
+    Me.cmdContinue.Enabled = True
+End If
+End Sub
+
+Private Sub cmdAdd_Click()
+Dim i As Long
+With Me.lstMergeFields
+    i = .ListIndex
+    If i > -1 Then
+        With Me.lstAttachmentFields
+            .AddItem
+            .List(.ListCount - 1, 0) = Me.lstMergeFields.List(i, 0)
+            .List(.ListCount - 1, 1) = Me.lstMergeFields.List(i, 1)
+        End With
+        .RemoveItem (i)
+    End If
+End With
+    
+End Sub
+
+Private Sub cmdAddFileNameField_Click()
+Dim i As Long
+With Me.lstfilemergefields
+    i = .ListIndex
+    If i > -1 Then
+        With Me.lstFileNameFields
+            .AddItem
+            .List(.ListCount - 1, 0) = Me.lstfilemergefields.List(i, 0)
+            .List(.ListCount - 1, 1) = Me.lstfilemergefields.List(i, 1)
+        End With
+        .RemoveItem (i)
+    End If
+End With
+If Me.cmbEmail.ListIndex > -1 And Me.lstFileNameFields.ListCount > 0 Then
+    Me.cmdContinue.Enabled = True
+End If
+
+End Sub
+
+Private Sub cmdBrowseforAttachments_Click()
+Set fd = Application.FileDialog(msoFileDialogFilePicker)
+With fd
+    .Title = "Select the files to be attached to the email messages."
+    .AllowMultiSelect = True
+    If .Show = -1 Then
+        For i = 1 To .SelectedItems.Count
+            lstAttachments.AddItem .SelectedItems(i)
+        Next i
+    End If
+End With
+
+End Sub
+
+Private Sub cmdCancel_Click()
+boolNext = False
+Me.Hide
+End Sub
+
+Private Sub cmdContinue_Click()
+If boolSalutation = True And cmbSalutation.ListIndex = -1 Then
+    MsgBox "You have indicated that you want to include a salutation in the email message, but have not selected the necessary mergefield.", vbCritical, "Missing Salutation"
+    cmbSalutation.SetFocus
+    cmbSalutation.DropDown
+    Exit Sub
+End If
+If boolSalutation = True And cmbDear.ListIndex = -1 Then
+    MsgBox "You have indicated that you want to include a salutation in the email message, but have not selected the word to be used for the salutation.", vbCritical, "Missing Salutation"
+    cmbDear.SetFocus
+    cmbDear.DropDown
+    Exit Sub
+End If
+If cmbEmail.ListIndex < 0 Then
+    MsgBox "Please select the field that contains the email addresses"
+    cmbEmail.SetFocus
+    Exit Sub
+End If
+If Me.chkSubjectField.Value = True And Me.cmbSubject.ListIndex = -1 Then
+    MsgBox "You have indicated that the data source contains a field with data for the subject of the messages, but have not selected that field."
+    cmbSubject.SetFocus
+    cmbSubject.DropDown
+    Exit Sub
+End If
+boolNext = True
+Me.Hide
+If chkSubjectField.Value = True Then
+    SubjectIndex = Me.txtSubjectIndex.Text
+End If
+End Sub
+
+
+Private Sub cmdDelete_Click()
+With Me.lstAttachments
+    i = .ListIndex
+    If i > -1 Then
+        .RemoveItem (i)
+    End If
+End With
+
+End Sub
+
+Private Sub cmdRemove_Click()
+Dim i As Long, j As Long
+With Me.lstAttachmentFields
+    i = .ListIndex
+    If i > -1 Then
+        With Me.lstMergeFields
+            .AddItem
+            For j = .ListCount - 1 To Me.lstAttachmentFields.List(i, 0) Step -1
+                .List(j, 0) = .List(j - 1, 0)
+                .List(j, 1) = .List(j - 1, 1)
+            Next j
+            .List(j, 0) = Me.lstAttachmentFields.List(i, 0)
+            .List(j, 1) = Me.lstAttachmentFields.List(i, 1)
+        End With
+        .RemoveItem (i)
+    End If
+End With
+End Sub
+
+Private Sub cmdRemoveFileNameField_Click()
+Dim i As Long, j As Long
+With Me.lstFileNameFields
+    i = .ListIndex
+    If i > -1 Then
+        With Me.lstfilemergefields
+            .AddItem
+            For j = .ListCount - 1 To Me.lstFileNameFields.List(i, 0) Step -1
+                .List(j, 0) = .List(j - 1, 0)
+                .List(j, 1) = .List(j - 1, 1)
+            Next j
+            .List(j, 0) = Me.lstFileNameFields.List(i, 0)
+            .List(j, 1) = Me.lstFileNameFields.List(i, 1)
+        End With
+        .RemoveItem (i)
+    End If
+    If .ListCount = 0 Then
+        Me.cmdContinue.Enabled = False
+    End If
+End With
+
+End Sub
+
+
+Attribute VB_Name = "frmMFForm"
+Attribute VB_Base = "0{801C156D-AA07-4BD7-8A66-05E794591254}{178884E3-66C2-4D81-BFC6-D7C671C0A147}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'Created by Doug Robbins - dkr@mvps.org
+
+Private Sub chkSalutation_Click()
+If chkSalutation.Value = True Then
+    cmbSalutation.Visible = True
+    cmbDear.Visible = True
+    boolSalutation = True
+Else
+    cmbSalutation.Visible = False
+    cmbDear.Visible = False
+    boolSalutation = False
+End If
+End Sub
+
+Private Sub chkSubjectField_Click()
+If chkSubjectField.Value = True Then
+    cmbSubject.Visible = True
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = True
+    lblBeforeSubject.Caption = "Text before Subject Field"
+    txtBeforeSubject.Visible = True
+    txtBeforeSubject.Width = 145
+    boolSubject = True
+    txtAfterSubject.Visible = True
+    lblSelectSubject.Visible = True
+Else
+    cmbSubject.Visible = False
+    cmbSubject.ListIndex = -1
+    txtSubjectIndex.Text = 0
+    boolSubject = False
+    lblBeforeSubject.Visible = True
+    lblAfterSubject.Visible = False
+    lblBeforeSubject.Caption = "Text for Subject of Email Message"
+    txtBeforeSubject.Width = 288
+    txtAfterSubject.Visible = False
+    lblSelectSubject.Visible = False
+End If
+End Sub
+
+Private Sub cmbCC_Change()
+With Me.cmbCC
+    If .ListIndex > -1 Then
+        Me.txtCCIndex.Text = .List(.ListIndex, 0)
+        boolCC = True
+    Else
+        boolCC = False
+    End If
+End With
+End Sub
+
+Private Sub cmbDestination_Change()
+With Me.cmbDestination
+    If .Value = "Merge to Email Message" Then
+        lblEmailAddress.Visible = True
+        cmbEmail.Visible = True
+        lblCCAddress.Visible = True
+        cmbCC.Visible = True
+        chkSubjectField.Visible = True
+        lblBeforeSubject.Visible = True
+        lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        txtBeforeSubject.Width = 288
+        txtBeforeSubject.Visible = True
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = False
+        cmbFileName.Visible = False
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        txtEmailMessage.Visible = False
+        lblMsgText.Visible = False
+        chkSignature.Visible = False
+    ElseIf .Value = "Merge to Email as Word Attachment" Or .Value = "Merge to Email as PDF Attachment" Then
+        lblEmailAddress.Visible = True
+        cmbEmail.Visible = True
+        lblCCAddress.Visible = True
+        cmbCC.Visible = True
+        chkSubjectField.Visible = True
+        lblBeforeSubject.Visible = True
+        lblBeforeSubject.Caption = "Text for Subject of Email Message"
+        txtBeforeSubject.Width = 288
+        txtBeforeSubject.Visible = True
+        lblMsgText.Visible = True
+        txtEmailMessage.Visible = True
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = True
+        cmbFileName.Visible = True
+        chkSalutation.Visible = True
+        cmbSalutation.Visible = False
+        chkSignature.Visible = True
+    ElseIf .Value = "Merge to Individual Word Files" Or .Value = "Merge to Individual PDF Files" Then
+        lblEmailAddress.Visible = False
+        cmbEmail.Visible = False
+        lblCCAddress.Visible = False
+        cmbCC.Visible = False
+        chkSubjectField.Visible = False
+        lblBeforeSubject.Visible = False
+        txtBeforeSubject.Visible = False
+        lblMsgText.Visible = False
+        txtEmailMessage.Visible = False
+        Me.cmdContinue.Enabled = False
+        lblFileName.Visible = True
+        cmbFileName.Visible = True
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        chkSignature.Visible = False
+    Else
+        lblEmailAddress.Visible = False
+        cmbEmail.Visible = False
+        lblCCAddress.Visible = False
+        cmbCC.Visible = False
+        chkSubjectField.Visible = False
+        lblBeforeSubject.Visible = False
+        txtBeforeSubject.Visible = False
+        lblMsgText.Visible = False
+        txtEmailMessage.Visible = False
+        Me.cmdContinue.Enabled = True
+        lblFileName.Visible = False
+        cmbFileName.Visible = False
+        chkSalutation.Visible = False
+        cmbSalutation.Visible = False
+        chkSignature.Visible = False
+    End If
+End With
+boolSubject = False
+boolSalutation = False
+End Sub
+Private Sub cmbEmail_Change()
+With Me.cmbEmail
+    If .ListIndex > -1 Then
+        Me.txtEmailIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+If Me.cmbFileName.ListIndex > -1 Then
+    If Me.cmbDestination.Value <> "Merge to Email as Word Attachment" Or Me.cmbDestination.Value <> "Merge to Email as PDF Attachment" Then
+        Me.cmdContinue.Enabled = True
+    End If
+ElseIf Me.cmbDestination.Value = "Merge to Email Message" Then
+    Me.cmdContinue.Enabled = True
+End If
+End Sub
+
+Private Sub cmbFileName_Change()
+With Me.cmbFileName
+    If .ListIndex > -1 Then
+        Me.txtFileNameIndex.Text = .List(.ListIndex, 0)
+        SaveSetting "MergeTools", "ManyToOne", "FileNameField", .Value
+        SaveSetting "MergeTools", "ManyToOne", "txtKeyIndex", txtFileNameIndex.Text
+    End If
+End With
+If cmbKeyField.ListIndex > -1 Then
+    If Me.cmbDestination.Value <> "Merge to Email as Word Attachment" Or Me.cmbDestination.Value <> "Merge to Email as PDF Attachment" Then
+        Me.cmdContinue.Enabled = True
+    ElseIf Me.cmbEmail.ListIndex > -1 Then
+        Me.cmdContinue.Enabled = True
+    Else
+        Me.cmdContinue.Enabled = False
+    End If
+End If
+End Sub
+Private Sub cmbKeyField_Change()
+With cmbKeyField
+    If .ListIndex > -1 Then
+        txtKeyIndex.Text = .List(.ListIndex, 0)
+        SaveSetting "MergeTools", "ManyToOne", "KeyField", .Value
+        SaveSetting "MergeTools", "ManyToOne", "txtKeyIndex", txtKeyIndex.Text
+    End If
+End With
+End Sub
+Private Sub cmbSalutation_Change()
+With Me.cmbSalutation
+    If .ListIndex > -1 Then
+        Me.txtSalutationIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+
+Private Sub cmbSubject_Change()
+With Me.cmbSubject
+    If .ListIndex > -1 Then
+        Me.txtSubjectIndex.Text = .List(.ListIndex, 0)
+    End If
+End With
+End Sub
+
+Private Sub cmdCancel_Click()
+boolNext = False
+Me.Hide
+End Sub
+
+Private Sub cmdContinue_Click()
+boolNext = True
+Me.Hide
+End Sub
+
+Attribute VB_Name = "frmMIForm"
+Attribute VB_Base = "0{BFAD8D76-3F19-4D04-A88A-41C2D0E03C29}{BF69CF96-45AC-4266-BD42-6DC6366D2049}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'Created by Doug Robbins - dkr@mvps.org
+Option Explicit
+Dim i As Long, j As Long
+
+Private Sub cmbDestination_Change()
+If Me.lstFileNameFields.ListCount > 0 Then
+    cmdContinue.Enabled = True
+End If
+End Sub
+
+Private Sub cmdCancel_Click()
+boolNext = False
+Me.Hide
+End Sub
+
+Private Sub cmdContinue_Click()
+boolNext = True
+Me.Hide
+End Sub
+Private Sub cmdAddFileNameField_Click()
+Dim i As Long
+With Me.lstfilemergefields
+    i = .ListIndex
+    If i > -1 Then
+        With Me.lstFileNameFields
+            .AddItem
+            .List(.ListCount - 1, 0) = Me.lstfilemergefields.List(i, 0)
+            .List(.ListCount - 1, 1) = Me.lstfilemergefields.List(i, 1)
+        End With
+        .RemoveItem (i)
+    End If
+End With
+If cmbDestination.ListIndex > -1 Then
+    Me.cmdContinue.Enabled = True
+End If
+
+End Sub
+Private Sub cmdRemoveFileNameField_Click()
+Dim i As Long, j As Long
+With Me.lstFileNameFields
+    i = .ListIndex
+    If i > -1 Then
+        With Me.lstfilemergefields
+            .AddItem
+            For j = .ListCount - 1 To Me.lstFileNameFields.List(i, 0) Step -1
+                .List(j, 0) = .List(j - 1, 0)
+                .List(j, 1) = .List(j - 1, 1)
+            Next j
+            .List(j, 0) = Me.lstFileNameFields.List(i, 0)
+            .List(j, 1) = Me.lstFileNameFields.List(i, 1)
+        End With
+        .RemoveItem (i)
+    End If
+    If .ListCount = 0 Then
+        Me.cmdContinue.Enabled = False
+    End If
+End With
+
+End Sub
+
+Attribute VB_Name = "frmRecords"
+Attribute VB_Base = "0{9A258892-8341-47F2-B2CA-E4E74E236DF6}{2F300BAE-9DE4-4A46-9ACC-616AB4241148}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub cmdCancel_Click()
+boolNext = False
+Me.Hide
+End Sub
+
+Private Sub cmdOK_Click()
+If optFromTo.Value = True Then
+    If Val(txtFrom.Text) = 0 Or Val(txtTo.Text) = 0 Then
+        MsgBox "You must enter numeric values into the From: and To: controls", vbCritical, "Invalid Entries"
+        If Val(txtFrom.Text) = 0 Then
+            txtFrom.SetFocus
+        Else
+            txtTo.SetFocus
+        End If
+        Exit Sub
+    End If
+    If Val(txtTo.Text) < Val(txtFrom.Text) Then
+        MsgBox "The number in the To: control cannot be less than the number in the From: control", vbCritical, "Invalid Entries"
+        txtTo.SetFocus
+        Exit Sub
+    ElseIf Val(txtTo.Text) > lngLast Then
+        MsgBox "The number in the To: control is more than the number of records in the data source." & vbCr & vbCr & "The last record that will be processed is record number " & lngLast, vbInformation
+    End If
+    strRecords = ""
+    If blnMergeChart = False Then
+        strRecords = txtFrom.Text
+        For i = 1 To Val(txtTo.Text) - Val(txtFrom.Text)
+            strRecords = strRecords & "|" & Val(txtFrom) + i
+        Next i
+    Else
+        strRecords = txtFrom.Text
+        For i = 1 To Val(txtTo.Text) - Val(txtFrom.Text)
+            strRecords = strRecords & "|" & Val(txtFrom) + i
+        Next i
+    End If
+    arrRecords = Split(strRecords, "|")
+ElseIf optAll = True Then
+    strRecords = ""
+    If blnMergeChart = False Then
+        For i = LBound(MergeData, 1) To UBound(MergeData, 1)
+            strRecords = strRecords & "|" & i
+        Next i
+        strRecords = Mid(strRecords, 2)
+    Else
+        For i = LBound(Datarray, 1) + 1 To UBound(Datarray, 1)
+            strRecords = strRecords & "|" & i
+        Next i
+        strRecords = Mid(strRecords, 2)
+    End If
+    arrRecords = Split(strRecords, "|")
+'    blnAll = True
+Else
+    myFormSelect.Show
+End If
+boolNext = True
+Me.Hide
+End Sub
+
+Private Sub optAll_Click()
+If optAll.Value = True Then
+    txtFrom.Enabled = False
+    txtTo.Enabled = False
+'Else
+'    txtFrom.Enabled = True
+'    txtTo.Enabled = True
+End If
+End Sub
+
+Private Sub optFromTo_Click()
+If optFromTo.Value = True Then
+    txtFrom.Enabled = True
+    txtTo.Enabled = True
+'Else
+'    txtFrom.Enabled = False
+'    txtTo.Enabled = False
+End If
+End Sub
+Private Sub optSelect_Click()
+If optSelect.Value = True Then
+    txtFrom.Enabled = False
+    txtTo.Enabled = False
+End If
+End Sub
+
+Attribute VB_Name = "frmSelect"
+Attribute VB_Base = "0{65BA2F7D-AA4B-4D36-92C2-B7C1E8959B98}{3E619DE0-7479-4376-9EC6-8518A288B30F}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Dim i As Long, j As Long
+
+Private Sub cmbFieldList_Change()
+With Me.cmbFieldList
+    If .ListIndex > -1 Then
+        j = .List(.ListIndex, 0)
+        With Me.lstAllRecords
+            For i = LBound(Datarray, 1) To UBound(Datarray, 1)
+                .AddItem
+                .List(i - 1, 0) = i
+                .List(i - 1, 1) = Datarray(i, j)
+            Next i
+            .RemoveItem (0)
+        End With
+        Me.lstMergeRecords.Clear
+    End If
+End With
+End Sub
+
+Private Sub cmdAdd_Click()
+With Me.lstAllRecords
+    i = .ListIndex
+    If i > -1 Then
+        With Me.lstMergeRecords
+            .AddItem
+            .List(.ListCount - 1, 0) = Me.lstAllRecords.List(i, 0)
+            .List(.ListCount - 1, 1) = Me.lstAllRecords.List(i, 1)
+        End With
+    End If
+End With
+End Sub
+
+Private Sub cmdCancel_Click()
+frmRecords.Show
+Me.Hide
+End Sub
+
+Private Sub cmdContinue_Click()
+arrRecords = Me.lstMergeRecords.List
+strRecords = ""
+For i = LBound(arrRecords) To UBound(arrRecords)
+    strRecords = strRecords & "|" & arrRecords(i, 0)
+Next i
+strRecords = Mid(strRecords, 2)
+arrRecords = Split(strRecords, "|")
+boolNext = True
+Me.Hide
+End Sub
+
+Private Sub cmdRemove_Click()
+With Me.lstMergeRecords
+    i = .ListIndex
+    If i > -1 Then
+        .RemoveItem (i)
+    End If
+End With
+End Sub
+
+
+
+' InQuest injected base64 decoded content
+' jZ 1
+' xL\z\"
+' abzWl
+' rgQzj/xX
+
+INQUEST-PP=macro

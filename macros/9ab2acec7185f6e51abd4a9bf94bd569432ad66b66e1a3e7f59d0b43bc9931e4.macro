@@ -1,0 +1,212 @@
+Attribute VB_Name = "DBFField"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Enum DBFFieldType
+    dftNumeric = 0
+    dftCharacter = 1
+    dftDate = 2
+    dftLogical = 3
+End Enum
+
+Public Name As String
+Public DBFType As DBFFieldType
+Public Size As Byte
+Public Precision As Byte
+
+Private Function TypeToString() As String
+    Select Case DBFType
+    Case dftNumeric
+        TypeToString = "N"
+    Case dftCharacter
+        TypeToString = "C"
+    Case dftDate
+        TypeToString = "D"
+    Case dftLogical
+        TypeToString = "L"
+    End Select
+End Function
+
+Public Sub SetFormatField(n As String, f As String)
+    Name = UCase(Mid(n, 1, 10))
+    f = UCase(Trim(f))
+    If f = "D" Then
+        DBFType = dftDate
+        Size = 8
+        Precision = 0
+    ElseIf f = "L" Then
+        DBFType = dftLogical
+        Size = 1
+        Precision = 0
+    ElseIf Left(f, 1) = "C" Then
+        DBFType = dftCharacter
+        Size = CByte(Mid(f, 2))
+        Precision = 0
+    ElseIf Left(f, 1) = "N" Then
+        DBFType = dftNumeric
+        Dim PointPos As Integer
+        PointPos = InStr(2, f, ".")
+        If PointPos > 0 Then
+            Size = CByte(Mid(f, 2, PointPos - 2))
+            Precision = CByte(Mid(f, PointPos + 1))
+        Else
+            Size = CByte(Mid(f, 2))
+            Precision = CByte(0)
+        End If
+    End If
+End Sub
+
+Public Function GetHeader() As String
+    GetHeader = Name & String(11 - Len(Name), Chr(0)) & _
+             TypeToString & String(4, Chr(0)) & _
+             Chr(Size) & Chr(Precision) & String(14, Chr(0))
+End Function
+
+Public Function ValToDBF(val As Variant) As String
+    If DBFType = dftCharacter Then
+        ValToDBF = Space(Size)
+        LSet ValToDBF = CStr(val)
+    End If
+    If DBFType = dftDate Then
+        ValToDBF = format(val, "YYYYMMDD")
+    End If
+    If DBFType = dftLogical Then
+        ValToDBF = IIf(CBool(val), "T", "F")
+    End If
+    If DBFType = dftNumeric Then
+        ValToDBF = Space(Size)
+        RSet ValToDBF = Trim(format(val, "0" + IIf(Precision > 0, "." + String(Precision, "0"), "")))
+        ValToDBF = Replace(ValToDBF, ",", ".")
+    End If
+End Function
+Attribute VB_Name = "Module"
+Option Explicit
+
+Type TopHead
+    Ver As Byte
+    YearUpdate As Byte
+    MonthUpdate As Byte
+    DayUpdate As Byte
+    NumRec As Long
+    FirstRecPos As Integer
+    RecLen As Integer
+    Reserved_1(15) As Byte
+    TableFlags As Byte
+    CodePage As Byte
+    Reserved_2(1) As Byte
+End Type
+
+Dim Head As TopHead            ' |fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+Dim FldHead() As New DBFField  ' |fffd||fffd||fffd||fffd||fffd||fffd| |fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd|
+Dim rngTable As Range          ' |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd| (Selection.CurrentRegion)
+Dim nCntFld As Integer         ' |fffd||fffd||fffd|-|fffd||fffd| |fffd||fffd||fffd||fffd||fffd| |fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd| (rngTable.Columns.Count)
+Dim nCntRec As Integer         ' |fffd||fffd||fffd|-|fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd| (rngTable.Rows.Count - 2)
+Dim strFileName As String      ' |fffd||fffd||fffd| DBF-|fffd||fffd||fffd||fffd||fffd| (rngTable(1, 1).Text)
+
+Sub XlsToDbf()
+    Set rngTable = Selection.CurrentRegion
+    
+    ' |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd|
+    strFileName = ActiveWorkbook.Path + "\" + rngTable(1, 1).Text
+    If Left(strFileName, 1) = "\" Then
+        strFileName = Mid(strFileName, 2)
+    End If
+    Set rngTable = rngTable.Resize(rngTable.Rows.Count - 1, rngTable.Columns.Count)
+    Set rngTable = rngTable.Offset(1, 0)
+    
+    ' |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Call CreateDbfHead
+    
+    ' |fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| -- |fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    On Error Resume Next
+        Kill strFileName
+    On Error GoTo 0
+    
+    ' |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd|
+    Dim FileID As Integer
+    FileID = FreeFile
+    Open strFileName For Binary Access Write As #FileID
+    
+    ' |fffd||fffd||fffd||fffd||fffd||fffd| DBF3-|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Put FileID, , Head
+    
+    ' |fffd||fffd||fffd||fffd||fffd| |fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd|
+    Dim i As Integer
+    For i = 0 To nCntFld - 1
+        Put FileID, , FldHead(i).GetHeader()
+    Next
+    
+    ' |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Put FileID, , CByte(13)
+    
+    ' |fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd| |fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set rngTable = rngTable.Resize(rngTable.Rows.Count - 2, rngTable.Columns.Count).Offset(2, 0)
+    Dim rngRow As Range
+    Dim strDbfRec As String
+    For Each rngRow In rngTable.Rows
+        strDbfRec = ""
+        For i = 0 To nCntFld - 1
+            strDbfRec = strDbfRec + FldHead(i).ValToDBF(rngRow.Cells(i + 1))
+        Next
+        Put FileID, , CByte(&H20)
+        Put FileID, , strDbfRec
+    Next
+    
+    ' |fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd| |fffd||fffd||fffd||fffd| DBF3-|fffd||fffd||fffd||fffd||fffd|
+    Put FileID, , CByte(&H1A)
+    Close FileID
+End Sub
+
+Sub CreateDbfHead()
+    nCntFld = rngTable.Columns.Count
+    ReDim FldHead(nCntFld - 1)
+    Dim i As Integer
+    For i = 0 To nCntFld - 1
+        FldHead(i).SetFormatField rngTable(2, i + 1), rngTable(1, i + 1)
+    Next
+
+    nCntRec = rngTable.Rows.Count - 2
+    With Head
+        .Ver = 3
+        .YearUpdate = val(format(Now, "YY"))
+        .MonthUpdate = val(format(Now, "MM"))
+        .DayUpdate = val(format(Now, "DD"))
+        .NumRec = nCntRec
+        .FirstRecPos = 33
+        .RecLen = 1
+        For i = 0 To UBound(FldHead)
+            .FirstRecPos = .FirstRecPos + 32
+            .RecLen = .RecLen + FldHead(i).Size
+        Next i
+        .CodePage = &HC9  ' DOS-RUS 866 = &H65, |fffd||fffd||fffd| WIN-RUS 1251 = &HC9
+    End With
+End Sub
+Attribute VB_Name = "|fffd||fffd||fffd||fffd|1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+
+
+INQUEST-PP=macro

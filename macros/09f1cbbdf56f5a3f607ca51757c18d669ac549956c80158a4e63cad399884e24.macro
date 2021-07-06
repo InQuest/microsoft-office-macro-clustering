@@ -1,0 +1,1121 @@
+Attribute VB_Name = "ConfigurationManager"
+'================================================================================
+' Local Constants
+'================================================================================
+
+Public Const WORKSHEET_CONFIG As String = "cfg"
+
+' Configuration type
+Public Type ConfigurationType
+    WSloadQuery As String
+    WSrefreshQuery As String
+    dimensionCount As Integer
+    lastUpdated As String
+    decimalString As String
+    WQuery As String
+    EndPoint As String
+
+End Type
+
+'
+' Gets the configuration from the configuration worksheet
+'
+Public Function getConfiguration() As ConfigurationType
+
+    Dim configuration As ConfigurationType
+
+    Set objConfigWorkSheet = Application.Sheets(WORKSHEET_CONFIG)
+        
+    ' Configurations are stored on the configuration worksheet
+    configuration.WSloadQuery = objConfigWorkSheet.Cells(1, 2)
+    configuration.dimensionCount = CInt(objConfigWorkSheet.Cells(2, 2))
+    configuration.lastUpdated = objConfigWorkSheet.Cells(3, 2)
+    configuration.decimalString = objConfigWorkSheet.Cells(2, 4)
+    configuration.WQuery = objConfigWorkSheet.Cells(2, 8)
+    configuration.EndPoint = objConfigWorkSheet.Cells(2, 6)
+    
+    
+    ' Generate the WS refresh query based on the lastUpdated, if set
+    If (Len(configuration.lastUpdated) > 0) Then
+        configuration.WSrefreshQuery = configuration.WSloadQuery + "?updatedAfter=" + configuration.lastUpdated
+    Else
+        configuration.WSrefreshQuery = vbaNullString
+    End If
+    
+    
+    ' Return the configuration
+    getConfiguration = configuration
+End Function
+
+'
+' Persist last updated time on the configuration worksheet in ISO 8601 format
+'
+Public Sub setLastUpdateTime(lastUpdateTime As Date)
+    Dim lastUpdate As String: lastUpdate = Format(lastUpdateTime, "yyyy-MM-ddTh:mm:ss")
+
+    Set objConfigWorkSheet = Application.Sheets(WORKSHEET_CONFIG)
+    objConfigWorkSheet.Cells(3, 2) = lastUpdate
+End Sub
+
+
+Public Function returnMessage() As String
+ 'Dim configuration As ConfigurationType
+  Set objConfigWorkSheet = Application.Sheets(WORKSHEET_CONFIG)
+  returnMessage = objConfigWorkSheet.Cells(2, 10)
+   
+ 
+End Function
+
+Attribute VB_Name = "Main"
+'================================================================================
+' Local Constants
+'================================================================================
+
+'Worksheet names
+Private Const WORKSHEET_DATA As String = "data"
+Private Const WORKSHEET_DELTA As String = "delta"
+Private Const WORKSHEET_PIVOT As String = "pivot"
+Private Const WORKSHEET_INSTRUCTIONS As String = "instructions"
+Private Const WORKSHEET_ATTRIBUTE As String = "attributes"
+
+'Column Titles
+Private Const COLUMN_TITLE_ID As String = "ID"
+Private Const COLUMN_TITLE_ACTION As String = "Action"
+
+' Refresh actions
+Private Const ACTION_ADD As String = "Add"
+Private Const ACTION_DELETE As String = "Delete"
+Private Const ACTION_REPLACE As String = "Replace"
+
+' User Agent header
+Private Const UA_VERSION As String = "1.0.0"
+Private Const UA_APPLICATION As String = "SDW-XLS-Pivot"
+Private Const UA_HTTP_HEADER As String = UA_APPLICATION + "(" + UA_VERSION + ")"
+
+
+' Libraries
+'Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+
+
+
+'================================================================================
+' Reset
+'================================================================================
+Sub reset()
+    For Each ws In Application.Sheets
+        ws.Visible = xlSheetVisible
+    Next
+End Sub
+
+
+
+
+' Load the data and pivot sheets
+'================================================================================
+Public Sub loadPivot()
+        
+    ' --------------------------------------------------------------------------------
+    ' Initialisation
+    ' --------------------------------------------------------------------------------
+    
+    'Get configuration
+    Dim configuration As ConfigurationType: configuration = ConfigurationManager.getConfiguration
+       
+    
+    ' Suppress alerts
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+        
+    ' Get worksheets
+    Set objDataWorkSheet = getEmptyWorksheet(WORKSHEET_DATA, "load")
+    Set objPivotWorkSheet = getEmptyWorksheet(WORKSHEET_PIVOT, "load")
+    Set objAttributeWorkSheet = getEmptyWorksheet(WORKSHEET_ATTRIBUTE, "load")
+            
+    ' --------------------------------------------------------------------------------
+    ' Load the data sheet
+    ' --------------------------------------------------------------------------------
+    
+    ' Load the data sheet
+    Dim startTime As Date: startTime = Now
+    Dim dataLoaded As Boolean: dataLoaded = generateDataSheet(objDataWorkSheet, False)
+        
+    If (dataLoaded) Then
+        ''Generate Attribute Sheet.
+        generateNoData objAttributeWorkSheet, False
+        ' Update last updated time
+        ConfigurationManager.setLastUpdateTime (startTime)
+
+        ' --------------------------------------------------------------------------------
+        ' Add Action and ID columns
+        ' --------------------------------------------------------------------------------
+        
+        ' Add a dummy Action column to ensure loads and refreshes have the same format
+        Set extendedRange = objDataWorkSheet.UsedRange.Resize(, objDataWorkSheet.UsedRange.Columns.Count + 1)
+        extendedRange.Cells(1, extendedRange.Columns.Count) = COLUMN_TITLE_ACTION
+                
+        ' Add an additional column for the generated ID
+        Set extendedRange = extendedRange.Resize(, objDataWorkSheet.UsedRange.Columns.Count + 1)
+        Dim lastColnum As Integer: lastColnum = extendedRange.Columns.Count
+        
+        ' Generate the ID value for each row
+        Dim idxSeriesKey As Integer: idxSeriesKey = 1
+        Dim idxTimestamp As Integer: idxTimestamp = configuration.dimensionCount + 2
+        Dim colNo As Integer
+        Dim seriesRowNoInDatasheet As Integer
+        Dim seriesId As String
+         Dim temp As String
+        
+        For Each dataRow In extendedRange.rows
+            With dataRow
+                .Cells(lastColnum) = .Cells(idxSeriesKey) + CStr(.Cells(idxTimestamp))
+            End With
+        Next
+        ' Overwrite last column title
+        extendedRange.Cells(1, lastColnum) = COLUMN_TITLE_ID
+            
+        ' Update last updated time
+        ConfigurationManager.setLastUpdateTime (startTime)
+        
+        ' --------------------------------------------------------------------------------
+        ' Create the pivot
+        ' --------------------------------------------------------------------------------
+        displayStatus ("Generating pivot table .....")
+        PivotManager.generatePivotSheet objDataWorkSheet, objPivotWorkSheet
+                                
+        ' Update the status
+        displayStatus ("Last uploaded: " + CStr(Now))
+        
+        ' Activate the pivot
+        objPivotWorkSheet.Activate
+       
+       ''searching for the series key in Pivot sheet
+        startRow = Find_First("Sum of Observation Value", "pivot", "Row", "A:A") + 2
+        colNo = -1
+        'searching for the same series key selected in previus step, in Data sheet to get the decimal.
+        colNo = Find_First("Decimals", "attributes", "Col", "A1:AZ1")
+        
+            
+            If colNo <> -1 Then
+                Dim formatArray As Variant
+                
+                    formatArray = Array("#", "#.0", "#.00", ".000", "#.0000", "#.00000", "#.000000", "#.0000000", "#.00000000", "#.000000000")
+                    ''Check the Series key in Pivot sheet
+                    ''then search the same series key in the data sheet.
+                    For i = startRow To objPivotWorkSheet.UsedRange.rows.Count - 1
+                    
+                       seriesId = Cells(i, 1).Value
+                       
+                       'find same series in Attribute sheet
+                         rowNo = Find_First(seriesId, "attributes", "row", "A:A")
+                         If rowNo > -1 Then
+                            objAttributeWorkSheet.Activate
+                             temp = Cells(rowNo, colNo).Value
+                            If temp <> "" Then
+                                decimalPlaceFromDB = Left(Cells(rowNo, colNo).Value, InStr(temp, " ") - 1) 'Find_First(seriesId, "data", "Row", "A1:A1")
+                                
+                                'decimalPlaceFromDB = Cells(seriesRowNoInDatasheet, colNo).Value
+                                ' For i = startRow To objDataWorkSheet.UsedRange.rows.Count
+                                 objPivotWorkSheet.Activate
+                                    objPivotWorkSheet.rows(i).Select
+                                    With Selection
+                                        .NumberFormat = formatArray(decimalPlaceFromDB)
+                                    End With
+                                 'Next
+                            End If
+                        End If
+                      Next  ''search Series Key in list.
+                       
+                End If
+             
+      
+    
+    End If
+    
+    objAttributeWorkSheet.Visible = False
+    ' Allow alerts
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+'================================================================================
+' Refresh the data and pivot sheets
+'================================================================================
+Private Sub refreshPivot()
+    
+    ' --------------------------------------------------------------------------------
+    ' Initialisation
+    ' --------------------------------------------------------------------------------
+    
+    'Get configuration
+    Dim configuration As ConfigurationType: configuration = ConfigurationManager.getConfiguration
+    
+    ' Suppress alerts
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+        
+    ' Get worksheets
+    Set objDeltaWorkSheet = getEmptyWorksheet(WORKSHEET_DELTA, "refresh")
+    Set objDataWorkSheet = Application.Sheets(WORKSHEET_DATA)
+                    
+    ' --------------------------------------------------------------------------------
+    ' Load the data sheet
+    ' --------------------------------------------------------------------------------
+    
+    ' Load the data sheet
+    Dim startTime As Date: startTime = Now
+    Dim dataLoaded As Boolean: dataLoaded = generateDataSheet(objDeltaWorkSheet, True)
+
+    If (dataLoaded) Then
+        
+        ' Get pivot worksheet
+        Set objPivotWorkSheet = getEmptyWorksheet(WORKSHEET_PIVOT, "refresh")
+        
+        ' Update last updated time
+        ConfigurationManager.setLastUpdateTime (startTime)
+
+        ' --------------------------------------------------------------------------------
+        ' Add Action and ID columns
+        ' --------------------------------------------------------------------------------
+                        
+        ' Add an additional column for the generated ID
+        Set extendedRange = objDeltaWorkSheet.UsedRange.Resize(, objDeltaWorkSheet.UsedRange.Columns.Count + 1)
+        Dim lastColnum As Integer: lastColnum = extendedRange.Columns.Count
+        
+        ' Generate the ID value for each row
+        Dim idxSeriesKey As Integer: idxSeriesKey = 1
+        Dim idxTimestamp As Integer: idxTimestamp = configuration.dimensionCount + 2
+        For Each dataRow In extendedRange.rows
+            With dataRow
+                .Cells(lastColnum) = .Cells(idxSeriesKey) + CStr(.Cells(idxTimestamp))
+            End With
+        Next
+        
+        ' Overwrite last column title
+        extendedRange.Cells(1, lastColnum) = COLUMN_TITLE_ID
+            
+        ' Update last updated time
+        ConfigurationManager.setLastUpdateTime (startTime)
+                             
+        ' Statistics
+        Dim numRowsAdded As Long: numRowsAdded = 0
+        Dim numRowsReplaced As Long: numRowsReplaced = 0
+        Dim numRowsDeleted As Long: numRowsDeleted = 0
+               
+        ' Work out ranges outside loop
+        Set rangeToCheck = Nothing
+        With objDataWorkSheet
+            Dim maxRowNum As Long: maxRowNum = .UsedRange.rows.Count
+            Dim maxColumnNum As Long: maxColumnNum = .UsedRange.Columns.Count
+            Set rangeToCheck = .Range(.Cells(1, maxColumnNum), .Cells(maxRowNum, maxColumnNum))
+        End With
+                
+                                        
+        Set startCell = objDataWorkSheet.Cells(1, maxColumnNum)
+        For Each deltaRow In objDeltaWorkSheet.UsedRange.rows
+            ' Row ID and action to be refreshed
+            Dim refreshRowId As String: refreshRowId = deltaRow.Cells(deltaRow.Columns.Count)
+            Dim refreshAction As String: refreshAction = deltaRow.Cells(deltaRow.Columns.Count - 1)
+                                    
+            ' Search the data sheet for a matching row, using the row id as a search criteria
+            Set cellFound = rangeToCheck.Find(What:=refreshRowId, After:=startCell, LookIn:=xlValues, LookAt _
+                :=xlWhole, SearchOrder:=xlByColumns, SearchDirection:=xlNext, MatchCase _
+                :=True, SearchFormat:=False)
+            
+            ' If no match is found, then this row should be added to the data sheet if the action was Replace otherwise is should be ignored
+            If (cellFound Is Nothing And refreshAction = ACTION_REPLACE) Then
+                refreshAction = ACTION_ADD
+            Else
+                Set startCell = cellFound
+                Set rowFound = objDataWorkSheet.UsedRange.rows(cellFound.Row)
+            End If
+                                    
+            ' Handle the refresh action
+            Select Case refreshAction
+                Case Is = ACTION_ADD
+                    objDeltaWorkSheet.Select
+                    deltaRow.Select
+                    Selection.Copy
+                    
+                    ' Add the new row at the end of the data sheet
+                    objDataWorkSheet.UsedRange.rows(objDataWorkSheet.UsedRange.rows.Count + 1).Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+                    objDataWorkSheet.Select
+                    objDataWorkSheet.Paste
+                    numRowsAdded = numRowsAdded + 1
+                    
+                Case Is = ACTION_DELETE
+                    ' Delete the target row
+                    rowFound.DELETE
+                    numRowsDeleted = numRowsDeleted + 1
+                    
+                Case Is = ACTION_REPLACE
+                    objDeltaWorkSheet.Select
+                    deltaRow.Select
+                    Selection.Copy
+                    
+                    ' Replace target row
+                    ' Worksheet must be selected before the row can be selected
+                    objDataWorkSheet.Select
+                    rowFound.Select
+                    objDataWorkSheet.Paste
+                    numRowsReplaced = numRowsReplaced + 1
+            End Select
+        Next deltaRow
+        
+        ' Summarise refresh
+        MsgBox "Refresh Summary" & vbCrLf & _
+               "---------------" & vbCrLf & _
+               "Rows Added    : " + CStr(numRowsAdded) & vbCrLf & _
+               "Rows Deleted  : " + CStr(numRowsDeleted) & vbCrLf & _
+               "Rows Replaced : " + CStr(numRowsReplaced) & vbCrLf
+                
+        ' Load pivot
+        objDataWorkSheet.Select
+        'generatePivotSheet objDataWorkSheet, objPivotWorkSheet
+                
+        
+    Else
+
+        ' Summarise refresh
+        MsgBox "Refresh Summary" & vbCrLf & _
+               "---------------" & vbCrLf & _
+               "No data refreshed, pivot is up to date"
+               
+    End If
+    
+    ' Delete the worksheet
+    objDeltaWorkSheet.DELETE
+
+    ' Update the status
+    displayStatus ("Last refreshed " + CStr(Now))
+       
+    ' Activate the pivot
+    Set objPivotWorkSheet = Application.Sheets(WORKSHEET_PIVOT)
+    objPivotWorkSheet.Activate
+    
+    ' Allow alerts
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+
+'================================================================================
+' generateDataSheet
+'
+' Loads and formats the data sheet
+'================================================================================
+Private Function generateDataSheet(objWorkSheet As Variant, refresh As Boolean) As Boolean
+        
+    ' Get the configuration
+    Dim configuration As ConfigurationManager.ConfigurationType
+    configuration = ConfigurationManager.getConfiguration
+    
+    Dim wsQuery As String
+    If (refresh) Then
+        wsQuery = configuration.WSrefreshQuery
+    Else
+        wsQuery = configuration.WSloadQuery
+    End If
+    
+    ' Filters
+    Dim numDimensions As Integer: numDimensions = configuration.dimensionCount
+    
+   ' Returns len of the query String.
+    
+    Dim wsQuerySize As Integer
+
+    wsQuerySize = Len(wsQuery)
+         
+    If wsQuerySize >= 1000 Then
+ 
+    UserForm1.Show
+    
+    If UserForm1.res = "Cancel" Then
+    
+    deleteWorksheet (WORKSHEET_DATA)
+    deleteWorksheet (WORKSHEET_PIVOT)
+    
+    Exit Function
+    
+    End If
+        
+    End If
+    
+       
+    
+    ' Retrieve the data from the web service
+    Dim rawData As String
+    Dim DecimalPlace As String
+    Dim rawDataSeriesAttributes  As String
+    Dim colNo As Integer
+    
+    DecimalPlace = configuration.decimalString
+    
+   ' rawData = executeWSQuery(wsQuery)
+    
+    rawData = getSplittedQuery(configuration.WQuery, refresh, False)
+    
+    ' Skip if no data
+    If (rawData = Empty) Then
+        generateDataSheet = False
+        Exit Function
+    End If
+            
+    ' Transform raw data
+    Dim rowArr As Variant
+   Dim rowArrForAttr As Variant
+    
+    'for Data
+    rowArr = Split(rawData, Chr(10))
+    'for attribute sheet
+    
+    
+    Dim numRows As Long: numRows = UBound(rowArr)
+   
+    
+    ' Free memory
+    rawData = vbNullString
+    
+    ' Transpose to 2D Array
+    ReDim rowTable(0 To numRows, 1 To 1)
+    For i = 0 To numRows
+        rowTable(i, 1) = rowArr(i)
+    Next
+    ' Free memory
+    Erase rowArr
+    
+   
+              
+    ' Process returned data if any
+    If (numRows > 0) Then
+        ' Update the status
+        displayStatus ("Processing " + CStr(numRows) + " observations")
+                   
+        ' Load data sheet
+        Set objDestination = objWorkSheet.Range("A1")
+        Set objDestination = objDestination.Resize(numRows, 1)
+        objDestination.Value = rowTable
+        objDestination.TextToColumns Destination:=objDestination, DataType:=xlDelimited, _
+            TextQualifier:=xlDoubleQuote, ConsecutiveDelimiter:=False, Tab:=False, _
+            Semicolon:=False, Comma:=True, Space:=False, Other:=False
+           
+        'Select first line
+        objWorkSheet.Activate
+        objWorkSheet.rows("1:1").Select
+        With Selection
+            .Font.FontStyle = "Bold"
+        End With
+        
+        'Freeze first line
+        With ActiveWindow
+            .SplitColumn = 0
+            .SplitRow = 1
+        End With
+        ActiveWindow.FreezePanes = True
+      
+              
+        
+        generateDataSheet = True
+    Else
+        generateDataSheet = False
+    End If
+    
+
+End Function
+
+
+
+
+
+'================================================================================'
+' executeWSQuery
+'
+' Executes the Web service Query and returns the data
+'================================================================================'
+Private Function executeWSQuery(wsQuery As String) As String
+    
+    ' --------------------------------------------------------------------------------
+    ' Find the optimal version of XMLHTTP to use.
+    ' --------------------------------------------------------------------------------
+    On Error Resume Next
+    Set XMLHttpRequest = CreateObject("MSXML2.XMLHTTP.6.0")
+    If XMLHttpRequest Is Nothing Then
+        Set XMLHttpRequest = CreateObject("MSXML2.XMLHTTP.5.0")
+    End If
+    If XMLHttpRequest Is Nothing Then
+        Set XMLHttpRequest = CreateObject("MSXML2.XMLHTTP.4.0")
+    End If
+    If XMLHttpRequest Is Nothing Then
+        Set XMLHttpRequest = CreateObject("MSXML2.XMLHTTP")
+    End If
+    Set getRequestObject = XMLHttpRequest
+        
+    ' --------------------------------------------------------------------------------
+    ' Execute the query
+    ' --------------------------------------------------------------------------------
+    On Error GoTo executeWSQueryError
+    
+    displayStatus "Reading data from web service " + wsQuery
+
+    XMLHttpRequest.Open "GET", wsQuery, False
+    XMLHttpRequest.setRequestHeader "accept", "application/vnd.ecb.data+csv;version=1.0.0"
+    XMLHttpRequest.setRequestHeader "User-Agent", UA_HTTP_HEADER
+    XMLHttpRequest.send
+      
+    executeWSQuery = XMLHttpRequest.responseText
+    Exit Function
+    
+executeWSQueryError:
+    displayStatus Err.Description
+    MsgBox Err.Description
+    executeWSQuery = Empty
+
+End Function
+
+
+Function Find_First(FindString As String, sName As String, typeofRange As String, rangeValue As String) As Long
+
+    
+    Dim Rng As Range
+    Dim SearchOrder As String
+    If UCase(typeofRange) = "ROW" Then
+     SearchOrder = xlByRows
+    Else
+        SearchOrder = xlByColumns
+    End If
+   ' Set Rng = Sheets(sName).Cells.Find("5/7 binnen 4h")
+    ' FindString = InputBox("Enter a Search value")
+    If Trim(FindString) <> "" Then
+        With Sheets(sName).Range(rangeValue)
+            Set Rng = .Find(What:=FindString, _
+                            After:=.Cells(.Cells.Count), _
+                            LookIn:=xlValues, _
+                            LookAt:=xlWhole, _
+                            SearchOrder:=SearchOrder, _
+                            SearchDirection:=xlNext, _
+                            MatchCase:=False)
+            If Not Rng Is Nothing Then
+                If UCase(typeofRange) = "ROW" Then
+                    Find_First = Rng.Row
+                Else
+                    Find_First = Rng.Column
+                End If
+                 
+            Else
+              Find_First = -1
+            End If
+        End With
+    End If
+End Function
+
+
+Function getSplittedQuery(wsQuery As String, refresh As Boolean, noData As Boolean) As String
+    Dim configuration As ConfigurationType: configuration = ConfigurationManager.getConfiguration
+    Dim mainString As String
+    Dim position As Integer
+    Dim subQuery As String
+    Dim queryResponse As String
+    Dim complete As String
+    Dim counter As Integer
+    counter = 0
+     mainString = wsQuery 'configuration.WQuery
+      If Not noData Then
+        If Len(mainString) > 3000 Then
+           
+               Do
+                   If InStr(3000, mainString, ",") <> 0 Then
+                        position = InStr(3001, mainString, ",")
+                        subQuery = Left(mainString, position - 1)
+                     
+                        mainString = Mid(mainString, position + 1, Len(mainString))
+                        
+                        If refresh Then
+                            complete = configuration.EndPoint + subQuery + "?updatedAfter=" + configuration.lastUpdated
+                      
+                        Else
+                            complete = configuration.EndPoint + subQuery
+                        End If
+                        
+                        queryResponse = queryResponse + executeWSQuery(complete)
+                        
+                    Else
+                        If refresh Then
+                            complete = configuration.EndPoint + mainString + "?updatedAfter=" + configuration.lastUpdated
+                      
+                        Else
+                            complete = configuration.EndPoint + mainString
+                        End If
+                         queryResponse = queryResponse + executeWSQuery(complete)
+                        Exit Do
+                    End If
+                  counter = counter + 1
+                Loop Until Len(mainString) < 3000
+                
+                ''once loop finish executing rest of the queries.
+                        If refresh Then
+                            complete = configuration.EndPoint + mainString + "?updatedAfter=" + configuration.lastUpdated
+                      
+                        Else
+                            complete = configuration.EndPoint + mainString
+                        End If
+                    queryResponse = queryResponse + executeWSQuery(complete)
+        Else
+             If Not refresh Then
+                    queryResponse = queryResponse + executeWSQuery(configuration.EndPoint + mainString)
+            Else
+                    queryResponse = queryResponse + executeWSQuery(configuration.EndPoint + mainString) + "?updatedAfter=" + configuration.lastUpdated
+            End If
+        End If
+     Else
+     
+     ''to get the attributes.
+       If Len(mainString) > 3000 Then
+        'to get the list of attribute of series list.
+        Do
+                     
+                     ' If Len(mainString) > 3000 Then
+                           position = InStr(3000, mainString, ",")
+                           subQuery = Left(mainString, position - 1)
+                        
+                           mainString = Mid(mainString, position + 1, Len(mainString))
+                           complete = configuration.EndPoint + subQuery + "?detail=nodata"
+                     '  Else
+                     '      complete = configuration.EndPoint + mainString + "?detail=nodata"
+                       ' Exit Do
+                    '   End If
+                       
+                            queryResponse = queryResponse + executeWSQuery(complete)
+                            
+                  Loop Until Len(mainString) < 3000
+                 queryResponse = queryResponse + executeWSQuery(configuration.EndPoint + mainString + "?detail=nodata")
+        Else
+            complete = configuration.EndPoint + mainString + "?nodata=true"
+              queryResponse = queryResponse + executeWSQuery(complete)
+        End If
+           
+          
+    End If
+    
+    getSplittedQuery = queryResponse
+
+End Function
+
+
+Private Function generateNoData(objAttributeWorkSheet As Variant, refresh As Boolean) As Boolean
+
+ ' Get the configuration
+    Dim configuration As ConfigurationManager.ConfigurationType
+    configuration = ConfigurationManager.getConfiguration
+    
+    Dim wsQuery As String
+    If (refresh) Then
+        wsQuery = configuration.WSrefreshQuery
+    Else
+        wsQuery = configuration.WSloadQuery
+    End If
+    
+    ' Filters
+    Dim numDimensions As Integer: numDimensions = configuration.dimensionCount
+   
+       
+    
+    ' Retrieve the data from the web service
+   
+    Dim DecimalPlace As String
+    Dim rawDataSeriesAttributes  As String
+    Dim colNo As Integer
+    
+    'DecimalPlace = configuration.decimalString
+    
+   ' rawData = executeWSQuery(wsQuery)
+    
+    
+    rawDataSeriesAttributes = getSplittedQuery(configuration.WQuery, refresh, True)
+    
+  
+            
+    ' Transform raw data
+    Dim rowArrForAttr As Variant
+    
+   
+    'for attribute sheet
+    rowArrForAttr = Split(rawDataSeriesAttributes, Chr(10))
+    
+  
+    Dim numRowsForAttr As Long: numRowsForAttr = UBound(rowArrForAttr)
+    
+    
+    ' Free memory
+    rawDataSeriesAttributes = vbNullString
+    
+   
+    
+    ' Transpose to 2D Array
+    ReDim rowTableAttr(0 To numRowsForAttr, 1 To 1)
+    For i = 0 To numRowsForAttr
+        rowTableAttr(i, 1) = rowArrForAttr(i)
+    Next
+    'Free Memory
+    Erase rowArrForAttr
+    ' Process returned data if any
+    If (numRowsForAttr > 0) Then
+        '
+        
+       '******* NowLoad series Attribute data ******
+         ' Load Attribute data sheet
+        Set objDestination = objAttributeWorkSheet.Range("A1")
+        Set objDestination = objDestination.Resize(numRowsForAttr, 1)
+        objDestination.Value = rowTableAttr
+        objDestination.TextToColumns Destination:=objDestination, DataType:=xlDelimited, _
+            TextQualifier:=xlDoubleQuote, ConsecutiveDelimiter:=False, Tab:=False, _
+            Semicolon:=False, Comma:=True, Space:=False, Other:=False
+          
+        objAttributeWorkSheet.Activate
+       '***********End of series Attribute Load ********
+              
+        
+        generateNoData = True
+    Else
+        generateNoData = False
+    End If
+    
+
+End Function
+
+
+
+
+Attribute VB_Name = "PivotManager"
+'================================================================================
+' Local Constants
+'================================================================================
+
+' Column titles
+Private Const OBS_VALUE As String = "Observation Value"
+Private Const OBS_DATE As String = "Time period or range"
+Private Const SERIES_KEY As String = "Key"
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' generatePivotSheet
+'
+' Generates the pivot sheet
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Public Sub generatePivotSheet(objDataWorkSheet As Variant, objPivotWorkSheet As Variant)
+
+    
+    ' Get the configuration
+    Dim configuration As ConfigurationType: configuration = ConfigurationManager.getConfiguration
+
+    Dim Arr(), fixDimensions(), nonfixDimensions()
+  
+    Dim MyString, counter, query, hDim, fileName, ispublic, pubstr
+    
+    Set rngData = objDataWorkSheet.UsedRange
+
+    Dim destinationAddress As String
+    destinationAddress = objPivotWorkSheet.Name & "!R3C1"
+      
+    ' Convert the address to a string to otherwise pivotCaches.Add will fail if the contents of a column exceed 255 chars
+    Dim sourceAddress As String
+    sourceAddress = objDataWorkSheet.Name + "!" + rngData.Address
+      
+    Set objPivotTable = ActiveWorkbook.PivotCaches.ADD(SourceType:=xlDatabase, SourceData:=sourceAddress).CreatePivotTable(TableDestination:=destinationAddress, TableName:="PivotTable1")
+    
+    Dim isObsColumn As Boolean: isObsColumn = True
+    objPivotTable.ManualUpdate = True
+    
+    With objPivotTable.PivotFields(OBS_DATE)
+        On Error Resume Next
+        .Orientation = xlColumnField
+        If Err.Number <> 0 Then
+            .Orientation = xlRowField
+            isObsColumn = False
+        End If
+        On Error GoTo 0
+        .position = 1
+    End With
+
+    With objPivotTable.PivotFields(SERIES_KEY)
+        If isObsColumn = True Then
+            .Orientation = xlRowField
+        Else
+            .Orientation = xlColumnField
+        End If
+        .position = 1
+    End With
+    
+    objPivotTable.AddDataField objPivotTable.PivotFields(OBS_VALUE), "Sum of Observation Value", xlSum
+        
+    ' Filters
+    Dim numDimensions As Integer: numDimensions = configuration.dimensionCount
+    
+    counter = 0
+    objDataWorkSheet.Activate
+    objDataWorkSheet.rows("1:1").Select
+    For Each objCell In Selection.Cells
+        If (counter >= numDimensions) Then
+            Exit For
+        End If
+        If (objCell.Text <> SERIES_KEY) Then
+            counter = counter + 1
+            ReDim Preserve Arr(counter)
+            Arr(counter) = objCell.Text
+        End If
+    Next
+    
+
+    If counter > 1 Then
+
+        Dim field As PivotField, items As PivotItems
+        Dim f_count, nf_count  As Integer
+        f_count = 0
+        nf_count = 0
+    
+        For x = 1 To UBound(Arr)
+         On Error Resume Next
+            Set field = objPivotTable.PivotFields(Arr(x))
+            Set items = objPivotTable.PivotFields(Arr(x)).PivotItems
+            If items.Count = 1 Then
+                f_count = f_count + 1
+                ReDim Preserve fixDimensions(f_count)
+                fixDimensions(f_count) = Arr(x)
+            Else
+                nf_count = nf_count + 1
+                ReDim Preserve nonfixDimensions(nf_count)
+                nonfixDimensions(nf_count) = Arr(x)
+            End If
+        Next x
+        
+        ' Display common filters
+        If IsArrayAllocated(Arr:=fixDimensions) = True Then
+            For x = 1 To UBound(fixDimensions)
+                Set field = objPivotTable.PivotFields(fixDimensions(x))
+                Set items = objPivotTable.PivotFields(fixDimensions(x)).PivotItems
+                With field
+                    .Orientation = xlPageField
+                    .position = 1
+                    .CurrentPage = items(1).Caption
+                    With objPivotWorkSheet.Cells(x, 1)
+                        .Font.FontStyle = "Bold"
+                        .Interior.Color = RGB(255, 228, 181)
+                    End With
+                    With objPivotWorkSheet.Cells(x, 2)
+                        .Font.FontStyle = "Bold"
+                        .Interior.Color = RGB(255, 228, 181)
+                    End With
+                     .Subtotals = Array(False, False, False, False, False, False, False, False, False, False, False, False)
+                End With
+            Next x
+        End If
+        
+        ' Display other filters
+        If IsArrayAllocated(Arr:=nonfixDimensions) = True Then
+            For x = 1 To UBound(nonfixDimensions)
+                Set field = objPivotTable.PivotFields(nonfixDimensions(x))
+                Set items = objPivotTable.PivotFields(nonfixDimensions(x)).PivotItems
+                With field
+                    .Orientation = xlPageField
+                    .position = 1
+                     .Subtotals = Array(False, False, False, False, False, False, False, False, False, False, False, False)
+                End With
+            Next x
+        End If
+        
+    End If
+    
+
+    With objPivotTable
+        .ColumnGrand = False
+        .RowGrand = False
+    End With
+    objPivotTable.PivotFields(OBS_DATE).AutoSort _
+        xlDescending, OBS_DATE
+        
+    'Add a refresh button
+    Dim Rng As Range
+    Set Rng = objPivotWorkSheet.Range("D3")
+    Set btn = objPivotWorkSheet.Buttons.ADD(Rng.Left, Rng.Top, Rng.Width, Rng.Height)
+    With btn
+        .Caption = "Refresh"
+        .Name = "refresh"
+        .OnAction = "refreshPivot"
+    End With
+
+
+    ' Style modifications
+    objPivotWorkSheet.Activate
+    ActiveWindow.DisplayGridlines = False
+    objPivotTable.TableStyle2 = "PivotStyleLight1"
+
+    objPivotTable.ManualUpdate = False
+       
+ 
+End Sub
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' IsArrayAllocated
+' Returns TRUE if the array is allocated (either a static array or a dynamic array that has been
+' sized with Redim) or FALSE if the array is not allocated (a dynamic that has not yet
+' been sized with Redim, or a dynamic array that has been Erased). Static arrays are always
+' allocated.
+'
+' The VBA IsArray function indicates whether a variable is an array, but it does not
+' distinguish between allocated and unallocated arrays. It will return TRUE for both
+' allocated and unallocated arrays. This function tests whether the array has actually
+' been allocated.
+'
+' This function is just the reverse of IsArrayEmpty.
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Public Function IsArrayAllocated(Arr As Variant) As Boolean
+
+Dim N As Long
+On Error Resume Next
+
+' if Arr is not an array, return FALSE and get out.
+If IsArray(Arr) = False Then
+    IsArrayAllocated = False
+    Exit Function
+End If
+
+' Attempt to get the UBound of the array. If the array has not been allocated,
+' an error will occur. Test Err.Number to see if an error occurred.
+N = UBound(Arr, 1)
+If (Err.Number = 0) Then
+    ''''''''''''''''''''''''''''''''''''''
+    ' Under some circumstances, if an array
+    ' is not allocated, Err.Number will be
+    ' 0. To acccomodate this case, we test
+    ' whether LBound <= Ubound. If this
+    ' is True, the array is allocated. Otherwise,
+    ' the array is not allocated.
+    '''''''''''''''''''''''''''''''''''''''
+    If LBound(Arr) <= UBound(Arr) Then
+        ' no error. array has been allocated.
+        IsArrayAllocated = True
+    Else
+        IsArrayAllocated = False
+    End If
+Else
+    ' error. unallocated array
+    IsArrayAllocated = False
+End If
+
+End Function
+
+
+
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+End Sub
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "UserForm1"
+Attribute VB_Base = "0{B9794CD7-E7E4-475F-9952-3CC24E609BF9}{3D45995E-A6D3-4CED-9790-CF1B769F8866}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Public res As String
+Private Sub CommandButton1_Click()
+
+
+  res = "Ok"
+  UserForm1.Hide
+
+End Sub
+
+Private Sub CommandButton2_Click()
+ res = "Cancel"
+UserForm1.Hide
+
+End Sub
+Attribute VB_Name = "Util"
+'================================================================================
+' Local Constants
+'================================================================================
+
+'Worksheet names
+Private Const WORKSHEET_INSTRUCTIONS As String = "instructions"
+    
+' --------------------------------------------------------------------------------
+' getEmptyWorksheet
+'
+' Returns an empty worksheet with the requested name.
+' If the worksheet exists, it is cleared and returned, otherwise a new worksheet is created
+' --------------------------------------------------------------------------------
+Public Function getEmptyWorksheet(worksheetName As String, operation As String) As Worksheet
+
+    On Error Resume Next
+    
+    Set objWorkSheet = Application.Sheets(worksheetName)
+    If (objWorkSheet Is Nothing) Then
+        Set objWorkSheet = Application.Sheets.ADD
+        objWorkSheet.Name = worksheetName
+    Else
+    If worksheetName = "pivot" And operation = "refresh" Then
+          ThisWorkbook.RefreshAll
+    Else
+       objWorkSheet.UsedRange.DELETE
+    End If
+    End If
+    
+    Set getEmptyWorksheet = objWorkSheet
+    
+End Function
+' --------------------------------------------------------------------------------
+' deleteWorksheet
+'
+' This method will delete the empty worksheet.
+' --------------------------------------------------------------------------------
+Public Function deleteWorksheet(worksheetName As String) As Worksheet
+    
+    Set objWorkSheet = Application.Sheets(worksheetName)
+    
+    objWorkSheet.DELETE
+        
+End Function
+'================================================================================'
+' displayProcessingStatus
+'
+' Displays the processing status of the pivot refresh
+'================================================================================'
+Public Sub displayStatus(statusMessage As String)
+    Dim objInstructionsWorkSheet As Worksheet
+    Set objInstructionsWorkSheet = Application.Sheets(WORKSHEET_INSTRUCTIONS)
+    
+    ' Update status
+    objInstructionsWorkSheet.Activate
+    objInstructionsWorkSheet.Cells(30, 3) = statusMessage
+
+End Sub
+
+
+INQUEST-PP=macro

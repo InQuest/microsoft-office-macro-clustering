@@ -1,0 +1,918 @@
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+Attribute VB_Name = "Plausibilitaet"
+Option Explicit
+'====================================================================
+'
+' Plausibilit|fffd|tspr|fffd|fung: Schlie|fffd|planformular
+' ------------------------------------------
+'
+'
+' Vorgaben:
+' ---------
+' Maximal zul|fffd|ssig sind MAX_SPOS S-Pos Eintr|fffd|ge
+' und MAX_SCHLUESSEL |fffd|bergeordnete Schl|fffd|ssel!
+' Die Dauer der Plausibilit|fffd|tspr|fffd|fung l|fffd|sst sich durch kleinere Werte
+' dieser Konstanten erheblich verringern.
+'
+' Die Routine 'PlausibilitaetsTest' wird |fffd|ber die Schaltfl|fffd|che 'CheckIt'
+' aufgerufen.
+'
+' (V1.8 vom 6.6.2002)
+' - Bugfixes: Anzahl |fffd|bergeordnete Schl|fffd|ssel
+'
+' (V1.7 vom 13.5.2002)
+' - |fffd|ber die Konstante 'SEITEN_ZOOM' wird der Verkleinerungsfaktor f|fffd|r den Ausdruck bestimmt.
+'   Standard sind 75%, s.d. immer 20 Zeilen und der Kopf gedruckt werden.
+'   'SPALTEN_PRO_SEITEN' ist damit hinf|fffd|llig geworden.
+' - Es wird immer der gesamte Kopf wiederholt.
+'
+' (V1.6 vom 26.3.2002)
+' - Blattschutz wird via SHEET_PASSWORD aufgehoben und nach der Pr|fffd|fung wieder gesetzt
+'
+' (V1.5 vom 25.3.2002)
+'
+' - |fffd|ber die Konstante 'SPALTEN_PRO_SEITEN' l|fffd|sst sich der Verkleinerungsfaktor f|fffd|r die
+'   Druckgr|fffd||fffd|e einstellen.
+' - Die Spalten '1' bis 'SPALTE_SPOS' werden zu Wiederholungsspalten gesetzt
+' - Die Zeile 'ZEILE_SPOS-1' wird alleinige Wiederholungszeile
+'
+' (V1.4 vom 19.3.2002)
+'
+' - Wiederholungszeilen von 10 bis 17 => IKON-Kopf verbleibt lediglich auf der ersten Seite
+'
+' (V1.3 vom 11.3.2002)
+'
+' - Zus|fffd|tlich sind die Spalten 'A' bis 'M' als Wiederholungsspalten eingestellt
+' - E-Mail-Versendung des Schlie|fffd|plans ist aus dem Plan selbst m|fffd|glich
+'   Aktuell sind zwei E-Mail Adressen vorgesehen, die in den Zellen 'A2' und 'A3' eingetragen werden.
+'   Um die E-Mail Adressen zu |fffd|ndern, ist die Spalte 'A' einzublenden.
+'   Wichtig! Die Zelle 'A1' wird f|fffd|r die E-Mail-Funktionalit|fffd|t ben|fffd|tigt und darf NICHT
+'   anderweitig belegt werden!
+'
+' (V1.2 vom 27.2.2002)
+'
+' |fffd|ber die Konstanten l|fffd|sst sich die Pr|fffd|fung an das Formular anpassen,
+' falls dort Zeilen bzw. Spalten eingef|fffd|gt werden
+'
+'====================================================================
+Private Const SHEET_PASSWORD = "IKON260302"     'Passwort der Blattschutzes
+
+Private Const SPALTE_SPOS = 7                   'S-Pos
+Private Const ZEILE_SPOS = 18
+
+Private Const SPALTE_FMATRIX = 27               'Zelle links oben der Funktionsmatrix
+Private Const ZEILE_FMATRIX = 18
+
+Private Const SPALTE_ANZUEBER = 27              'Anzahl |fffd|bergeordneter Schl|fffd|ssel
+Private Const ZEILE_ANZUEBER = 10
+
+Private Const SPALTE_SBS = 27                   'Bezeichnung |fffd|bergeordneter Schl|fffd|ssel
+Private Const ZEILE_SBS = 15
+
+Private Const SEITEN_ZOOM = 75                  'bei 75% sind neben dem Kopf noch 20 Zeilen zu sehen
+
+'Private Const SPALTEN_PRO_SEITEN = 35          'Hier kann man den Vergr|fffd||fffd|erungsfaktor einstellen
+                                                'entspricht nicht exakt der Anzahl der Spalten, die
+                                                'gedruckt werden.
+
+Private Const MAX_SPOS As Long = 5000           'maximal 65524 durch EXCEL beschr|fffd|nkt
+Private Const MAX_SCHLUESSEL As Long = 255 - SPALTE_FMATRIX 'maximal 255-SPALTE_FMATRIX durch EXCEL beschr|fffd|nkt
+
+Private sPosListe As Collection                 'Liste aller S-Pos
+Private ZeileSpos(MAX_SPOS) As Integer          'Array zur Zuordnung Zeile-SPos
+
+Private istSPosGesetzt(MAX_SPOS) As Boolean     'Eintr|fffd|ge werden auf True gesetzt, wenn SPos vorkommt
+Private untersteZeile As Long                   'letzte Funktionszeile mit gesetzter S-Pos
+Private rechtesteSpalte As Long                 'rechteste Funktionsspalte
+
+'---------------------------------------------------------
+'
+' Funktion: EntferneFehlerMarkierungen
+'
+' Entfernt die rote Hinterlegung der kritischen Zellen:
+' 'S-Pos', die 'Funktionsmatrix' und
+' 'Anzahl |fffd|bergeordneter Schl|fffd|ssel'
+'
+'---------------------------------------------------------
+Private Function EntferneFehlerMarkierungen() As Boolean
+    On Error GoTo EntferneFehlerMarkierungenError
+
+    Dim a As Range
+    
+    'S-Pos-Spalte
+    Set a = Range(Cells(ZEILE_SPOS, SPALTE_SPOS), Cells(ZEILE_SPOS + MAX_SPOS, SPALTE_SPOS))
+    
+    a.Interior.ColorIndex = xlNone
+    
+    'Funktionsmatrix
+    Set a = Range(Cells(ZEILE_FMATRIX, SPALTE_FMATRIX), Cells(ZEILE_FMATRIX + MAX_SPOS, MAX_SCHLUESSEL + SPALTE_FMATRIX))
+    a.Interior.ColorIndex = xlNone
+    
+    'Anzahl- und Bezeichung |fffd|bergeordneter Schl|fffd|ssel
+    Set a = Range(Cells(ZEILE_ANZUEBER, SPALTE_ANZUEBER), Cells(ZEILE_SBS + 2, MAX_SCHLUESSEL + SPALTE_FMATRIX))
+    a.Interior.ColorIndex = xlNone
+
+    EntferneFehlerMarkierungen = True
+    Exit Function
+    
+EntferneFehlerMarkierungenError:
+    EntferneFehlerMarkierungen = False
+End Function 'EntferneFehlerMarkierungen
+
+
+'---------------------------------------------------------
+'
+' Funktion: BestimmeSPos
+'
+' Liest die S-Pos-Spalte aus und sortiert die S-Pos
+' folgenderma|fffd|en ein:
+' In 'sPosListe' werden zu jeder S-Pos die Zeilen ihres
+' Auftretens als Liste abgelegt
+'
+'---------------------------------------------------------
+Private Function BestimmeSPos() As Boolean
+    On Error GoTo BestimmeSPosError
+    
+    Dim i, j, k, cnt, sPosCnt As Long
+    Dim SPosAkt As Integer                  'aktuelle SPos
+    Dim spos As Range                       'SPos Spalte
+    
+    Set sPosListe = New Collection         'Verweist auf die erste Zeile aller SPositionen
+    Dim actSPos As Collection               'Liste aller Zeilen mit aktueller SPos
+    
+    'bisher kein SPos
+    For i = 0 To MAX_SPOS
+        istSPosGesetzt(i) = False
+    Next
+    
+    'Zun|fffd|chst alle verschiedenen SPos erfassen
+    Set spos = Range(Cells(ZEILE_SPOS, SPALTE_SPOS), Cells(ZEILE_SPOS + MAX_SPOS, SPALTE_SPOS))
+    cnt = spos.Rows.Count
+    
+    For i = 1 To cnt
+        'numerischer Wert?
+        If IsNumeric(spos.Cells(i, 1)) = True Then
+            If spos.Cells(i, 1).Value > 0 Then
+                SPosAkt = spos.Cells(i, 1).Value
+                untersteZeile = i
+                ZeileSpos(i) = SPosAkt
+                'kam Spos bereits vor?
+                If istSPosGesetzt(SPosAkt) = False Then
+                    Set actSPos = New Collection
+                    sPosListe.Add Item:=actSPos, Key:=Str(SPosAkt)
+                    actSPos.Add Item:=i
+                    istSPosGesetzt(SPosAkt) = True
+                Else
+                    sPosListe.Item(Str(SPosAkt)).Add Item:=i
+                End If
+            End If
+        Else
+            'kein numerischer Wert
+            If spos.Cells(i, 1) <> "" Then
+                With spos.Cells(i, 1).Interior
+                    .ColorIndex = 6
+                    .Pattern = xlSolid
+                    .PatternColorIndex = xlAutomatic
+                End With
+            End If
+        End If
+    Next
+    
+    untersteZeile = untersteZeile + ZEILE_SPOS - 1
+    
+    BestimmeSPos = True
+    Exit Function
+BestimmeSPosError:
+    untersteZeile = 15
+    BestimmeSPos = False
+End Function 'BestimmeSPos
+
+
+
+'---------------------------------------------------------
+'
+' Funktion: ZeilenGleicherSPos
+'
+' Pr|fffd|ft zu jeder SPos, ob die Zeilen den Funktionsmatrix
+' gleich sind. Ggf. werden die unterschiedlichen Zellen
+' der Zeilen gleicher S-Pos farblich hervorgehoben
+'
+' (Pr|fffd|fung 1.)
+'
+'---------------------------------------------------------
+Private Function ZeilenGleicherSPos() As Boolean
+    On Error GoTo ZeilenGleicherSPosError:
+    
+    Dim i, j, k, cnt, sPosCnt As Long
+    Dim zeilenGleich As Boolean
+    Dim spalteGleich As Boolean
+    
+    Dim a As Range                          'Bereich aller Funktionsbeschreibung zu einer Position
+    Dim aStart As String                    'Erste Zelle der Funktionsbeschreibung
+    
+    'F|fffd|r alle SPos pr|fffd|fen, ob die Zeilen der Funktionsbeschreibungen |fffd|bereinstimmen
+    sPosCnt = sPosListe.Count
+    For k = 1 To sPosCnt
+        'Aktuelle SPos spaltenweise pr|fffd|fen
+        Set a = Range(Cells(ZEILE_FMATRIX, SPALTE_FMATRIX), _
+                      Cells(MAX_SPOS + sPosListe.Item(k).Item(sPosListe.Item(k).Count) - 1, MAX_SCHLUESSEL + SPALTE_FMATRIX))
+                      
+        For i = 1 To MAX_SCHLUESSEL
+            spalteGleich = True
+            For j = 2 To sPosListe.Item(k).Count
+                If a.Cells(sPosListe.Item(k).Item(j - 1), i) <> a.Cells(sPosListe.Item(k).Item(j), i) Then
+                    spalteGleich = False
+                End If
+            Next
+            
+            'ggf. Spalte rot einf|fffd|rben
+            If spalteGleich = False Then
+                For j = 1 To sPosListe.Item(k).Count
+                    With a.Cells(sPosListe.Item(k).Item(j), i).Interior
+                        .ColorIndex = 6
+                        .Pattern = xlSolid
+                        .PatternColorIndex = xlAutomatic
+                    End With
+                Next
+            End If
+        Next
+    Next
+    
+    ZeilenGleicherSPos = True
+    Exit Function
+ZeilenGleicherSPosError:
+    ZeilenGleicherSPos = False
+End Function 'ZeilenGleicherSPos
+
+'---------------------------------------------------------
+'
+' Funktion: SPosOhneLuecken
+'
+' Pr|fffd|ft, ob keine S-Pos |fffd|bersprungen wurde
+'
+' (Pr|fffd|fung 5.)
+'
+'---------------------------------------------------------
+Private Function SPosOhneLuecken() As Boolean
+    On Error GoTo SPosOhneLueckenError
+    
+    Dim i, j, k, maxSPos, sPosCnt As Long
+    Dim spos As Range                       'SPos Spalte
+    
+    Set spos = Range(Cells(ZEILE_SPOS, SPALTE_SPOS), Cells(ZEILE_SPOS + MAX_SPOS, SPALTE_SPOS))
+    sPosCnt = sPosListe.Count
+    
+    'Von oben testen, welche S-Pos vorkommen
+    maxSPos = 0
+    i = MAX_SPOS
+    While (maxSPos = 0 And i > 0)
+        If istSPosGesetzt(i) = True Then
+            maxSPos = i
+        End If
+        i = i - 1
+    Wend
+    
+    'Maximale S-Pos = Anzahl der S-Pos?
+    If maxSPos <> sPosCnt Then
+        For i = 1 To maxSPos - 1
+            'fehlt die n|fffd|chste S-Pos?
+            If istSPosGesetzt(i) = True And istSPosGesetzt(i + 1) = False Then
+                For j = 1 To sPosListe.Item(Str(i)).Count
+                    With spos.Cells(sPosListe.Item(Str(i)).Item(j), 1).Interior
+                        .ColorIndex = 6
+                        .Pattern = xlSolid
+                        .PatternColorIndex = xlAutomatic
+                    End With
+                Next
+            End If
+            'fehlt die verherige S-Pos?
+            If istSPosGesetzt(i) = False And istSPosGesetzt(i + 1) = True Then
+                For j = 1 To sPosListe.Item(Str(i + 1)).Count
+                    With spos.Cells(sPosListe.Item(Str(i + 1)).Item(j), 1).Interior
+                        .ColorIndex = 6
+                        .Pattern = xlSolid
+                        .PatternColorIndex = xlAutomatic
+                    End With
+                Next
+            End If
+        Next
+    End If
+    
+    SPosOhneLuecken = True
+    Exit Function
+SPosOhneLueckenError:
+    SPosOhneLuecken = False
+End Function
+
+
+'---------------------------------------------------------
+'
+' Funktion: MundZinSpalte
+'
+' Pr|fffd|ft, ob Kombinationen aus M, X  und Z in einer Spalte
+' vorhanden sind.
+' Im Fall von Z oder M wird gepr|fffd|ft, ob die zus|fffd|tzlich nur
+' einmal vorkommen.
+'
+' (Pr|fffd|fung 5.)
+'
+'
+'---------------------------------------------------------
+Private Function MundZinSpalte() As Boolean
+    On Error GoTo MundZinSpalteError
+    
+    Dim i, j, k As Long
+    Dim aktSpalte As Range
+    Dim erstesVorkommen As String
+    
+    Dim mInSPos As Boolean          'Sind bei einer S-Pos Ms eingetragen?
+    Dim anzahlM As Long             'Anzahl der M in einer Spalte
+    Dim zInSPos As Boolean          'Sind bei einer S-Pos Zs eingetragen?
+    Dim anzahlZ As Long             'Anzahl der Z in einer Spalte
+    Dim sPosCnt As Long
+    Dim SPosAkt As Integer
+    
+    Dim m As Range
+    Dim z As Range
+    Dim x As Range
+    Dim ii As Range
+    
+    
+    '|fffd|ber alle Spalten
+    For i = 1 To MAX_SCHLUESSEL
+        Set aktSpalte = Range(Cells(ZEILE_FMATRIX, SPALTE_FMATRIX + i - 1), Cells(ZEILE_FMATRIX + MAX_SPOS, SPALTE_FMATRIX + i - 1))
+        
+        'Kommen 'X','M' und 'Z' in einer Spalte vor?
+        Set m = aktSpalte.Find("M", LookIn:=xlValues)
+        Set z = aktSpalte.Find("Z", LookIn:=xlValues)
+        Set x = aktSpalte.Find("X", LookIn:=xlValues)
+        Set ii = aktSpalte.Find("I", LookIn:=xlValues)
+        
+        If (Not m Is Nothing) And (Not z Is Nothing) Or _
+           (Not m Is Nothing) And (Not x Is Nothing) Or _
+           (Not x Is Nothing) And (Not z Is Nothing) Then
+           
+            If (Not m Is Nothing) Then
+                'Alle 'M' rot hinterlegen
+                Set m = aktSpalte.Find("M", LookIn:=xlValues)
+                erstesVorkommen = m.Address
+                Do
+                    With m.Interior
+                            .ColorIndex = 6
+                            .Pattern = xlSolid
+                            .PatternColorIndex = xlAutomatic
+                    End With
+                    
+                    Set m = aktSpalte.FindNext(m)
+                Loop While Not m Is Nothing And m.Address <> erstesVorkommen
+            End If
+            
+            
+            If (Not z Is Nothing) Then
+                'Alle 'Z' rot hinterlegen
+                Set z = aktSpalte.Find("Z", LookIn:=xlValues)
+                erstesVorkommen = z.Address
+                Do
+                    With z.Interior
+                            .ColorIndex = 6
+                            .Pattern = xlSolid
+                            .PatternColorIndex = xlAutomatic
+                    End With
+                    
+                    Set z = aktSpalte.FindNext(z)
+                Loop While Not z Is Nothing And z.Address <> erstesVorkommen
+            End If
+            
+            If (Not x Is Nothing) Then
+                'Alle 'X' rot hinterlegen
+                Set x = aktSpalte.Find("X", LookIn:=xlValues)
+                erstesVorkommen = x.Address
+                Do
+                    With x.Interior
+                            .ColorIndex = 6
+                            .Pattern = xlSolid
+                            .PatternColorIndex = xlAutomatic
+                    End With
+                    
+                    Set x = aktSpalte.FindNext(x)
+                Loop While Not x Is Nothing And x.Address <> erstesVorkommen
+            End If
+        End If
+    
+        'Mehr als ein 'M' bzw. 'Z' pro Spalte?
+        If Not m Is Nothing Then
+            sPosCnt = sPosListe.Count
+            anzahlM = 0
+            For k = 1 To sPosCnt
+                'F|fffd|r jede S-Pos pr|fffd|fen, ob M darin vorkommt
+                mInSPos = False
+                For j = 1 To sPosListe.Item(k).Count
+                    If aktSpalte.Cells(sPosListe.Item(k).Item(j), 1).Value = "M" Then
+                        mInSPos = True
+                        SPosAkt = ZeileSpos(sPosListe.Item(k).Item(j))
+                    End If
+                Next
+                If mInSPos = True Then
+                    anzahlM = anzahlM + 1
+                End If
+            Next
+            'Ist die Anzahl gr|fffd||fffd|er als 1, dann alle Ms einf|fffd|rben
+            If anzahlM > 1 Then
+                Set m = aktSpalte.Find("M", LookIn:=xlValues)
+                erstesVorkommen = m.Address
+                Do
+                    With m.Interior
+                            .ColorIndex = 6
+                            .Pattern = xlSolid
+                            .PatternColorIndex = xlAutomatic
+                    End With
+                    
+                    Set m = aktSpalte.FindNext(m)
+                Loop While Not m Is Nothing And m.Address <> erstesVorkommen
+                aktSpalte.Cells(0).Value = ""
+            Else
+                aktSpalte.Cells(0).Value = SPosAkt
+            End If
+        End If
+        
+        If Not z Is Nothing Then
+            sPosCnt = sPosListe.Count
+            anzahlZ = 0
+            For k = 1 To sPosCnt
+                'F|fffd|r jede S-Pos pr|fffd|fen, ob Z darin vorkommt
+                zInSPos = False
+                For j = 1 To sPosListe.Item(k).Count
+                    If aktSpalte.Cells(sPosListe.Item(k).Item(j), 1).Value = "Z" Then
+                        zInSPos = True
+                        SPosAkt = ZeileSpos(sPosListe.Item(k).Item(j))
+                    End If
+                Next
+                If zInSPos = True Then
+                    anzahlZ = anzahlZ + 1
+                End If
+            Next
+            'Ist die Anzahl gr|fffd||fffd|er als 1, dann alle Zs einf|fffd|rben
+            If anzahlZ > 1 Then
+                Set z = aktSpalte.Find("Z", LookIn:=xlValues)
+                erstesVorkommen = z.Address
+                Do
+                    With z.Interior
+                            .ColorIndex = 6
+                            .Pattern = xlSolid
+                            .PatternColorIndex = xlAutomatic
+                    End With
+                    
+                    Set z = aktSpalte.FindNext(z)
+                Loop While Not z Is Nothing And z.Address <> erstesVorkommen
+                aktSpalte.Cells(0).Value = ""
+            Else
+                'SPos des ZZ oder Ms in Spaltenkopf eintragen:
+                aktSpalte.Cells(0).Value = SPosAkt
+            End If
+        End If
+        
+        'Alle 'I' einf|fffd|rben, wenn 'X' vorkommt
+        If (Not x Is Nothing) And (Not ii Is Nothing) Then
+            'Alle 'X' rot hinterlegen
+            Set ii = aktSpalte.Find("I", LookIn:=xlValues)
+            erstesVorkommen = ii.Address
+            Do
+                With ii.Interior
+                        .ColorIndex = 6
+                        .Pattern = xlSolid
+                        .PatternColorIndex = xlAutomatic
+                End With
+                
+                Set ii = aktSpalte.FindNext(ii)
+            Loop While Not ii Is Nothing And ii.Address <> erstesVorkommen
+        End If
+    Next
+
+    MundZinSpalte = True
+    Exit Function
+MundZinSpalteError:
+    MundZinSpalte = False
+End Function
+
+'---------------------------------------------------------
+'
+' Funktion: I_Test
+'
+' Pr|fffd|ft, ob bei M und bei Z in einer Spalte mindestens
+' ein I vorhanden ist.
+' Weiterhin wird gepr|fffd|ft, ob maximal 3 Is verschiedener
+' SPos im Falle einer Mitschlie|fffd|ung vorkommen.
+'
+' (Pr|fffd|fung 2. und 3.)
+'
+'---------------------------------------------------------
+Private Function I_Test() As Boolean
+    On Error GoTo I_TestError
+    Dim i, j, k As Long
+    Dim aktSpalte As Range
+    Dim erstesVorkommen As String
+    
+    Dim iInSPos As Boolean          'Sind bei einer S-Pos Is eingetragen?
+    Dim anzahlI As Long             'Anzahl der I pro M in einer Spalte
+    Dim sPosCnt As Long
+    Dim m As Range
+    Dim z As Range
+    Dim a As Range
+    
+    '|fffd|ber alle Spalten
+    For i = 1 To MAX_SCHLUESSEL
+        Set aktSpalte = Range(Cells(ZEILE_FMATRIX, SPALTE_FMATRIX + i - 1), Cells(ZEILE_FMATRIX + MAX_SPOS, SPALTE_FMATRIX + i - 1))
+        
+        'Kommen 'M' oder 'Z' in einer Spalte vor?
+        Set m = aktSpalte.Find("M", LookIn:=xlValues)
+        Set z = aktSpalte.Find("Z", LookIn:=xlValues)
+        Set a = aktSpalte.Find("I", LookIn:=xlValues)
+        
+        If (Not m Is Nothing) Or (Not z Is Nothing) Then
+            'kommt kein I vor?
+            If a Is Nothing Then
+                If Not m Is Nothing Then
+                    'Alle 'M' rot hinterlegen
+                    Set m = aktSpalte.Find("M", LookIn:=xlValues)
+                    erstesVorkommen = m.Address
+                    Do
+                        With m.Interior
+                                .ColorIndex = 6
+                                .Pattern = xlSolid
+                                .PatternColorIndex = xlAutomatic
+                        End With
+                        
+                        Set m = aktSpalte.FindNext(m)
+                     Loop While Not m Is Nothing And m.Address <> erstesVorkommen
+                End If
+                If Not z Is Nothing Then
+                    'Alle 'Z' rot hinterlegen
+                    Set z = aktSpalte.Find("Z", LookIn:=xlValues)
+                    erstesVorkommen = z.Address
+                    Do
+                        With z.Interior
+                                .ColorIndex = 6
+                                .Pattern = xlSolid
+                                .PatternColorIndex = xlAutomatic
+                        End With
+                        Set z = aktSpalte.FindNext(z)
+                    Loop While Not z Is Nothing And z.Address <> erstesVorkommen
+                End If
+            Else
+                'Im Falle von 'M' noch die maximale Anzahl pr|fffd|fen
+                If Not m Is Nothing Then
+                    sPosCnt = sPosListe.Count
+                    anzahlI = 0
+                    For k = 1 To sPosCnt
+                        'F|fffd|r jede S-Pos pr|fffd|fen, ob I darin vorkommt
+                        iInSPos = False
+                        For j = 1 To sPosListe.Item(k).Count
+                            If aktSpalte.Cells(sPosListe.Item(k).Item(j), 1).Value = "I" Then
+                                iInSPos = True
+                            End If
+                        Next
+                        If iInSPos = True Then
+                            anzahlI = anzahlI + 1
+                        End If
+                    Next
+                    'Ist die Anzahl gr|fffd||fffd|er als 3, dann alle Is einf|fffd|rben
+                    If anzahlI > 3 Then
+                        Set a = aktSpalte.Find("I", LookIn:=xlValues)
+                        erstesVorkommen = a.Address
+                        Do
+                            With a.Interior
+                                    .ColorIndex = 6
+                                    .Pattern = xlSolid
+                                    .PatternColorIndex = xlAutomatic
+                            End With
+                            
+                            Set a = aktSpalte.FindNext(a)
+                        Loop While Not a Is Nothing And a.Address <> erstesVorkommen
+                    End If
+                End If
+            End If
+        Else
+            'Es kommen nur Is vor! => Alle Is einf|fffd|rben
+            If Not a Is Nothing Then
+                    Set a = aktSpalte.Find("I", LookIn:=xlValues)
+                    erstesVorkommen = a.Address
+                    Do
+                        With a.Interior
+                                .ColorIndex = 6
+                                .Pattern = xlSolid
+                                .PatternColorIndex = xlAutomatic
+                        End With
+                        
+                        Set a = aktSpalte.FindNext(a)
+                    Loop While Not a Is Nothing And a.Address <> erstesVorkommen
+            End If
+        End If
+    Next
+    
+    
+    I_Test = True
+    Exit Function
+I_TestError:
+    I_Test = False
+End Function 'I_Test
+
+'---------------------------------------------------------
+'
+' Funktion: SPosZurFunktion
+'
+' Pr|fffd|ft, ob bei Eintrag in der Funktionsmatrix auch eine S-Pos vorhanden ist
+'
+' (Pr|fffd|fung 6.)
+'
+'---------------------------------------------------------
+Private Function SPosZurFunktion() As Boolean
+    On Error GoTo SPosZurFunktionError
+    
+    Dim i, j, k, cnt As Long
+    
+    Dim spos As Range                       'SPos Spalte
+    Dim a As Range
+    
+    'Funktionsmatrix
+    Set a = Range(Cells(ZEILE_FMATRIX, SPALTE_FMATRIX), Cells(ZEILE_FMATRIX + MAX_SPOS, SPALTE_FMATRIX + MAX_SCHLUESSEL))
+    
+    'S-Pos-Spalte
+    Set spos = Range(Cells(ZEILE_SPOS, SPALTE_SPOS), Cells(ZEILE_SPOS + MAX_SPOS, SPALTE_SPOS))
+    cnt = spos.Rows.Count
+    
+    For i = 1 To cnt
+        'keine S-Pos eingetragen
+        If IsEmpty(spos.Cells(i, 1).Value) Then
+            'pr|fffd|fe, ob Funktion eingetragen ist
+            If (a.Cells(i, 1).Value <> "") Or _
+               (Range(a.Cells(i, 1).Address).End(xlToRight).Cells(1, 1).Value <> "") Then
+                With spos.Cells(i, 1).Interior
+                    .ColorIndex = 6
+                    .Pattern = xlSolid
+                    .PatternColorIndex = xlAutomatic
+                End With
+            End If
+        End If
+    Next
+    
+    SPosZurFunktion = True
+    Exit Function
+SPosZurFunktionError:
+    SPosZurFunktion = False
+End Function 'SPosZurFunktion
+
+'---------------------------------------------------------
+'
+' Funktion: UebergeordneteSchluessel
+'
+' Pr|fffd|ft, ob |fffd|bergeordnete Schl|fffd|ssel korrekt eingetragen sind
+' Schl|fffd|sselanzahl > 0 eingetragen => nur X in der Funktionsspalte
+'
+' (Pr|fffd|fung 7. und Zusatzanforderungen)
+'
+'---------------------------------------------------------
+Private Function UebergeordneteSchluessel() As Boolean
+    On Error GoTo UebergeordneteSchluesselError
+    
+    Dim i, j, k, cnt As Long
+    
+    Dim schluessel As Range         'Schl|fffd|sselanzahl und -bezeichnungen
+    Dim a As Range
+    Dim b As Range
+'    Dim istLeer As Boolean
+    Dim tmpStr As String
+    Dim hasX As Boolean
+    Dim LastUE As Integer
+    Dim AktUe As Integer
+    
+    'Funktionsmatrix
+    Set a = Range(Cells(ZEILE_FMATRIX, SPALTE_FMATRIX), Cells(ZEILE_FMATRIX + MAX_SPOS, SPALTE_FMATRIX + MAX_SCHLUESSEL))
+    
+    'Schl|fffd|sselanzahl und -bezeichnungen
+    Set schluessel = Range(Cells(ZEILE_ANZUEBER, SPALTE_ANZUEBER), Cells(ZEILE_SBS + 2, MAX_SCHLUESSEL + SPALTE_FMATRIX))
+    cnt = schluessel.Columns.Count
+    
+    For i = 1 To cnt
+        hasX = False
+        Set b = Range(a.Cells(1, i), Range(a.Cells(1, i).Address).End(xlDown).Cells(1, 1))
+        tmpStr = schluessel.Cells(8, i).Value
+        'pr|fffd|fe, ob Funktion eingetragen ist
+        If (a.Cells(1, i).Value = "") And _
+           (Range(a.Cells(1, i).Address).End(xlDown).Cells(1, 1).Value = "") Then
+            If schluessel.Cells(1, i) > 0 And schluessel.Cells(1, i) <> "" Then
+                With schluessel.Cells(1, i).Interior
+                    .ColorIndex = 6
+                    .Pattern = xlSolid
+                    .PatternColorIndex = xlAutomatic
+                End With
+            End If
+        'Funktionen (X) aber keine Korrekte UE-SPos:
+        ElseIf Not b.Find("X") Is Nothing Then
+            'UE-SPos leer:
+            If tmpStr = "" Then
+                With schluessel.Cells(8, i).Interior
+                    .ColorIndex = 6
+                    .Pattern = xlSolid
+                    .PatternColorIndex = xlAutomatic
+                End With
+            'UE-SPos beginnt nicht mit "A":
+            ElseIf InStr(1, tmpStr, "A") <> 1 Then
+                With schluessel.Cells(8, i).Interior
+                    .ColorIndex = 6
+                    .Pattern = xlSolid
+                    .PatternColorIndex = xlAutomatic
+                End With
+            'UE-SPos fortlaufend ohne L|fffd|cken?:
+            Else
+                If IsNumeric(Mid(tmpStr, 2)) Then
+                    AktUe = CInt(Mid(tmpStr, 2))
+                    If Not AktUe - LastUE = 1 Then
+                         With schluessel.Cells(8, i).Interior
+                            .ColorIndex = 6
+                            .Pattern = xlSolid
+                            .PatternColorIndex = xlAutomatic
+                        End With
+                    End If
+                    LastUE = AktUe
+                'A ohne Ziffer
+                Else
+                With schluessel.Cells(8, i).Interior
+                    .ColorIndex = 6
+                    .Pattern = xlSolid
+                    .PatternColorIndex = xlAutomatic
+                End With
+                End If
+            End If
+        Else
+            'Alle Spalten nach "M","I","Z" durchsuchen
+            If Not (b.Find("M") Is Nothing And _
+               b.Find("Z") Is Nothing And _
+               b.Find("I") Is Nothing) Then
+                '"M","Z" oder "I" eingetragen aber eine Anzahl, dann Fehler anzeigen!
+                If schluessel.Cells(1, i) > 0 And schluessel.Cells(1, i) <> "" Then
+                    With schluessel.Cells(1, i).Interior
+                        .ColorIndex = 6
+                        .Pattern = xlSolid
+                        .PatternColorIndex = xlAutomatic
+                    End With
+                End If
+            End If
+            rechtesteSpalte = i + SPALTE_FMATRIX - 1
+        End If
+        
+        'bei UE ohne Funktion:
+        If (b.Find("X") Is Nothing) And (InStr(1, tmpStr, "A") = 1) Then
+            If IsNumeric(Mid(tmpStr, 2)) Then
+                AktUe = CInt(Mid(tmpStr, 2))
+                If Not AktUe - LastUE = 1 Then
+                     With schluessel.Cells(8, i).Interior
+                        .ColorIndex = 6
+                        .Pattern = xlSolid
+                        .PatternColorIndex = xlAutomatic
+                    End With
+                End If
+                LastUE = AktUe
+            'A ohne Ziffer
+            Else
+            With schluessel.Cells(8, i).Interior
+                .ColorIndex = 6
+                .Pattern = xlSolid
+                .PatternColorIndex = xlAutomatic
+            End With
+            End If
+        End If
+    Next
+    
+    If rechtesteSpalte < 19 + SPALTE_FMATRIX Then
+        rechtesteSpalte = 19 + SPALTE_FMATRIX
+    End If
+    
+    
+    UebergeordneteSchluessel = True
+    Exit Function
+UebergeordneteSchluesselError:
+    UebergeordneteSchluessel = False
+End Function 'UebergeordneteSchluessel
+    
+'---------------------------------------------------------
+'
+' Plausibilit|fffd|tspr|fffd|fung: Schlie|fffd|planformular
+'
+' Hauptroutine
+'
+' Treten EXCEL-Fehler auf, wird ein Fehler gemeldet.
+'
+'---------------------------------------------------------
+Sub PlausibilitaetsTest()
+    'Vorbereitende Arbeiten
+    Range("G15").Select 'Ein Feld selektieren, damit EXCEL97 l|fffd|uft
+    ActiveSheet.Unprotect SHEET_PASSWORD
+    
+    If EntferneFehlerMarkierungen() = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+    If BestimmeSPos() = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+    
+    'Pr|fffd|fen der Funktionsmatrix
+    If ZeilenGleicherSPos() = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+    If MundZinSpalte = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+    If I_Test = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+    
+    'S-Pos Pr|fffd|fung
+    If SPosOhneLuecken() = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+    If SPosZurFunktion = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+
+    'Pr|fffd|fung der |fffd|bergeordneten Schl|fffd|ssel
+    If UebergeordneteSchluessel() = False Then
+        MsgBox "Eine Plausibilit|fffd|tspr|fffd|fung dieses Schlie|fffd|plans konnte nicht vorgenommen werden!", vbCritical
+        Exit Sub
+    End If
+    
+    'Druckbereich festlegen
+    ActiveSheet.PageSetup.PrintArea = Cells(1, 2).Address + ":" + Cells(untersteZeile, rechtesteSpalte).Address 'Cells(ZEILE_ANZUEBER, 2).Address + ":" + Cells(untersteZeile, rechtesteSpalte).Address
+    'ActiveSheet.PageSetup.PrintTitleRows = "$" + Format(ZEILE_SPOS - 1, "#") + ":$" + Format(ZEILE_SPOS - 1, "#")
+    ActiveSheet.PageSetup.PrintTitleRows = "$" + Format(15, "#") + ":$" + Format(ZEILE_SPOS - 1, "#")
+    ActiveSheet.PageSetup.PrintTitleColumns = ActiveSheet.Columns(1).Address + ":" + ActiveSheet.Columns(SPALTE_SPOS).Address
+    'ActiveSheet.PageSetup.Zoom = False
+'    ActiveSheet.PageSetup.FitToPagesWide = Int(rechtesteSpalte / SPALTEN_PRO_SEITEN + 0.5)
+    
+    ActiveSheet.PageSetup.Zoom = SEITEN_ZOOM
+    ActiveSheet.Protect Password:=SHEET_PASSWORD, DrawingObjects:=True, Contents:=True, Scenarios:=True, AllowInsertingRows:=True, AllowDeletingRows:=True, AllowFiltering:=True
+
+End Sub 'PlausibilitaetsTest
+
+Sub Senden_BeiKlick()
+    Dim blubb
+    On Error GoTo Senden_BeiKlickError
+    If Application.Dialogs(xlDialogSendMail).Show(Cells(1 + Cells(1, 1).Value, 1), Cells(1, 5)) = True Then
+        MsgBox "E-Mail wurde an '" + Cells(1 + Cells(1, 1).Value, 1) + "' versendet!"
+    Else
+        MsgBox "E-Mail-Versand wurde abgebrochen!"
+    End If
+    Exit Sub
+Senden_BeiKlickError:
+    MsgBox "E-Mail-Versand war nicht m|fffd|glich!", vbCritical
+End Sub
+
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "CheckIt, 181, 0, MSForms, CommandButton"
+Private Sub ListBox1_Click()
+  SK6
+  TK5
+End Sub
+
+Private Sub CheckIt_Click()
+    PlausibilitaetsTest
+End Sub
+
+Attribute VB_Name = "Tabelle3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' z'!z
+
+INQUEST-PP=macro

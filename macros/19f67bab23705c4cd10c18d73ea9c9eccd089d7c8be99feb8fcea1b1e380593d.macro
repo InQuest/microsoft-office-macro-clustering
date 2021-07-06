@@ -1,0 +1,3703 @@
+Attribute VB_Name = "BuildDynamicLists"
+Option Explicit
+Option Base 1
+
+Private Const POSITION_NAME_TEMPLATE As String = "Positions_"
+'
+
+Public Function buildGrantYearsList(startDate As Date)
+    Dim years As New Collection
+    Dim i As Integer
+    Dim yrStart As Integer: yrStart = Year(startDate)
+    Dim yrEnd As Integer: yrEnd = Year(Date) + 1
+    If yrStart < 2000 Then yrStart = Year(Date)
+    If yrEnd < yrStart Then yrEnd = yrStart
+    For i = yrStart To yrEnd
+        years.add CStr(i)
+    Next
+    
+    buildLookupRange years, "GrantYears", False
+    
+End Function
+
+Public Function buildBusinessesList()
+    Dim Businesses As Collection
+    Dim cBus As New clsBusinesses
+    
+    Call initGlobals
+
+    ' Get list of businesses
+    Set Businesses = cBus.businessesCollection
+    Set cBus = Nothing
+
+    buildLookupRange Businesses, "Lookup_Businesses"
+    
+End Function
+
+Public Function buildPositionsList()
+    Dim irow As Long
+    Dim lu As String
+    Dim n As name
+    Dim v As Variant
+    Dim r As Range
+    Dim bNameKey As String
+    Dim sBusKey As String, sPos As String
+    Dim pos As New Collection ' of positions
+    
+    Call initGlobals
+
+    ' Delete all of the existing names for the positions
+    For Each n In ThisWorkbook.Names
+        If n.name <> POSITION_NAME_TEMPLATE And n.name Like POSITION_NAME_TEMPLATE & "*" Then
+            n.Delete
+        End If
+    Next
+    
+    buildLookupRange pos, POSITION_NAME_TEMPLATE ' this just clears the column of entries, since col is empty
+    
+    ' Now add named ranges for the pos for each business
+    
+    irow = 3
+    
+    For Each v In [Lookup_Businesses]
+    
+        If Trim(v) <> "" Then
+        
+            bNameKey = buildKey(v)
+        
+            Set pos = New Collection
+            For Each r In wsPositions.Range("Business_Positions").Columns(1).Cells
+                sBusKey = buildKey(r.Cells(1, 1))
+                sPos = r.Cells(1, 2)
+                If sBusKey = bNameKey And sPos <> "" Then
+                    addToCol pos, sPos
+                End If
+            Next
+            
+            If pos.Count > 0 Then
+                    
+                ' Create the named range - in the lu_subcontractor_list column
+                lu = POSITION_NAME_TEMPLATE & Lists_CreateName(v)
+                
+                Set r = wsLookups.Range(POSITION_NAME_TEMPLATE).Cells(irow, 1)
+                
+                r(1) = lu
+                
+                ActiveWorkbook.Names.add lu, "='" & wsLookups_NAME & "'!" & r(2).Address() & ":" & r(2 + pos.Count).Address()
+                   
+                irow = irow + 4 + pos.Count
+                
+                buildLookupRange pos, lu, True, 500
+                
+            End If
+            
+        End If
+     
+    Next
+    
+    Set pos = Nothing
+    
+End Function
+
+Private Function addToCol(col As Collection, s As String)
+    On Error GoTo Done  ' in case not unique
+    col.add s
+Done:
+    Err.Clear
+End Function
+
+Public Function buildLookupRange(sourceCol As Collection, lookupRng As String, Optional includeBlankEntry As Boolean = True, Optional maxRows As Long = 10000)
+    ' Build sorted lists on Lookups tab that are used to validate user entries
+    ' Lookup are assumed to be one column of data.
+    ' Duplicates from source are weeded out.
+    ' ALL is first entry, if included.  Blank is final entry, if included.
+    ' If list is empty and blanks is not included, we still need to create the range with a blank, so that the range exits.
+    '
+    
+    Dim n As Long
+    Dim kvs As CKeyValues, kv As CKeyValue
+    Dim col As Collection
+    Dim r As Range
+    Dim s As String
+    
+    Set kvs = New CKeyValues
+    
+    Dim v As Variant
+    For Each v In sourceCol
+        s = Trim(CStr(v))
+        If s <> "" Then
+            If Not kvs.hasKey(s) Then
+               Set kv = New CKeyValue
+               kv.key = s
+               kv.value = s
+               kvs.add kv, s
+            End If
+        End If
+    Next
+        
+    s = " "
+    If includeBlankEntry Or kvs.Count = 0 Then
+        If Not kvs.hasKey(s) Then
+            Set kv = New CKeyValue
+            kv.key = s
+            kv.value = "ZZZ" ' so it will come last in the values sort.
+            kvs.add kv, kv.key
+        End If
+    End If
+    
+    Set col = kvs.sort()
+    
+    Set r = wsLookups.Range(lookupRng)
+    
+    wsLookups.Range(r.Cells(1, 1), r.Cells(maxRows, 1)).ClearContents
+    
+    n = 0
+    For Each kv In col
+        n = n + 1
+        r.Cells(n, 1) = kv.key
+        If n = maxRows Then Exit For
+    Next
+    
+    Dim fromWs As Worksheet
+    Set fromWs = ThisWorkbook.ActiveSheet
+
+    wsLookups.Activate
+    
+    ThisWorkbook.Names.add lookupRng, "='" & wsLookups_NAME & "'!" & r(1).Address() & ":" & r(n).Address()
+    
+    fromWs.Activate
+    
+End Function
+
+Attribute VB_Name = "Businesses"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    On Error GoTo Done:
+    If isDevMode() Then Exit Sub
+    Dim fromSheet As Worksheet: Set fromSheet = ThisWorkbook.ActiveSheet
+    
+    If Intersect(Target, fromSheet.Range("DataEntryRange")) Is Nothing Then
+        Exit Sub
+    End If
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+
+    ' Change paste operation into a paste values, so formats & data validation do not change.
+    Dim origVal As Variant
+    origVal = copyValues(Target)
+    
+    ' Validate the worksheet
+    Dim Businesses As New clsBusinesses
+    Businesses.validateTarget Target
+    
+    If Not Intersect(Target, fromSheet.Range("Business_Name")) Is Nothing Then
+        Call buildBusinessesList
+        If Target <> "" And Not IsEmpty(origVal) Then
+            Call propogateBusinessNameChange(origVal, Target.text)
+        End If
+    End If
+    
+    Call validationMessageEnd(ActiveSheet, Businesses.colOffset_Err)
+
+Done:
+    Err.Clear
+    On Error Resume Next
+    
+    Set Businesses = Nothing
+
+    Call protectALL
+    
+    fromSheet.Activate
+    
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    ' Change cut command to copy command
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call disableCut(Target)
+Done:
+    Err.Clear
+    On Error Resume Next
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub validateBusinessesWS()
+    On Error GoTo Done:
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call validationMessageInit(ActiveSheet)
+    
+    Call buildBusinessesList
+    
+    Dim Businesses As New clsBusinesses
+    
+    Businesses.validateAll  ' Always validate all, not just the current.  Fast enough for businesses tab.
+    
+    Call validationMessageEnd(ActiveSheet, Businesses.colOffset_Err)
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Set Businesses = Nothing
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub showDetails()
+    On Error GoTo Done:
+    Call toggleHideShowDetails(ThisWorkbook.ActiveSheet)
+Done:
+    Err.Clear
+End Sub
+
+Private Function propogateBusinessNameChange(origNameV As Variant, newNameS As String)
+    On Error GoTo Done:
+    Dim c As Range
+    Dim thisName As String
+    Dim origName As String: origName = Trim(CStr(origNameV))
+    Dim newName As String: newName = Trim(newNameS)
+    Dim Employees As New clsEmployees
+    Dim Positions As New clsPositions
+    
+    For Each c In wsPositions.Range("DataEntryRange").Resize(, 1)
+        
+        thisName = Trim(CStr(c.offset(0, Positions.colOffset_BusName)))
+        
+        If thisName = origName Then
+            c.offset(0, Positions.colOffset_BusName) = newName
+        End If
+            
+    Next
+    
+    For Each c In wsEmployees.Range("DataEntryRange").Resize(, 1)
+        
+        thisName = Trim(CStr(c.offset(0, Employees.colOffset_BusName)))
+        
+        If thisName = origName Then
+            c.offset(0, Employees.colOffset_BusName) = newName
+        End If
+            
+    Next
+Done:
+    Err.Clear
+    On Error Resume Next
+    Set Positions = Nothing
+    Set Employees = Nothing
+End Function
+Attribute VB_Name = "CKeyValue"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Option Base 1
+
+Dim m_Key As String
+Dim m_value As String
+
+Public Property Get key() As String
+    key = m_Key
+End Property
+Public Property Let key(v As String)
+    m_Key = v
+End Property
+
+Public Property Get value() As String
+    value = m_value
+End Property
+Public Property Let value(v As String)
+    m_value = v
+End Property
+
+Attribute VB_Name = "CKeyValues"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Option Base 0  ' This is correctly 0.
+
+Private pKVs As Collection ' of CKeyValue, indexed by key.
+
+Private Sub Class_Initialize()
+    Set pKVs = New Collection
+End Sub
+
+Private Sub Class_Terminate()
+    Set pKVs = Nothing
+End Sub
+
+Public Function add(kv As CKeyValue, key As String)
+    If pKVs Is Nothing Then Exit Function
+    If key = "" Then Exit Function
+    pKVs.add kv, key
+End Function
+Public Function remove(key As String)
+    If pKVs Is Nothing Then Exit Function
+    pKVs.remove key
+End Function
+Public Property Get Count() As Long
+    If pKVs Is Nothing Then Exit Property
+    Count = pKVs.Count
+End Property
+
+Public Property Get Item(key As String) As CKeyValue
+    If pKVs Is Nothing Then Exit Property
+    Set Item = New CKeyValue
+    If hasKey(key) Then
+        Set Item = pKVs.Item(key)
+    End If
+End Property
+
+Public Function hasKey(key As Variant) As Boolean
+    ' This works on a collection of CKeyValue objects.
+    Dim found As Boolean: found = False
+    If pKVs Is Nothing Then Exit Function
+    On Error GoTo Done:
+    found = (pKVs.Item(key).key <> "")
+Done:
+    hasKey = found
+End Function
+
+Public Function sort() As Collection
+    ' Uses the "heap sort" algorithm to sort a VB collection of CKeyValue objects. Returns a new sorted collection.
+    Dim n As Long
+    Dim i As Long, m As Long
+    Dim c2 As New Collection
+    If pKVs Is Nothing Then Exit Function
+    n = pKVs.Count
+    If n = 0 Then
+        Set sort = c2
+        Exit Function
+    End If
+    ReDim index(0 To n - 1) As Long                    ' allocate index array
+    For i = 0 To n - 1
+        index(i) = i + 1                               ' fill index array
+    Next
+    For i = n \ 2 - 1 To 0 Step -1                     ' generate ordered heap
+        Heapify index, i, n
+    Next
+    For m = n To 2 Step -1                             ' sort the index array
+        Exchange index, 0, m - 1                       ' move highest element to top
+        Heapify index, 0, m - 1
+    Next
+    For i = 0 To n - 1
+        c2.add pKVs.Item(index(i))                   ' fill output collection
+    Next
+    Set sort = c2
+End Function
+
+Private Function Heapify(index() As Long, ByVal i1 As Long, ByVal n As Long)
+    ' Heap order rule: a[i] >= a[2*i+1] and a[i] >= a[2*i+2]
+    Dim nDiv2 As Long
+    Dim i As Long
+    Dim k As Long
+    Dim kv1 As New CKeyValue
+    Dim kv2 As New CKeyValue
+    nDiv2 = n \ 2
+    i = i1
+    Do While i < nDiv2
+        k = 2 * i + 1
+        If k + 1 < n Then
+            Set kv1 = pKVs.Item(index(k))
+            Set kv2 = pKVs.Item(index(k + 1))
+            If ucase(kv1.value) < ucase(kv2.value) Then k = k + 1
+        End If
+        Set kv1 = pKVs.Item(index(i))
+        Set kv2 = pKVs.Item(index(k))
+        If ucase(kv1.value) >= ucase(kv2.value) Then Exit Do
+        Exchange index, i, k
+        i = k
+    Loop
+End Function
+
+Private Function Exchange(index() As Long, ByVal i As Long, ByVal j As Long)
+    Dim tmp As Long
+    tmp = index(i)
+    index(i) = index(j)
+    index(j) = tmp
+End Function
+
+Attribute VB_Name = "Clipboard"
+Option Explicit
+
+#If VBA7 Then
+ Declare PtrSafe Function OpenClipboard Lib "user32.dll" (ByVal hwnd As LongPtr) As LongPtr
+ Declare PtrSafe Function EmptyClipboard Lib "user32.dll" () As LongPtr
+ Declare PtrSafe Function CloseClipboard Lib "user32.dll" () As LongPtr
+ Declare PtrSafe Function IsClipboardFormatAvailable Lib "user32.dll" (ByVal wFormat As LongPtr) As LongPtr
+ Declare PtrSafe Function GetClipboardData Lib "user32.dll" (ByVal wFormat As LongPtr) As LongPtr
+ Declare PtrSafe Function SetClipboardData Lib "user32.dll" (ByVal wFormat As LongPtr, ByVal hMem As LongPtr) As LongPtr
+ Declare PtrSafe Function GlobalAlloc Lib "kernel32.dll" (ByVal wFlags As LongPtr, ByVal dwBytes As LongPtr) As LongPtr
+ Declare PtrSafe Function GlobalLock Lib "kernel32.dll" (ByVal hMem As LongPtr) As LongPtr
+ Declare PtrSafe Function GlobalUnlock Lib "kernel32.dll" (ByVal hMem As LongPtr) As LongPtr
+ Declare PtrSafe Function GlobalSize Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+ Declare PtrSafe Function lstrcpy Lib "kernel32.dll" Alias "lstrcpyW" (ByVal lpString1 As LongPtr, ByVal lpString2 As LongPtr) As LongPtr
+#Else
+ Private Declare Function OpenClipboard Lib "user32.dll" (ByVal hwnd As Long) As Long
+ Private Declare Function EmptyClipboard Lib "user32.dll" () As Long
+ Private Declare Function CloseClipboard Lib "user32.dll" () As Long
+ Private Declare Function IsClipboardFormatAvailable Lib "user32.dll" (ByVal wFormat As Long) As Long
+ Private Declare Function GetClipboardData Lib "user32.dll" (ByVal wFormat As Long) As Long
+ Private Declare Function SetClipboardData Lib "user32.dll" (ByVal wFormat As Long, ByVal hMem As Long) As Long
+ Private Declare Function GlobalAlloc Lib "kernel32.dll" (ByVal wFlags As Long, ByVal dwBytes As Long) As Long
+ Private Declare Function GlobalLock Lib "kernel32.dll" (ByVal hMem As Long) As Long
+ Private Declare Function GlobalUnlock Lib "kernel32.dll" (ByVal hMem As Long) As Long
+ Private Declare Function GlobalSize Lib "kernel32" (ByVal hMem As Long) As Long
+ Private Declare Function lstrcpy Lib "kernel32.dll" Alias "lstrcpyW" (ByVal lpString1 As Long, ByVal lpString2 As Long) As Long
+#End If
+
+Public Sub CopyTextToClipboard(sUniText As String)
+#If Win64 Then
+    Dim iStrPtr As LongPtr
+    Dim iLen As LongPtr
+    Dim iLock As LongPtr
+#Else
+    Dim iStrPtr As Long
+    Dim iLen As Long
+    Dim iLock As Long
+#End If
+    Const GMEM_MOVEABLE As Long = &H2
+    Const GMEM_ZEROINIT As Long = &H40
+    Const CF_UNICODETEXT As Long = &HD
+    On Error GoTo IsError:
+    Application.CutCopyMode = False
+    OpenClipboard 0&
+    EmptyClipboard
+    iLen = LenB(sUniText) + 2&
+    iStrPtr = GlobalAlloc(GMEM_MOVEABLE Or GMEM_ZEROINIT, iLen)
+    iLock = GlobalLock(iStrPtr)
+    lstrcpy iLock, StrPtr(sUniText)
+    GlobalUnlock iStrPtr
+    SetClipboardData CF_UNICODETEXT, iStrPtr
+    GoTo Done:
+IsError:
+    On Error Resume Next
+    Err.Clear
+Done:
+    On Error Resume Next
+    CloseClipboard
+End Sub
+
+Public Function clearClipboard()
+    On Error GoTo IsError:
+    Call CopyTextToClipboard("")
+    GoTo Done:
+IsError:
+    On Error Resume Next
+    Err.Clear
+Done:
+    On Error Resume Next
+    Application.CutCopyMode = False
+End Function
+
+Public Function GetTextFromClipboard() As String
+    Dim iStrPtr As Long
+    Dim iLen As Long
+    Dim iLock As Long
+    Dim sUniText As String
+    Const CF_UNICODETEXT As Long = 13&
+    On Error GoTo IsError:
+    OpenClipboard 0&
+    If IsClipboardFormatAvailable(CF_UNICODETEXT) Then
+        iStrPtr = GetClipboardData(CF_UNICODETEXT)
+        If iStrPtr Then
+            iLock = GlobalLock(iStrPtr)
+            iLen = GlobalSize(iStrPtr)
+            sUniText = String$(iLen \ 2& - 1&, vbNullChar)
+            lstrcpy StrPtr(sUniText), iLock
+            GlobalUnlock iStrPtr
+        End If
+        GetTextFromClipboard = sUniText
+    End If
+    GoTo Done:
+IsError:
+    On Error Resume Next
+    Err.Clear
+Done:
+    On Error Resume Next
+    CloseClipboard
+End Function
+
+Attribute VB_Name = "DataForFormA"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Public Sub finalize()
+    On Error GoTo Done:
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call finalizeCurrentPeriod
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Private Function finalizeCurrentPeriod()
+    On Error GoTo errDone:
+'
+' Copies Form A data to the proper Period in the Records tab.
+'
+    Dim response As Integer
+    Dim dataCheck As Double
+    Dim qN As Integer
+    Dim q1 As Integer: q1 = 1
+    Dim currentPeriod As String: currentPeriod = periodRange([ReportStartDate])
+    
+    qN = periodN([ReportStartDate])
+    
+    response = MsgBox("Are you sure you are ready to finalize the data for the reporting Period " & currentPeriod & "?", vbYesNo + vbDefaultButton2 + IIf(Date < [ReportEndDate], vbCritical, 0), IIf(Date < [ReportEndDate], "  WARNING: The reporting period end date is in the future.", "Confirm Finalization"))
+    If response = vbNo Then GoTo Done:
+
+    dataCheck = WorksheetFunction.Sum(wsRecords.Range(wsRecords.Cells(2, qN + 3), wsRecords.Cells(32, qN + 3)))
+    If dataCheck > 0 Then
+        response = MsgBox("You already have data recorded for the current reporting Period " & currentPeriod & ".  Are you sure you want to overwrite it?  You cannot undo this action.", vbCritical + vbYesNo + vbDefaultButton2)
+        If response = vbNo Then GoTo Done:
+    End If
+    
+    MsgBox "The data will now be validated.  This may take a few minutes.", vbInformation
+    
+    Call validateAllRecords
+    
+    If Validate_HasError() Then
+        MsgBox "The data contains errors.  Please correct the errors before finalizing the data.", vbCritical, "Records NOT Finalized"
+        GoTo Done:
+    End If
+    
+    With wsRecords
+    
+        If qN > 1 Then
+            .Range(.Cells(1, q1 + 3), .Cells(32, q1 + 3)).Copy
+            .Range(.Cells(1, qN + 3), .Cells(32, qN + 3)).PasteSpecial xlPasteFormats
+        End If
+        
+        .Cells(1, qN + 3) = currentPeriod
+         
+         wsDataForFormA.Range("DataForFormA").Copy
+         
+        .Cells(2, qN + 3).PasteSpecial xlPasteValues
+        
+    End With
+    
+    MsgBox "Congratulations! You have calculated the data needed for your PPR.  Please log onto OLDC and enter the data online now.", vbInformation, "Records Successfully Finalized"
+    
+    wsRecords.Activate
+    
+    Exit Function
+
+errDone:
+    MsgBox "An error occured during the finalization process.", vbCritical, "Records NOT Finalized"
+
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Application.CutCopyMode = False
+End Function
+Attribute VB_Name = "Employees"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Dim Businesses As clsBusinesses
+Dim Positions As clsPositions
+
+Private Sub Worksheet_Activate()
+    On Error GoTo Done:
+    
+    If isDevMode() Then Exit Sub
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call populatePositions
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+
+Private Sub Worksheet_Deactivate()
+    On Error Resume Next
+    Set Businesses = Nothing
+    Set Positions = Nothing
+    Err.Clear
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    'This macro checks to see if the start date of an employee is earlier than the end date of another employee
+    '   at the same business in the same position.
+    Dim fromSheet As Worksheet: Set fromSheet = ThisWorkbook.ActiveSheet
+    
+    If Intersect(Target, fromSheet.Range("DataEntryRange")) Is Nothing Then
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+     
+    Call unprotectALL
+    
+    ' Change paste operation into a paste values, so formats & data validation do not change.
+    Call copyValues(Target)
+    
+    ' Validate the worksheet
+    Call populatePositions
+    Dim Employees As New clsEmployees
+    Employees.validateTarget Target, Businesses, Positions
+
+    Call validationMessageEnd(ActiveSheet, Employees.colOffset_Err)
+
+Done:
+    Err.Clear
+    On Error Resume Next
+    
+    Set Employees = Nothing
+
+    Call protectALL
+    
+    fromSheet.Activate
+    
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    ' Change cut command to copy command
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call disableCut(Target)
+Done:
+    Err.Clear
+    On Error Resume Next
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub validateEmployeesWS()
+    On Error GoTo Done:
+    
+    Dim Employees As New clsEmployees
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Set Businesses = Nothing
+    
+    Call unprotectALL
+    
+    Call validationMessageInit(ActiveSheet)
+    
+    Call buildBusinessesList
+    Call buildPositionsList
+    
+    Call populatePositions
+    
+    Employees.validateAll Businesses, Positions
+    
+    Call validationMessageEnd(ActiveSheet, Employees.colOffset_Err)
+
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Set Employees = Nothing
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+
+Private Function populatePositions()
+    On Error GoTo Done:
+    If Businesses Is Nothing Then
+        Set Businesses = New clsBusinesses
+    End If
+    If Positions Is Nothing Then
+        Set Positions = New clsPositions
+    End If
+Done:
+    Err.Clear
+End Function
+
+
+Attribute VB_Name = "Globals"
+Option Explicit
+
+Global Const wsStart_NAME As String = "1. Start Here"
+Global Const wsBusinesses_NAME As String = "2. Businesses"
+Global Const wsPositions_NAME As String = "3. Positions"
+Global Const wsEmployees_NAME As String = "4. Employees"
+Global Const wsLeveraging_NAME As String = "5. Leveraging"
+Global Const wsDataForFormA_NAME As String = "6. Data for Form A"
+Global Const wsRecords_NAME As String = "7. Records"
+Global Const wsLookups_NAME As String = "Lookups"
+Global Const wsMoreInfo_NAME As String = "More Info"
+
+Global Const YES As String = "Y"
+
+Global Const ufCreate As String = "CREATE"
+
+Public wsStart As Worksheet
+Public wsBusinesses  As Worksheet
+Public wsPositions  As Worksheet
+Public wsEmployees  As Worksheet
+Public wsLeveraging  As Worksheet
+Public wsDataForFormA  As Worksheet
+Public wsRecords  As Worksheet
+Public wsLookups  As Worksheet
+Public wsMoreInfo  As Worksheet
+
+Private initDone As Boolean
+
+Public Function initGlobals()
+    If initDone Then Exit Function
+    
+    Set wsStart = ThisWorkbook.Worksheets(wsStart_NAME)
+    Set wsBusinesses = ThisWorkbook.Worksheets(wsBusinesses_NAME)
+    Set wsPositions = ThisWorkbook.Worksheets(wsPositions_NAME)
+    Set wsEmployees = ThisWorkbook.Worksheets(wsEmployees_NAME)
+    Set wsLeveraging = ThisWorkbook.Worksheets(wsLeveraging_NAME)
+    Set wsDataForFormA = ThisWorkbook.Worksheets(wsDataForFormA_NAME)
+    Set wsRecords = ThisWorkbook.Worksheets(wsRecords_NAME)
+    Set wsLookups = ThisWorkbook.Worksheets(wsLookups_NAME)
+    Set wsMoreInfo = ThisWorkbook.Worksheets(wsMoreInfo_NAME)
+    
+    initDone = True
+End Function
+
+Public Function isDevMode() As Boolean
+    On Error Resume Next
+    isDevMode = [DevMode]
+End Function
+Public Function setDevMode(Optional tf As Boolean = True)
+    On Error Resume Next
+    [DevMode] = tf
+End Function
+
+Attribute VB_Name = "Leveraging"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    Dim fromSheet As Worksheet: Set fromSheet = ThisWorkbook.ActiveSheet
+    
+    If Intersect(Target, fromSheet.Range("DataEntryRange")) Is Nothing Then
+        Exit Sub
+    End If
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+
+    ' Change paste operation into a paste values, so formats & data validation do not change.
+    Call copyValues(Target)
+    
+    ' Validate the worksheet
+    Dim Leveragings As New clsLeveragings
+    Leveragings.validateTarget Target
+    
+    Call validationMessageEnd(ActiveSheet, Leveragings.colOffset_Err)
+Done:
+    Err.Clear
+    On Error Resume Next
+    
+    Set Leveragings = Nothing
+
+    Call protectALL
+    
+    fromSheet.Activate
+    
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    ' Change cut command to copy command
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call disableCut(Target)
+Done:
+    Err.Clear
+    On Error Resume Next
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub validateLeveragingsWS()
+    On Error GoTo Done:
+
+    Dim Leveragings As New clsLeveragings
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call validationMessageInit(ActiveSheet)
+    
+    Leveragings.validateAll
+
+    Call validationMessageEnd(ActiveSheet, Leveragings.colOffset_Err)
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Set Leveragings = Nothing
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+Attribute VB_Name = "Lookups"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Const cmdDevMode As String = "cmdSetDevMode"
+
+Private Sub Worksheet_Activate()
+    On Error GoTo Done:
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Call initGlobals
+    ActiveSheet.Unprotect
+    ActiveSheet.Shapes(cmdDevMode).TextFrame.Characters.text = IIf(isDevMode(), "Clear", "Set") & " Dev Mode"
+    If Not isDevMode() Then ActiveSheet.Protect
+Done:
+    Err.Clear
+    On Error Resume Next
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub toggleDevMode()
+    On Error GoTo Done:
+    Dim x As Long
+    Dim y As Long
+    Dim ws As Worksheet
+    Application.ScreenUpdating = False
+    ActiveSheet.Unprotect
+    If ActiveSheet.Shapes(cmdDevMode).TextFrame.Characters.text = "Set Dev Mode" Then
+        ActiveSheet.Shapes(cmdDevMode).TextFrame.Characters.text = "Clear Dev Mode"
+        Call setDevMode(True)
+        Call unprotectALL
+        Call userDisplay(False)
+'        For Each ws In ThisWorkbook.Worksheets
+'            ws.Activate
+' Next time: unhide, set row height to 12 then...  to reset Excel last used cell
+'            ActiveSheet.Range("1000:1048576").EntireRow.delete
+'            ActiveSheet.Range("A1").Select
+'        Next
+    Else
+        Call setDevMode(True)
+        ActiveSheet.Shapes(cmdDevMode).TextFrame.Characters.text = "Set Dev Mode"
+        Call setDevMode(False)
+        Call userDisplay(True)
+        Call protectALL
+    End If
+Done:
+    Err.Clear
+    On Error Resume Next
+    Application.ScreenUpdating = True
+End Sub
+Attribute VB_Name = "Misc"
+Option Explicit
+
+Public Function unprotectALL()
+    On Error Resume Next
+    Dim ws As Worksheet, thisWS As Worksheet: Set thisWS = ThisWorkbook.ActiveSheet
+    Call initGlobals
+    For Each ws In ThisWorkbook.Worksheets
+        ws.Unprotect
+    Next
+    thisWS.Activate
+End Function
+
+Public Function protectALL()
+    On Error Resume Next
+    Dim ws As Worksheet, thisWS As Worksheet: Set thisWS = ThisWorkbook.ActiveSheet
+    If isDevMode() Then Exit Function
+    For Each ws In ThisWorkbook.Worksheets
+        ws.Protect
+    Next
+    thisWS.Activate
+End Function
+
+Public Function userDisplay(Optional isUser As Boolean = True)
+    Dim notUser As Boolean
+    Dim ht1 As Double, ht2 As Double
+    notUser = Not isUser
+    Call initGlobals
+    If isDevMode() Then notUser = True
+    Application.ScreenUpdating = False
+'    Application.ExecuteExcel4Macro "SHOW.TOOLBAR(""Ribbon""," & IIf(notUser, "True", "False") & ")"
+'    Application.DisplayFormulaBar = notUser
+'    Application.DisplayStatusBar = Not Application.DisplayStatusBar
+'    ActiveWindow.DisplayWorkbookTabs = notuser
+
+    If notUser Then
+        ht1 = Application.CommandBars("Ribbon").Height
+        CommandBars.ExecuteMso "MinimizeRibbon"
+        DoEvents
+        ht2 = Application.CommandBars("Ribbon").Height
+        If ht2 <= ht1 Then CommandBars.ExecuteMso "MinimizeRibbon"
+    Else
+        ht1 = Application.CommandBars("Ribbon").Height
+        CommandBars.ExecuteMso "MinimizeRibbon"
+        DoEvents
+        ht2 = Application.CommandBars("Ribbon").Height
+        If ht2 > ht1 Then CommandBars.ExecuteMso "MinimizeRibbon"
+    End If
+    wsLookups.Visible = isDevMode()
+    wsMoreInfo.Visible = isDevMode()
+    Application.ScreenUpdating = True
+End Function
+
+Public Function copyValues(Target As Range, Optional allowPasteFormulas As Boolean = False)
+    On Error Resume Next
+    If isDevMode() Then Exit Function
+    Call initGlobals
+    
+    copyValues = False
+    
+    ' Change paste operation into a paste values, so formats & data validation do not change.
+    If Application.CutCopyMode = xlCopy Then
+        Application.DisplayAlerts = False
+        Application.Undo
+        copyValues = Target.value
+        Target.PasteSpecial Paste:=IIf(allowPasteFormulas, xlPasteFormulas, xlPasteValues)
+        Application.CutCopyMode = False
+    Else
+        Application.DisplayAlerts = False
+        Application.Undo
+        copyValues = Target.value
+        Application.Undo
+    End If
+End Function
+
+Public Function disableCut(Target As Range)
+    On Error GoTo Done:
+    If isDevMode() Then Exit Function
+    Call initGlobals
+    If Application.CutCopyMode = xlCut Then
+        Application.CutCopyMode = False
+    End If
+Done:
+End Function
+
+Public Function toggleHideShowDetails(ws As Worksheet)
+    On Error GoTo Done
+    Dim shp As Shape
+    Dim detailCols As Range
+    Application.ScreenUpdating = False
+    ws.Unprotect
+    Set detailCols = ws.Range("DetailsRange")
+    Set shp = ws.Shapes("cmdViewDetails")
+    If shp.TextFrame.Characters.text = "Hide Details" Then
+        shp.TextFrame.Characters.text = "Show Details"
+        detailCols.EntireColumn.Hidden = True
+    Else
+        shp.TextFrame.Characters.text = "Hide Details"
+        detailCols.EntireColumn.Hidden = False
+    End If
+Done:
+    If Not isDevMode() Then ws.Protect
+    Application.ScreenUpdating = True
+End Function
+Public Function initShowDetails(ws As Worksheet)
+    On Error GoTo Done
+    Dim shp As Shape
+    Dim detailCols As Range
+    Set detailCols = ws.Range("'" & ws.name & "'!DetailsRange")
+    Set shp = ws.Shapes("cmdViewDetails")
+    shp.TextFrame.Characters.text = "Show Details"
+    detailCols.EntireColumn.Hidden = True
+Done:
+End Function
+
+Public Function SelectIfError(ws As Worksheet)
+    If ws.name = Validate_LastError_WS() Then
+        ws.Activate
+        ActiveSheet.Range(Validate_LastError_Address()).Select
+    End If
+End Function
+
+Public Function periodStartDate(dt As Date, Optional periodN As Integer = 1) As Date
+    ' Find the starting date of the year-portion than contains date dt.
+    ' Semi-annual: 4/1 or 10/1
+    Dim mm As Integer, yy As Integer, d As Date
+    d = DateAdd("m", (periodN - 1) * 6, dt)
+    mm = Month(d)
+    yy = Year(d)
+    If mm < 4 Then
+        mm = 10
+        yy = yy - 1
+    ElseIf mm < 10 Then
+        mm = 4
+    Else
+        mm = 10
+    End If
+    periodStartDate = DateSerial(yy, mm, 1)
+End Function
+Public Function periodEndDate(dt As Date, Optional periodN As Integer = 1) As Date
+    ' Find the ending date of the Period than contains date d.
+    ' Semi-annual: 4/1 or 10/1
+    Dim mm As Integer, yy As Integer, d As Date
+    d = DateAdd("m", (periodN - 1) * 6, dt)
+    mm = Month(d)
+    yy = Year(d)
+    If mm < 4 Then
+        mm = 4
+    ElseIf mm < 10 Then
+        mm = 10
+    Else
+        mm = 4
+        yy = yy + 1
+    End If
+    periodEndDate = DateSerial(yy, mm, 0)
+End Function
+Public Function periodRange(dt As Date, Optional periodN As Integer = 1) As String
+    periodRange = Format(periodStartDate(dt, periodN), "mm/dd/yyyy") & " - " & Format(periodEndDate(dt, periodN), "mm/dd/yyyy")
+End Function
+Public Function periodN(dt As Date) As Integer
+    Dim pStart As Date, pEnd As Date, gEffDate As Date
+    Dim i As Integer
+    gEffDate = DateAdd("d", 1, [GrantStartDate]) ' Grant start date is usually 9/30, but reporting starts on 10/1.
+    For i = 1 To 10000 ' a big enough number
+        pStart = periodStartDate(gEffDate, i)
+        pEnd = periodEndDate(gEffDate, i)
+        If pStart <= dt And dt <= pEnd Then Exit For
+    Next
+    periodN = IIf(i = 100, 0, i)
+End Function
+
+Public Function getColACell(Target As Range) As Range
+    Set getColACell = Target.offset(0, -Target.Column + 1).Resize(1, 1)
+End Function
+
+Public Function keyInCollection(col As Collection, key As String) As Boolean
+    On Error GoTo Done:
+    Dim k As String
+    keyInCollection = False
+    k = col(key).key
+    keyInCollection = True
+Done:
+    Err.Clear
+End Function
+
+Function buildKey(ParamArray var() As Variant) As String
+    Dim i As Integer
+    Dim tmp As String
+    tmp = ""
+    For i = LBound(var) To UBound(var)
+        tmp = tmp & Trim(CStr(var(i))) & "|"
+    Next
+    buildKey = Lists_CreateName(tmp)
+End Function
+
+Function isKeyPattern(key, ParamArray var() As Variant) As Boolean
+    Dim i As Integer
+    Dim tmp As String
+    tmp = ""
+    For i = LBound(var) To UBound(var)
+        tmp = tmp & "?*|"
+    Next
+    isKeyPattern = (key Like tmp)
+End Function
+
+Public Function Lists_CreateName(text, Optional forceUpperCase As Boolean = True) As String
+    Dim s As String
+    
+    s = Trim$(CStr(text) & "")
+    s = Replace(s, " ", "_")
+    s = Replace(s, ",", "")
+    s = Replace(s, "(", "")
+    s = Replace(s, ")", "")
+    s = Replace(s, "{", "_")
+    s = Replace(s, "}", "_")
+    s = Replace(s, "[", "_")
+    s = Replace(s, "]", "_")
+    s = Replace(s, "=", "_")
+    s = Replace(s, "'", "_")
+    s = Replace(s, """", "_")
+    s = Replace(s, "@", "_")
+    s = Replace(s, "!", "_")
+    s = Replace(s, "#", "_")
+    s = Replace(s, "$", "_")
+    s = Replace(s, "\", "_")
+    s = Replace(s, "/", "_")
+    s = Replace(s, ">", "_")
+    s = Replace(s, "<", "_")
+    s = Replace(s, "*", "_")
+    s = Replace(s, "?", "_")
+    s = Replace(s, ".", "")
+    s = Replace(s, "&", "_")
+    
+    If forceUpperCase Then s = ucase(s)
+    
+    Lists_CreateName = s
+
+End Function
+
+Attribute VB_Name = "MoreInfo"
+Option Explicit
+
+Declare PtrSafe Function GetActiveWindow Lib "user32" () As LongPtr
+Declare PtrSafe Sub SetLastError Lib "kernel32" (ByVal dwErrCode As Long)
+
+#If Win64 Then
+    Declare PtrSafe Function GetWindowLongPtr Lib "user32" Alias "GetWindowLongPtrA" (ByVal hwnd As LongPtr, ByVal nIndex As Long) As LongPtr
+    Declare PtrSafe Function SetWindowLongPtr Lib "user32" Alias "SetWindowLongPtrA" (ByVal hwnd As LongPtr, ByVal nIndex As Long, ByVal dwNewLong As LongPtr) As LongPtr
+#Else
+    Declare PtrSafe Function GetWindowLongPtr Lib "user32" Alias "GetWindowLongA" (ByVal hwnd As LongPtr, ByVal nIndex As Long) As LongPtr
+    Declare PtrSafe Function SetWindowLongPtr Lib "user32" Alias "SetWindowLongA" (ByVal hwnd As LongPtr, ByVal nIndex As Long, ByVal dwNewLong As LongPtr) As LongPtr
+#End If
+
+
+Public Sub showHelp()
+    Dim thisWS As Worksheet: Set thisWS = ThisWorkbook.ActiveSheet
+    On Error GoTo Done:
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    ' If it is already loaded, delete it & recreate it.
+    Dim frm As Object
+    For Each frm In UserForms
+        If frm.name = "ufMoreInfo" Then
+            Unload ufMoreInfo
+            Exit For
+        End If
+    Next frm
+    
+    Call unprotectALL
+    
+    wsLookups.Range("ufInfo_CalledFromTab") = thisWS.name
+    
+    Call protectALL
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    
+    thisWS.Activate
+    
+    ' Show the New Grant user form
+'    ufMoreInfo.Show vbModal
+    ufMoreInfo.Show
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    
+    thisWS.Activate
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+
+End Sub
+
+Public Function MakeFormResizable()
+    Dim lStyle As LongPtr
+    Dim hwnd As LongPtr
+    Dim RetVal As LongPtr
+    
+    Const WS_THICKFRAME = &H40000
+    Const GWL_STYLE As Long = (-16)
+    
+    hwnd = GetActiveWindow
+  
+    ' Get the basic window style
+    lStyle = GetWindowLongPtr(hwnd, GWL_STYLE) Or WS_THICKFRAME
+     
+    ' Set the basic window styles
+    RetVal = SetWindowLongPtr(hwnd, GWL_STYLE, lStyle)
+    
+    ' Clear any previous API error codes
+    SetLastError 0
+    
+End Function
+
+Public Sub updateIcons()
+    On Error GoTo Done:
+    Call setDevMode
+    Call unprotectALL
+    Call updateIcon(wsStart)
+    Call updateIcon(wsBusinesses)
+    Call updateIcon(wsPositions)
+    Call updateIcon(wsEmployees)
+    Call updateIcon(wsLeveraging)
+Done:
+    On Error Resume Next
+    Err.Clear
+    Call setDevMode(False)
+    Call protectALL
+End Sub
+
+Private Sub updateIcon(ws As Worksheet)
+    On Error GoTo Done:
+    Dim tp As Single, lft As Single
+    Dim nm As String
+    Dim shp As Shape
+    
+    nm = "shpMoreInfo"
+    
+    tp = 0
+    lft = 0
+    ws.Activate
+    For Each shp In ws.Shapes
+        If shp.name = nm Then
+            tp = shp.Top
+            lft = shp.Left
+            shp.Delete
+            Exit For
+        End If
+    Next
+    
+    wsLookups.Activate
+    Set shp = wsLookups.Shapes(nm)
+    shp.Copy
+    
+    ws.Activate
+    With ws
+        .PasteSpecial
+        With .Shapes(.Shapes.Count)
+            .name = nm
+            .Top = tp
+            .Left = lft
+            .OnAction = "showHelp"
+        End With
+    End With
+
+Done:
+    On Error Resume Next
+    Err.Clear
+    Call clearClipboard
+    Application.CutCopyMode = False
+End Sub
+
+Attribute VB_Name = "Positions"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Dim Businesses As clsBusinesses
+
+Private Sub Worksheet_Activate()
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call populateBusinesses
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+
+Private Sub Worksheet_Deactivate()
+    On Error Resume Next
+    Set Businesses = Nothing
+    Err.Clear
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    Dim fromSheet As Worksheet: Set fromSheet = ThisWorkbook.ActiveSheet
+    
+    If Intersect(Target, fromSheet.Range("DataEntryRange")) Is Nothing Then
+        Exit Sub
+    End If
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    ' Change paste operation into a paste values, so formats & data validation do not change.
+    Dim origVal As Variant
+    origVal = copyValues(Target)
+    
+    ' Validate the worksheet
+    Call populateBusinesses
+    Dim Positions As New clsPositions
+    Positions.validateTarget Target, Businesses
+
+    If Not Intersect(Target, fromSheet.Range("Business_Positions")) Is Nothing Then
+        Call buildPositionsList
+        
+        ' NOTE: Business Name and Position are assumed to be next to each other: business name first, position second.
+        If Not Intersect(Target, fromSheet.Range("Business_Positions").Resize(, 1).offset(0, 1)) Is Nothing Then
+            If Target <> "" And Not IsEmpty(origVal) Then
+                Dim busName As String
+                busName = Target.offset(0, -1)
+                Call propogatePositionNameChange(busName, origVal, Target.text)
+            End If
+        End If
+    End If
+    
+    Call validationMessageEnd(ActiveSheet, Positions.colOffset_Err)
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    
+    Set Positions = Nothing
+
+    Call protectALL
+    
+    fromSheet.Activate
+    
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    On Error GoTo Done:
+
+    If isDevMode() Then Exit Sub
+    ' Change cut command to copy command
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call disableCut(Target)
+Done:
+    Err.Clear
+    On Error Resume Next
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub validatePositionsWS()
+'''    On Error GoTo Done:
+
+    Dim Positions As New clsPositions
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call validationMessageInit(ActiveSheet)
+    
+    Call buildBusinessesList
+    Call buildPositionsList
+    
+    Call populateBusinesses
+    
+    Positions.validateAll Businesses
+
+    Call validationMessageEnd(ActiveSheet, Positions.colOffset_Err)
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Set Positions = Nothing
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+
+Private Function populateBusinesses()
+    On Error GoTo Done:
+    If Businesses Is Nothing Then
+        Set Businesses = New clsBusinesses
+    End If
+Done:
+    Err.Clear
+End Function
+
+Private Function propogatePositionNameChange(busName As String, origNameV As Variant, newNameS As String)
+    On Error GoTo Done:
+    Dim c As Range
+    Dim thisBus As String, thisPos As String
+    Dim origName As String: origName = Trim(CStr(origNameV))
+    Dim newName As String: newName = Trim(newNameS)
+    Dim Employees As New clsEmployees
+    
+    For Each c In wsEmployees.Range("DataEntryRange").Resize(, 1)
+        
+        thisBus = Trim(CStr(c.offset(0, Employees.colOffset_BusName)))
+        thisPos = Trim(CStr(c.offset(0, Employees.colOffset_Position)))
+        
+        If thisPos = origName And thisBus = busName Then
+            c.offset(0, Employees.colOffset_Position) = newName
+        End If
+            
+    Next
+Done:
+    Err.Clear
+    On Error Resume Next
+    Set Employees = Nothing
+End Function
+Attribute VB_Name = "Records"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "StartHere"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Worksheet_Activate()
+    On Error GoTo Done:
+    
+    If isDevMode() Then Exit Sub
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call populateGrantYearsCombo
+    
+    Call setOptLabels
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub setOptLabels()
+    On Error GoTo Done:
+    Dim yr As Long
+    yr = getComboYear()
+    
+    ActiveSheet.OptionButtons("optApr").Caption = "April 1, " & yr & " to September 30, " & yr
+    ActiveSheet.OptionButtons("optOct").Caption = "October 1, " & yr & " to March 31, " & yr + 1
+Done:
+    Err.Clear
+End Sub
+
+Public Sub startNewGrant()
+    On Error GoTo Done:
+    
+    ' Show the New Grant user form
+    ufNewGrant.Show vbModal
+    
+    ' It's outcome is signaled by the cell ufNew_Status.
+    If [ufNew_Status] <> ufCreate Then Exit Sub
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call initializeNewGrant
+    
+    wsBusinesses.Activate
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub continueGrant()
+    On Error GoTo Done:
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    wsBusinesses.Activate
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub setCurrentReportPeriod()
+    On Error GoTo Done:
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    Call setReportPeriod
+    
+    Call validateAllRecords
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    wsStart.Activate
+    Call protectALL
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub initializeNewGrant()
+    On Error GoTo Done:
+    '
+    ' Clears out all data from the workbook.  Sets the grant start date and grant ID.
+    '
+    Dim fromSheet As Worksheet: Set fromSheet = ThisWorkbook.ActiveSheet
+    Dim s As String, response As Integer
+    
+    Call setDevMode
+    
+    Call resetWS(wsBusinesses, "DataEntryRange")
+    Call resetWS(wsPositions, "DataEntryRange")
+    Call resetWS(wsEmployees, "DataEntryRange")
+    Call resetWS(wsLeveraging, "DataEntryRange")
+    Call resetWS(wsDataForFormA, "J5")
+    Call resetWS(wsRecords, "D2:D100")
+    
+    wsRecords.Range("D1:D1") = ""
+    wsRecords.Range("D2:D32") = 0
+    wsRecords.Range("E1:AZ1").EntireColumn.Delete
+    
+    Call initShowDetails(wsBusinesses)
+    Call initShowDetails(wsPositions)
+    Call initShowDetails(wsEmployees)
+    Call initShowDetails(wsLeveraging)
+    
+    Call validateAllRecords
+    
+    Call Validate_ClearErrors
+
+    Dim dt As Date
+    dt = DateAdd("d", 1, [GrantStartDate]) ' Grants usually start on 9/30, but reporting starts on 10/1.
+    [ReportStartDate] = periodStartDate(dt)
+    [ReportEndDate] = periodEndDate(dt)
+    [ReportStartDatePrevious] = periodStartDate(dt, 0)
+    
+    wsRecords.Range("D1:D1") = periodRange([ReportStartDate])
+    
+    [ReportStartMonthIndex] = IIf(Month([ReportStartDate]) = 4, 1, 2)
+    [ReportStartYearIndex] = 1
+    
+    Call populateGrantYearsCombo
+    
+    Call setOptLabels
+
+    MsgBox "Done!"
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call setDevMode(False)
+    
+    fromSheet.Activate
+End Sub
+
+Private Function setReportPeriod()
+    On Error GoTo Done:
+    ' Set the Report Start Date and Report End Date
+    If Val(getComboYear()) <> 0 Then
+        [ReportStartDate] = DateSerial(getComboYear(), IIf(getOptApril(), 4, 10), 1)
+    
+        If [GrantStartDate] > [ReportStartDate] Then
+            MsgBox [ErrorMessage_ReportPeriodInvalid], vbInformation, "Verify Dates"
+        End If
+        
+        [ReportEndDate] = periodEndDate([ReportStartDate])
+        
+        [ReportStartDatePrevious] = periodStartDate([ReportStartDate], 0)
+    
+        Call setOptLabels
+    
+    End If
+Done:
+    Err.Clear
+End Function
+    
+Private Function resetWS(ws As Worksheet, dataRange As String)
+    On Error GoTo Done:
+    Dim r As Range
+    Set r = ws.Range("'" & ws.name & "'!" & dataRange)
+    r.ClearContents
+    ws.Activate
+    r.Cells(1, 1).Select
+Done:
+    Err.Clear
+End Function
+
+Private Function populateGrantYearsCombo()
+    On Error GoTo Done:
+
+    Call buildGrantYearsList([GrantStartDate])
+        
+    Dim yr As Range
+    Dim cmbo As Shape
+    
+    Set cmbo = ActiveSheet.Shapes("cmboYear")
+    
+    cmbo.ControlFormat.ListFillRange = "'" & wsLookups.name & "'!GrantYears"
+
+Done:
+    Err.Clear
+End Function
+
+Private Function getComboYear() As Long
+    On Error GoTo Done:
+    Dim cmbo As Shape
+    Set cmbo = ActiveSheet.Shapes("cmboYear")
+    With cmbo.ControlFormat
+        getComboYear = .List(.value)
+    End With
+Done:
+    Err.Clear
+End Function
+
+Private Function getOptApril() As Boolean
+    On Error GoTo Done:
+    getOptApril = ([ReportStartMonthIndex] = 1)
+Done:
+    Err.Clear
+End Function
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+    On Error Resume Next
+    Call initGlobals ' Get references to all the worksheets
+    Application.ScreenUpdating = False
+    Call unprotectALL
+    [DevMode] = False
+    Call protectALL
+    wsStart.Activate
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub Workbook_Activate()
+    On Error Resume Next
+
+    Call userDisplay
+
+End Sub
+
+
+Private Sub Workbook_Deactivate()
+    On Error Resume Next
+
+    Call userDisplay(False)
+
+ End Sub
+Attribute VB_Name = "Validation"
+Option Explicit
+
+Public Type ValidationField
+    name As String
+    formatOK As Range
+    required As Boolean
+    hasValidList As Boolean
+    validlist As Range
+    errMsgOffset As Integer
+    forceUCase As Boolean
+End Type
+
+Public Function validateAllRecords()
+    Dim Businesses As clsBusinesses
+    Dim Positions As clsPositions
+    Dim Employees As clsEmployees
+    
+    Call Validate_ClearErrors
+    
+    Call buildBusinessesList
+    Call buildPositionsList
+    
+    Set Businesses = New clsBusinesses
+    Set Positions = New clsPositions
+    Set Employees = New clsEmployees
+    
+    Businesses.validateAll
+    Positions.validateAll Businesses
+    Employees.validateAll Businesses, Positions
+    
+    Set Businesses = Nothing
+    Set Positions = Nothing
+    Set Employees = Nothing
+    
+    Dim Leveragings As New clsLeveragings
+    Leveragings.validateAll
+    Set Leveragings = Nothing
+
+End Function
+
+Public Function initValidationField(name As String, flds() As ValidationField, offset As Integer, formatOK As Range, required As Boolean, errMsgOffset As Integer, Optional validlist As Range = Nothing, Optional forceUCase As Boolean = False)
+    With flds(offset)
+        .name = name
+        Set .formatOK = formatOK
+        .required = required
+        Set .validlist = validlist
+        .errMsgOffset = errMsgOffset
+        .forceUCase = forceUCase
+    End With
+End Function
+
+Public Function validate(c As Range, fields() As ValidationField, i As Integer) As Boolean
+    Dim cell As Range
+    Dim formatCell As Range
+    Dim required As Boolean
+    Dim forceUCase As Boolean
+    Dim vNameRange As Range
+    Dim fldName As String
+    Set cell = c.Resize(1, 1).offset(0, i)
+    
+    validate = True
+    
+    fldName = fields(i).name
+    Set formatCell = fields(i).formatOK
+    required = fields(i).required
+    Set vNameRange = fields(i).validlist
+    forceUCase = fields(i).forceUCase
+    
+    cell.Interior.Color = formatCell.Interior.Color
+    cell.Font.Color = formatCell.Font.Color
+    
+    If Not IsNumeric(cell) Then
+        If cell <> Trim(cell) Then
+            cell = Trim(cell)
+        End If
+        If forceUCase Then
+            If cell <> ucase(cell) Then
+                cell = ucase(cell)
+            End If
+        End If
+    End If
+    
+    If IsEmpty(cell) Then
+    
+        If required Then
+            validate = validateSetError(c, fields, i, fldName & " is required.")
+        End If
+        
+    Else
+        ' See if it is the list, if specified
+        If Not vNameRange Is Nothing Then
+            Dim r As Range
+            Set r = vNameRange.Find(cell, LookIn:=xlValues, lookat:=xlWhole, MatchCase:=True)
+            If r Is Nothing Then
+                validate = validateSetError(c, fields, i, fldName & " contains an invalid entry.")
+            End If
+        End If
+    End If
+
+End Function
+
+
+Public Function validateSetError(c As Range, fields() As ValidationField, i As Integer, msg As String) As Boolean
+    Dim cell As Range
+    Dim errCell As Range
+    
+    Set cell = c.Resize(1, 1).offset(0, i)
+    
+    cell.Interior.Color = [Format_Error].Interior.Color
+    cell.Font.Color = [Format_Error].Font.Color
+    
+    Set errCell = c.Resize(1, 1).offset(0, fields(i).errMsgOffset)
+    
+    errCell = msg
+
+    [ValidationError] = "Validation Errors Found"
+    [ValidationError].offset(0, 1) = cell.Worksheet.name
+    [ValidationError].offset(0, 2) = cell.Address
+    
+    validateSetError = False
+End Function
+
+Public Function validateClearError(c As Range, fields() As ValidationField, i As Integer)
+    Dim cell As Range
+    Dim formatCell As Range
+    
+    Set cell = c.Resize(1, 1).offset(0, i)
+    Set formatCell = fields(i).formatOK
+    
+    cell.Interior.Color = formatCell.Interior.Color
+    cell.Font.Color = formatCell.Font.Color
+End Function
+
+Public Function Validate_ClearErrors()
+    [ValidationError] = "No Errors Found"
+    [ValidationError].offset(0, 1) = ""
+    [ValidationError].offset(0, 2) = ""
+End Function
+
+Public Function Validate_HasError() As Boolean
+    Validate_HasError = IIf([ValidationError] = "Validation Errors Found", True, False)
+End Function
+
+Public Function Validate_LastError_WS() As String
+    Validate_LastError_WS = [ValidationError].offset(0, 1)
+End Function
+
+Public Function Validate_LastError_Address() As String
+    Validate_LastError_Address = [ValidationError].offset(0, 2)
+End Function
+
+Public Function validationMessageInit(ws As Worksheet)
+    Dim cell As Range, formatCell As Range
+    Set cell = ws.Range("Data_Validation")
+    Set formatCell = [DataValidation_Progress]
+    Call validationMessageSet(ws, cell, formatCell)
+End Function
+
+Public Function validationMessageEnd(ws As Worksheet, colOffset_Err As Long)
+    Dim hasErr As Boolean
+    hasErr = False
+    Dim c As Range
+    For Each c In ActiveSheet.Range("DataEntryRange").Resize(, 1)
+        If c.offset(, colOffset_Err) <> "" Then
+            hasErr = True
+            Exit For
+        End If
+    Next
+    
+    Dim cell As Range, formatCell As Range
+    Set cell = ws.Range("Data_Validation")
+    Set formatCell = IIf(hasErr, [DataValidation_Errors], [DataValidation_OK])
+    Call validationMessageSet(ws, cell, formatCell)
+End Function
+
+Private Function validationMessageSet(ws As Worksheet, cell, formatCell)
+    Dim scUp As Boolean
+    scUp = Application.ScreenUpdating
+    Application.ScreenUpdating = True
+    ws.Range("Data_Validation") = formatCell.text
+    cell.Interior.Color = formatCell.Interior.Color
+    cell.Font.Color = formatCell.Font.Color
+    Application.ScreenUpdating = scUp
+End Function
+Attribute VB_Name = "clsBusiness"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+' Corresponds to one record in the Businesses tab
+
+Dim cKey As String
+Dim cRow As Long            ' Where the data is on the Business tab
+Dim cIndex As Long
+
+Dim cBusinessName As String
+Dim cCreatedOrExpanded As String
+Dim cCreationOrExpansionDate As Date
+Dim cClosingDate As Date
+
+Public Function validKey() As Boolean
+    validKey = isKeyPattern(cKey, cBusinessName)
+End Function
+Public Function hasData() As Boolean
+    hasData = ((cBusinessName & cCreatedOrExpanded) <> "" Or _
+               cClosingDate > 0 Or _
+               cCreationOrExpansionDate > 0)
+End Function
+
+Public Property Get key() As String
+    key = cKey
+End Property
+Private Function setKey()
+    cKey = buildKey(cBusinessName)
+End Function
+
+Public Property Get row() As Long
+    row = cRow
+End Property
+Public Property Let row(v As Long)
+    cRow = v
+End Property
+
+Public Property Get index() As Long
+    index = cIndex
+End Property
+Public Property Let index(v As Long)
+    cIndex = v
+End Property
+
+Public Property Get businessName() As String
+    businessName = cBusinessName
+End Property
+Public Property Let businessName(v As String)
+    cBusinessName = v
+    Call setKey
+End Property
+
+Public Property Get CreatedOrExpanded() As String
+    CreatedOrExpanded = cCreatedOrExpanded
+End Property
+Public Property Let CreatedOrExpanded(v As String)
+    cCreatedOrExpanded = v
+End Property
+
+Public Property Get CreationOrExpansionDate() As Date
+    CreationOrExpansionDate = cCreationOrExpansionDate
+End Property
+Public Property Let CreationOrExpansionDate(v As Date)
+    cCreationOrExpansionDate = v
+End Property
+
+Public Property Get ClosingDate() As Date
+    ClosingDate = cClosingDate
+End Property
+Public Property Let ClosingDate(v As Date)
+    cClosingDate = v
+End Property
+
+
+Attribute VB_Name = "clsBusinesses"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' Corresponds to the Businesses tab
+Private Enum ColumnOffsets
+    [_First] = 0
+    businessName = [_First]
+    CreatedOrExpanded
+    CreationOrExpansionDate
+    ClosingDate
+    [_Last] = ClosingDate
+    ErrMessage = [_Last] + 2
+End Enum
+Private fields([_Last]) As ValidationField
+
+Private cBusinesses As Collection ' of clsBusiness
+
+Private dataEntryRangeFirstCol As Range
+Private dataEntryOffset As Long
+
+Private thisWS As Worksheet
+
+Private Sub Class_Initialize()
+    Call initGlobals
+    Set thisWS = wsBusinesses
+    Set cBusinesses = New Collection ' of clsBusiness
+    Set dataEntryRangeFirstCol = thisWS.Range("DataEntryRange").Columns(1)
+    dataEntryOffset = dataEntryRangeFirstCol.Cells(1, 1).row() - 1
+    
+    ' Build the validation field list.
+    Call initValidationField("Business", fields, ColumnOffsets.businessName, [Format_Business_Name], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("Created/Expanded", fields, ColumnOffsets.CreatedOrExpanded, [Format_Business_Created], True, ColumnOffsets.ErrMessage, [CreatedExpanded])
+    Call initValidationField("Creation/Expansion Date", fields, ColumnOffsets.CreationOrExpansionDate, [Format_Business_Dates], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("Closing Date", fields, ColumnOffsets.ClosingDate, [Format_Business_Dates], False, ColumnOffsets.ErrMessage)
+      
+    Call populate
+End Sub
+
+Private Sub Class_Terminate()
+    Set cBusinesses = Nothing
+End Sub
+
+Public Property Get Item(businessName)
+    Dim s As String
+    s = buildKey(businessName)
+    If keyInCollection(cBusinesses, s) Then
+        Set Item = cBusinesses(s)
+    Else
+        Set Item = New clsBusiness
+    End If
+End Property
+
+Public Property Get Count() As Long
+    Count = cBusinesses.Count
+End Property
+
+Public Property Get colOffset_Err() As Long
+    colOffset_Err = ColumnOffsets.ErrMessage
+End Property
+
+Public Function validateTarget(Target As Range)
+    Dim b As clsBusiness
+    Set b = getCurrent(Target)
+    Call validateCurrent(b)
+End Function
+
+Private Function validateCurrent(b As clsBusiness)
+    ' Validate the data within the current record.  This does not perform cross-record validation, which is done via validateAll.
+    Dim c As Range
+    Dim ok As Boolean
+    Dim i As Integer
+
+    Set c = dataEntryRangeFirstCol.Cells(b.index, 1)
+    
+    ' First see if there is any data - or if there was & there is still an error message.
+    ' If not, then nothing to do.
+    If Not b.hasData Then
+        If c.offset(0, ColumnOffsets.ErrMessage) = "" Then
+            Exit Function
+        End If
+    End If
+    
+    ' Clear the error message
+    c.offset(0, ColumnOffsets.ErrMessage) = ""
+    
+    ' Check all of the fields.
+    If b.hasData Then
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            Call validate(c, fields, i)
+        Next
+    Else
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            Call validateClearError(c, fields, i)
+        Next
+    End If
+    
+    If b.CreationOrExpansionDate > [ReportEndDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.CreationOrExpansionDate, [ErrorMessage_DateAfterReportEndDate])
+    End If
+    
+    If b.ClosingDate > [ReportEndDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.ClosingDate, [ErrorMessage_DateAfterReportEndDate])
+    End If
+    
+    If b.ClosingDate > 0 And b.CreationOrExpansionDate > 0 Then
+        If b.ClosingDate < b.CreationOrExpansionDate Then
+            Call validateSetError(c, fields, ColumnOffsets.CreationOrExpansionDate, [ErrorMessage_Businesses_CreationExpansionDate])
+            Call validateSetError(c, fields, ColumnOffsets.ClosingDate, [ErrorMessage_Businesses_CreationExpansionDate])
+        End If
+    End If
+
+    If b.ClosingDate > 0 And b.ClosingDate < [GrantStartDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.ClosingDate, [ErrorMessage_Businesses_BeforeGrantStart])
+    End If
+        
+    If b.CreationOrExpansionDate > 0 And b.CreationOrExpansionDate < [GrantStartDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.CreationOrExpansionDate, [ErrorMessage_Businesses_CreationBeforeGrantStart])
+    End If
+        
+End Function
+
+Private Function getCurrent(Target As Range) As clsBusiness
+    ' Get the data within the current record.
+    Dim c As Range
+    Dim b As New clsBusiness
+    Dim ok As Boolean
+
+    Set c = getColACell(Target)
+    
+    With b
+        .businessName = Trim(c.offset(0, ColumnOffsets.businessName))
+        .CreatedOrExpanded = c.offset(0, ColumnOffsets.CreatedOrExpanded)
+        .CreationOrExpansionDate = c.offset(0, ColumnOffsets.CreationOrExpansionDate)
+        .ClosingDate = c.offset(0, ColumnOffsets.ClosingDate)
+        .index = c.row() - dataEntryOffset ' relative to dataEntryRange which starts in col 2
+    End With
+    
+    Set getCurrent = b
+
+End Function
+
+Public Function validateAll()
+    ' Load the data from the Businesses tab into class clsBusinesses which contains one record for each business
+    ' Validate the data as it is being loaded.
+    Dim c As Range
+    Dim b As clsBusiness
+    Dim ok As Boolean
+    
+    Application.StatusBar = "Validating the " & thisWS.name & " worksheet..."
+    
+    Set cBusinesses = New Collection ' we rebuild it here when we check for dups.
+    
+    For Each c In dataEntryRangeFirstCol.Cells
+        
+        Set b = getCurrent(c)
+        
+        Call validateCurrent(b)
+        
+        If b.validKey Then
+        
+            ok = add(b) ' Add it to the collection
+            
+            If Not ok Then
+                ' Highlight row, to mark as an error: duplicate business
+                Call validateSetError(c, fields, ColumnOffsets.businessName, [ErrorMessage_Businesses_Duplicate])
+            End If
+            
+        End If
+        
+    Next
+    
+    Call SelectIfError(thisWS)
+
+    Application.StatusBar = ""
+    
+End Function
+
+Public Function resetAll()
+    ' Clear the worksheet and reset all formats.
+    Dim c As Range
+    Dim b As clsBusiness
+    Dim ok As Boolean
+    
+    Set cBusinesses = New Collection ' we rebuild it here when we check for dups.
+    
+    For Each c In dataEntryRangeFirstCol.Cells
+        
+        Set b = getCurrent(c)
+        
+        Call validateCurrent(b)
+        
+        If b.validKey Then
+        
+            ok = add(b) ' Add it to the collection
+            
+            If Not ok Then
+                ' Highlight row, to mark as an error: duplicate business
+                Call validateSetError(c, fields, ColumnOffsets.businessName, [ErrorMessage_Businesses_Duplicate])
+            End If
+            
+        End If
+        
+    Next
+End Function
+
+Public Function businessesCollection() As Collection
+    Dim b As clsBusiness
+    Dim col As New Collection
+    For Each b In cBusinesses
+        col.add b.businessName
+    Next
+    Set businessesCollection = col
+End Function
+
+Private Function populate()
+    ' Load the data from the Businesses tab into collection which contains one clsBusiness record for each business
+    Dim c As Range
+    Dim b As clsBusiness
+    Set cBusinesses = New Collection
+    For Each c In dataEntryRangeFirstCol.Cells
+        Set b = getCurrent(c)
+        add b
+    Next
+End Function
+
+Private Function add(b As clsBusiness)
+    add = False
+    On Error GoTo Done:
+    If b.validKey Then
+        cBusinesses.add b, b.key
+        add = True
+    End If
+Done:
+    Err.Clear
+End Function
+
+Private Function addBusiness(bName As String, col As Collection)
+    On Error GoTo Done:
+    col.add bName, bName
+Done:
+    Err.Clear
+End Function
+
+
+Attribute VB_Name = "clsEmployee"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+' Corresponds to one record in the Employees tab
+
+Dim cKey As String
+Dim cRow As Long            ' Where the data is on the Employees tab
+Dim cIndex As Long
+
+Dim cBusinessName As String
+Dim cEmployee As String
+Dim cPositionTitle As String
+Dim cStartDate As Date
+Dim cEndDate As Date
+Dim cTrained As String
+Dim cCertified As String
+Dim cTANF As String
+Dim cLowIncome As String
+Dim cStartingWage As String
+Dim cReceivedRaise As String
+Dim cPromoted As String
+
+Public Function validKey() As Boolean
+    validKey = isKeyPattern(cKey, cBusinessName, cPositionTitle, cEmployee, cStartDate)
+End Function
+Public Function hasData() As Boolean
+    hasData = ((cBusinessName & cEmployee & cPositionTitle & cStartingWage & cTrained & cCertified & cTANF & cLowIncome & cReceivedRaise & cPromoted) <> "" Or _
+               cEndDate > 0 Or _
+               cStartDate > 0)
+End Function
+
+Public Property Get key() As String
+    key = cKey
+End Property
+Private Function setKey()
+    cKey = buildKey(cBusinessName, cPositionTitle, cEmployee, cStartDate)
+End Function
+
+Public Property Get row() As Long
+    row = cRow
+End Property
+Public Property Let row(v As Long)
+    cRow = v
+End Property
+
+Public Property Get index() As Long
+    index = cIndex
+End Property
+Public Property Let index(v As Long)
+    cIndex = v
+End Property
+
+Public Property Get businessName() As String
+    businessName = cBusinessName
+End Property
+Public Property Let businessName(v As String)
+    cBusinessName = v
+    Call setKey
+End Property
+
+Public Property Get employee() As String
+    employee = cEmployee
+End Property
+Public Property Let employee(v As String)
+    cEmployee = v
+    Call setKey
+End Property
+
+Public Property Get positionTitle() As String
+    positionTitle = cPositionTitle
+End Property
+Public Property Let positionTitle(v As String)
+    cPositionTitle = v
+    Call setKey
+End Property
+
+Public Property Get startDate() As Date
+    startDate = cStartDate
+End Property
+Public Property Let startDate(v As Date)
+    cStartDate = v
+    Call setKey
+End Property
+
+Public Property Get EndDate() As Date
+    EndDate = cEndDate
+End Property
+Public Property Let EndDate(v As Date)
+    cEndDate = v
+End Property
+
+Public Property Get Trained() As String
+    Trained = cTrained
+End Property
+Public Property Let Trained(v As String)
+    cTrained = v
+End Property
+Public Function isTrained() As Boolean
+    isTrained = (cTrained = YES)
+End Function
+
+Public Property Get Certified() As String
+    Certified = cCertified
+End Property
+Public Property Let Certified(v As String)
+    cCertified = v
+End Property
+Public Function iscertified() As Boolean
+    iscertified = (cCertified = YES)
+End Function
+
+Public Property Get TANF() As String
+    TANF = cTANF
+End Property
+Public Property Let TANF(v As String)
+    cTANF = v
+End Property
+Public Function isTANF() As Boolean
+    isTANF = (cTANF = YES)
+End Function
+
+Public Property Get LowIncome() As String
+    LowIncome = cLowIncome
+End Property
+Public Property Let LowIncome(v As String)
+    cLowIncome = v
+End Property
+Public Function isLowIncome() As Boolean
+    isLowIncome = (cLowIncome = YES)
+End Function
+
+Public Property Get StartingWage() As String
+    StartingWage = cStartingWage
+End Property
+Public Property Let StartingWage(v As String)
+    cStartingWage = v
+End Property
+
+Public Property Get ReceivedRaise() As String
+    ReceivedRaise = cReceivedRaise
+End Property
+Public Property Let ReceivedRaise(v As String)
+    cReceivedRaise = v
+End Property
+Public Function isReceivedRaise() As Boolean
+    isReceivedRaise = (cReceivedRaise = YES)
+End Function
+
+Public Property Get Promoted() As String
+    Promoted = cPromoted
+End Property
+Public Property Let Promoted(v As String)
+    cPromoted = v
+End Property
+Public Function isPromoted() As Boolean
+    isPromoted = (cPromoted = YES)
+End Function
+
+
+
+
+
+
+Attribute VB_Name = "clsEmployees"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' Corresponds to the Employees tab
+Private Enum ColumnOffsets
+    [_First] = 0
+    businessName = [_First]
+    positionTitle
+    employee
+    startDate
+    EndDate
+    Trained
+    Certified
+    TANF
+    LowIncome
+    StartingWage
+    ReceivedRaise
+    Promoted
+    [_Last] = Promoted
+    ErrMessage = [_Last] + 2
+End Enum
+Private fields([_Last]) As ValidationField
+
+Private cEmployees As Collection ' of clsEmployee
+
+Private dataEntryRangeFirstCol As Range
+Private dataEntryOffset As Long
+
+Private thisWS As Worksheet
+
+Private Sub Class_Initialize()
+    Call initGlobals
+    Set thisWS = wsEmployees
+    Set cEmployees = New Collection ' of clsEmployee
+    Set dataEntryRangeFirstCol = thisWS.Range("DataEntryRange").Columns(1)
+    dataEntryOffset = dataEntryRangeFirstCol.Cells(1, 1).row() - 1
+    
+    ' Build the validation field list.
+    Call initValidationField("Business", fields, ColumnOffsets.businessName, [Format_Employees_BusinessName], True, ColumnOffsets.ErrMessage, [Lookup_Businesses])
+    Call initValidationField("Employee", fields, ColumnOffsets.employee, [Format_Employees_Employee], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("Position", fields, ColumnOffsets.positionTitle, [Format_Employees_PositionTitle], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("Start Date", fields, ColumnOffsets.startDate, [Format_Employees_Dates], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("End Date", fields, ColumnOffsets.EndDate, [Format_Employees_Dates], False, ColumnOffsets.ErrMessage)
+    Call initValidationField("Trained", fields, ColumnOffsets.Trained, [Format_Employees_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Certified", fields, ColumnOffsets.Certified, [Format_Employees_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("TANF", fields, ColumnOffsets.TANF, [Format_Employees_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Low Income", fields, ColumnOffsets.LowIncome, [Format_Employees_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Starting Wage", fields, ColumnOffsets.StartingWage, [Format_Employees_StartingWage], False, ColumnOffsets.ErrMessage)
+    Call initValidationField("Promoted", fields, ColumnOffsets.ReceivedRaise, [Format_Employees_StartingWage], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Received Raise", fields, ColumnOffsets.Promoted, [Format_Employees_StartingWage], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    
+    Call populate
+End Sub
+
+Private Sub Class_Terminate()
+    Set cEmployees = Nothing
+End Sub
+
+Public Property Get colOffset_Err() As Long
+    colOffset_Err = ColumnOffsets.ErrMessage
+End Property
+Public Property Get colOffset_BusName() As Long
+    colOffset_BusName = ColumnOffsets.businessName
+End Property
+Public Property Get colOffset_Position() As Long
+    colOffset_Position = ColumnOffsets.positionTitle
+End Property
+
+Private Function getCurrent(Target As Range) As clsEmployee
+    ' Get the data within the current record.
+    Dim c As Range
+    Dim b As New clsEmployee
+    Set c = getColACell(Target)
+    With b
+        .businessName = Trim(c.offset(0, ColumnOffsets.businessName))
+        .employee = Trim(c.offset(0, ColumnOffsets.employee))
+        .positionTitle = Trim(c.offset(0, ColumnOffsets.positionTitle))
+        .startDate = c.offset(0, ColumnOffsets.startDate)
+        .EndDate = c.offset(0, ColumnOffsets.EndDate)
+        .Trained = Trim(ucase(c.offset(0, ColumnOffsets.Trained)))
+        .Certified = Trim(ucase(c.offset(0, ColumnOffsets.Certified)))
+        .TANF = Trim(ucase(c.offset(0, ColumnOffsets.TANF)))
+        .LowIncome = Trim(ucase(c.offset(0, ColumnOffsets.LowIncome)))
+        .StartingWage = Trim(c.offset(0, ColumnOffsets.StartingWage))
+        .ReceivedRaise = Trim(ucase(c.offset(0, ColumnOffsets.ReceivedRaise)))
+        .Promoted = Trim(ucase(c.offset(0, ColumnOffsets.Promoted)))
+        .index = c.row() - dataEntryOffset ' relative to dataEntryRange
+    End With
+    
+    Set getCurrent = b
+End Function
+
+Public Function validateTarget(Target As Range, Businesses As clsBusinesses, Positions As clsPositions)
+    Dim b As clsEmployee
+    Set b = getCurrent(Target)
+    Call validateCurrent(b, Businesses, Positions)
+End Function
+
+Private Function validateCurrent(b As clsEmployee, Businesses As clsBusinesses, Positions As clsPositions)
+    ' Validate the data within the current record.  This does not perform cross-record validation, which is done via validateAll.
+    Dim c As Range
+    Dim ok As Boolean
+    Dim i As Integer
+    Set c = dataEntryRangeFirstCol.Cells(b.index, 1)
+
+    ' First see if there is any data - or if there was & there is still an error message.
+    ' If not, then nothing to do.
+    If Not b.hasData Then
+        If c.offset(0, ColumnOffsets.ErrMessage) = "" Then
+            Exit Function
+        End If
+    End If
+    
+    ' Clear the error message
+    c.offset(0, ColumnOffsets.ErrMessage) = ""
+    
+    ' Check all of the fields.
+    If b.hasData Then
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            If i = ColumnOffsets.positionTitle And b.businessName <> "" Then ' Positions_AAAA
+                Set fields(i).validlist = wsLookups.Range("Positions_" & Lists_CreateName(b.businessName))
+            End If
+            Call validate(c, fields, i)
+        Next
+    Else
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            Call validateClearError(c, fields, i)
+        Next
+    End If
+    
+    If b.startDate > [ReportEndDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.startDate, [ErrorMessage_DateAfterReportEndDate])
+    End If
+    
+    If b.EndDate > [ReportEndDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.EndDate, [ErrorMessage_DateAfterReportEndDate])
+    End If
+
+    If b.EndDate > 0 And b.startDate > 0 Then
+        If b.EndDate < b.startDate Then
+            Call validateSetError(c, fields, ColumnOffsets.startDate, [ErrorMessage_Employees_StartDateAfterEndDate])
+        End If
+    End If
+    
+   ' Make sure that the employee start date is before the business closing date.
+    Dim bus As clsBusiness
+    Set bus = Businesses.Item(b.businessName)
+    If bus.ClosingDate > 0 Then
+        If b.startDate > bus.ClosingDate Then
+            Call validateSetError(c, fields, ColumnOffsets.startDate, Trim([ErrorMessage_Employees_StartDateAfterBusinessClose]) & " " & bus.ClosingDate)
+        End If
+    End If
+    
+    ' Make sure that the employee start date is before the position end date and after the creation date.
+    Dim pos As clsPosition
+    Set pos = Positions.Item(b.businessName, b.positionTitle)
+    If pos.EndDate > 0 Then
+        If b.startDate > pos.EndDate Then
+            Call validateSetError(c, fields, ColumnOffsets.startDate, Trim([ErrorMessage_Employees_StartDateAfterPositionEnd]) & " " & pos.EndDate)
+        End If
+    End If
+    If pos.CreationDate > 0 Then
+        If b.startDate < pos.CreationDate Then
+            Call validateSetError(c, fields, ColumnOffsets.startDate, Trim([ErrorMessage_Employees_StartDateBeforePositionStart]) & " " & pos.CreationDate)
+        End If
+    End If
+    
+End Function
+
+
+Public Function validateAll(Businesses As clsBusinesses, Positions As clsPositions)
+    ' Load the data from the Employees tab into class clsEmployees which contains one record for each business/position/employee/startDate
+    ' Validate the data as it is being loaded.
+    Dim c As Range
+    Dim b As clsEmployee
+    Dim ok As Boolean
+    
+    Application.StatusBar = "Validating the " & thisWS.name & " worksheet..."
+    
+    Set cEmployees = New Collection ' we rebuild it here when we check for dups.
+    
+    For Each c In dataEntryRangeFirstCol.Cells
+
+        Set b = getCurrent(c)
+
+        Call validateCurrent(b, Businesses, Positions)
+        
+        If b.validKey Then
+            
+            ok = add(b) ' Add it to the collection
+            
+            If Not ok Then
+                ' Highlight row, to mark as an error: duplicate business
+                Call validateSetError(c, fields, ColumnOffsets.businessName, [ErrorMessages_EmployeesDuplicate])
+                Call validateSetError(c, fields, ColumnOffsets.employee, [ErrorMessages_EmployeesDuplicate])
+                Call validateSetError(c, fields, ColumnOffsets.positionTitle, [ErrorMessages_EmployeesDuplicate])
+                Call validateSetError(c, fields, ColumnOffsets.startDate, [ErrorMessages_EmployeesDuplicate])
+            End If
+            
+        End If
+            
+    Next
+
+    Call SelectIfError(thisWS)
+
+    Application.StatusBar = ""
+    
+End Function
+
+Private Function populate()
+    ' Load the data from the Positions tab into collection which contains one clsPosition record for each business
+    Dim c As Range
+    Dim b As clsEmployee
+    Set cEmployees = New Collection
+    For Each c In dataEntryRangeFirstCol.Cells
+        Set b = getCurrent(c)
+        add b
+    Next
+End Function
+
+Private Function add(b As clsEmployee)
+    add = False
+    On Error GoTo Done:
+    If b.validKey Then
+        cEmployees.add b, b.key
+        add = True
+    End If
+Done:
+    Err.Clear
+End Function
+Attribute VB_Name = "clsLeveraging"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+' Corresponds to one record in the Leveragings tab
+
+Dim cKey As String
+Dim cRow As Long            ' Where the data is on the tab
+Dim cIndex As Long
+
+Dim cLeveragingSource As String
+Dim cSourceType As String
+Dim cAmount As Double
+
+Public Function validKey() As Boolean
+    validKey = isKeyPattern(cKey, cLeveragingSource, cSourceType)
+End Function
+
+Public Function hasData() As Boolean
+    hasData = ((cLeveragingSource & cSourceType) <> "" Or _
+               cAmount > 0)
+End Function
+
+Public Property Get key() As String
+    key = cKey
+End Property
+Private Function setKey()
+    cKey = buildKey(cLeveragingSource, cSourceType)
+End Function
+
+Public Property Get row() As Long
+    row = cRow
+End Property
+Public Property Let row(v As Long)
+    cRow = v
+End Property
+
+Public Property Get index() As Long
+    index = cIndex
+End Property
+Public Property Let index(v As Long)
+    cIndex = v
+End Property
+
+Public Property Get leveragingSource() As String
+    leveragingSource = cLeveragingSource
+    Call setKey
+End Property
+Public Property Let leveragingSource(v As String)
+    cLeveragingSource = v
+    Call setKey
+End Property
+
+Public Property Get sourceType() As String
+    sourceType = cSourceType
+End Property
+Public Property Let sourceType(v As String)
+    cSourceType = v
+    Call setKey
+End Property
+
+Public Property Get amount() As Double
+    amount = cAmount
+End Property
+Public Property Let amount(v As Double)
+    cAmount = v
+End Property
+
+
+
+
+Attribute VB_Name = "clsLeveragings"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' Corresponds to the Leveragings tab
+Private Enum ColumnOffsets
+    [_First] = 0
+    leveragingSource = [_First]
+    sourceType
+    amount
+    [_Last] = amount
+    ErrMessage = [_Last] + 2
+End Enum
+Private fields([_Last]) As ValidationField
+
+Private cLeveragings As Collection ' of clsLeveraging
+
+Private dataEntryRangeFirstCol As Range
+Private dataEntryOffset As Long
+
+Private thisWS As Worksheet
+
+Private Sub Class_Initialize()
+    Call initGlobals
+    Set thisWS = wsLeveraging
+    Set cLeveragings = New Collection ' of clsLeveraging
+    Set dataEntryRangeFirstCol = thisWS.Range("DataEntryRange").Columns(1)
+    dataEntryOffset = dataEntryRangeFirstCol.Cells(1, 1).row() - 1
+    
+    Call initValidationField("Leveraging Source", fields, ColumnOffsets.leveragingSource, [Format_Leveraging_Source], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("Source Type", fields, ColumnOffsets.sourceType, [Format_Leveraging_SourceType], True, ColumnOffsets.ErrMessage, [Source])
+    Call initValidationField("Amount", fields, ColumnOffsets.amount, [Format_Leveraging_Amount], True, ColumnOffsets.ErrMessage)
+      
+    Call populate
+End Sub
+
+Private Sub Class_Terminate()
+    Set cLeveragings = Nothing
+End Sub
+
+Public Property Get Item(leveragingSource, sourceType)
+    Dim s As String
+    s = buildKey(leveragingSource, sourceType)
+    If keyInCollection(cLeveragings, s) Then
+        Set Item = cLeveragings(s)
+    Else
+        Set Item = New clsLeveraging
+    End If
+End Property
+
+Public Property Get colOffset_Err() As Long
+    colOffset_Err = ColumnOffsets.ErrMessage
+End Property
+
+Public Function validateTarget(Target As Range)
+    Dim b As clsLeveraging
+    Set b = getCurrent(Target)
+    Call validateCurrent(b)
+End Function
+
+Private Function validateCurrent(b As clsLeveraging)
+    ' Validate the data within the current record.  This does not perform cross-record validation, which is done via validateAll.
+    Dim c As Range
+    Dim ok As Boolean
+    Dim i As Integer
+
+    Set c = dataEntryRangeFirstCol.Cells(b.index, 1)
+    
+    ' First see if there is any data - or if there was & there is still an error message.
+    ' If not, then nothing to do.
+    If Not b.hasData Then
+        If c.offset(0, ColumnOffsets.ErrMessage) = "" Then
+            Exit Function
+        End If
+    End If
+    
+    ' Clear the error message
+    c.offset(0, ColumnOffsets.ErrMessage) = ""
+    
+    ' Check all of the fields.
+    If b.hasData Then
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            Call validate(c, fields, i)
+        Next
+    Else
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            Call validateClearError(c, fields, i)
+        Next
+    End If
+    
+    If b.amount < 0 Then
+        Call validateSetError(c, fields, ColumnOffsets.amount, [ErrorMessage_AmountIsNegative])
+    End If
+
+End Function
+
+Public Function validateAll()
+    ' Load the data from the Leveragings tab into class clsLeveragings which contains one record for each leveraging
+    ' Validate the data as it is being loaded.
+    Dim c As Range
+    Dim b As clsLeveraging
+    Dim ok As Boolean
+    
+    Application.StatusBar = "Validating the " & thisWS.name & " worksheet..."
+    
+    Set cLeveragings = New Collection ' we rebuild it here when we check for dups.
+    
+    For Each c In dataEntryRangeFirstCol.Cells
+        
+        Set b = getCurrent(c)
+        
+        Call validateCurrent(b)
+        
+        If b.validKey Then
+        
+            ok = add(b) ' Add it to the collection
+            
+            If Not ok Then
+                ' Highlight row, to mark as an error: duplicate leveraging
+                Call validateSetError(c, fields, ColumnOffsets.leveragingSource, [ErrorMessages_Leveragins_Duplicate])
+                Call validateSetError(c, fields, ColumnOffsets.sourceType, [ErrorMessages_Leveragins_Duplicate])
+            End If
+            
+        End If
+        
+    Next
+
+    Call SelectIfError(thisWS)
+
+    Application.StatusBar = ""
+    
+End Function
+
+Private Function getCurrent(Target As Range) As clsLeveraging
+    ' Get the data within the current record.
+    Dim c As Range
+    Dim b As New clsLeveraging
+    Dim ok As Boolean
+
+    Set c = getColACell(Target)
+    
+    With b
+        .leveragingSource = Trim(c.offset(0, ColumnOffsets.leveragingSource))
+        .sourceType = c.offset(0, ColumnOffsets.sourceType)
+        .amount = c.offset(0, ColumnOffsets.amount)
+        .index = c.row() - dataEntryOffset ' relative to dataEntryRange which starts in col 3
+    End With
+    
+    Set getCurrent = b
+
+End Function
+
+Private Function populate()
+    ' Load the data from the Leveragings tab into collection which contains one clsLeveraging record for each Leveraging
+    Dim c As Range
+    Dim b As clsLeveraging
+    Set cLeveragings = New Collection
+    For Each c In dataEntryRangeFirstCol.Cells
+        Set b = getCurrent(c)
+        add b
+    Next
+End Function
+
+Private Function add(b As clsLeveraging)
+    add = False
+    On Error GoTo Done:
+    If b.validKey Then
+        cLeveragings.add b, b.key
+        add = True
+    End If
+Done:
+    Err.Clear
+End Function
+
+
+
+
+Attribute VB_Name = "clsMoreInfo"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Dim cMoreInfoSource As String
+Dim cInstructions As String
+Dim cMoreInfo As String
+Dim cKey As String
+
+Public Property Get key() As String
+    key = cKey
+End Property
+Public Property Let key(v As String)
+    cKey = v
+End Property
+
+Public Property Get Instructions() As String
+    Instructions = cInstructions
+End Property
+Public Property Let Instructions(v As String)
+    cInstructions = v
+End Property
+
+Public Property Get moreInfo() As String
+    moreInfo = cMoreInfo
+End Property
+Public Property Let moreInfo(v As String)
+    cMoreInfo = v
+End Property
+
+Public Property Get MoreInfoSource() As String
+    MoreInfoSource = cMoreInfoSource
+End Property
+Public Property Let MoreInfoSource(v As String)
+    cMoreInfoSource = v
+End Property
+
+Attribute VB_Name = "clsMoreInfos"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' Corresponds to the MoreInfos tab
+Private Enum ColumnOffsets
+    [_First] = 0
+    MoreInfoSource = [_First]
+    Instructions
+    keytips
+    [_Last] = keytips
+End Enum
+
+Private cMoreInfos As Collection ' of clsMoreInfo
+
+Private thisWS As Worksheet
+
+Private Sub Class_Initialize()
+    Call initGlobals
+    Set thisWS = wsMoreInfo
+    Set cMoreInfos = New Collection ' of clsMoreInfo
+      
+    Call populate
+End Sub
+
+Private Sub Class_Terminate()
+    Set cMoreInfos = Nothing
+End Sub
+
+Public Property Get Item(MoreInfoSource)
+    Dim s As String
+    s = buildKey(MoreInfoSource)
+    If keyInCollection(cMoreInfos, s) Then
+        Set Item = cMoreInfos(s)
+    Else
+        Set Item = New clsMoreInfo
+    End If
+End Property
+
+Private Function populate()
+    ' Load the data from the MoreInfos tab into collection which contains one clsMoreInfo record for each MoreInfoSource
+    Dim c As Range
+    Dim b As clsMoreInfo
+    Set cMoreInfos = New Collection
+    For Each c In wsMoreInfo.Range("MoreInfo_Table").Columns(1).Cells
+        Set b = New clsMoreInfo
+        With b
+            .MoreInfoSource = Trim(c.offset(0, ColumnOffsets.MoreInfoSource))
+            .Instructions = c.offset(0, ColumnOffsets.Instructions)
+            .moreInfo = c.offset(0, ColumnOffsets.keytips)
+            .key = buildKey(.MoreInfoSource)
+        End With
+        add b
+    Next
+End Function
+
+Private Function add(b As clsMoreInfo)
+    add = False
+    On Error GoTo Done:
+    cMoreInfos.add b, b.key
+    add = True
+Done:
+    Err.Clear
+End Function
+
+
+
+
+
+Attribute VB_Name = "clsPosition"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+' Corresponds to one record in the Positions tab
+
+Dim cKey As String
+Dim cRow As Long            ' Where the data is on the Positions tab
+Dim cIndex As Long
+
+Dim cBusinessName As String
+Dim cPositionTitle As String
+Dim cCreationDate As Date
+Dim cEndDate As Date
+Dim cHealthCare As String
+Dim cSickLeave As String
+Dim cRetirement As String
+Dim cProfitSharing As String
+Dim cStatus As String
+
+Public Function validKey() As Boolean
+    validKey = isKeyPattern(cKey, cBusinessName, cPositionTitle)
+End Function
+Public Function hasData() As Boolean
+    hasData = ((cBusinessName & cPositionTitle & cStatus & cHealthCare & cSickLeave & cRetirement & cProfitSharing) <> "" Or _
+               cEndDate > 0 Or _
+               cCreationDate > 0)
+End Function
+
+Public Property Get key() As String
+    key = cKey
+End Property
+Private Function setKey()
+    cKey = buildKey(cBusinessName, cPositionTitle)
+End Function
+
+Public Property Get row() As Long
+    row = cRow
+End Property
+Public Property Let row(v As Long)
+    cRow = v
+End Property
+
+Public Property Get index() As Long
+    index = cIndex
+End Property
+Public Property Let index(v As Long)
+    cIndex = v
+End Property
+
+Public Property Get businessName() As String
+    businessName = cBusinessName
+End Property
+Public Property Let businessName(v As String)
+    cBusinessName = v
+    Call setKey
+End Property
+
+Public Property Get positionTitle() As String
+    positionTitle = cPositionTitle
+End Property
+Public Property Let positionTitle(v As String)
+    cPositionTitle = v
+    Call setKey
+End Property
+
+Public Property Get CreationDate() As Date
+    CreationDate = cCreationDate
+End Property
+Public Property Let CreationDate(v As Date)
+    cCreationDate = v
+End Property
+
+Public Property Get EndDate() As Date
+    EndDate = cEndDate
+End Property
+Public Property Let EndDate(v As Date)
+    cEndDate = v
+End Property
+
+Public Property Get HealthCare() As String
+    HealthCare = cHealthCare
+End Property
+Public Property Let HealthCare(v As String)
+    cHealthCare = v
+End Property
+Public Function isHealthCare() As Boolean
+    isHealthCare = (cHealthCare = YES)
+End Function
+
+Public Property Get SickLeave() As String
+    SickLeave = cSickLeave
+End Property
+Public Property Let SickLeave(v As String)
+    cSickLeave = v
+End Property
+Public Function isSickLeave() As Boolean
+    isSickLeave = (cSickLeave = YES)
+End Function
+
+Public Property Get Retirement() As String
+    Retirement = cRetirement
+End Property
+Public Property Let Retirement(v As String)
+    cRetirement = v
+End Property
+Public Function isRetirement() As Boolean
+    isRetirement = (cRetirement = YES)
+End Function
+
+Public Property Get ProfitSharing() As String
+    ProfitSharing = cProfitSharing
+End Property
+Public Property Let ProfitSharing(v As String)
+    cProfitSharing = v
+End Property
+Public Function isProfitSharing() As Boolean
+    isProfitSharing = (cProfitSharing = YES)
+End Function
+
+Public Property Get Status() As String
+    Status = cStatus
+End Property
+Public Property Let Status(v As String)
+    cStatus = v
+End Property
+
+
+
+Attribute VB_Name = "clsPositions"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' Corresponds to the Positions tab
+Private Enum ColumnOffsets
+    [_First] = 0
+    businessName = [_First]
+    positionTitle
+    CreationDate
+    EndDate
+    HealthCare
+    SickLeave
+    Retirement
+    ProfitSharing
+    Status
+    [_Last] = Status
+    ErrMessage = [_Last] + 2
+End Enum
+Private fields([_Last]) As ValidationField
+
+Private cPositions As Collection ' of clsPosition
+
+Private dataEntryRangeFirstCol As Range
+Private dataEntryOffset As Long
+
+Private thisWS As Worksheet
+
+Private Sub Class_Initialize()
+    Call initGlobals
+    Set thisWS = wsPositions
+    Set cPositions = New Collection ' of clsPosition
+    Set dataEntryRangeFirstCol = thisWS.Range("DataEntryRange").Columns(1)
+    dataEntryOffset = dataEntryRangeFirstCol.Cells(1, 1).row() - 1
+
+    Call initValidationField("Business", fields, ColumnOffsets.businessName, [Format_Positions_BusinessName], True, ColumnOffsets.ErrMessage, [Lookup_Businesses])
+    Call initValidationField("Position Title", fields, ColumnOffsets.positionTitle, [Format_Positions_PositionTitle], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("Creation Date", fields, ColumnOffsets.CreationDate, [Format_Positions_Dates], True, ColumnOffsets.ErrMessage)
+    Call initValidationField("End Date", fields, ColumnOffsets.EndDate, [Format_Positions_Dates], False, ColumnOffsets.ErrMessage)
+    Call initValidationField("Health Care", fields, ColumnOffsets.HealthCare, [Format_Positions_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Sick Leave", fields, ColumnOffsets.SickLeave, [Format_Positions_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Retirement", fields, ColumnOffsets.Retirement, [Format_Positions_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Profit Sharing", fields, ColumnOffsets.ProfitSharing, [Format_Positions_YN], False, ColumnOffsets.ErrMessage, [YNorBlank], True)
+    Call initValidationField("Status", fields, ColumnOffsets.Status, [Format_Positions_Status], True, ColumnOffsets.ErrMessage, [FTPT], True)
+    
+    Call populate
+End Sub
+
+Private Sub Class_Terminate()
+    Set cPositions = Nothing
+End Sub
+
+Public Property Get Item(businessName, positionTitle)
+    Dim s As String
+    s = buildKey(businessName, positionTitle)
+    If keyInCollection(cPositions, s) Then
+        Set Item = cPositions(s)
+    Else
+        Set Item = New clsPosition
+    End If
+End Property
+
+Public Property Get colOffset_Err() As Long
+    colOffset_Err = ColumnOffsets.ErrMessage
+End Property
+Public Property Get colOffset_BusName() As Long
+    colOffset_BusName = ColumnOffsets.businessName
+End Property
+
+Public Function validateTarget(Target As Range, Businesses As clsBusinesses)
+    Dim b As clsPosition
+    Set b = getCurrent(Target)
+    Call validateCurrent(b, Businesses)
+End Function
+
+Private Function validateCurrent(b As clsPosition, Businesses As clsBusinesses)
+    ' Validate the data within the current record.  This does not perform cross-record validation, which is done via validateAll.
+    Dim c As Range
+    Dim ok As Boolean
+    Dim i As Integer
+    Set c = dataEntryRangeFirstCol.Cells(b.index, 1)
+    
+    ' First see if there is any data - or if there was & there is still an error message.
+    ' If not, then nothing to do.
+    If Not b.hasData Then
+        If c.offset(0, ColumnOffsets.ErrMessage) = "" Then
+            Exit Function
+        End If
+    End If
+    
+    ' Clear the error message
+    c.offset(0, ColumnOffsets.ErrMessage) = ""
+    
+    ' Check all of the fields.
+    If b.hasData Then
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            Call validate(c, fields, i)
+        Next
+    Else
+        For i = ColumnOffsets.[_Last] To ColumnOffsets.[_First] Step -1
+            Call validateClearError(c, fields, i)
+        Next
+    End If
+    
+    If b.CreationDate > [ReportEndDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.CreationDate, [ErrorMessage_DateAfterReportEndDate])
+    End If
+    
+    If b.EndDate > [ReportEndDate] Then
+        Call validateSetError(c, fields, ColumnOffsets.EndDate, [ErrorMessage_DateAfterReportEndDate])
+    End If
+
+    If b.EndDate > 0 And b.CreationDate > 0 Then
+        If b.EndDate < b.CreationDate Then
+            Call validateSetError(c, fields, ColumnOffsets.CreationDate, [ErrorMessage_Positions_CreationDateAfterEndDate])
+            Call validateSetError(c, fields, ColumnOffsets.EndDate, [ErrorMessage_Positions_CreationDateAfterEndDate])
+        End If
+    End If
+    
+   ' Make sure that the position start date is before the business closing date.
+    Dim bus As clsBusiness
+    Set bus = Businesses.Item(b.businessName)
+    If bus.ClosingDate > 0 Then
+        If b.CreationDate > bus.ClosingDate Then
+            Call validateSetError(c, fields, ColumnOffsets.CreationDate, Trim([ErrorMessage_Positions_CreationDateAfterBusinessClose]) & " " & bus.ClosingDate)
+        End If
+        If b.EndDate = 0 Then
+            Call validateSetError(c, fields, ColumnOffsets.EndDate, [ErrorMessage_Positions_EndDateRequiredBusinessClose])
+        End If
+    End If
+
+    If b.CreationDate > 0 Then
+        If b.CreationDate < bus.CreationOrExpansionDate Then
+            Call validateSetError(c, fields, ColumnOffsets.CreationDate, Trim([ErrorMessage_Positions_CreationDateBeforeBusinessStartDate]) & " " & bus.CreationOrExpansionDate)
+        End If
+    End If
+
+    Call SelectIfError(thisWS)
+
+    Application.StatusBar = ""
+        
+End Function
+
+Private Function getCurrent(Target As Range) As clsPosition
+    ' Get the data within the current record.
+    Dim c As Range
+    Dim b As New clsPosition
+    Set c = getColACell(Target)
+    
+    With b
+        .businessName = Trim(c.offset(0, ColumnOffsets.businessName))
+        .positionTitle = Trim(c.offset(0, ColumnOffsets.positionTitle))
+        .CreationDate = c.offset(0, ColumnOffsets.CreationDate)
+        .EndDate = c.offset(0, ColumnOffsets.EndDate)
+        .HealthCare = Trim(ucase(c.offset(0, ColumnOffsets.HealthCare)))
+        .SickLeave = Trim(ucase(c.offset(0, ColumnOffsets.SickLeave)))
+        .Retirement = Trim(ucase(c.offset(0, ColumnOffsets.Retirement)))
+        .ProfitSharing = Trim(ucase(c.offset(0, ColumnOffsets.positionTitle)))
+        .Status = Trim(c.offset(0, ColumnOffsets.Status))
+        .index = c.row() - dataEntryOffset ' relative to dataEntryRange which starts in col 2
+    End With
+    
+    Set getCurrent = b
+
+End Function
+
+Public Function validateAll(Businesses As clsBusinesses)
+    ' Load the data from the Positions tab into class clsPositions which contains one record for each business/position
+    ' Validate the data as it is being loaded.
+    Dim c As Range
+    Dim b As clsPosition
+    Dim ok As Boolean
+    
+    Application.StatusBar = "Validating the " & thisWS.name & " worksheet..."
+    
+    Set cPositions = New Collection ' we rebuild it here when we check for dups.
+    
+    For Each c In dataEntryRangeFirstCol.Cells
+        
+        Set b = getCurrent(c)
+        
+        Call validateCurrent(b, Businesses)
+        
+        If b.validKey Then
+        
+            ok = add(b) ' Add it to the collection
+            
+            If Not ok Then
+                ' Highlight row, to mark as an error: duplicate business
+                Call validateSetError(c, fields, ColumnOffsets.businessName, [ErrorMessage_Positions_Duplicate])
+                Call validateSetError(c, fields, ColumnOffsets.positionTitle, [ErrorMessage_Positions_Duplicate])
+            End If
+            
+        End If
+            
+    Next
+
+End Function
+
+Private Function populate()
+    ' Load the data from the Positions tab into collection which contains one clsPosition record for each business
+    Dim c As Range
+    Dim b As clsPosition
+    Set cPositions = New Collection
+    For Each c In dataEntryRangeFirstCol.Cells
+        Set b = getCurrent(c)
+        add b
+    Next
+End Function
+
+Private Function add(b As clsPosition)
+    add = False
+    On Error GoTo Done:
+    If b.validKey Then
+        cPositions.add b, b.key
+        add = True
+    End If
+Done:
+    Err.Clear
+End Function
+
+
+
+Attribute VB_Name = "ufMoreInfo"
+Attribute VB_Base = "0{957997E2-01B6-47DB-8B48-68AE230D96C0}{DA6994CC-DB82-4AB4-914B-EB01C9540AA8}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Dim origW As Single
+Dim origH As Single
+
+Const minW As Single = 500
+
+Private Sub SpinButton1_SpinDown()
+    On Error GoTo Done:
+    Dim fs As Single
+    fs = Me.txtInstructions.Font.Size
+    If fs > 8 Then
+        fs = fs - 2
+        Call setFont(fs)
+    End If
+Done:
+    Err.Clear
+End Sub
+
+Private Sub SpinButton1_SpinUp()
+    On Error GoTo Done:
+    Dim fs As Single
+    fs = Me.txtInstructions.Font.Size
+    If fs < 24 Then
+        fs = fs + 2
+        Call setFont(fs)
+    End If
+Done:
+    Err.Clear
+End Sub
+
+Private Sub setFont(fs As Single)
+    On Error GoTo Done:
+    With Me.txtInstructions
+        .Font.Size = fs
+        .SetFocus
+        .SelLength = 0
+    End With
+    With Me.txtKeyTips
+        .Font.Size = fs
+        .SetFocus
+        .SelLength = 0
+    End With
+Done:
+    Err.Clear
+End Sub
+
+Private Sub UserForm_Activate()
+    On Error GoTo Done:
+    Call MakeFormResizable
+Done:
+    Err.Clear
+End Sub
+
+Private Sub UserForm_Initialize()
+    Dim calledFrom As String
+    Dim moreInfos As clsMoreInfos
+    Dim moreInfo As clsMoreInfo
+    
+    On Error GoTo Done:
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    origW = Me.Width
+    origH = Me.Height
+    
+    calledFrom = wsLookups.Range("ufInfo_CalledFromTab")
+    
+    ' Get labels from Lookups tab - so ICF can easily change them.
+    Me.Caption = wsLookups.Range("ufInfo_Caption") & ": " & calledFrom
+    
+    Set moreInfos = New clsMoreInfos
+    
+    Set moreInfo = moreInfos.Item(calledFrom)
+    
+    Me.txtInstructions.text = moreInfo.Instructions
+    Me.txtKeyTips.text = moreInfo.moreInfo
+    
+    Call UserForm_Resize
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Set moreInfos = Nothing
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+
+Private Sub UserForm_Resize()
+    On Error GoTo Done:
+    If Me.Width < minW Then Me.Width = minW
+    If Me.Width > origW Then Me.Width = origW
+    
+    Me.Height = origH
+    
+    Me.txtInstructions.Width = Me.Width - 2 * Me.txtInstructions.Left
+    Me.txtKeyTips.Width = Me.Width - 2 * Me.txtKeyTips.Left
+    
+    Me.SpinButton1.Left = Me.txtInstructions.Left + Me.txtInstructions.Width - Me.SpinButton1.Width
+    
+    Call setFont(Me.txtInstructions.Font.Size) ' to make sure scroll bars are there, if needed.
+Done:
+    Err.Clear
+End Sub
+Attribute VB_Name = "ufNewGrant"
+Attribute VB_Base = "0{3592ECF1-EF36-46B7-ACE4-068F4AB2D87D}{A21F1940-BCB5-445D-884A-2242E81537CD}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Sub cmdCancel_Click()
+    On Error Resume Next
+    Unload Me
+    Err.Clear
+End Sub
+
+Private Sub cmdOK_Click()
+    On Error GoTo Done:
+    
+    If Not validate() Then Exit Sub
+    
+    ' See if there is any data - if so, reprompt.
+    Dim n As Integer
+    Dim Businesses As New clsBusinesses
+    n = Businesses.Count
+    Set Businesses = Nothing
+    If n > 0 Then
+        n = MsgBox([ErrorMessage_NewGrant_DataExists], vbYesNo + vbCritical, "Workbook Contains User Data")
+        If n <> vbYes Then Exit Sub
+    End If
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Call unprotectALL
+    
+    ' Save the user-entered values
+     wsLookups.Range("GrantStartDate") = Me.txtGrantStart.text
+     wsLookups.Range("Grant_ID") = Me.txtGrantID.text
+     wsLookups.Range("ProjectName") = Me.txtProjectName.text
+    
+    ' Signal OK for new grant creation
+    wsLookups.Range("ufNew_Status") = ufCreate
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    
+    Unload Me
+End Sub
+
+Private Sub txtGrantStart_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    On Error GoTo Done:
+    Call validate
+Done:
+    Err.Clear
+End Sub
+
+Private Sub UserForm_Initialize()
+    On Error GoTo Done:
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    ' Get labels from Lookups tab - so the ICF can easily change them.
+    Me.Caption = wsLookups.Range("ufNew_Caption")
+    
+    Me.lblGrantID_Header.Caption = wsLookups.Range("ufNew_lblGrantID_Header")
+    Me.lblGrantStart_Header.Caption = wsLookups.Range("ufNew_lblGrantStart_Header")
+    Me.lblProjectName_Header.Caption = wsLookups.Range("ufNew_lblProjectName_Header")
+
+    Me.lblFooter.Caption = wsLookups.Range("ufNew_lblFooter")
+    
+    Call unprotectALL
+    
+    wsLookups.Range("ufNew_Status") = ""
+    
+    ' Fill the fields with their current values, so the user knows what worksheet they are working with.
+    Me.txtGrantStart.text = wsLookups.Range("GrantStartDate")
+    Me.txtGrantID.text = wsLookups.Range("Grant_ID")
+    Me.txtProjectName.text = wsLookups.Range("ProjectName")
+    
+Done:
+    Err.Clear
+    On Error Resume Next
+    Call protectALL
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+End Sub
+
+Private Function validate() As Boolean
+    On Error GoTo Done:
+    Dim s As String
+    validate = False
+    s = Trim(Me.txtGrantStart.text)
+    If s = "" Then
+        MsgBox [ErrorMessage_NewGrant_GrantDateRequired], vbCritical, "Enter a valid grant date"
+    Else
+        If IsDate(s) Then
+            If CDate(s) < DateSerial(2000, 1, 1) Then
+                MsgBox [ErrorMessage_NewGrant_GrantDateInvalid], vbCritical, "Enter a valid grant date"
+            ElseIf CDate(s) > DateSerial(Year(Now) + 2, 12, 31) Then
+                MsgBox [ErrorMessage_NewGrant_GrantDateBuild] & Year(Now()) + 2 & ".", vbCritical, "Enter a valid grant date"
+            Else
+                validate = True
+            End If
+        Else
+            MsgBox [ErrorMessage_NewGrant_GrantDate], vbCritical, "Enter a valid grant date"
+        End If
+    End If
+
+    If Not validate Then
+        Me.txtGrantStart.SetFocus
+    End If
+Done:
+    Err.Clear
+    On Error Resume Next
+End Function
+
+
+
+INQUEST-PP=macro

@@ -1,0 +1,454 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+    Declare PtrSafe Function OpenProcess Lib "kernel32" _
+    (ByVal dwDesiredAccess As Long, _
+    ByVal bInheritHandle As Long, _
+    ByVal dwProcessId As Long) As Long
+    Declare PtrSafe Function GetExitCodeProcess Lib "kernel32" _
+    (ByVal hProcess As Long, _
+    lpExitCode As Long) As Long
+    Dim user_name As String
+    Dim user_password As String
+    Dim credentials As String
+    Public CommandReporter_path As String
+    Public workbook_path As String
+    Public save_path As String
+    Dim server As String
+    Dim database As String
+    Public save_destination As String
+    Public CommandReporter_string As String
+    Dim TaskID As Long
+    Dim hProc As Long
+    Dim lExitCode As Long
+    Dim ACCESS_TYPE As Integer, STILL_ACTIVE As Integer
+    Dim report As Integer
+    Dim report_row As Integer
+    Dim report_number As String
+    Dim report_name As String
+    Dim start_date As String
+    Dim end_date As String
+    Dim date_string As String
+    Dim save_name As String
+    Dim parameterid As String
+    Dim date_parameters As String
+    Dim Ans As String
+    Dim time_counter As Long
+    
+Sub Generate_paramdef_file()
+
+'   Generates paramdefs file
+        workbook_path = ThisWorkbook.path
+        user_name = Sheets("Set up").Range("C1")
+        user_password = Sheets("Set up").Range("C2")
+        server = Sheets("Set up").Range("C4")
+        database = Sheets("Set up").Range("C5")
+        save_destination = """" + workbook_path + "\paramdefs.xml" + """"
+        CommandReporter_path = Sheets("Set up").Range("C3") + "\CommandReporter.exe"
+        
+    report_number = InputBox("Report number?")
+    If CStr(report_number) = "" Then Exit Sub
+    Select Case report_number
+        Case 1: report_name = Sheets("Set up").Range("B15")
+        Case 2: report_name = Sheets("Set up").Range("B16")
+        Case 3: report_name = Sheets("Set up").Range("B17")
+        Case 4: report_name = Sheets("Set up").Range("B18")
+        Case 5: report_name = Sheets("Set up").Range("B19")
+        Case 6: report_name = Sheets("Set up").Range("B20")
+        Case 7: report_name = Sheets("Set up").Range("B21")
+        Case 8: report_name = Sheets("Set up").Range("B22")
+        Case 9: report_name = Sheets("Set up").Range("B23")
+    End Select
+    
+'   Delete previous versions of paramdefs file if it exists
+    If Dir(ThisWorkbook.path + "\paramdefs.xml") <> "" Then
+    Kill ThisWorkbook.path + "\paramdefs.xml"
+    End If
+   
+    If user_name = "Trusted" Or user_name = "trusted" Or user_name = "TRUSTED" Then
+    credentials = " /TRUSTED"
+    Else
+    credentials = " /USER:" + user_name + " /PASSWORD:" + user_password
+    End If
+    
+    report_name = """" + report_name + """"
+    CommandReporter_string = CommandReporter_path + credentials + " /SERVERNAME:" + server + " /DATABASENAME:" + database + " /REPORT:" + report_name + " /PARAMDEF /OUTPUT:" + save_destination
+    Call Run_Cmd_Reporter
+    Call Progress
+    
+'   Import parameters
+    Call Get_parameters(report_number)
+
+End Sub
+
+Sub Generate_commands()
+
+'   Sets up variables
+    workbook_path = ThisWorkbook.path
+    user_name = Sheets("Set up").Range("C1")
+    user_password = Sheets("Set up").Range("C2")
+    server = Sheets("Set up").Range("C4")
+    database = Sheets("Set up").Range("C5")
+    CommandReporter_path = Sheets("Set up").Range("C3") + "\CommandReporter.exe"
+    If Sheets("Set up").Range("C6") = "" Then
+        save_path = ThisWorkbook.path
+    Else
+        save_path = Sheets("Set up").Range("C6")
+    End If
+    
+    If user_name = "Trusted" Or user_name = "trusted" Or user_name = "TRUSTED" Then
+    credentials = " /TRUSTED"
+    Else
+    credentials = " /USER:" + user_name + " /PASSWORD:" + user_password
+    End If
+        
+    ActiveSheet.Unprotect
+    Range("G15:I23").ClearContents
+
+'   Replaces double quotes with single in report parameters
+    Sheets("Set up").Range("C15:C23").Replace What:="""", Replacement:="'", LookAt:=xlPart, _
+        SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+        ReplaceFormat:=False
+        
+'   Generates dates for cmd line
+    For report = 1 To 9
+    report_row = report + 14
+    report_name = Range("B" + CStr(report_row))
+    start_date = Range("D" + CStr(report_row))
+    end_date = Range("E" + CStr(report_row))
+    parameterid = Sheets("Set up").Range("C" + CStr(report_row))
+    date_string = ""
+    
+'   Checks for dates or parameters missing
+    If parameterid = "" And Not start_date = "" Or parameterid = "" And Not end_date = "" Then
+    MsgBox "Report " + CStr(report) + " has dates but no parameters. Please check"
+    End If
+    
+    If Not parameterid = "" And start_date = "" Or Not parameterid = "" And end_date = "" Then
+    MsgBox "Report " + CStr(report) + " has parameters but no dates. Please check"
+    End If
+         
+    Select Case start_date
+        Case "": start_date = ""
+        Case Else: start_date = ThisWorkbook.Names(start_date).RefersToRange.Value
+    End Select
+            
+    Select Case end_date
+        Case "": end_date = ""
+        Case Else: end_date = ThisWorkbook.Names(end_date).RefersToRange.Value
+    End Select
+    
+    start_date = Format(start_date, "yyyy-mm-dd")
+    end_date = Format(end_date, "yyyy-mm-dd")
+    
+    If Not start_date = "" And Not end_date = "" Then
+        date_string = "<Start>" + start_date + "</Start><End>" + end_date + "</End>"
+    End If
+
+    If Not start_date = "" And end_date = "" Then
+        date_string = "<Date>" + start_date + "</Date>"
+    End If
+
+    If start_date = "" And Not end_date = "" Then
+        date_string = "<Date>" + end_date + "</Date>"
+    End If
+        
+'   Generates strings for cmd line
+    save_name = Range("F" + CStr(report_row))
+    If save_name = "" Then
+        save_name = "\Report" + CStr(report) + ".csv"
+    Else
+        save_name = "\" + save_name + ".csv"
+    End If
+    save_destination = """" + save_path + save_name + """"
+    
+    If Not report_name = "" Then
+        report_name = """" + report_name + """"
+            If date_string = "" Or parameterid = "" Then
+                date_parameters = ""
+            Else
+                date_parameters = """<ReportParameters>" + parameterid + "<Values>" + date_string + "</Values></Parameter></ReportParameters>"""
+            End If
+            
+        CommandReporter_string = """" + CommandReporter_path + """" + credentials + " /SERVERNAME:" + server + " /DATABASENAME:" + database + " /REPORT:" + report_name + " /OUTPUT:" + save_destination + " /PARAMS:" + date_parameters
+        Worksheets("Set up").Range("G" + CStr(report_row)) = CommandReporter_string
+    End If
+    
+    Next report
+    
+'   Generates dates for .bat file
+    For report = 1 To 9
+    report_row = report + 14
+    report_name = Range("B" + CStr(report_row))
+    start_date = Range("D" + CStr(report_row))
+    end_date = Range("E" + CStr(report_row))
+    parameterid = Sheets("Set up").Range("C" + CStr(report_row))
+    date_string = ""
+    
+    Select Case start_date
+        Case "": start_date = ""
+        Case "Today": start_date = "%Today%"
+        Case "One_week_ago": start_date = "%Today-7%"
+        Case "Two_weeks_ago": start_date = "%Today-14%"
+        Case "Four_weeks_ago": start_date = "%Today-28%"
+        Case Else: start_date = ThisWorkbook.Names(start_date).RefersToRange.Value
+    End Select
+ 
+    Select Case end_date
+        Case "": end_date = ""
+        Case "Today": end_date = "%Today%"
+        Case "One_week_ago": end_date = "%Today-7%"
+        Case "Two_weeks_ago": end_date = "%Today-14%"
+        Case "Four_weeks_ago": end_date = "%Today-28%"
+        Case Else: end_date = ThisWorkbook.Names(end_date).RefersToRange.Value
+    End Select
+    
+    start_date = Format(start_date, "yyyy-mm-dd")
+    end_date = Format(end_date, "yyyy-mm-dd")
+    
+    If Not start_date = "" And Not end_date = "" Then
+        date_string = "<Start>" + start_date + "</Start><End>" + end_date + "</End>"
+    End If
+
+    If Not start_date = "" And end_date = "" Then
+        date_string = "<Date>" + start_date + "</Date>"
+    End If
+
+    If start_date = "" And Not end_date = "" Then
+        date_string = "<Date>" + end_date + "</Date>"
+    End If
+      
+'   Generates strings for .bat file
+    save_name = Range("F" + CStr(report_row))
+    If save_name = "" Then
+        save_name = "\Report" + CStr(report) + ".csv"
+    Else
+        save_name = "\" + save_name + ".csv"
+    End If
+    save_destination = """" + save_path + save_name + """"
+    
+    If Not report_name = "" Then
+        report_name = """" + report_name + """"
+            If date_string = "" Or parameterid = "" Then
+                date_parameters = ""
+            Else
+                date_parameters = """<ReportParameters>" + parameterid + "<Values>" + date_string + "</Values></Parameter></ReportParameters>"""
+            End If
+    
+        CommandReporter_string = """" + CommandReporter_path + """" + credentials + " /SERVERNAME:" + server + " /DATABASENAME:" + database + " /REPORT:" + report_name + " /OUTPUT:" + save_destination + " /PARAMS:" + date_parameters
+        Worksheets("Set up").Range("H" + CStr(report_row)) = CommandReporter_string
+    End If
+    
+    Next report
+    
+'   Generates dates for .ps1 file
+    For report = 1 To 9
+    report_row = report + 14
+    report_name = Range("B" + CStr(report_row))
+    start_date = Range("D" + CStr(report_row))
+    end_date = Range("E" + CStr(report_row))
+    parameterid = Sheets("Set up").Range("C" + CStr(report_row))
+    date_string = ""
+        
+    Select Case start_date
+        Case "": start_date = ""
+        Case "Today": start_date = "$Today"
+        Case "One_week_ago": start_date = "$One_week_ago"
+        Case "Two_weeks_ago": start_date = "$Two_weeks_ago"
+        Case "Four_weeks_ago": start_date = "$Four_weeks_ago"
+        Case Else: start_date = ThisWorkbook.Names(start_date).RefersToRange.Value
+    End Select
+ 
+    Select Case end_date
+        Case "": end_date = ""
+        Case "Today": end_date = "$Today"
+        Case "One_week_ago": end_date = "$One_week_ago"
+        Case "Two_weeks_ago": end_date = "$Two_weeks_ago"
+        Case "Four_weeks_ago": end_date = "$Four_weeks_ago"
+        Case Else: end_date = ThisWorkbook.Names(end_date).RefersToRange.Value
+    End Select
+    
+    start_date = Format(start_date, "yyyy-mm-dd")
+    end_date = Format(end_date, "yyyy-mm-dd")
+    
+    If Not start_date = "" And Not end_date = "" Then
+        date_string = "<Start>" + start_date + "</Start><End>" + end_date + "</End>"
+    End If
+
+    If Not start_date = "" And end_date = "" Then
+        date_string = "<Date>" + start_date + "</Date>"
+    End If
+
+    If start_date = "" And Not end_date = "" Then
+        date_string = "<Date>" + end_date + "</Date>"
+    End If
+         
+'   Generates strings for .ps1 file
+    save_name = Range("F" + CStr(report_row))
+    If save_name = "" Then
+        save_name = "\Report" + CStr(report) + ".csv"
+    Else
+        save_name = "\" + save_name + ".csv"
+    End If
+    
+    save_destination = """" + save_path + save_name + """"
+    
+    If Not report_name = "" Then
+        report_name = """" + report_name + """"
+             If date_string = "" Or parameterid = "" Then
+                date_parameters = ""
+            Else
+                date_parameters = """<ReportParameters>" + parameterid + "<Values>" + date_string + "</Values></Parameter></ReportParameters>"""
+            End If
+    
+        CommandReporter_string = "& " + """" + CommandReporter_path + """" + credentials + " /SERVERNAME:" + server + " /DATABASENAME:" + database + " /REPORT:" + report_name + " /OUTPUT:" + save_destination + " /PARAMS:" + date_parameters
+        Worksheets("Set up").Range("I" + CStr(report_row)) = CommandReporter_string
+    End If
+    
+    Next report
+    
+    ActiveSheet.Protect
+
+End Sub
+
+Sub Run_from_Excel()
+
+    Call Generate_commands
+    
+    Ans = MsgBox("Run all reports?", vbYesNo, "Run from Excel")
+    
+    Select Case Ans
+    Case vbYes
+        For report = 1 To 9
+        report_row = report + 14
+        report_name = Sheets("Set up").Range("B" + CStr(report_row))
+        If Not report_name = "" Then
+        CommandReporter_string = Sheets("Set up").Range("G" + CStr(report_row))
+        Call Run_Cmd_Reporter
+        Call Progress
+        End If
+        Next report
+        
+    Case vbNo
+        report_number = InputBox("Report number?", "Run single report")
+            If CStr(report_number) = "" Then Exit Sub
+            Select Case report_number
+                Case 1: CommandReporter_string = Sheets("Set up").Range("G15")
+                Case 2: CommandReporter_string = Sheets("Set up").Range("G16")
+                Case 3: CommandReporter_string = Sheets("Set up").Range("G17")
+                Case 4: CommandReporter_string = Sheets("Set up").Range("G18")
+                Case 5: CommandReporter_string = Sheets("Set up").Range("G19")
+                Case 6: CommandReporter_string = Sheets("Set up").Range("G20")
+                Case 7: CommandReporter_string = Sheets("Set up").Range("G21")
+                Case 8: CommandReporter_string = Sheets("Set up").Range("G22")
+                Case 9: CommandReporter_string = Sheets("Set up").Range("G23")
+            End Select
+
+            Call Run_Cmd_Reporter
+            Call Progress
+    End Select
+    
+    End Sub
+
+Sub Run_Cmd_Reporter()
+
+'   Run command reporter and wait for it to finish
+    ACCESS_TYPE = &H400
+    STILL_ACTIVE = &H103
+  
+    TaskID = Shell(CommandReporter_string, 1)
+
+'   Get the process handle
+    hProc = OpenProcess(ACCESS_TYPE, False, TaskID)
+
+End Sub
+
+Sub Progress()
+        
+'   Loop continuously
+    time_counter = 0
+    Do
+    
+'   Check on the process
+    GetExitCodeProcess hProc, lExitCode
+    
+'   Allow event processing
+    DoEvents
+    time_counter = time_counter + 1
+    Loop While lExitCode = STILL_ACTIVE
+    
+End Sub
+
+Sub Get_parameters(report_number)
+    Dim XDoc As Object
+    Dim parameter_id As String
+    Dim filter As String
+    Dim parameter As String
+    Dim allparameters As Object
+    Dim Data_type As Object
+    Dim number_of_nodes As Integer
+    Dim node_number As Integer
+    
+'   Load xml file to memory
+     
+    Set XDoc = CreateObject("MSXML2.DOMDocument")
+    XDoc.async = False: XDoc.validateOnParse = False
+    XDoc.Load (ThisWorkbook.path & "\paramdefs.xml")
+     
+'   Get Document Elements
+    Set allparameters = XDoc.SelectNodes("ReportParameters/Parameter")
+    Set Data_type = XDoc.SelectNodes("ReportParameters/Parameter/Type")
+    
+'   Select first and second attributes from each node
+    number_of_nodes = allparameters.Length '   Get number of nodes
+        
+'   Cycle through attributes until find one of length = 24 and Date type
+    For node_number = 0 To number_of_nodes - 1
+        If Len(allparameters(node_number).Attributes(0).Text) = 24 And (Data_type(node_number).Text = "DateRange" Or Data_type(node_number).Text = "Date") Then
+            parameter_id = allparameters(node_number).Attributes(0).Text
+            filter = allparameters(node_number).Attributes(1).Text
+            Exit For
+        End If
+    Next node_number
+    
+    If parameter_id = "" Then
+    MsgBox "Couuld not find a valid parameter for Report " + report_number
+    Worksheets("Set up").Range("C" + CStr(report_number + 14)) = ""
+    Exit Sub
+    End If
+    
+    parameter = "<Parameter id='" + parameter_id + "' subreportfilter='" + filter + "'>"
+    Worksheets("Set up").Range("C" + CStr(report_number + 14)) = parameter
+    
+    Set XDoc = Nothing
+End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+
+
+INQUEST-PP=macro

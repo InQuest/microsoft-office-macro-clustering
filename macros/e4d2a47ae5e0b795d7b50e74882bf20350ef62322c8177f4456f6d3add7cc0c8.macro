@@ -1,0 +1,378 @@
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+'-- Makro Version 17
+'-- |fffd|berarbeitet von Daniel Motzko, R|fffd|dl Consulting AG
+'-- v6: Makrogenerierter Code aus MS-Word2003 herausgenommen.
+'-- v7: Enfernen des Leerzeichens bei Nichtersetzung von Dokumentenvariable Document0.
+'-- v8: Bef|fffd|llen von Dokumentenvariablen in Kopf- und Fusszeile erg|fffd|nzt.
+'-- v9: Speichern der HTML-Datei |fffd|ber wdFormatFilteredHTML an Stelle von wdFormatHTML.
+'-- v10: SIGNATURE zum Einlesen von Signaturbildern erg|fffd|nzt.
+'-- v11: Korrektur bzgl. "ThisDocument.Path". Umfirmierung in Targenio.
+'-- v12: Verhindern des Flacker-Effekts beim Bef|fffd|llen. Einbau eines Fehlerhandlings bzgl. des Upload-Servlet.
+'-- v13: ThisDocument anstatt ActiveDocument, Makro nur |fffd|ber Word-Button ausf|fffd|hren.
+'-- v14: Fehlerbehebung: Speichern von |fffd|nderungen in erstellten Dokumenten wieder m|fffd|glich.
+'-- v15: Grund des Scheiterns beim Laden des Dokuments ausgeben
+'-- Encoding:=1252, InsertLineBreaks:=False, AllowSubstitutions:=False, LineEnding:=wdCRLF
+'-- V16: Meldungen in das Englische |fffd|bersetzt
+'-- V17: Airlinespezifische Umformatierung des Textk|fffd|rpers
+
+
+
+Public WithEvents appWord As Word.Application
+Attribute appWord.VB_VarHelpID = -1
+
+Dim Host As String
+Dim DocumentId As String
+Dim Update As String
+Dim Format As String
+
+Sub Document_Open()
+    Set appWord = Word.Application
+End Sub
+
+Sub AutoOpen()
+      
+    FileName = ThisDocument.Name
+   
+    Pos = InStr(FileName, "$PROP$")
+    
+    If Pos > 0 Then
+    
+        Pos = InStr(FileName, "$PROP$")
+        PROP = Mid(FileName, Pos + 6)
+        Pos = InStr(PROP, "$PROP$")
+        PROP = Mid(PROP, 1, Pos - 1)
+  
+        Update = Mid(PROP, 1, 1)
+        Format = Mid(PROP, 2, 3)
+       
+        PROP = Mid(PROP, 5)
+        PROP = Replace(PROP, "$SL$", "/")
+        PROP = Replace(PROP, "$CO$", ":")
+        PROP = Replace(PROP, "$PT$", ".")
+    
+        Pos = InStrRev(PROP, "/")
+        Host = Left(PROP, Pos)
+        DocumentId = Mid(PROP, Pos + 1)
+    
+        XMLAccess "Write"
+    
+    End If
+    
+End Sub
+
+Sub appWord_DocumentBeforeClose(ByVal Doc As Document, Cancel As Boolean)
+
+    BeforeClose Cancel
+    If Not Cancel Then
+        DocCount = Application.Documents.Count
+        Doc.Saved = True
+        If Application.Documents.Count = 1 Then
+            Application.Quit
+        Else
+            Doc.Close
+            Application.ActiveWindow.Close
+        End If
+    End If
+End Sub
+
+
+Sub BeforeClose(Cancel As Boolean)
+
+    If Len(Host) > 0 Then
+
+        ' -- Wird beim Schliessen des Dokumentes ausgef|fffd|hrt
+        ' -- Speichern ist n|fffd|tig um den Dialog "M|fffd|chten Sie speichern" abzufangen.
+        ' -- Leider ist kein Schliessen ohne zu speichern in diesem Kontext m|fffd|glich
+        
+        FileName = ThisDocument.Path + "\" + DocumentId + "." + Format
+        ' -- Anlegen einer Datei, welche an den Server gesandt wird
+        SaveFileName = ThisDocument.Path + "\" + DocumentId + "2.doc"
+        
+        If StrComp(Format, "doc") = 0 Then
+            ThisDocument.SaveAs FileName
+            ThisDocument.SaveAs SaveFileName
+            PostWordDocumentToServer FileName, "doc", Cancel
+        Else
+            If StrComp(Format, "txt") = 0 Then
+                    
+                ThisDocument.SaveAs FileName + ".doc"
+                ThisDocument.SaveAs SaveFileName
+                PostWordDocumentToServer FileName + ".doc", "edoc", Cancel
+                    
+                ThisDocument.SaveAs FileName:=FileName, FileFormat:=wdFormatText, _
+                    LockComments:=False, Password:="", AddToRecentFiles:=True, WritePassword _
+                    :="", ReadOnlyRecommended:=False, EmbedTrueTypeFonts:=False, _
+                    SaveNativePictureFormat:=False, SaveFormsData:=False, SaveAsAOCELetter:=False
+        '-- Makrocode herausgenommen
+                
+                ThisDocument.SaveAs SaveFileName
+                PostWordDocumentToServer FileName, "txt", Cancel
+            
+            Else: ThisDocument.SaveAs FileName + ".doc"
+                ThisDocument.SaveAs SaveFileName
+                PostWordDocumentToServer FileName + ".doc", "edoc", Cancel
+            
+                ThisDocument.SaveAs FileName:=FileName, _
+                FileFormat:=wdFormatFilteredHTML
+                 
+                ThisDocument.SaveAs SaveFileName
+                PostWordDocumentToServer FileName, "htm", Cancel
+            End If
+        End If
+    End If
+    
+End Sub
+
+Sub FileSave()
+    If StrComp(Update, "1") = 0 Then
+    ' -- File Save wird abgefangen
+        MsgBox ("Unable to save - the document will be automatically saved when you close Microsoft Word.")
+        Continue = False
+    End If
+End Sub
+
+Sub FileSaveAs()
+    If StrComp(Update, "1") = 0 Then
+        ' -- File Save As wird abgefangen
+        MsgBox ("Unable to save - the document will be automatically saved when you close Microsoft Word.")
+        Continue = False
+    End If
+End Sub
+
+' ############# Funktionen zum Einlesen der Werte ######################
+' Funktion zum Zugriff auf das XML Dokument und Einlesen der Werte
+Sub XMLAccess(mode As String)
+    Dim oStory As Object
+    
+    If StrComp(Update, "1") = 0 Then
+
+        Dim xmldoc As MSXML2.DOMDocument
+        Set xmldoc = New MSXML2.DOMDocument
+        xmldoc.async = False
+
+        If xmldoc.Load(Host + "textcompose?type=word&id=" + DocumentId) Then
+
+            If xmldoc.ChildNodes.Length = 0 Then
+                MsgBox "Dokument konnte nicht geladen werden"
+            Else
+                Application.ScreenUpdating = False
+                DisplayNodes xmldoc.ChildNodes, mode
+                For Each oStory In ThisDocument.StoryRanges
+                    oStory.Fields.Update
+                Next oStory
+                Application.ScreenUpdating = True
+            End If
+        Else
+            Dim errorText As String
+            Dim xPE As MSXML2.IXMLDOMParseError
+            Set xPE = xmldoc.parseError
+            errorText = "Document could not be loaded" & _
+                xPE.reason & xPE.ErrorCode & xPE.reason & xPE.URL
+            MsgBox errorText
+        End If
+    End If
+End Sub
+
+' Funktion zum Durchlaufen eines XML Knotens
+Sub DisplayNodes(Nodes As MSXML2.IXMLDOMNodeList, mode As String)
+    Dim xNode As MSXML2.IXMLDOMNode
+    For Each xNode In Nodes
+        If xNode.NodeType = NODE_TEXT Then
+            SetFieldValues xNode, mode
+        End If
+        If xNode.HasChildNodes Then
+            DisplayNodes xNode.ChildNodes, mode
+        End If
+    Next xNode
+End Sub
+
+' Funktion zum Schreiben der Werte in die Feldfunktionen
+Sub SetFieldValues(xNode As MSXML2.IXMLDOMNode, mode As String)
+
+    If mode = "Write" Then
+    
+        NodeValue = xNode.NodeValue
+        NodeValue = Replace(NodeValue, "&lt;", "<")
+        NodeValue = Replace(NodeValue, "&gt;", ">")
+        NodeValue = Replace(NodeValue, "&quot;", """")
+        NodeValue = Replace(NodeValue, "&apos;", "'")
+        NodeValue = Replace(NodeValue, "&amp;", "&")
+    
+        If StrComp(xNode.ParentNode.nodeName, "DOCUMENT0") = 0 Then
+            ThisDocument.Variables("DOCUMENT0").Value = " "
+            
+            Dim I As Integer
+            Dim xField As Field
+            Dim Index As Integer
+
+            Index = -1
+            I = FreeFile
+            File = ThisDocument.Path + "\targenio.html"
+            Open File For Output As #I
+            Print #I, NodeValue
+            Close I
+            For I = 1 To ThisDocument.Fields.Count
+                If InStr(ThisDocument.Fields(I).Code, "DOCUMENT0") > 0 Then
+                    Index = I
+                End If
+            Next I
+            If Index > -1 Then
+                With ThisDocument.Fields(Index)
+                    .Select
+                End With
+                Selection.InsertFile FileName:=File, Range:="", ConfirmConversions:= _
+                False, Link:=False, Attachment:=False
+                Index = -1
+                For I = 1 To ThisDocument.Fields.Count
+                If InStr(ThisDocument.Fields(I).Code, "DOCUMENT0") > 0 Then
+                    Index = I
+                End If
+                Next I
+                If Index > -1 Then
+                    ThisDocument.Fields(Index).Delete
+                    'Swiss-spezifische Umformatierung des Textkoerpers
+                    Set rngStart = ThisDocument.Bookmarks("Anfang").Range
+                    Set rngEnd = ThisDocument.Bookmarks("Ende").Range
+                    Range(rngStart.Start, rngEnd.End).Select
+                    'Selection.Font.Name = "Arial"               ' F|fffd|r Markierung neue Schriftart setzen'
+                    'Selection.Font.Size = 11                    ' F|fffd|r Markierung neue Schriftgroesse setzen'
+                    ThisDocument.Range(0, 0).Select             ' Bereich demarkieren'
+                End If
+            End If
+        ElseIf StrComp(xNode.ParentNode.nodeName, "SIGNATURE") = 0 Then
+            Index = -1
+            ThisDocument.Variables("SIGNATURE").Value = " "
+            ' Find signature field index
+            For I = 1 To ThisDocument.Fields.Count
+                If InStr(ThisDocument.Fields(I).Code, "SIGNATURE") > 0 Then
+                    Index = I
+                End If
+            Next I
+            ' If signature field has been found, select it and load proper signature to the selection.
+            If Index > -1 Then
+                If NodeValue <> "NO_VALUE" Then
+                    ThisDocument.Fields(Index).Select
+                    Selection.InlineShapes.AddPicture FileName:= _
+                        Host + "textcompose?type=signature&userId=" + NodeValue, LinkToFile:=False, SaveWithDocument:= _
+                        True
+                End If
+            End If
+        Else:
+            NodeValue = Replace(NodeValue, Chr(10), Chr(13))
+            If xNode.NodeValue = "NO_VALUE" Then
+                ThisDocument.Variables(xNode.ParentNode.nodeName).Value = " "
+            Else:
+                ThisDocument.Variables(xNode.ParentNode.nodeName).Value = NodeValue
+            End If
+        End If
+    Else
+         ThisDocument.Variables(xNode.ParentNode.nodeName).Value = ""
+    End If
+End Sub
+
+'#### Funktionen zum Zur|fffd|ckschreiben des Dokumentes auf den Server
+Sub PostWordDocumentToServer(FileName, FileFormat, Cancel As Boolean)
+    Const Boundary = "---------------------------0123456789012"
+    Const FieldName = "uploadFile"
+    Cancel = False
+    Dim FileContents, FormData
+    FileContents = GetFile(FileName)
+    FormData = BuildFormData(FileContents, Boundary, FileName, FieldName)
+    Temp = WinHTTPPostRequest(Host + "textcompose?type=save&format=" + FileFormat + "&id=" & DocumentId, FormData, Boundary)
+    If (Temp <> "") Then
+        Response = MsgBox("An error occurred when saving the document!" & vbNewLine & "Would You like to close without saving?", vbCritical + vbYesNo + vbDefaultButton2)
+        Select Case Response
+        Case vbYes
+        'do nothing, the word will be closed
+        Case vbNo
+        Cancel = True
+        End Select
+    End If
+End Sub
+
+Function WinHTTPPostRequest(URL, FormData, Boundary)
+    Dim http As New MSXML2.XMLHTTP
+    Set http = CreateObject("MSXML2.ServerXMLHTTP")
+    http.Open "POST", URL, False
+    http.setRequestHeader "Content-Type", "multipart/form-data; boundary=" + Boundary
+    http.send FormData
+    WinHTTPPostRequest = http.responseText
+End Function
+
+Function GetFile(FileName)
+  Dim Stream: Set Stream = CreateObject("ADODB.Stream")
+  Stream.Type = 1 'Binary
+  Stream.Open
+  Stream.LoadFromFile FileName
+  GetFile = Stream.Read
+  Stream.Close
+End Function
+Function BuildFormData(FileContents, Boundary, FileName, FieldName)
+  Dim FormData, Pre, Po
+  Const ContentType = "application/upload"
+  'The two parts around file contents In the multipart-form data.
+  Pre = "--" + Boundary + vbCrLf + mpFields(FieldName, FileName, ContentType)
+  Po = vbCrLf + "--" + Boundary + "--" + vbCrLf
+  'Build form data using recordset binary field
+  Const adLongVarBinary = 205
+  Dim RS: Set RS = CreateObject("ADODB.Recordset")
+  RS.Fields.Append "b", adLongVarBinary, Len(Pre) + LenB(FileContents) + Len(Po)
+  RS.Open
+  RS.AddNew
+    Dim LenData
+    'Convert Pre string value To a binary data
+    LenData = Len(Pre)
+    RS("b").AppendChunk (StringToMB(Pre) & ChrB(0))
+    Pre = RS("b").GetChunk(LenData)
+    RS("b") = ""
+    'Convert Po string value To a binary data
+    LenData = Len(Po)
+    RS("b").AppendChunk (StringToMB(Po) & ChrB(0))
+    Po = RS("b").GetChunk(LenData)
+    RS("b") = ""
+    'Join Pre + FileContents + Po binary data
+    RS("b").AppendChunk (Pre)
+    RS("b").AppendChunk (FileContents)
+    RS("b").AppendChunk (Po)
+  RS.Update
+  FormData = RS("b")
+  RS.Close
+  BuildFormData = FormData
+End Function
+Function mpFields(FieldName, FileName, ContentType)
+  Dim MPTemplate 'template For multipart header
+  MPTemplate = "Content-Disposition: form-data; name=""{field}"";" + _
+   " filename=""{file}""" + vbCrLf + _
+   "Content-Type: {ct}" + vbCrLf + vbCrLf
+  Dim Out
+  Out = Replace(MPTemplate, "{field}", FieldName)
+  Out = Replace(Out, "{file}", FileName)
+  mpFields = Replace(Out, "{ct}", ContentType)
+End Function
+Function StringToMB(S)
+  Dim I, B
+  For I = 1 To Len(S)
+    B = B & ChrB(Asc(Mid(S, I, 1)))
+  Next
+  StringToMB = B
+End Function
+
+Sub DeleteContent()
+    ' --- Deletes the document content
+    ThisDocument.Range(0, 0).Select 'An den Anfang positionieren
+    While Not Selection.Bookmarks.Exists("\EndOfDoc") 'Bis zum Ende des Dokumentes
+        Selection.Bookmarks("\Line").Range.Delete
+        Selection.MoveDown Unit:=wdLine 'Zur n|fffd|chsten Zeile positionieren
+    Wend
+End Sub
+
+
+
+INQUEST-PP=macro

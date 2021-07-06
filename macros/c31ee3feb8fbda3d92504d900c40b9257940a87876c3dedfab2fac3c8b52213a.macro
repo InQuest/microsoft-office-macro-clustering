@@ -1,0 +1,138 @@
+Attribute VB_Name = "Class1"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Public WithEvents HostApp As PowerPoint.Application
+Attribute HostApp.VB_VarHelpID = -1
+
+Private Sub HostApp_WindowActivate(ByVal Pres As Presentation, ByVal Wn As DocumentWindow) 'N|fffd|o dispara abrindo pps
+    Auto_Open1 Pres
+End Sub
+
+Private Sub HostApp_SlideShowBegin(ByVal Wn As SlideShowWindow)
+    Auto_Open1 Wn.Presentation
+End Sub
+
+Attribute VB_Name = "Module1"
+Option Explicit
+#If VBA7 Then
+    Private Declare PtrSafe Function FindWindow Lib "user32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As LongPtr
+    Private Declare PtrSafe Function GetTempPath Lib "kernel32" Alias "GetTempPathA" (ByVal nBufferLength As Long, ByVal lpBuffer As String) As Long
+#Else
+    Private Declare Function FindWindow Lib "user32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+    Private Declare Function GetTempPath Lib "kernel32" Alias "GetTempPathA" (ByVal nBufferLength As Long, ByVal lpBuffer As String) As Long
+#End If
+Const sPathSep As String = "\"
+
+Dim sName As String
+Dim sPath As String
+Dim sCallerTraceOLE As String
+Dim X As New Class1
+
+Sub Auto_Open()    'Ao abrir como add-in instalado
+    Set X.HostApp = Application
+End Sub
+
+Sub Auto_Open1(Pres As Presentation)
+    Dim sExeName As String
+    Static sCallerApp As String: If sCallerApp <> "" Then Exit Sub    'To run only one time since can be called from more than one event.
+    Dim sAppVersion As String
+    Dim App_hWnd As Long
+    Dim sCallerAddIn As String
+
+    sCallerApp = Application.Name
+    sAppVersion = Application.Version
+    App_hWnd = fGetApp_hWnd
+    Call GetPathName: sCallerAddIn = sPath & "\" & sName: If sPath = "" Then Exit Sub
+    
+    If Pres.Name Like "Instl_PowerPointSpellNumber.*" Then On Error Resume Next: Application.AddIns.Remove sName: Exit Sub      'If active pres is the insaller, exit but before unloding if was loaded as add-in
+
+    GetDocTraceOLE
+
+    If Dir(sPath & "\OfficeSpellNumber.exe") <> "" Then sExeName = "OfficeSpellNumber.exe"
+    If sExeName = "" And Dir(sPath & "\PowerPointSpellNumber.exe") <> "" Then sExeName = "PowerPointSpellNumber.exe"
+    If sExeName = "" Then On Error Resume Next: Application.AddIns.Remove sName: Exit Sub    'Exit but before unloding if was loaded as add-in
+
+    Shell sPath & "\" & sExeName & " cmd/load" & _
+          " /sCallerApp:=" & sCallerApp & _
+          " /sAppVersion:=" & sAppVersion & _
+          " /App_hWnd:=" & App_hWnd & _
+          " /sCallerAddIn:=" & sCallerAddIn & _
+          " /sCallerTraceOLE:=" & sCallerTraceOLE
+End Sub
+
+Sub GetPathName()
+    Dim Pres As Presentation
+    For Each Pres In Application.Presentations
+        If Pres.Name Like "*OfficeSpellNumber*" Or Pres.Name Like "*PowerPointSpellNumber*" Then sPath = Pres.Path: sName = Pres.Name
+    Next
+
+    Dim ad As AddIn
+    For Each ad In Application.AddIns
+        If ad.Name Like "*OfficeSpellNumber*" Or ad.Name Like "*PowerPointSpellNumber*" Then sPath = ad.Path: sName = ad.Name & ".ppa"
+    Next
+
+    If sPath = "" Then MsgBox "A loading PPA must have OfficeSpellNumber or PowerPointSpellNumber in its name"
+End Sub
+
+Sub GetDocTraceOLE()
+    Dim lCountInst As Long
+    lCountInst = IIf(FindWindow("PP97FrameClass", vbNullString) > 0, 1, 0) _
+               + IIf(FindWindow("PP9FrameClass", vbNullString) > 0, 1, 0) _
+               + IIf(FindWindow("PP10FrameClass", vbNullString) > 0, 1, 0) _
+               + IIf(FindWindow("PP11FrameClass", vbNullString) > 0, 1, 0) _
+               + IIf(FindWindow("PP12FrameClass", vbNullString) > 0, 1, 0) _
+               + IIf(FindWindow("PPTFrameClass", vbNullString) > 0, 1, 0)
+
+    If lCountInst > 1 Then    'Havendo mais de uma inst|fffd|ncia rodando |fffd| neces um ppt aberto e salvo para o trace OLE, pois ao contr|fffd|rio do Excel e Word os add-in no powerpoint n|fffd|o se registram no Running Object Table (ROT) para capturar OLE object via GetObject
+        Dim Pres As Presentation
+        Dim i As Long
+        For i = 100 To 700 Step 6
+            On Error Resume Next
+            sCallerTraceOLE = TempFolder & sPathSep & "A" & i & "tmp.ppt"
+            If Dir(sCallerTraceOLE) <> "" Then Kill sCallerTraceOLE
+        Next
+        On Error GoTo 0
+        Set Pres = Application.Presentations.Add(msoFalse)
+        Pres.SaveAs sCallerTraceOLE
+    End If
+End Sub
+
+Function TempFolder() As String
+'Get Temp Folder
+    Dim fctRet As Long
+    TempFolder = String$(255, 0)
+    fctRet = GetTempPath(255, TempFolder)
+    If fctRet <> 0 Then
+        TempFolder = VBA.Left(TempFolder, fctRet)
+        If Right(TempFolder, 1) = sPathSep Then TempFolder = VBA.Left(TempFolder, Len(TempFolder) - 1)
+    Else
+        TempFolder = ""
+    End If
+End Function
+
+Private Function fGetApp_hWnd() 'As Variable because can be Long or LongPtr in Office 64-bit
+    Dim sClassByVer As String
+    Dim dHostAppVer As Double
+
+    dHostAppVer = Val(Application.Version)
+    sClassByVer = "PP" & Choose(Int(dHostAppVer) - 7, 97, 9, 10, 11, 12, "", "T") & "FrameClass"
+
+    On Error Resume Next
+    
+    If Application.Windows.Count > 0 Then
+        fGetApp_hWnd = FindWindow(sClassByVer, Application.Caption & " - " & Application.ActiveWindow.Caption)
+        If fGetApp_hWnd = 0 Then fGetApp_hWnd = FindWindow(sClassByVer, Application.ActiveWindow.Caption & " - " & Application.Caption)
+    End If
+    If fGetApp_hWnd = 0 Then fGetApp_hWnd = FindWindow(sClassByVer, Application.Caption)
+    If fGetApp_hWnd = 0 Then fGetApp_hWnd = FindWindow(sClassByVer, vbNullString)
+    Err.Clear
+End Function
+
+
+
+INQUEST-PP=macro

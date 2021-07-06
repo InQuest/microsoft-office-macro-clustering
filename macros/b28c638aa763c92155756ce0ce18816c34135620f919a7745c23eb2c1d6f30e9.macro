@@ -1,0 +1,404 @@
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "genLIjst"
+Option Explicit
+'--------------------------------------------------------------------
+' Omzetten sattline-adressering (board - channel) naar kanaalnummers
+'
+' Voorbeeld => Board240 QX36 => 276
+'
+'
+Sub ConvertRACK()
+
+Dim IO As Worksheet
+Dim ReadRow As Integer, LastRow As Integer, BoardCol As Integer, ChannelCol As Integer, IOAddressCol As Integer
+Dim strBoard As String, strChannel As String
+Dim Board As Integer, Channel As Integer
+
+'Presetten kolomnummers
+BoardCol = 3
+ChannelCol = 5
+IOAddressCol = 4
+
+'Sheet selecteren
+Set IO = Sheets("BRON")
+
+'Einde bepalen van de sheet
+LastRow = IO.Cells(1048576, 1).End(xlUp).Row
+
+For ReadRow = 2 To LastRow
+    'Boardstring ophalen - Board240 wordt 240
+    strBoard = Right(IO.Cells(ReadRow, BoardCol), Len(IO.Cells(ReadRow, BoardCol)) - 5)
+    
+    'Channel ophalen - QX0 wordt 0
+    strChannel = Right(IO.Cells(ReadRow, ChannelCol), Len(IO.Cells(ReadRow, ChannelCol)) - 2)
+    
+    'Conversie naar kanaalnummers
+    IO.Cells(ReadRow, IOAddressCol) = CInt(strBoard) + CInt(strChannel)
+    
+
+Next ReadRow
+
+
+End Sub
+
+' Invullen opleverlijst op basis van bron
+
+Sub VullenOpleverLijst()
+
+Dim Bron As Worksheet, Opleverlijst As Worksheet
+Dim ReadRow As Integer, LastRow As Integer, WriteRow As Integer
+
+'Hulpvars
+Dim strReadTmp As String, strRWZI As String
+Dim strReadNodeModule As String
+Dim strArrayTmp() As String
+Dim strSplitString As String
+Dim strIOConnection As String
+Dim strTag As String
+Dim intModule, intAdres As Integer
+
+
+' Kolommen in opleverlijst
+Dim PLCCol As Integer, SattObjCol As Integer, SattIORecCol As Integer, SattKopCol As Integer
+Dim SattNodeCol As Integer, SattModCol As Integer, SattChanCol As Integer, SattModTypeCol As Integer
+Dim strBoard As String, strChannel As String
+Dim Board As Integer, Channel As Integer, BoardCol As Integer, ChannelCol As Integer
+
+
+'Kolommen toewijzen aan nummer
+PLCCol = 1
+SattObjCol = 19
+SattIORecCol = 20
+SattKopCol = 21
+SattNodeCol = 22
+SattModCol = 23
+SattChanCol = 24
+SattModTypeCol = 25
+
+BoardCol = 3
+ChannelCol = 5
+
+
+
+' Sheets toewijzen
+Set Bron = Sheets("BRON")
+Set Opleverlijst = Sheets("OPLEVERLIJST")
+
+' Wissen opleverlijst
+Opleverlijst.Range("8:10000").Clear
+
+' Laatste rij zoeken bron
+LastRow = Bron.Cells(1048576, 1).End(xlUp).Row
+
+'RWZI uit bron halen
+'Voorbeeld BEEM_K300 wordt gespleten in BEEM en K300
+strArrayTmp() = Split(Bron.Cells(2, 1), "_")
+
+If UBound(strArrayTmp) > 0 Then
+    strRWZI = strArrayTmp(0)
+Else
+    strRWZI = "RWZI"
+End If
+
+Opleverlijst.Cells(1, "G") = strArrayTmp(0) + " " + strArrayTmp(1) + " I/O Lijst"
+
+
+Erase strArrayTmp()
+
+
+'Door de bronlijst scrollen
+For ReadRow = 2 To LastRow
+
+    'Offset meegeven voor te schrijven rij opleverlijst
+    WriteRow = ReadRow + 6
+    
+    '--------------------------------------------------------------
+    'Schrijven controller
+    Opleverlijst.Cells(WriteRow, PLCCol) = Bron.Cells(ReadRow, "A")
+    
+    '--------------------------------------------------------------
+    'Overnemen IO module type -> LIB:Type splitten en alleen type overnemen
+    strArrayTmp() = Split(Bron.Cells(ReadRow, "B"), ":")
+    
+    If UBound(strArrayTmp) > 0 Then
+        Opleverlijst.Cells(WriteRow, SattModTypeCol) = strArrayTmp(1)
+    Else
+        Opleverlijst.Cells(WriteRow, SattModTypeCol) = Bron.Cells(ReadRow, "B")
+    End If
+    
+    '--------------------------------------------------------------
+    'Schrijven objectnaam op basis van tagnaam uit bronlijst
+    
+    strReadTmp = Bron.Cells(ReadRow, "F")
+    ' Zoek naar aangesloten IO-connectie
+    ' Mogelijkheden zijn:
+    ' TAG.ELEMENT (P3060.Hoofdstroom)
+    ' SLCa:<XXX> - niet aangesloten IO
+    ' BasePicture:IO.TAG - hogerliggende, vaak algemene IO
+    If strReadTmp <> "" And InStr(strReadTmp, "<") = 0 Then
+        'Normale IO -connectie detecteren aan het ontbreken van de waarde "BasePicture"
+        If InStr(strReadTmp, "BasePicture:") = 0 Then
+            strArrayTmp() = Split(strReadTmp, ".")
+            If UBound(strArrayTmp) > 0 Then
+                'Uitzonderingformaat uitzoeken welke geen "Basepicture" heeft
+                'bv. Start.SLCa:GSA13312
+                'Uitzondering, bijvoorbeeld Start.SLCa:GSA13312
+                'Deze is hierboven gespleten in Start en SLCa:TAG
+                'Wordt hieronder gecheckt op :, en normaal record heeft deze niet meer
+                'Waarde 0 : normaal record, groter dan 0 : uitzondering
+                'Locatiecode toevoegen aan tagnaam in element 0
+                'strArrayTmp(0) = strRWZI + "_" + strArrayTmp(0)
+                
+                If InStr(strArrayTmp(1), ":") = 0 Then
+                    'Normale situatie
+                    'Element 0 is de tagname
+                    'Element 1 is de IO-connectie
+                    Opleverlijst.Cells(WriteRow, SattObjCol) = strRWZI + "_" + strArrayTmp(0)
+                    Opleverlijst.Cells(WriteRow, SattIORecCol) = strArrayTmp(1)
+                    'Opleverlijst.Cells(WriteRow, SattIORecCol) = Bron.Cells(ReadRow, "G")
+                    'Verzamelen naar tijdelijke var voor latere verwerking
+                    'NODIG?
+                    strTag = strArrayTmp(0)
+                    strIOConnection = strArrayTmp(1)
+                    
+                Else
+                    'Hulpvar gebruiken om substring te splitten
+                    strSplitString = strArrayTmp(1) 'XX:TAG
+                    Erase strArrayTmp()
+                    strArrayTmp() = Split(strSplitString, ":")
+                    If UBound(strArrayTmp) > 0 Then
+                        Opleverlijst.Cells(WriteRow, SattObjCol) = strRWZI + "_" + strArrayTmp(1)
+                        Opleverlijst.Cells(WriteRow, SattIORecCol) = "-"
+                        'Opleverlijst.Cells(WriteRow, SattIORecCol) = Bron.Cells(ReadRow, "G")
+                        'Verzamelen naar tijdelijke var voor latere verwerking
+                        'NODIG?
+                        strTag = strArrayTmp(1)
+                        strIOConnection = ""
+                    End If
+                End If
+            End If
+        Else
+            'BasePicture:IO.FqIR10821NegDeb
+            'Splitten en invullen. Is iets wat later uitgezocht dient te worden in de APG
+            Erase strArrayTmp()
+            strArrayTmp() = Split(strReadTmp, ":") '2e element=> IO.TAG
+            If UBound(strArrayTmp) > 0 Then
+                'Hulpvar gebruiken om substring te splitten
+                strSplitString = strArrayTmp(1) 'IO.TAG
+                Erase strArrayTmp()
+                strArrayTmp() = Split(strSplitString, ".")
+                If UBound(strArrayTmp) > 0 Then
+                    Opleverlijst.Cells(WriteRow, SattObjCol) = strRWZI + "_" + strArrayTmp(1)
+                    Opleverlijst.Cells(WriteRow, SattIORecCol) = "-"
+                    'Opleverlijst.Cells(WriteRow, SattIORecCol) = Bron.Cells(ReadRow, "G")
+                    
+                    'Verzamelen naar tijdelijke var voor latere verwerking
+                    'NODIG?
+                    strTag = strArrayTmp(1)
+                    strIOConnection = ""
+                End If
+                
+            End If
+        End If
+ Else
+        
+    Opleverlijst.Cells(WriteRow, SattObjCol) = "-"
+    Opleverlijst.Cells(WriteRow, SattIORecCol) = "-"
+        
+        
+ End If
+    
+    '--------------------------------------------------------------
+    ' Schrijven IO adressen
+    ' Node -> Rij met IO-kaarten
+    ' Module -> IO-kaart
+    ' In Sattline-formaat wordt de IO-kaart als IP:NODE.MODULE getoond in geval van S200 IO
+    ' Voorbeeld 128.3.2.71:0.0 of bij control net 128.3.2.71:14.0.0
+    ' NODE en MODULE hieruit filteren en naar afzonderlijke kolommen schrijven
+    strReadTmp = Bron.Cells(ReadRow, "D")
+    
+    If InStr(strReadTmp, ":") > 0 Then 'S200
+        'NODE.MODULE isoleren
+        strReadNodeModule = Right(strReadTmp, (Len(strReadTmp) - InStr(strReadTmp, ":")))
+        'Splitten om te kijken of controlnet gebruikt wordt.
+        'ANN : 0.1  , ACN : 14.0.1
+        Erase strArrayTmp()
+        strArrayTmp() = Split(strReadNodeModule, ".")
+        
+        If UBound(strArrayTmp) < 2 Then
+            Opleverlijst.Cells(WriteRow, SattKopCol) = "0" 'Voor ANN waarde 0 meegeven
+            Opleverlijst.Cells(WriteRow, SattNodeCol) = strArrayTmp(0)
+            Opleverlijst.Cells(WriteRow, SattModCol) = strArrayTmp(1)
+        Else
+            Opleverlijst.Cells(WriteRow, SattKopCol) = strArrayTmp(0) 'Voor ANN waarde 0 meegeven
+            Opleverlijst.Cells(WriteRow, SattNodeCol) = strArrayTmp(1)
+            Opleverlijst.Cells(WriteRow, SattModCol) = strArrayTmp(2)
+        End If
+        
+        'Channelnummer afleiden IX03 => 3
+        'IO-kanaal -> formaat IX, QX, IW, QW met een getal, bijvoorbeeld IX9
+        'Eerste twee karakters verwijderen is genoeg
+        strReadTmp = Bron.Cells(ReadRow, "E")
+        Opleverlijst.Cells(WriteRow, SattChanCol) = Mid(strReadTmp, 3)
+        
+    Else
+        
+        'Boardstring ophalen - Board240 wordt 240
+        strBoard = Right(Bron.Cells(ReadRow, BoardCol), Len(Bron.Cells(ReadRow, BoardCol)) - 5)
+    
+        'Channel ophalen - QX0 wordt 0
+        strChannel = Right(Bron.Cells(ReadRow, ChannelCol), Len(Bron.Cells(ReadRow, ChannelCol)) - 2)
+    
+        'Conversie naar kanaalnummers
+        Opleverlijst.Cells(WriteRow, SattChanCol) = CInt(strBoard) + CInt(strChannel)
+    
+    End If
+
+    DoEvents
+Next ReadRow
+
+    MsgBox ("Klaar met vullen opleverlijst!")
+    ' Wissen bronlijst
+    Bron.Range("1:10000").Clear
+
+End Sub
+
+Sub ObjectsInIoList()
+
+
+    Dim my_FileName As Variant
+    Dim wkb As Workbook
+    Dim Opleverlijst As Worksheet
+    Dim ReadRow As Integer, LastRow As Integer
+    Dim strType As String, strSourceTag As String, strSourceArray() As String, strConvertedTag As String
+    
+    my_FileName = Application.GetOpenFilename(FileFilter:="Excel Files (*.xl*), *.xm*")
+    
+    If my_FileName <> False Then
+
+        Set wkb = Workbooks.Open(Filename:=my_FileName)
+        wkb.Activate
+        
+        Set Opleverlijst = Sheets("Opleverlijst")
+        
+        ' Laatste rij zoeken bron
+        LastRow = Opleverlijst.Cells(1048576, 1).End(xlUp).Row
+        
+        'Door de lijst gaan
+        For ReadRow = 8 To LastRow
+            strType = Opleverlijst.Cells(ReadRow, "Y")
+            
+            strSourceTag = Opleverlijst.Cells(ReadRow, "S") 'bv HEIL_PISA40551
+            'Splitten in array
+            strSourceArray() = Split(strSourceTag, "_")
+            
+            'Moet iets van een tagnaam inzitten
+            If UBound(strSourceArray) > 0 Then
+            
+                'Analoge metingen hebben een type IE of IA
+                If InStr(strType, "IE") > 0 Or InStr(strType, "IA") > 0 Then
+                    If UBound(strSourceArray) > 0 And UBound(strSourceArray) < 2 Then   'Normale tag: HEIL en PISA40551
+                        
+                        'Controleer of de laatste 5 karakters allemaal nummers zijn, anders is het een special
+                        If HasNumber(Right(strSourceArray(1), 5)) = 2 Then 'returnwaarde 2 is volledig uit nummers
+                            If InStr(strSourceArray(1), "Y") = 0 And InStr(strSourceArray(1), "d") = 0 Then  'normale tag, geen "y" of "d" aanwezig
+                                strConvertedTag = Left(strSourceArray(1), 1) & "T" & Right(strSourceArray(1), 5) 'P + T + 40551
+                                strConvertedTag = strSourceArray(0) & "_" & strConvertedTag 'HEIL_PT40551
+                            Else
+                                strConvertedTag = Left(strSourceArray(1), 1) & "Y" & Right(strSourceArray(1), 5) 'P + Y + 40551
+                                strConvertedTag = strSourceArray(0) & "_" & strConvertedTag 'HEIL_PY40551
+                            End If
+                            
+                            Opleverlijst.Cells(ReadRow, "I") = strConvertedTag
+                            
+                        Else
+                            Opleverlijst.Cells(ReadRow, "I") = strSourceTag
+                            
+                        End If
+                    
+                    End If
+                
+                'Digitale hebben IB of ID, |fffd|n een tagnaam met vijf getallen
+                ElseIf (InStr(strType, "IB") > 0 Or InStr(strType, "ID") > 0) And HasNumber(Right(strSourceArray(1), 5)) = 2 Then
+                        
+    
+                    If UBound(strSourceArray) > 0 And UBound(strSourceArray) < 2 Then   'Normale tag: HEIL en LSA43102
+                        
+                        'Controleer of de laatste 5 karakters allemaal nummers zijn, anders is het een special
+                        If HasNumber(Right(strSourceArray(1), 5)) = 2 Then 'returnwaarde 2 is volledig uit nummers
+                            'Indien GEEN noodstop HZ
+                            If InStr(strSourceArray(1), "HZ") < 1 Then
+                                strConvertedTag = Left(strSourceArray(1), 1) & "S" & Right(strSourceArray(1), 5) 'L + S + 43102
+                                strConvertedTag = strSourceArray(0) & "_" & strConvertedTag 'HEIL_LS43102
+                            Else
+                                'Noodstop heeft soms HZ, soms HZA. Altijd de H pakken en daarna de Z toevoegen
+                                strConvertedTag = Left(strSourceArray(1), 1) & "Z" & Right(strSourceArray(1), 5) 'H + Z + 43102
+                                strConvertedTag = strSourceArray(0) & "_" & strConvertedTag 'HEIL_HZ43102
+                            End If
+                            
+                            Opleverlijst.Cells(ReadRow, "I") = strConvertedTag
+      
+                         End If
+                    End If
+                
+                ElseIf InStr(strSourceTag, "QXA") > 0 Then
+                    'HEIL_ + QX + 11111
+                    Opleverlijst.Cells(ReadRow, "I") = strSourceArray(0) + "_" + Left(strSourceArray(1), 2) & Right(strSourceArray(1), 5)
+                Else
+                    Opleverlijst.Cells(ReadRow, "I") = strSourceTag
+                
+                End If
+            Else
+                Opleverlijst.Cells(ReadRow, "I") = strSourceTag
+            End If
+        Next ReadRow
+        
+    End If
+
+    MsgBox ("Klaar met omzetten objectnamen!")
+
+End Sub
+
+'Functie om te checken of een string een nummer bevat, en of deze geheel uit nummers bestaat
+'Returnwaarde:
+'0 = geen nummers
+'1 = minimaal 1 nummer
+'2 = volledig uit nummers
+Function HasNumber(strData As String) As Integer
+    Dim iCnt, iTotalCnt As Integer
+     
+    For iCnt = 1 To Len(strData)
+        If IsNumeric(Mid(strData, iCnt, 1)) Then
+            
+            iTotalCnt = iTotalCnt + 1
+            
+        End If
+    Next iCnt
+    
+    If iTotalCnt < Len(strData) Then
+        HasNumber = 1
+    ElseIf iTotalCnt = Len(strData) Then
+        HasNumber = 2
+    Else
+        HasNumber = 0
+    End If
+    
+End Function
+
+
+INQUEST-PP=macro

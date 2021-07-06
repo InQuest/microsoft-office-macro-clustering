@@ -1,0 +1,4921 @@
+Attribute VB_Name = "CalibrationEQModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+Public Function calibrateEQModel(wksModel As Worksheet, strCurncy As String, strTicker As String, strModelType As String, _
+                                    strStartDate As String, strEndDate As String, _
+                                    vecErrMsg As vector_var) As String
+    Dim strModelID$, strModelAddr$
+    Dim blnHasFatalError As Boolean
+    
+    'Strange Ticker: BP/ LN Equity
+    'market data object: BP/LN.DIVYIELD, BP/LN.QUOTE, BP/LN.VOLATILITY
+    Dim vaTemp As Variant: vaTemp = VBA.Split(strTicker)
+    Dim asn$: asn = wksModel.Name
+    Dim strEQVolObject$
+    Dim vaViewEQVol As Variant
+    
+    wksModel.Activate
+    Range("NX_" & asn & "_M_NameValue") = strModelType & "." & VBA.Replace$(vaTemp(0), "/", "") & "." & strCurncy
+    Range("C7") = strCurncy
+    'keep ASSET NAME consistent with ASSET NAME in NBE page
+    
+    If UBound(vaTemp) <= 1 Then
+        Range("C8") = vaTemp(0)
+    Else
+        Range("C8") = vaTemp(0) & vaTemp(1)
+    End If
+    
+    'Range("C8") = IIf(UBound(vaTemp) = 1, vaTemp(0), vaTemp(0) & vaTemp(1))
+        
+    'check if raw EQ Vol surface is built without fatals
+    
+    If UBound(vaTemp) <= 1 Then
+        strEQVolObject = vaTemp(0) & ".Volatility"
+    Else
+        strEQVolObject = vaTemp(0) & vaTemp(1) & ".Volatility"
+    End If
+    
+    'strEQVolObject = IIf(UBound(vaTemp) = 1, vaTemp(0), vaTemp(0) & vaTemp(1)) & ".Volatility"
+    
+    vaViewEQVol = Application.Run("nxlibviewWarnings", strEQVolObject)
+    If (Not useRawEQVol) Or UBound(vaViewEQVol) > 1 Then
+        'if any fatal,switch to vol surface ByMoneyness
+        Range("NX_" & asn & "_M_VolCurveID") = strEQVolObject & ".ByMoneyness"
+    End If
+    
+    'continue resize american table
+    Call ResizeTable("European", strStartDate, strEndDate)
+    Call ResizeTable("American", strStartDate, strEndDate)
+    'calibration
+    generateOptions
+    
+    'Has Fatal Errors?
+    strModelID = Range("NX_" & ActiveSheet.Name & "_M_ModelID")
+    blnHasFatalError = Utilities.hasFatalError(strModelID)
+    If blnHasFatalError Then
+        vecErrMsg.push_back ("Error in creating model: " & wksModel.Name)
+    End If
+    
+    
+    
+    strModelAddr = Range("NX_" & ActiveSheet.Name & "_M_ModelID").Address
+    calibrateEQModel = strModelAddr
+    
+End Function
+
+Private Function useRawEQVol() As Boolean
+    Dim blnUseRawEQVol As Boolean: blnUseRawEQVol = False
+    Dim vaNOWDATE As Date
+    Dim vaToday As Long: vaToday = CLng(VBA.Date)
+    On Error Resume Next
+    vaNOWDATE = Application.Run("nxlibview", "TODAY", "TODAY")(1)
+    'vaTemp = Application.Run("nxlibaddtenor", vaNOWDATE, "1BD", "NONE", "NONE")(1)
+    If Application.Run("nxlibaddtenor", vaNOWDATE, "1BD", "NONE", "NONE")(1) > vaToday Then
+        blnUseRawEQVol = True
+    End If
+    
+    useRawEQVol = blnUseRawEQVol
+    
+End Function
+
+
+
+Private Function IsDummyData() As Boolean
+    Dim asn$: asn = ActiveSheet.Name
+    ActiveSheet.Calculate
+    Dim strEQVolCurve$: strEQVolCurve = Range("NX_" & asn & "_M_VolCurveID")
+    If InStr(1, strEQVolCurve, "DUMMY", vbTextCompare) <> 0 Then
+        IsDummyData = True
+    Else
+        IsDummyData = False
+    End If
+End Function
+
+
+
+Private Sub generateOptions()
+    ActiveSheet.Calculate
+    Application.ScreenUpdating = False
+    Dim asn$: asn = ActiveSheet.Name
+    Dim i As Integer, j As Integer, counter As Integer: counter = 0
+    Range("NX_" & asn & "_M_OptionDefs").Clear
+    Dim invCom$: invCom = """"
+    Dim rngIn As Range: Set rngIn = Range("NX_" & asn & "_M_SelectionGrid")
+    Dim rngOt As Range: Set rngOt = Range("NX_" & asn & "_M_OptionDefs")
+    Dim ID$
+    Dim strCcy: strCcy = Range("NX_" & asn & "_M_CurrencyValue")
+    Dim CcyAdd$: CcyAdd = Range("NX_" & asn & "_M_CurrencyValue").Address
+    
+    Dim prefixVal$: prefixVal = Range("NX_" & asn & "_M_PrefixValue")
+    Dim equityVal$: equityVal = Range("NX_" & asn & "_M_EquityName")
+    Dim modelType$: modelType = Range("NX_" & asn & "_M_ModelType")
+    Dim flavor$: flavor = Range("NX_" & asn & "_M_Flavor")
+    
+    ' fill in the European options
+    For j = 1 To rngIn.Rows.count
+        For i = 1 To rngIn.Columns.count
+            If rngIn.Cells(j, i) = "Y" Or rngIn.Cells(j, i) = "y" Then
+                counter = counter + 1
+                rngOt.Cells(counter, 1) = rngIn.Cells(j, 1)
+                rngOt.Cells(counter, 1).NumberFormat = "dd-mmm-yy"
+                rngOt.Cells(counter, 2) = rngIn.Cells(1, i)
+                ID = prefixVal & "." & modelType & "." & equityVal & "." & strCcy & ".EuroOpt" & counter
+                rngOt.Cells(counter, 3).Formula = "=nxInstrumentEQEuropean(" & invCom & ID & invCom _
+                    & ",NX_" & asn & "_M_CurrencyValue," _
+                    & invCom & flavor & invCom _
+                    & ",NX_" & asn & "_M_VolCurveID," _
+                    & rngOt.Cells(counter, 1).Address & ",," & rngOt.Cells(counter, 2).Address _
+                    & ",,,NX_" & asn & "_M_ConventionValue)"
+            End If
+        Next
+    Next
+    
+    Dim numOfEuroOpt As Integer: numOfEuroOpt = counter
+    'Fill in the American options
+    Set rngIn = Range("NX_" & asn & "_M_AmerSelectionGrid")
+    For j = 1 To rngIn.Rows.count
+        For i = 1 To rngIn.Columns.count
+            If i <> 1 And j <> 1 And (Not rngIn.Cells(j, i).Value = vbNullString) And IsNumeric(rngIn.Cells(j, i)) Then
+                counter = counter + 1
+                rngOt.Cells(counter, 1) = rngIn.Cells(j, 1)
+                rngOt.Cells(counter, 1).NumberFormat = "dd-mmm-yy"
+                rngOt.Cells(counter, 2) = rngIn.Cells(1, i)
+                ID = prefixVal & "." & modelType & "." & equityVal & "." & strCcy & ".AmerOpt" & counter
+                rngOt.Cells(counter, 3) = "=nxInstrEQAmericanByDate(" & invCom & ID & invCom _
+                    & ",NX_" & asn & "_M_CurrencyValue," _
+                    & invCom & flavor & invCom _
+                    & ",," & rngOt.Cells(counter, 1).Address & "," & rngOt.Cells(counter, 2).Address _
+                    & ",NX_" & asn & "_M_ConventionValue,,,,,,," _
+                    & rngIn.Cells(j, i).Address & ")"
+                                        
+                    
+            End If
+        Next
+    Next
+       
+    If counter > 0 Then
+        Range(rngOt.Cells(1, 1), rngOt.Cells(counter, 3)).Select
+        ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_OptionDefs", RefersTo:=Selection
+        Selection.HorizontalAlignment = xlCenter
+        Selection.Interior.ColorIndex = 2
+        Selection.Font.Name = "Tahoma"
+        Selection.Font.size = 10
+        
+        With Selection.Borders(xlEdgeLeft)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        With Selection.Borders(xlEdgeTop)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        With Selection.Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        With Selection.Borders(xlEdgeRight)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        
+        Range("NX_" & asn & "_M_InstCollection").Formula = "=nxInstrumentCollection(" & invCom _
+            & prefixVal & "." & modelType & "." & equityVal & "." & strCcy & ".Collection" & invCom & "," & CcyAdd & "," _
+            & Range(rngOt.Cells(1, 3).Offset(-1, 0), rngOt.Cells(counter, 3)).Address & ")"
+        
+        Range("A1").Select
+        ActiveSheet.Calculate
+    Else
+        Range("NX_" & asn & "_M_InstCollection") = "NO OPTIONS"
+    End If
+    
+    
+    Set rngIn = Nothing
+    Set rngOt = Nothing
+    
+End Sub
+
+'only display expiry within a certain date range
+Private Function ResizeTable(optionType As String, strStartDate As String, strEndDate As String) As Boolean
+    ActiveSheet.Calculate
+    Dim asn$: asn = ActiveSheet.Name
+    Dim midName$
+    If optionType = "European" Then
+        midName = ""
+    Else
+        midName = "Amer"
+    End If
+       
+    Dim anchor As Range: Set anchor = Range("NX_" & asn & "_M_" & midName & "SelectionGrid").Cells(1, 1)
+    
+    Dim strMatrixID$: strMatrixID = GetVolDataMatrixID
+    If strMatrixID = "" Then
+        GoTo errorHandler_BadMarketData
+    End If
+    
+    Dim temp: temp = Application.Run("NxLibView", strMatrixID)
+    'Dim temp: temp = Application.Run("NxLibView", Range("NX_" & asn & "_M_VolCurveID"))
+    
+    Dim blnValidStartDate As Boolean: blnValidStartDate = VBA.IsDate(strStartDate)
+    Dim blnValidEndDate As Boolean: blnValidEndDate = VBA.IsDate(strEndDate)
+    
+    
+    'Check that a valid volatility curve was returned
+    On Error GoTo errorHandler_BadMarketData
+    Dim ErrorCheck As Variant: ErrorCheck = LBound(temp, 1): ErrorCheck = LBound(temp, 2)
+    Dim spotPrice As Double: spotPrice = Range("NX_" & asn & "_M_SpotPrice").Value
+    On Error GoTo 0
+    
+    Dim strikeStep As Double: strikeStep = Range("NX_" & asn & "_M_StrikeStep").Value
+    Dim strikeEachSide As Integer: strikeEachSide = Range("NX_" & asn & "_M_StrikeEachSide").Value
+    
+    Range("NX_" & asn & "_M_" & midName & "SelectionGrid") = ""
+    Dim i As Integer, dateCounter As Integer, strikeCounter As Integer
+    dateCounter = 0
+    strikeCounter = 0
+    For i = 2 To UBound(temp)
+        If temp(i, 1) = "" Then Exit For
+        
+        'If EndDate is not supplied, choose all the expiry after StartDate
+        If blnValidStartDate And Not blnValidEndDate Then
+            If CLng(DateValue(strStartDate)) <= temp(i, 1) Then
+                dateCounter = dateCounter + 1
+                anchor.Offset(dateCounter, 0) = temp(i, 1)
+                anchor.Offset(dateCounter, 0).NumberFormat = "dd-mmm-yy"
+            End If
+        
+        ElseIf blnValidStartDate And blnValidEndDate Then
+            If CLng(DateValue(strStartDate)) <= temp(i, 1) And CLng(DateValue(strEndDate)) >= temp(i, 1) Then
+                dateCounter = dateCounter + 1
+                anchor.Offset(dateCounter, 0) = temp(i, 1)
+                anchor.Offset(dateCounter, 0).NumberFormat = "dd-mmm-yy"
+            End If
+        End If
+    Next i
+
+    Dim j As Integer
+    For i = 1 To strikeEachSide * 2 + 1
+        If optionType = "European" And i = strikeEachSide + 1 Then
+            anchor.Offset(0, i) = "ATM"
+            For j = 1 To dateCounter
+                anchor.Offset(j, i) = "y"
+            Next j
+        
+        ElseIf i < strikeEachSide + 1 Then
+            anchor.Offset(0, i) = spotPrice * (1 - strikeStep) ^ (strikeEachSide + 1 - i)
+        Else
+            anchor.Offset(0, i) = spotPrice * (1 + strikeStep) ^ (i - strikeEachSide - 1)
+        End If
+    Next i
+
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_" & midName & "SelectionGrid", RefersTo:=Range(anchor, anchor.Offset(dateCounter, strikeEachSide * 2 + 1))
+    Set anchor = Nothing
+    ResizeTable = True
+    
+    Exit Function
+
+
+errorHandler_BadMarketData:
+    Set anchor = Nothing
+    ResizeTable = False
+End Function
+
+Private Function GetVolDataMatrixID() As String
+    Dim asn$: asn = ActiveSheet.Name
+    Dim strDataMatrixID As String: strDataMatrixID = ""
+    Dim temp: temp = Application.Run("NxLibView", Range("NX_" & asn & "_M_VolCurveID"))
+    On Error GoTo errorHandler_BadVol
+    Dim rowStartIndex As Integer, rowEndIndex As Integer, colStartIndex As Integer, colEndIndex As Integer, i As Integer, depColIndex As Integer
+    rowStartIndex = LBound(temp, 1)
+    rowEndIndex = UBound(temp, 1)
+    colStartIndex = LBound(temp, 2)
+    colEndIndex = UBound(temp, 2)
+    depColIndex = -1
+    For i = colStartIndex To colEndIndex
+        If UCase(temp(rowStartIndex, i)) = "DEPENDENCIES" Then
+            depColIndex = i
+            Exit For
+        End If
+    Next i
+    If depColIndex = -1 Then
+        GoTo errorHandler_BadVol
+    End If
+    For i = rowStartIndex To rowEndIndex
+        If VBA.InStr(1, (temp(i, depColIndex)), "VOLDATA") <> 0 Then
+            strDataMatrixID = temp(i, depColIndex)
+            Exit For
+        End If
+    Next i
+    
+errorHandler_BadVol:
+    GetVolDataMatrixID = strDataMatrixID
+End Function
+
+
+Attribute VB_Name = "CalibrationFXModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+'Calibrate the FX model
+Public Function calibrateFXModel(wksModel As Worksheet, strCcy As String, strModelType As String, _
+                                    vecErrMsg As vector_var) As String
+    
+    Dim strModelID$, strModelAddr$
+    Dim blnHasFatalError As Boolean
+    
+    Dim asn$: asn = wksModel.Name
+    wksModel.Activate
+    
+    Range("NX_" & asn & "_M_NameValue") = strModelType & "." & VBA.Replace(strCcy, "/", "")
+    Range("C16") = VBA.Left(strCcy, 3)
+    Range("C17") = VBA.Right(strCcy, 3)
+
+    'Resize table
+    ResizeTable
+    'calibration
+    generateOptions
+
+    'Has Fatal error or not
+    strModelID = Range("NX_" & ActiveSheet.Name & "_M_ModelID")
+    blnHasFatalError = Utilities.hasFatalError(strModelID)
+    If blnHasFatalError Then
+        vecErrMsg.push_back ("Error in creating model: " & wksModel.Name)
+    End If
+    
+    strModelAddr = Range("NX_" & ActiveSheet.Name & "_M_ModelID").Address
+    calibrateFXModel = strModelAddr
+End Function
+
+Private Function IsDummyData() As Boolean
+    Dim asn$: asn = ActiveSheet.Name
+    ActiveSheet.Calculate
+    Dim strFXVolCurve$: strFXVolCurve = Range("NX_" & asn & "_M_VolCurve")
+    If InStr(1, strFXVolCurve, "DUMMY", vbTextCompare) <> 0 Then
+        IsDummyData = True
+    Else
+        IsDummyData = False
+    End If
+End Function
+
+Private Sub generateOptions()
+    ActiveSheet.Calculate
+    Application.ScreenUpdating = False
+    
+    On Error GoTo CleanUp
+    Dim asn$: asn = ActiveSheet.Name
+    Range("NX_" & asn & "_M_InstDefs").Clear
+    
+    Dim rngIn As Range: Set rngIn = Range("NX_" & asn & "_M_SelectionGrid")
+    Dim rngOut As Range: Set rngOut = Range("NX_" & asn & "_M_InstDefs")
+      
+    Dim i As Integer, j As Integer
+    Dim counter As Integer: counter = 0
+    Dim invCom$: invCom = """"
+    
+    For i = 2 To rngIn.Rows.count
+        For j = 2 To rngIn.Columns.count
+            If UCase(rngIn(i, j)) = "Y" Then
+                counter = counter + 1
+                rngOut.Cells(counter, 1) = rngIn.Cells(i, 1)
+                rngOut.Cells(counter, 2) = rngIn.Cells(1, j)
+                rngOut.Cells(counter, 3).Formula = "=nxInstrumentFXEuropean(" _
+                                                    & "NX_" & asn & "_M_PrefixValue &" & invCom & "." & invCom & "& NX_" & asn & "_M_NameValue &" & invCom & "." & invCom & "&" & invCom & rngOut(counter, 1) & invCom & "&" & invCom & "." & invCom & "&" & invCom & rngOut(counter, 2) & invCom & "," _
+                                                    & "NX_" & asn & "_M_DomesticCurrency," _
+                                                    & "NX_" & asn & "_M_Flavor," _
+                                                    & "NX_" & asn & "_M_ForeignCurrency," _
+                                                    & rngOut.Cells(counter, 2).Address & ",,," _
+                                                    & rngOut.Cells(counter, 1).Address & ",,," _
+                                                    & "NX_" & asn & "_M_NoticePeriod," _
+                                                    & "NX_" & asn & "_M_FixCalendar," _
+                                                    & "NX_" & asn & "_M_FixConvention," _
+                                                    & "NX_" & asn & "_M_Notional," _
+                                                    & "NX_" & asn & "_M_VolCurve)"
+
+                   
+            End If
+        Next
+    Next
+    
+    If counter = 0 Then Exit Sub
+    Range(rngOut.Cells(1, 1), rngOut.Cells(counter, 3)).Select
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_InstDefs", RefersTo:=Selection
+    Selection.HorizontalAlignment = xlCenter
+    Selection.Interior.ColorIndex = 2
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    Range(rngOut.Cells(1, 2), rngOut.Cells(counter, 3)).NumberFormat = "#,##0.0000"
+    Range(rngOut.Cells(1, 3), rngOut.Cells(counter, 4)).HorizontalAlignment = xlLeft
+    
+    Range("NX_" & asn & "_M_InstCollection").Formula = "=nxInstrumentCollection(" _
+                                    & "NX_" & asn & "_M_PrefixValue&" & invCom & "." & invCom & "& NX_" & asn & "_M_NameValue&" & invCom & ".Collection" & invCom & "," _
+                                    & "NX_" & asn & "_M_DomesticCurrency," _
+                                    & Range(rngOut.Cells(1, 3).Offset(-1, 0), rngOut.Cells(counter, 3)).Address & ",," _
+                                    & "NX_" & asn & "_M_ForeignCurrency)"
+
+   
+   ActiveSheet.Calculate
+   Range("NX_" & asn & "_M_Anchor").Select
+
+CleanUp:
+    Application.ScreenUpdating = True
+    
+End Sub
+
+Private Function ResizeTable() As Boolean
+    ActiveSheet.Calculate
+    Application.ScreenUpdating = False
+    
+    On Error GoTo CleanUp
+    Dim asn$: asn = ActiveSheet.Name
+    Dim anchor As Range: Set anchor = Range("NX_" & asn & "_M_SelectionGrid").Cells(1, 1)
+    Dim FXVolData: FXVolData = Application.Run("NxLibView", Range("NX_" & asn & "_M_VolCurve") & ".Data")
+    Dim i As Integer, rowCount As Integer, columnCount As Integer: rowCount = 0
+    Dim ErrorCheck As Variant
+    Dim ATMPrice As Variant
+    
+    'Check that a valid XXX.XXX.FXVol.Data exists
+    On Error GoTo errorHandler_BadMarketData
+    ErrorCheck = LBound(FXVolData, 1)
+    ErrorCheck = LBound(FXVolData, 2)
+    On Error GoTo CleanUp
+    
+    'Check that ATM Price is valid
+    ATMPrice = Range("NX_" & asn & "_M_ATMPrice")
+    If Not IsNumeric(ATMPrice) Then
+        GoTo errorHandler_BadMarketData
+    End If
+    
+    Dim strikeBySide As Variant: strikeBySide = Range("NX_" & asn & "_M_StrikeBySide").Value
+    columnCount = 2 * strikeBySide + 1
+    
+    Range("NX_" & asn & "_M_SelectionGrid") = ""
+    For i = LBound(FXVolData) + 1 To UBound(FXVolData)
+        rowCount = rowCount + 1
+        anchor.Offset(rowCount, 0) = FXVolData(i, 1)
+        anchor.Offset(rowCount, strikeBySide + 1) = "y"
+    Next
+    
+    anchor.Offset(0, strikeBySide + 1) = "ATM"
+    Dim lastLeftPrice As Double: lastLeftPrice = ATMPrice
+    Dim lastRightPrice As Double: lastRightPrice = ATMPrice
+    Dim strikeFactor As Double: strikeFactor = Range("NX_" & asn & "_M_StrikeFactor")
+        
+    For i = strikeBySide To 1 Step -1
+            lastLeftPrice = lastLeftPrice * (1 - strikeFactor)
+            lastRightPrice = lastRightPrice * (1 + strikeFactor)
+            anchor.Offset(0, i) = lastLeftPrice
+            anchor.Offset(0, columnCount - i + 1) = lastRightPrice
+    Next
+    
+    Range(anchor, anchor.Offset(rowCount, columnCount)).Select
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_SelectionGrid", RefersTo:=Selection
+    
+    Application.ScreenUpdating = True
+    ActiveSheet.Calculate
+    Range("NX_" & asn & "_M_Anchor").Select
+    
+    ResizeTable = True
+    Exit Function
+    
+errorHandler_BadMarketData:
+'    MsgBox "FX Vol and FX Spot objects must be created to resize table.", _
+'        vbExclamation, "Numerix Object Not Found"
+    
+CleanUp:
+    ResizeTable = False
+    Application.ScreenUpdating = True
+
+End Function
+
+Attribute VB_Name = "CalibrationHYModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+
+Option Explicit
+Private hasBeenInitialised As Boolean
+
+
+Public Sub Create_CC_EQB()
+    On Error GoTo errorHandler
+    Application.EnableEvents = False
+    Dim asn$: asn = ActiveSheet.Name
+    Dim rngForeignModelList As Range: Set rngForeignModelList = Range("NX_" & asn & "_M_ForeignModelList")
+    Dim numForeignModels%: numForeignModels = rngForeignModelList.Rows.count
+    Dim rngForeignModelListAnchor As Range: Set rngForeignModelListAnchor = rngForeignModelList.Cells(1, 1).Offset(-1, 0)
+    Dim rngForeignModels As Range: Set rngForeignModels = Range("NX_" & asn & "_M_ForeignModels")
+    rngForeignModels.Formula = "=nxlibdata(" & rngForeignModelListAnchor.Address & "," & Range(rngForeignModelListAnchor.Offset(1, 0), rngForeignModelListAnchor.Offset(numForeignModels, 0)).Address & "," & """" & "CC_EQB_ForeignModel.Data" & """" & ")"
+    Dim rngFXModelList As Range: Set rngFXModelList = Range("NX_" & asn & "_M_FXModelList")
+    Dim numFXModels%: numFXModels = rngFXModelList.Rows.count
+    Dim rngFXModelListAnchor As Range: Set rngFXModelListAnchor = rngFXModelList.Cells(1, 1).Offset(-1, 0)
+    Dim rngFXModels As Range: Set rngFXModels = Range("NX_" & asn & "_M_FXModels")
+    rngFXModels.Formula = "=nxlibdata(" & rngFXModelListAnchor.Address & "," & Range(rngFXModelListAnchor.Offset(1, 0), rngFXModelListAnchor.Offset(numFXModels, 0)).Address & "," & """" & "CC_EQB_FXModel.Data" & """" & ")"
+    Dim rngEQModelList As Range: Set rngEQModelList = Range("NX_" & asn & "_M_EQModelList")
+    Dim numEQModels%: numEQModels = rngEQModelList.Rows.count
+    Dim rngEQModelListAnchor As Range: Set rngEQModelListAnchor = rngEQModelList.Cells(1, 1).Offset(-1, 0)
+    Dim rngEQModels As Range: Set rngEQModels = Range("NX_" & asn & "_M_EQModels")
+    rngEQModels.Formula = "=nxlibdata(" & Range(rngEQModelListAnchor, rngEQModelListAnchor.Offset(0, 1)).Address & "," & Range(rngEQModelListAnchor.Offset(1, 0), rngEQModelListAnchor.Offset(numEQModels, 1)).Address & "," & """" & "CC_EQB_EQModel.Data" & """" & ")"
+    ActiveSheet.Calculate
+CleanUp:
+    Application.EnableEvents = True
+    Exit Sub
+errorHandler:
+    Call VBA.MsgBox("Error in creating model table data", vbCritical + vbOKOnly, "Error")
+    GoTo CleanUp
+    End Sub
+    
+    
+    
+Public Sub Create_IR_EQB()
+    On Error GoTo errorHandler
+    Application.EnableEvents = False
+    Dim rngEQModelList As Range: Set rngEQModelList = Range("NX_" & ActiveSheet.Name & "_M_EQModelList")
+    Dim rngModelListAnchor As Range: Set rngModelListAnchor = rngEQModelList.Cells(1, 1).Offset(-1, 0)
+    Dim numEQModels%: numEQModels = rngEQModelList.Rows.count
+    Dim rngEQModels As Range: Set rngEQModels = Range("NX_" & ActiveSheet.Name & "_M_EQModels")
+    rngEQModels.Formula = "=nxlibdata(" & Range(rngModelListAnchor, rngModelListAnchor.Offset(0, 1)).Address & "," & Range(rngModelListAnchor.Offset(1, 0), rngModelListAnchor.Offset(numEQModels, 1)).Address & "," & """" & "IR_EQB_EQModel.Data" & """" & ")"
+    ActiveSheet.Calculate
+CleanUp:
+    Application.EnableEvents = True
+    Exit Sub
+errorHandler:
+    Call VBA.MsgBox("Error in creating model table data", vbCritical + vbOKOnly, "Error")
+    GoTo CleanUp
+    End Sub
+
+
+''''Public Sub resize_HYModel(wksHYModel As Worksheet, strHYModelCcy As String, _
+''''                            vecIRModelIDAddr As vector_var, vecIRModelCcy As vector_var, _
+''''                            vecEQModelIDAddr As vector_var, vecEQModelNameAddr As vector_var, _
+''''                            vecCMDTYModelIDAddr As vector_var, vecCMDTYModelNameAddr As vector_var, _
+''''                            vecFXModelIDAddr As vector_var)
+''''
+''''
+''''
+''''
+''''End Sub
+
+
+
+
+'Public Sub Resize_CC_EQB(numForeignModel As Integer, numEQModel As Integer)
+Public Sub Resize_CC_EQB(vecForeignModelIDAddr As vector_var, vecFXModelIDAddr As vector_var, _
+                            vecEQModelIDAddr As vector_var, vecEQModelNameAddr As vector_var)
+
+    
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    Dim numForeignModel%, numFXModel%, numEQModel%
+    On Error GoTo errorHandler
+    numEQModel = vecEQModelIDAddr.size
+    numForeignModel = vecForeignModelIDAddr.size
+    numFXModel = vecFXModelIDAddr.size
+    
+    Dim asn$: asn = ActiveSheet.Name
+    Dim rngForeignModels As Range: Set rngForeignModels = Range("NX_" & asn & "_M_ForeignModels")
+    Dim rngForeignModelList As Range: Set rngForeignModelList = Range("NX_" & asn & "_M_ForeignModelList")
+    Dim rngFXModels As Range: Set rngFXModels = Range("NX_" & asn & "_M_FXModels")
+    Dim rngFXModelList As Range: Set rngFXModelList = Range("NX_" & asn & "_M_FXModelList")
+    Dim rngEQModels As Range: Set rngEQModels = Range("NX_" & asn & "_M_EQModels")
+    Dim rngEQModelList As Range: Set rngEQModelList = Range("NX_" & asn & "_M_EQModelList")
+        
+    Dim rngIRModelFactorNum As Range: Set rngIRModelFactorNum = Range("NX_" & asn & "_M_IRModelFactorNum")
+    Dim rngCorrAnchor As Range: Set rngCorrAnchor = Range("NX_" & asn & "_M_CorrAnchor")
+    Dim rngForeignModelListAnchor As Range: Set rngForeignModelListAnchor = rngForeignModelList.Cells(1, 1).Offset(-1, 0)
+    Dim rngFXModelListAnchor As Range: Set rngFXModelListAnchor = rngFXModelList.Cells(1, 1).Offset(-1, 0)
+    Dim rngEQModelListAnchor As Range: Set rngEQModelListAnchor = rngEQModelList.Cells(1, 1).Offset(-1, 0)
+    
+    rngForeignModelList.Clear
+    rngFXModelList.Clear
+    rngEQModelList.Clear
+    rngCorrAnchor.CurrentRegion.Clear
+    rngForeignModels = "<LINK>"
+    rngFXModels = "<LINK>"
+    rngEQModels = "<LINK>"
+    rngIRModelFactorNum.Value = 1
+    
+    'Resize the Foreign Model table
+    Dim i As Long, j As Long
+    For i = 1 To numForeignModel
+        rngForeignModelListAnchor.Offset(i, 0) = vecForeignModelIDAddr.at(i)
+        rngForeignModelListAnchor.Offset(i, 1) = 1
+    Next i
+    Range(rngForeignModelListAnchor.Offset(1, 0), rngForeignModelListAnchor.Offset(numForeignModel, 1)).Select
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_ForeignModelList", RefersTo:=Selection
+    Set rngForeignModelList = Range("NX_" & asn & "_M_ForeignModelList")
+    Call formatColorAndBorder(rngForeignModelList)
+    Call addConditionalFormat(Range(rngForeignModelListAnchor.Offset(1, 0), rngForeignModelListAnchor.Offset(numForeignModel, 0)))
+    Call addDataValidation(Range(rngForeignModelListAnchor.Offset(1, 1), rngForeignModelListAnchor.Offset(numForeignModel, 1)))
+        
+    'Resize the FX Model Table
+    For i = 1 To numFXModel
+        rngFXModelListAnchor.Offset(i, 0) = vecFXModelIDAddr.at(i)
+        rngFXModelListAnchor.Offset(i, 1) = 1
+    Next i
+    Range(rngFXModelListAnchor.Offset(1, 0), rngFXModelListAnchor.Offset(numFXModel, 1)).Select
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_FXModelList", RefersTo:=Selection
+    Set rngFXModelList = Range("NX_" & asn & "_M_FXModelList")
+    Call formatColorAndBorder(rngFXModelList)
+    Call addConditionalFormat(Range(rngFXModelListAnchor.Offset(1, 0), rngFXModelListAnchor.Offset(numFXModel, 0)))
+    Call addDataValidation(Range(rngFXModelListAnchor.Offset(1, 1), rngFXModelListAnchor.Offset(numFXModel, 1)))
+          
+    'Resize the EQ Model Table
+    For i = 1 To numEQModel
+        rngEQModelListAnchor.Offset(i, 0) = vecEQModelNameAddr.at(i)
+        rngEQModelListAnchor.Offset(i, 1) = vecEQModelIDAddr.at(i)
+        rngEQModelListAnchor.Offset(i, 2) = 1
+    Next i
+    Range(rngEQModelListAnchor.Offset(1, 0), rngEQModelListAnchor.Offset(numEQModel, 2)).Select
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_EQModelList", RefersTo:=Selection
+    Set rngEQModelList = Range("NX_" & asn & "_M_EQModelList")
+    Call formatColorAndBorder(rngEQModelList)
+    Call addConditionalFormat(Range(rngEQModelListAnchor.Offset(1, 0), rngEQModelListAnchor.Offset(numEQModel, 1)))
+    Call addDataValidation(Range(rngEQModelListAnchor.Offset(1, 2), rngEQModelListAnchor.Offset(numEQModel, 2)))
+          
+          
+    rngCorrAnchor.Offset(0, 1) = "DomesticModelFactor1"
+    rngCorrAnchor.Offset(1, 0) = "DomesticModelFactor1"
+    
+    For i = 1 To numFXModel
+        rngCorrAnchor.Offset(0, i + 1) = "Foreign" & CStr(i) & "ModelFactor1"
+        rngCorrAnchor.Offset(i + 1, 0) = "Foreign" & CStr(i) & "ModelFactor1"
+    Next i
+    
+    For i = 1 To numForeignModel
+        rngCorrAnchor.Offset(0, i + numFXModel + 1) = "FX" & CStr(i) & "ModelFactor1"
+        rngCorrAnchor.Offset(i + numFXModel + 1, 0) = "FX" & CStr(i) & "ModelFactor1"
+    Next i
+    
+    For i = 1 To numEQModel
+        rngCorrAnchor.Offset(0, i + numFXModel + numForeignModel + 1) = "=" & rngEQModelListAnchor.Offset(i, 0).Address & "&" & """" & "Factor1" & """"
+        rngCorrAnchor.Offset(i + numFXModel + numForeignModel + 1, 0) = "=" & rngEQModelListAnchor.Offset(i, 0).Address & "&" & """" & "Factor1" & """"
+    Next i
+    
+    For i = 1 To numFXModel + numForeignModel + numEQModel + 1
+        rngCorrAnchor.Offset(i, i) = 1
+        For j = i + 1 To numFXModel + numForeignModel + numEQModel + 1
+            rngCorrAnchor.Offset(i, j) = 0
+        Next j
+    Next i
+    
+    rngCorrAnchor.Formula = "=nxlibmatrix(" & Range(rngCorrAnchor.Offset(0, 1), rngCorrAnchor.Offset(0, numFXModel + numForeignModel + numEQModel + 1)).Address & "," _
+                                            & Range(rngCorrAnchor.Offset(1, 0), rngCorrAnchor.Offset(numFXModel + numForeignModel + numEQModel + 1, 0)).Address & "," _
+                                            & Range(rngCorrAnchor.Offset(1, 1), rngCorrAnchor.Offset(numFXModel + numForeignModel + numEQModel + 1, numFXModel + numForeignModel + numEQModel + 1)).Address & "," _
+                                            & """" & "CC_EQB_Corr.Data" & """" & ")"
+                                            
+    Call formatColorAndBorder(rngCorrAnchor)
+    Call formatColorAndBorder(Range(rngCorrAnchor.Offset(1, 1), rngCorrAnchor.Offset(numFXModel + numForeignModel + numEQModel + 1, numFXModel + numForeignModel + numEQModel + 1)))
+    Call formatHeader(Range(rngCorrAnchor.Offset(0, 1), rngCorrAnchor.Offset(0, numFXModel + numForeignModel + numEQModel + 1)))
+    Call formatHeader(Range(rngCorrAnchor.Offset(1, 0), rngCorrAnchor.Offset(numFXModel + numForeignModel + numEQModel + 1, 0)))
+
+CleanUp:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Set rngForeignModels = Nothing
+    Set rngForeignModelList = Nothing
+    Set rngForeignModelListAnchor = Nothing
+    Set rngFXModels = Nothing
+    Set rngFXModelList = Nothing
+    Set rngFXModelListAnchor = Nothing
+    Set rngEQModels = Nothing
+    Set rngEQModelList = Nothing
+    Set rngEQModelListAnchor = Nothing
+    Set rngCorrAnchor = Nothing
+    Exit Sub
+   
+errorHandler:
+    Call VBA.MsgBox("Error in resizing the model", vbCritical + vbOKOnly, "Error")
+    GoTo CleanUp
+    End Sub
+    
+    
+    
+    
+    
+Public Sub Resize_IR_EQB(vecEQModelIDAddr As vector_var, vecEQModelNameAddr As vector_var)
+            
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    On Error GoTo errorHandler
+    Dim numEQModel As Integer: numEQModel = vecEQModelIDAddr.size
+    Dim asn$: asn = ActiveSheet.Name
+    Dim rngEQModels As Range: Set rngEQModels = Range("NX_" & asn & "_M_EQModels")
+    Dim rngEQModelList As Range: Set rngEQModelList = Range("NX_" & asn & "_M_EQModelList")
+    Dim rngIRModelFactorNum As Range: Set rngIRModelFactorNum = Range("NX_" & asn & "_M_IRModelFactorNum")
+    Dim rngCorrAnchor As Range: Set rngCorrAnchor = Range("NX_" & asn & "_M_CorrAnchor")
+    Dim rngEQModelListAnchor As Range: Set rngEQModelListAnchor = rngEQModelList.Cells(1, 1).Offset(-1, 0)
+        
+    rngEQModelList.Clear
+    rngCorrAnchor.CurrentRegion.Clear
+    rngEQModels = "<LINK>"
+    rngIRModelFactorNum.Value = 1
+    
+    'resize and fill out the EQ model list
+    Dim i As Long
+    Dim j As Long
+    
+    For i = 1 To numEQModel
+        rngEQModelListAnchor.Offset(i, 0) = vecEQModelNameAddr.at(i)
+        rngEQModelListAnchor.Offset(i, 1) = vecEQModelIDAddr.at(i)
+        rngEQModelListAnchor.Offset(i, 2) = 1
+    Next i
+    Range(rngEQModelListAnchor.Offset(1, 0), rngEQModelListAnchor.Offset(numEQModel, 2)).Select
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_EQModelList", RefersTo:=Selection
+    Set rngEQModelList = Range("NX_" & asn & "_M_EQModelList")
+    Call formatColorAndBorder(rngEQModelList)
+    Call addConditionalFormat(Range(rngEQModelListAnchor.Offset(1, 0), rngEQModelListAnchor.Offset(numEQModel, 1)))
+    Call addDataValidation(Range(rngEQModelListAnchor.Offset(1, 2), rngEQModelListAnchor.Offset(numEQModel, 2)))
+    
+    rngCorrAnchor.Offset(0, 1) = "DomesticModelFactor1"
+    rngCorrAnchor.Offset(1, 0) = "DomesticModelFactor1"
+
+    For i = 1 To numEQModel
+        rngCorrAnchor.Offset(0, i + 1) = "=" & rngEQModelList.Cells(i, 1).Address & "&" & """" & "Factor1" & """"
+        rngCorrAnchor.Offset(i + 1, 0) = "=" & rngEQModelList.Cells(i, 1).Address & "&" & """" & "Factor1" & """"
+    Next i
+    
+    For i = 1 To numEQModel + 1
+        rngCorrAnchor.Offset(i, i) = 1
+        For j = i + 1 To numEQModel + 1
+            rngCorrAnchor.Offset(i, j) = 0
+        Next j
+    Next i
+    
+    rngCorrAnchor.Formula = "=nxlibmatrix(" & Range(rngCorrAnchor.Offset(0, 1), rngCorrAnchor.Offset(0, numEQModel + 1)).Address & "," _
+                                            & Range(rngCorrAnchor.Offset(1, 0), rngCorrAnchor.Offset(numEQModel + 1, 0)).Address & "," _
+                                            & Range(rngCorrAnchor.Offset(1, 1), rngCorrAnchor.Offset(numEQModel + 1, numEQModel + 1)).Address & "," _
+                                            & """" & "IR_EQB_Corr.Data" & """" & ")"
+    Call formatColorAndBorder(rngCorrAnchor)
+    Call formatColorAndBorder(Range(rngCorrAnchor.Offset(1, 1), rngCorrAnchor.Offset(numEQModel + 1, numEQModel + 1)))
+    Call formatHeader(Range(rngCorrAnchor.Offset(0, 1), rngCorrAnchor.Offset(0, numEQModel + 1)))
+    Call formatHeader(Range(rngCorrAnchor.Offset(1, 0), rngCorrAnchor.Offset(numEQModel + 1, 0)))
+      
+CleanUp:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Exit Sub
+   
+errorHandler:
+    Call VBA.MsgBox("Error in resizing the model", vbCritical + vbOKOnly, "Error")
+    GoTo CleanUp
+    End Sub
+    
+    
+    
+    
+    
+    
+    
+    
+
+''' Formatting methods
+
+Private Sub addConditionalFormat(tempRng As Range)
+    tempRng.Select
+    Selection.FormatConditions.Delete
+    Selection.FormatConditions.Add Type:=xlCellValue, Operator:=xlEqual, _
+        Formula1:="=""<LINK>"""
+    Selection.FormatConditions(1).Interior.ColorIndex = 3
+        
+    Cells(1, 1).Select
+End Sub
+
+Private Sub formatHeader(tempRng As Range)
+    tempRng.Select
+    With Selection.Interior
+        .Pattern = xlSolid
+        .PatternColorIndex = xlAutomatic
+        .Color = 10040115
+    End With
+    With Selection.Font
+        .ColorIndex = 2
+        .Name = "Calibri"
+        .size = 11
+    End With
+    Cells(1, 1).Select
+End Sub
+
+Private Sub formatColorAndBorder(tempRng As Range)
+    tempRng.Select
+    Selection.HorizontalAlignment = xlCenter
+    Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+    Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .Weight = xlThin
+    End With
+    Selection.Borders(xlInsideVertical).LineStyle = xlNone
+    Selection.Borders(xlInsideHorizontal).LineStyle = xlNone
+    With Selection.Interior
+        .Pattern = xlSolid
+        .PatternColorIndex = xlAutomatic
+        .ColorIndex = 2
+    End With
+    With Selection.Font
+        .Name = "Calibri"
+        .size = 11
+    End With
+    Cells(1, 1).Select
+
+End Sub
+
+Private Sub addDataValidation(tempRng As Range)
+    tempRng.Select
+    With Selection.Validation
+        .Delete
+        .Add Type:=xlValidateWholeNumber, AlertStyle:=xlValidAlertStop, _
+        Operator:=xlGreaterEqual, Formula1:="1"
+        .IgnoreBlank = True
+        .InCellDropdown = True
+        .InputTitle = ""
+        .ErrorTitle = "Incorrect Input"
+        .InputMessage = ""
+        .ErrorMessage = "Please input an integer"
+        .ShowInput = True
+        .ShowError = True
+    End With
+    Cells(1, 1).Select
+End Sub
+
+
+
+Attribute VB_Name = "CalibrationIRModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+
+'Create the IR Deterministic Model
+
+Public Function createIRDetModel(wksModel As Worksheet, strCurncy As String, strModelType As String, _
+                                    vecErrMsg As vector_var) As String
+    Dim strModelID$, strModelAddr$
+    Dim blnHasFatalError As Boolean
+
+    wksModel.Activate
+    Dim asn$: asn = wksModel.Name
+    Range("NX_" & asn & "_M_NameValue") = strModelType & "." & strCurncy
+    Range("NX_" & asn & "_M_CurrencyValue") = strCurncy
+    wksModel.Calculate
+    
+    'Has Fatal error or not
+    strModelID = Range("NX_" & ActiveSheet.Name & "_M_ModelID")
+    blnHasFatalError = Utilities.hasFatalError(strModelID)
+    If blnHasFatalError Then
+        vecErrMsg.push_back ("Error in creating model: " & wksModel.Name)
+    End If
+    
+    strModelAddr = Range("NX_" & ActiveSheet.Name & "_M_ModelID").Address
+    createIRDetModel = strModelAddr
+    
+End Function
+
+
+
+'Calibrate the IR model
+Public Function calibrateIRModel(wksModel As Worksheet, strCurncy As String, strModelType As String, _
+                                    vecErrMsg As vector_var) As String
+    Dim strModelID$, strModelAddr$
+    Dim blnHasFatalError As Boolean
+
+    Dim asn$: asn = wksModel.Name
+    wksModel.Activate
+    'Name set according to the Underlier table input no matter use dummy data or not
+    Range("NX_" & asn & "_M_NameValue") = strModelType & "." & strCurncy
+    
+    Range("NX_" & asn & "_M_CurrencyValue") = strCurncy
+   
+    'resize swaption & caplets table
+    ResizeSwaptionTable
+    ResizeCapletsTable
+    'calibration
+    GenerateCapletsSwaptions
+    
+    'Has Fatal error or not
+    strModelID = Range("NX_" & ActiveSheet.Name & "_M_ModelID")
+    blnHasFatalError = Utilities.hasFatalError(strModelID)
+    If blnHasFatalError Then
+        vecErrMsg.push_back ("Error in creating model: " & wksModel.Name)
+    End If
+
+    strModelAddr = Range("NX_" & ActiveSheet.Name & "_M_ModelID").Address
+    calibrateIRModel = strModelAddr
+End Function
+
+
+Private Function IsDummyData() As Boolean
+    ActiveSheet.Calculate
+    Dim asn$: asn = ActiveSheet.Name
+    Dim strSwaptionVol$: strSwaptionVol = Range("NX_" & asn & "_M_SwaptionsVolCurveID")
+    If InStr(1, strSwaptionVol, "DUMMY", vbTextCompare) <> 0 Then
+        IsDummyData = True
+    Else
+        IsDummyData = False
+    End If
+
+End Function
+
+
+
+Private Sub GenerateCapletsSwaptions()
+    ActiveSheet.Calculate
+    Application.ScreenUpdating = False
+    Dim i As Integer, j As Integer, k As Integer, counter As Integer: counter = 0
+    
+    On Error GoTo CleanUp
+    ClearCapletsSwaptions
+    'Create Caplets
+    Dim invCom$: invCom = """"
+    Dim asn$: asn = ActiveSheet.Name
+    Dim rngInCaplets As Range: Set rngInCaplets = Range("NX_" & asn & "_M_CapletsSelectionGrid")
+    Dim rngOut As Range: Set rngOut = Range("NX_" & asn & "_M_InstrumentsDefs")
+    Dim CcyAdd$: CcyAdd = Range("NX_" & asn & "_M_CurrencyValue").Address
+    Dim prefixVal$: prefixVal = Range("NX_" & asn & "_M_PrefixValue")
+    Dim nameVal$: nameVal = Range("NX_" & asn & "_M_NameValue")
+    Dim freqVal$: freqVal = Range("NX_" & asn & "_M_CapletsFreqValue")
+    Dim startTenorVal$: startTenorVal = Range("NX_" & asn & "_M_CapletsTableStartTenor")
+    Dim endTenorVal$: endTenorVal = Range("NX_" & asn & "_M_CapletsTableEndTenor")
+    Dim freqMonths As Integer
+    Dim startTenorMonths As Integer
+    Dim endTenorMonths As Integer
+    Dim CapletsID$
+    
+    On Error GoTo GenerateCaplets_BadTenor
+    freqMonths = TenorInMonths(freqVal)
+    startTenorMonths = TenorInMonths(startTenorVal)
+    endTenorMonths = TenorInMonths(endTenorVal)
+    On Error GoTo CleanUp
+   
+    ' Fill in the caplets
+    For j = 2 To rngInCaplets.Rows.count
+        On Error GoTo GenerateCaplets_BadTenor
+        Dim nMonths As Integer: nMonths = TenorInMonths(rngInCaplets.Cells(j, 1))
+        On Error GoTo 0
+        
+        For i = 1 To rngInCaplets.Columns.count
+            If UCase(rngInCaplets.Cells(j, i)) = "Y" Then
+                counter = counter + 1
+                rngOut.Cells(counter, 1) = rngInCaplets.Cells(j, 1)
+                
+                If j = rngInCaplets.Rows.count Then
+                    Dim kk As Integer
+                    kk = CInt(TenorInMonths(rngInCaplets.Cells(j, 1))) + freqMonths
+                    
+                    If kk Mod 12 = 0 Then
+                        rngOut.Cells(counter, 2) = CStr(kk / 12) & "Y"
+                    Else
+                        rngOut.Cells(counter, 2) = CStr(kk) & "M"
+                    End If
+                    
+                Else
+                    rngOut.Cells(counter, 2) = rngInCaplets.Cells(j + 1, 1)
+                End If
+                                
+                rngOut.Cells(counter, 3) = rngInCaplets.Cells(1, i)
+                CapletsID = prefixVal & "." & nameVal & "." & Range("NX_" & asn & "_M_CapletsFlavor") & "let." & rngOut.Cells(counter, 1) & "." & rngOut.Cells(counter, 2) & "." & rngOut.Cells(counter, 3)
+                
+                rngOut.Cells(counter, 4).Formula = "=nxInstrumentCapTenor(" & invCom & CapletsID & invCom _
+                    & ",NX_" & asn & "_M_CurrencyValue," _
+                    & "NX_" & asn & "_M_CapletsFlavor," _
+                    & rngOut.Cells(counter, 1).Address & "," _
+                    & rngOut.Cells(counter, 2).Address & "," _
+                    & rngOut.Cells(counter, 3).Address & "," _
+                    & "NX_" & asn & "_M_CapletsConventionValue," _
+                    & "NX_" & asn & "_M_CapletsFreqValue," _
+                    & "NX_" & asn & "_M_CapletsBasisValue," _
+                    & "NX_" & asn & "_M_CapletsVolCurveID," _
+                    & "NX_" & asn & "_M_CapletsNoticePeriodValue)" _
+
+            End If
+        Next
+    Next
+    
+    
+   'Create Swaptions
+    
+    Dim rngInSwaptions As Range: Set rngInSwaptions = Range("NX_" & asn & "_M_SwaptionsSelectionGrid")
+    Dim strikeVal$: strikeVal = Range("NX_" & asn & "_M_SwaptionsStrikeValue")
+    Dim flavourAdd$: flavourAdd = Range("NX_" & asn & "_M_SwaptionsFlavor").Address
+    Dim sptnVolIDAdd$: sptnVolIDAdd = Range("NX_" & asn & "_M_SwaptionsVolCurveID").Address
+    Dim sptnConvAdd$: sptnConvAdd = Range("NX_" & asn & "_M_SwaptionsConventionValue").Address
+    Dim sptnID$
+    Debug.Print sptnID
+    ' fill in the swaptions
+    For j = 1 To rngInSwaptions.Rows.count
+        For i = 1 To rngInSwaptions.Columns.count
+              If i <> 1 And j <> 1 And rngInSwaptions.Cells(j, i).Value <> vbNullString Then
+                    If UCase(rngInSwaptions.Cells(j, i).Value) = "Y" Or UCase(rngInSwaptions.Cells(j, i).Value) = "ATM" Then
+                    
+                        counter = counter + 1
+                        rngOut.Cells(counter, 1) = rngInSwaptions.Cells(j, 1)
+                        rngOut.Cells(counter, 2) = rngInSwaptions.Cells(1, i)
+                        'get the Strike Price
+                        rngOut.Cells(counter, 3).Value = strikeVal
+                        sptnID = prefixVal & "." & nameVal & ".Swaptions." & rngOut.Cells(counter, 1).Value & "." & rngOut.Cells(counter, 2).Value & "." & rngOut.Cells(counter, 3).Value
+                        rngOut.Cells(counter, 4).Formula = "= nxInstrumentSwaptionTenor(" & invCom & sptnID & invCom _
+                            & "," & CcyAdd & "," & flavourAdd _
+                            & "," & rngOut.Cells(counter, 1).Address _
+                            & "," & rngOut.Cells(counter, 2).Address _
+                            & "," & rngOut.Cells(counter, 3).Address & "," _
+                            & sptnVolIDAdd & "," _
+                            & sptnConvAdd & ")"
+                    
+                    ElseIf InStr(rngInSwaptions.Cells(j, i).Value, ";") <> 0 Or IsNumeric(rngInSwaptions.Cells(j, i).Value) Then
+                    'Multiple Strikes in one cell
+                    
+                        Dim multipleStrikes() As String
+                        multipleStrikes = Split(trim(rngInSwaptions.Cells(j, i).Value), ";")
+                        
+                        For k = LBound(multipleStrikes) To UBound(multipleStrikes)
+                            counter = counter + 1
+                            rngOut.Cells(counter, 1) = rngInSwaptions.Cells(j, 1)
+                            rngOut.Cells(counter, 2) = rngInSwaptions.Cells(1, i)
+                            rngOut.Cells(counter, 3) = multipleStrikes(k)
+                            sptnID = prefixVal & "." & nameVal & ".Swaptions." & rngOut.Cells(counter, 1).Value & "." & rngOut.Cells(counter, 2).Value & "." & rngOut.Cells(counter, 3).Value
+                           rngOut.Cells(counter, 4).Formula = "= nxInstrumentSwaptionTenor(" & invCom & sptnID & invCom _
+                            & "," & CcyAdd & "," & flavourAdd _
+                            & "," & rngOut.Cells(counter, 1).Address _
+                            & "," & rngOut.Cells(counter, 2).Address _
+                            & "," & rngOut.Cells(counter, 3).Address & "," _
+                            & sptnVolIDAdd & "," _
+                            & sptnConvAdd & ")"
+                                            
+                        Next
+                   
+                  
+                    End If
+     
+            End If
+        Next
+    Next
+   
+    If counter > 0 Then
+        Range(rngOut.Cells(1, 1), rngOut.Cells(counter, 4)).Select
+        ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_InstrumentsDefs", RefersTo:=Selection
+        Selection.HorizontalAlignment = xlCenter
+        Selection.Interior.ColorIndex = 2
+        With Selection.Borders(xlEdgeLeft)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        With Selection.Borders(xlEdgeTop)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        With Selection.Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        With Selection.Borders(xlEdgeRight)
+            .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+        End With
+        
+        Range("NX_" & asn & "_M_InstCollection").Formula = "=nxInstrumentCollection(" _
+            & invCom & prefixVal & "." & nameVal & ".Collection" & invCom _
+            & ",NX_" & asn & "_M_CurrencyValue," _
+            & Range(rngOut.Cells(1, 4).Offset(-1, 0), rngOut.Cells(counter, 4)).Address & ")"
+     
+        Range("E11").Select
+        ActiveSheet.Calculate
+    Else
+        Range("NX_" & asn & "_M_InstCollection") = "NO Caplets and Swaptions"
+    End If
+    
+CleanUp:
+    Application.ScreenUpdating = True
+    ActiveSheet.Calculate
+    Exit Sub
+   
+GenerateCaplets_BadTenor:
+    Resume CleanUp
+
+End Sub
+
+Private Sub ResizeSwaptionTable()
+    ActiveSheet.Calculate
+    Application.ScreenUpdating = False
+    Dim asn$: asn = ActiveSheet.Name
+    On Error GoTo CleanUp
+    Dim strCcy$: strCcy = Range("NX_" & asn & "_M_CurrencyValue")
+    Dim anchor As Range: Set anchor = Range("NX_" & asn & "_M_SwaptionsSelectionGrid").Cells(1, 1)
+    Dim rngSwaptionVolCurve As Range: Set rngSwaptionVolCurve = Range("NX_" & asn & "_M_SwaptionsVolCurveID")
+    Dim temp1
+    Dim iCol%
+    Dim strTemp$
+    'view object XXX_CAP_VOL
+    temp1 = Application.Run("NXLibView", rngSwaptionVolCurve)
+    iCol = UBound(temp1, 2)
+    strTemp = GetDependencyField(temp1, iCol, "ATM_SWAPTION")
+    'view object XXX_ATM_SWAPTION
+    temp1 = Application.Run("NXLibView", strTemp)
+    iCol = UBound(temp1, 2)
+    strTemp = GetDependencyField(temp1, iCol, "SWAPTION")
+    'view object QXXXSWAPTION
+    temp1 = Application.Run("NXLibView", strTemp)
+    iCol = UBound(temp1, 2)
+    strTemp = GetDependencyField(temp1, iCol, ".DATA")
+    'View object SWAPTION.XXX.DATA
+    Dim temp: temp = Application.Run("NxLibView", strTemp)
+   
+    'Check that a valid volatility curve was returned
+    On Error GoTo ResizeTable_BadSwaptionVolCurve
+    Dim ErrorCheck As Variant: ErrorCheck = LBound(temp, 1): ErrorCheck = LBound(temp, 2)
+    On Error GoTo CleanUp
+    
+    Range("NX_" & asn & "_M_SwaptionsSelectionGrid") = ""
+    Dim i%, k%
+    For i = LBound(temp, 2) + 1 To UBound(temp, 2)
+        anchor.Offset(0, i - 1) = temp(1, i)
+    Next
+    For i = LBound(temp) + 1 To UBound(temp)
+        anchor.Offset(i - 1, 0) = temp(i, 1)
+       'populate the default 10Y diagonal calibration strategy
+        Dim vtTemp As Variant: vtTemp = VBA.Split(temp(i, 1))
+         
+        If UCase(vtTemp(1)) = "Y" And CInt(vtTemp(0)) <= 9 Then
+            k = 10 - CInt(vtTemp(0))
+            anchor.Offset(i - 1, k) = "Y"
+        End If
+        
+    Next
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_SwaptionsSelectionGrid", RefersTo:=Range(anchor, anchor.Offset(UBound(temp, 1) - 1, UBound(temp, 2) - 1))
+CleanUp:
+    Application.ScreenUpdating = True
+    Exit Sub
+    
+ResizeTable_BadSwaptionVolCurve:
+    Application.ScreenUpdating = True
+End Sub
+
+Private Function GetDependencyField(vtObjectView As Variant, iCol As Integer, strKeyWord As String) As String
+    Dim i%
+    For i = LBound(vtObjectView) To UBound(vtObjectView)
+        If InStr(UCase(vtObjectView(i, iCol)), strKeyWord) <> 0 Then
+            GetDependencyField = vtObjectView(i, iCol)
+            Exit Function
+        End If
+    Next i
+    GetDependencyField = Null
+End Function
+
+Private Sub ResizeCapletsTable()
+    ActiveSheet.Calculate
+    Application.ScreenUpdating = False
+    Dim asn$: asn = ActiveSheet.Name
+    
+    On Error GoTo CleanUp
+    Dim strCcy$: strCcy = Range("NX_" & asn & "_M_CurrencyValue")
+    Dim anchor As Range: Set anchor = Range("NX_" & asn & "_M_CapletsSelectionGrid").Cells(1, 1)
+    Dim temp: temp = Application.Run("NxLibView", Range("NX_" & asn & "_M_CapletsVolCurveID"))
+    
+    'Check that a valid volatility curve was returned
+    On Error GoTo ResizeTable_BadCapVolCurve
+    Dim ErrorCheck As Variant: ErrorCheck = LBound(temp, 1): ErrorCheck = LBound(temp, 2)
+    On Error GoTo CleanUp
+    
+    Range("NX_" & asn & "_M_CapletsSelectionGrid") = ""
+    Dim i As Integer, dateCounter As Integer, strikeCounter As Integer
+    dateCounter = 0
+    strikeCounter = 0
+
+    Dim freqVal$: freqVal = Range("NX_" & asn & "_M_CapletsFreqValue")
+    Dim freqMonths As Integer: freqMonths = TenorInMonths(freqVal)
+    Dim startTenorVal$: startTenorVal = Range("NX_" & asn & "_M_CapletsTableStartTenor")
+    Dim startTenorMonths As Integer: startTenorMonths = TenorInMonths(startTenorVal)
+    Dim endTenorVal$: endTenorVal = Range("NX_" & asn & "_M_CapletsTableEndTenor")
+    Dim endTenorMonths As Integer: endTenorMonths = TenorInMonths(endTenorVal)
+
+    For i = startTenorMonths To endTenorMonths Step freqMonths
+        dateCounter = dateCounter + 1
+        If i Mod 12 = 0 Then
+            anchor.Offset(dateCounter, 0) = CStr(i / 12) & "Y"
+        Else
+            anchor.Offset(dateCounter, 0) = CStr(i) & "M"
+        End If
+    Next
+
+    strikeCounter = strikeCounter + 1
+    anchor.Offset(0, strikeCounter) = "ATM"
+
+    For i = 3 To UBound(temp, 2)
+        If Not IsNumeric(temp(1, i)) Or Len(temp(1, i)) = 0 Then Exit For
+        strikeCounter = strikeCounter + 1
+        anchor.Offset(0, strikeCounter) = temp(1, i)
+    Next
+    ActiveWorkbook.Names.Add Name:="NX_" & asn & "_M_CapletsSelectionGrid", RefersTo:=Range(anchor, anchor.Offset(dateCounter, strikeCounter))
+CleanUp:
+    Application.ScreenUpdating = True
+    Exit Sub
+
+ResizeTable_BadCapVolCurve:
+    Application.ScreenUpdating = True
+End Sub
+
+
+
+Private Sub ClearCapletsSwaptions()
+    Dim rng As Range: Set rng = Range("NX_" & ActiveSheet.Name & "_M_InstrumentsDefs")
+    Range(rng.Cells(1, 1), rng.Cells(rng.Rows.count, rng.Columns.count)).Clear
+End Sub
+
+Private Function IsValidFreq(x As String) As Boolean
+    Dim y As String: y = UCase$(x)
+    
+    IsValidFreq = (y = "1M" Or y = "2M" Or y = "3M" _
+                  Or y = "4M" Or y = "6M")
+End Function
+
+Private Function TenorInMonths(x As String) As Integer
+    Dim y As String: y = UCase$(x)
+    
+    If y Like "##Y" Or y Like "#Y" Then
+        TenorInMonths = CInt(Left$(x, Len(x) - 1)) * 12
+    ElseIf y Like "###M" Or y Like "##M" Or y Like "#M" Then
+        TenorInMonths = CInt(Left$(x, Len(x) - 1))
+    Else
+        Err.Raise 5
+    End If
+End Function
+
+Attribute VB_Name = "CreateIndexModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+
+
+Public Function createIndex(wksModel As Worksheet, wksTemplate As Worksheet, _
+                            strCcy As String, strTicker As String, strIndexType As String, strTenor As String, _
+                            strIndexName As String, iCountIndex As Integer) As String
+
+    wksTemplate.Activate
+    Dim asn$: asn = ActiveSheet.Name
+    Dim strFixingName$
+    Dim strIndexIDAddr$
+    Dim strIndexRangeName$: strIndexRangeName = "NX_M_" & asn & "_" & UCase(strIndexType)
+    
+    Range(strIndexRangeName).Copy
+    wksModel.Activate
+    'locate where to paste the index object and change index object inputs
+    Select Case (UCase(strIndexType))
+        Case "LIBOR":
+            strFixingName = "FIXINGS." & strCcy & "." & strIndexType & strTenor
+            Range("AA7").Offset(0, 3 * (iCountIndex - 1)).Select
+            wksModel.Paste
+            Call setLIBORIndexField(Range("AA7").Offset(0, 3 * (iCountIndex - 1)), strCcy, strTenor, strFixingName, strIndexName)
+            strIndexIDAddr$ = "=" & wksModel.Name & "!" & Range("AA7").Offset(0, 3 * (iCountIndex - 1)).End(xlDown).End(xlToRight).Address
+            
+        Case "CMS":
+            strFixingName = "FIXINGS." & strCcy & "." & strIndexType & strTenor
+            Range("AA7").Offset(0, 3 * (iCountIndex - 1)).Select
+            wksModel.Paste
+            Call setCMSIndexField(Range("AA7").Offset(0, 3 * (iCountIndex - 1)), strCcy, strTenor, strFixingName, strIndexName)
+            strIndexIDAddr$ = "=" & wksModel.Name & "!" & Range("AA7").Offset(0, 3 * (iCountIndex - 1)).End(xlDown).End(xlToRight).Address
+            
+        Case "FX":
+            strFixingName = "FIXINGS." & VBA.Replace(strCcy, "/", "") & "." & strTicker
+            Range("F30").Offset(0, 3 * (iCountIndex - 1)).Select
+            wksModel.Paste
+            Call setFXIndexField(Range("F30").Offset(0, 3 * (iCountIndex - 1)), strCcy, strFixingName, strIndexName)
+            strIndexIDAddr$ = "=" & wksModel.Name & "!" & Range("F30").Offset(0, 3 * (iCountIndex - 1)).End(xlDown).End(xlToRight).Address
+            
+        Case "EQUITY":
+            strFixingName = "FIXINGS." & strCcy & "." & strTicker
+            Range("F80").Offset(0, 3 * (iCountIndex - 1)).Select
+            wksModel.Paste
+            Call setEquityIndexField(Range("F80").Offset(0, 3 * (iCountIndex - 1)), strCcy, strTicker, strFixingName, strIndexName)
+            strIndexIDAddr$ = "=" & wksModel.Name & "!" & Range("F80").Offset(0, 3 * (iCountIndex - 1)).End(xlDown).End(xlToRight).Address
+            
+        Case Else:
+    End Select
+    
+    Range("A1").Select
+    wksModel.Calculate
+    createIndex = strIndexIDAddr
+End Function
+
+Private Sub setLIBORIndexField(rngAnchor As Range, strCcy As String, strTenor As String, strFixingName As String, strIndexName As String)
+    Dim i%: i = 0
+    Do While trim(rngAnchor.Offset(i, 0)) <> ""
+        Select Case UCase(trim(rngAnchor.Offset(i, 0)))
+            Case "PREFIX":
+                rngAnchor.Offset(i, 1) = "Index.IR"
+            Case "NAME":
+                rngAnchor.Offset(i, 1) = strIndexName
+            Case "CURRENCY":
+                rngAnchor.Offset(i, 1) = strCcy
+            Case "TENOR":
+                rngAnchor.Offset(i, 1) = strTenor
+            Case "FIXINGS":
+                rngAnchor.Offset(i, 1) = "=IF(nxObjectExists(" & """" & strFixingName & """" & ")," & """" & strFixingName & """" & "," & """" & """" & ")"
+            Case Else:
+        End Select
+        i = i + 1
+    Loop
+End Sub
+
+Private Sub setCMSIndexField(rngAnchor As Range, strCcy As String, strTenor As String, strFixingName As String, strIndexName As String)
+    Dim i%: i = 0
+    Do While trim(rngAnchor.Offset(i, 0)) <> ""
+        Select Case UCase(trim(rngAnchor.Offset(i, 0)))
+            Case "PREFIX":
+                rngAnchor.Offset(i, 1) = "Index.IR"
+            Case "NAME":
+                rngAnchor.Offset(i, 1) = strIndexName
+            Case "CURRENCY":
+                rngAnchor.Offset(i, 1) = strCcy
+            Case "TENOR":
+                rngAnchor.Offset(i, 1) = strTenor
+            Case "FIXINGS":
+                rngAnchor.Offset(i, 1) = "=IF(nxObjectExists(" & """" & strFixingName & """" & ")," & """" & strFixingName & """" & "," & """" & """" & ")"
+            Case Else:
+        End Select
+        i = i + 1
+    Loop
+End Sub
+
+Private Sub setFXIndexField(rngAnchor As Range, strCcy As String, strFixingName As String, strIndexName As String)
+    Dim i%: i = 0
+    Dim strDomCcy$: strDomCcy = VBA.Left(strCcy, 3)
+    Dim strForeignCcy$: strForeignCcy = VBA.Right(strCcy, 3)
+    
+    Do While trim(rngAnchor.Offset(i, 0)) <> ""
+        Select Case UCase(trim(rngAnchor.Offset(i, 0)))
+            Case "PREFIX":
+                rngAnchor.Offset(i, 1) = "Index.FX"
+            Case "NAME":
+                rngAnchor.Offset(i, 1) = strIndexName
+            Case "CURRENCY":
+                rngAnchor.Offset(i, 1) = strDomCcy
+            Case "FOREIGN 1 CURRENCY":
+                rngAnchor.Offset(i, 1) = strForeignCcy
+            Case "FIXINGS":
+                rngAnchor.Offset(i, 1) = "=IF(nxObjectExists(" & """" & strFixingName & """" & ")," & """" & strFixingName & """" & "," & """" & """" & ")"
+            Case Else:
+        End Select
+        i = i + 1
+    Loop
+End Sub
+
+Private Sub setEquityIndexField(rngAnchor As Range, strCcy As String, strEquityTicker As String, strFixingName As String, strIndexName As String)
+    Dim i%: i = 0
+    Do While trim(rngAnchor.Offset(i, 0)) <> ""
+        Select Case UCase(trim(rngAnchor.Offset(i, 0)))
+            Case "PREFIX":
+                rngAnchor.Offset(i, 1) = "Index.EQ"
+            Case "NAME":
+                rngAnchor.Offset(i, 1) = strIndexName
+            Case "CURRENCY":
+                rngAnchor.Offset(i, 1) = strCcy
+            Case "FIXINGS":
+                rngAnchor.Offset(i, 1) = "=IF(nxObjectExists(" & """" & strFixingName & """" & ")," & """" & strFixingName & """" & "," & """" & """" & ")"
+            Case Else:
+        End Select
+        i = i + 1
+    Loop
+End Sub
+Attribute VB_Name = "EquityMarketDAtaModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+'EQ Market data Build EQ VOL Matrix
+
+Public Sub ConstructEQVolSurface()
+    Dim expires As Collection: Set expires = New Collection
+    Dim strikes As Collection: Set strikes = New Collection
+    Dim asn$: asn = ActiveSheet.Name
+    Dim strCallSurface$: strCallSurface = "NX_M_" & asn & "_CallSurface"
+
+    Dim counter As Integer: counter = 1
+    Do While Range(strCallSurface).Offset(0, counter) <> ""
+        strikes.Add Range(strCallSurface).Offset(0, counter).Value
+        counter = counter + 1
+    Loop
+    counter = 1
+    Do While Range(strCallSurface).Offset(counter, 0) <> ""
+        expires.Add Range(strCallSurface).Offset(counter, 0).Value
+        counter = counter + 1
+    Loop
+    buildTheMatrix strikes, expires
+    
+    Set expires = Nothing
+    Set strikes = Nothing
+    
+End Sub
+
+Private Sub buildTheMatrix(strikes As Collection, expires As Collection)
+    Range("I6:R35") = ""
+    Range("I6:R35").FormatConditions.Delete
+    Dim i As Integer, j As Long, temp As Double
+    For i = 1 To expires.count
+        Range("i6").Offset(i, 0) = expires.Item(i)
+    Next
+    
+    Dim asn$: asn = ActiveSheet.Name
+    Dim minDiff As Double:     minDiff = 10000000
+    Dim atm As Double:         atm = Range("NX_M_" & asn & "_SpotOutput")
+    Dim ATMStrike As Double:   ATMStrike = -1
+    Dim strikeSize As Integer: strikeSize = Range("NX_M_" & asn & "_StrikeSize")
+    Dim strikeStep As Double:  strikeStep = Range("NX_M_" & asn & "_StrikeStep")
+    Dim strCallSurface$: strCallSurface = "NX_M_" & asn & "_CallSurface"
+
+    For i = 1 To strikes.count
+        If (100 * strikes.Item(i)) Mod (100 * strikeStep) = 0 Then
+            temp = Abs(atm - strikes.Item(i))
+            If temp < minDiff Then
+                minDiff = temp
+                ATMStrike = strikes.Item(i)
+            End If
+        End If
+    Next
+    
+    If ATMStrike = -1 Then GoTo errorHand
+    Dim ic$: ic = """" ' ic = inverted commas
+    Dim strHLookUp$
+    For i = -strikeSize To strikeSize
+        Range("j6").Offset(0, i + strikeSize) = ATMStrike + i * strikeStep
+        For j = 1 To expires.count
+            strHLookUp = "HLOOKUP(" & Range("j6").Offset(0, i + strikeSize).Address & "," & Range(strCallSurface).CurrentRegion.Offset(1, 1).Address & ",ROW()-5)"
+            Range("j6").Offset(j, i + strikeSize).Formula = "=IF(" & strHLookUp & ">0," & strHLookUp & "," & ic & ic & ")"
+            Range("j6").Offset(j, i + strikeSize).FormatConditions.Delete
+            Range("j6").Offset(j, i + strikeSize).FormatConditions.Add Type:=xlCellValue, Operator:=xlLessEqual, Formula1:="0"
+            Range("j6").Offset(j, i + strikeSize).FormatConditions(1).Interior.ColorIndex = 3
+        Next
+    Next
+    
+    Dim blnEmptyRow As Boolean
+    'remove the expire with empty strike row
+    For i = 1 To expires.count
+        blnEmptyRow = True
+        For j = -strikeSize To strikeSize
+            If CStr(Range("j6").Offset(i, j + strikeSize)) <> "" Then
+                blnEmptyRow = False
+            End If
+        Next j
+        If blnEmptyRow Then
+            Range("i6").Offset(i, 0) = ""
+        End If
+    Next i
+    
+    'Remove the #N/A(Error) column
+    Dim blnErrorCol As Boolean
+    For i = -strikeSize To strikeSize
+        blnErrorCol = False
+        For j = 1 To expires.count
+            If IsError(Range("j6").Offset(j, i + strikeSize)) Then
+                blnErrorCol = True
+                Exit For
+            End If
+        Next j
+        If blnErrorCol Then
+            For j = 1 To expires.count
+                Range("j6").Offset(j, i + strikeSize) = ""
+            Next j
+        End If
+    Next i
+    
+    Dim lVolatilitySurfaceRange As Range
+    Set lVolatilitySurfaceRange = Range("NX_M_" & asn & "_VolatilitySurface")
+    Dim colHeadingsAddr As String: colHeadingsAddr = Range(lVolatilitySurfaceRange.Offset(0, 1), lVolatilitySurfaceRange.Offset(0, strikeSize * 2 + 1)).Address
+    Dim rowHeadingsAddr As String: rowHeadingsAddr = Range(lVolatilitySurfaceRange.Offset(1, 0), lVolatilitySurfaceRange.Offset(expires.count, 0)).Address
+    Dim volSurfaceDataByMoneynessAddr As String: volSurfaceDataByMoneynessAddr = Range(lVolatilitySurfaceRange.Offset(1, 1), lVolatilitySurfaceRange.Offset(expires.count, strikeSize * 2 + 1)).Address
+    Dim dataID$: dataID = Range("NX_M_" & asn & "_EquityName") & ".RawVolData"
+    lVolatilitySurfaceRange.Formula = "=nxlibMatrix(" & colHeadingsAddr & "," & rowHeadingsAddr & "," & volSurfaceDataByMoneynessAddr & "," & ic & dataID & ic & ")"
+    
+    ActiveSheet.Calculate
+    Exit Sub
+
+errorHand:
+'    MsgBox "No valid strikes could be found"
+
+End Sub
+
+
+Attribute VB_Name = "MainControl"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+Public Sub AddModelBuilderTable()
+    TableInterface.AddTableInterface
+
+End Sub
+
+Public Sub createAllModels()
+    SubControl.createModels
+
+End Sub
+
+
+Public Sub RecreateUnderlyingTable()
+    SubControl.CleanWorkbook
+End Sub
+
+
+Public Sub CreatePayoffPage()
+    SubControl.CreatePayoffPage
+End Sub
+Attribute VB_Name = "MarketDataModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+Private Const COL_OFFSET_ASSET_CLASS As Integer = 0
+Private Const COL_OFFSET_CCY As Integer = 2
+Private Const COL_OFFSET_TICKER As Integer = 4
+Private Const COL_OFFSET_DATASOURCE As Integer = 5
+Private Const COL_OFFSET_INDEX_TYPE As Integer = 6
+Private Const COL_OFFSET_INDEX_TENOR As Integer = 7
+
+Private Const DUMMY_WKB_NAME As String = "Dummy Data.xls"
+Private Const NBE_TEMPLATE_WKB_NAME As String = "NBE Template.xls"
+
+
+
+
+Public Function addMarketDataSheets(wksControl As Worksheet) As vector_var
+    Dim vecIR As vector_var: Set vecIR = New vector_var
+    Dim vecEQCcy As vector_var: Set vecEQCcy = New vector_var
+    Dim vecEQTicker As vector_var: Set vecEQTicker = New vector_var
+    Dim vecFXVol As vector_var: Set vecFXVol = New vector_var
+    Dim vecIRSource As vector_var: Set vecIRSource = New vector_var
+    Dim vecEQSource As vector_var: Set vecEQSource = New vector_var
+    Dim vecFXVolSource As vector_var: Set vecFXVolSource = New vector_var
+    
+    Dim vecErrMsg As vector_var: Set vecErrMsg = New vector_var
+    
+    Dim strNewSheetName$, asn$
+    Dim strDataSource$
+    Dim strStartDate$, strEndDate$
+    Dim i As Long
+    Dim blnHasBBGDataReq As Boolean, blnHasDummyDataReq As Boolean
+    Dim wkbDummy As Workbook: Set wkbDummy = Nothing
+    Dim wkbNBE As Workbook: Set wkbNBE = Nothing
+    Dim wksCopied As Worksheet: Set wksCopied = Nothing
+    Dim wksActive As Worksheet: Set wksActive = Nothing
+    
+    Dim strPath$: strPath = Utilities.GetDependencyFolderPath
+    strPath = Utilities.AppendPathSeparator(strPath)
+    Dim strDummyFullName$: strDummyFullName = strPath & DUMMY_WKB_NAME
+    Dim strNBETemplateFullName$: strNBETemplateFullName = strPath & NBE_TEMPLATE_WKB_NAME
+    blnHasBBGDataReq = TableInterface.hasSpecificDataRequest(wksControl, "BLOOMBERG")
+    blnHasDummyDataReq = TableInterface.hasSpecificDataRequest(wksControl, "DUMMY")
+        
+    'get required market data list to build all models
+    Call getRequiredDataList(wksControl, vecIR, vecEQCcy, vecEQTicker, vecFXVol, vecIRSource, vecEQSource, vecFXVolSource)
+       
+    'Open dummy data workbook
+    On Error Resume Next
+    If blnHasDummyDataReq Then
+        Workbooks.Open strDummyFullName
+        Set wkbDummy = ActiveWorkbook
+    End If
+    
+    If blnHasBBGDataReq Then
+        Workbooks.Open strNBETemplateFullName
+        Set wkbNBE = ActiveWorkbook
+    End If
+    On Error GoTo CleanUp
+    
+    wksControl.Activate
+    
+' TT 31994 open asset class sheet from Bloomberg
+    '"FX Spot" market data is required or not
+    If Not vecFXVol.IsEmpty Then
+        If Not IsWorksheetExist("FXSpot") Then
+            'Fetch the first data source in FXVol data source as FXSpot data source
+            'strNewSheetName = vecFXVol.at(1)
+            strDataSource = vecFXVolSource.at(1)
+            If UCase(strDataSource) = "BLOOMBERG" Then
+                'Application.Run "CopyWorksheetByName", "nxProtoFXSpot", "FXSpot"
+                Application.Run "CopyWorksheet", wkbNBE.Worksheets("nxprotoFXSpot"), "FXSpot"
+                'Rename copied Worksheet
+                 Set wksActive = ActiveSheet
+                 If wkbNBE.Worksheets("nxProtoFXSpot").Name <> "FXSpot" Then
+                    Utilities.RenameWorksheet wksActive, wkbNBE.Worksheets("nxProtoFXSpot").Name, "FXSpot"
+                 End If
+                Utilities.CleanUpBadNamedRanges (NBE_TEMPLATE_WKB_NAME)
+            Else
+                Call addSingleDummySheet(wkbDummy, wksControl, "FXSPOT_Dummy", "FXSPOT")
+                Utilities.CleanUpBadNamedRanges (DUMMY_WKB_NAME)
+            End If
+            'Set Skip to FALSE
+            asn = ActiveSheet.Name
+            Range("NX_M_" & asn & "_Skip") = "False"
+        End If
+    End If
+
+    'Copy IR Market Data from NBE add-in
+    For i = 1 To vecIR.size
+        'USD serves both as sheet name and currency field in C6
+        strNewSheetName = vecIR.at(i)
+        strDataSource = vecIRSource.at(i)
+        If Not IsWorksheetExist(strNewSheetName) Then
+            If UCase(strDataSource) = "BLOOMBERG" Then
+                 'Application.Run "CopyWorksheetByName", "nxprotoIRMarketData", strNewSheetName
+                 Application.Run "CopyWorksheet", wkbNBE.Worksheets("nxprotoIRMarketData"), strNewSheetName
+                 'Rename copied Worksheet
+                 Set wksActive = ActiveSheet
+                 If wkbNBE.Worksheets("nxprotoIRMarketData").Name <> strNewSheetName Then
+                    Utilities.RenameWorksheet wksActive, wkbNBE.Worksheets("nxprotoIRMarketData").Name, strNewSheetName
+                 End If
+                 Utilities.CleanUpBadNamedRanges (NBE_TEMPLATE_WKB_NAME)
+            Else
+                Call addSingleDummySheet(wkbDummy, wksControl, "IR_Dummy", strNewSheetName)
+                Utilities.CleanUpBadNamedRanges (DUMMY_WKB_NAME)
+            End If
+            asn = ActiveSheet.Name
+            'Currency
+            'ActiveSheet.Range("C6") = strNewSheetName
+            Range("C6") = strNewSheetName
+            'Bloomberg Ticker
+            'ActiveSheet.Range("NX_M_" & asn & "_In") = strNewSheetName & " Curncy"
+            Range("NX_M_" & asn & "_In") = strNewSheetName & " Curncy"
+            'Set Skip to FALSE
+            'ActiveSheet.Range("NX_M_" & asn & "_Skip") = "False"
+            Range("NX_M_" & asn & "_Skip") = "False"
+        End If
+    Next i
+    
+    'Copy FX Data from NBE add-in
+    For i = 1 To vecFXVol.size
+        strNewSheetName = vecFXVol.at(i)
+        strDataSource = vecFXVolSource.at(i)
+        If Not IsWorksheetExist(strNewSheetName) Then
+            If UCase(strDataSource) = "BLOOMBERG" Then
+                'Application.Run "CopyWorksheetByName", "nxprotoFXVol", strNewSheetName
+                Application.Run "CopyWorksheet", wkbNBE.Worksheets("nxprotoFXVol"), strNewSheetName
+                ' Rename copied Worksheet
+                 Set wksActive = ActiveSheet
+                 If wkbNBE.Worksheets("nxprotoFXVol").Name <> strNewSheetName Then
+                    Utilities.RenameWorksheet wksActive, wkbNBE.Worksheets("nxprotoFXVol").Name, strNewSheetName
+                 End If
+                Utilities.CleanUpBadNamedRanges (NBE_TEMPLATE_WKB_NAME)
+            Else
+                Call addSingleDummySheet(wkbDummy, wksControl, "FXVOL_Dummy", strNewSheetName)
+                Utilities.CleanUpBadNamedRanges (DUMMY_WKB_NAME)
+            End If
+            
+            asn = ActiveSheet.Name
+            'Domestic ccy
+            Range("C6") = VBA.Left$(strNewSheetName, 3)
+            'Foreign Ccy
+            Range("C7") = VBA.Right$(strNewSheetName, 3)
+            'Set skip to FALSE
+            Range("NX_M_" & asn & "_Skip") = "False"
+        End If
+    Next i
+    
+    'Copy EQ Data from NBE Add-in
+    For i = 1 To vecEQTicker.size
+        'strNewSheetName: remove spaces - IBMUSEquity
+        strNewSheetName = VBA.Replace$(VBA.Replace$(vecEQTicker.at(i), " ", ""), "/", "")
+        'strNewSheetName = VBA.Replace$(vecEQTicker.at(i), " ", "")
+        strDataSource = vecEQSource.at(i)
+        If Not IsWorksheetExist(strNewSheetName) Then
+            If UCase(strDataSource) = "BLOOMBERG" Then
+                'Application.Run "CopyWorksheetByName", "nxprotoEquity", strNewSheetName
+                Application.Run "CopyWorksheet", wkbNBE.Worksheets("nxprotoEquity"), strNewSheetName
+                'Rename copied Worksheet
+                 Set wksActive = ActiveSheet
+                 If wkbNBE.Worksheets("nxprotoEquity").Name <> strNewSheetName Then
+                    Utilities.RenameWorksheet wksActive, wkbNBE.Worksheets("nxprotoEquity").Name, strNewSheetName
+                 End If
+                Utilities.CleanUpBadNamedRanges (NBE_TEMPLATE_WKB_NAME)
+            Else
+                Call addSingleDummySheet(wkbDummy, wksControl, "EQ_Dummy", strNewSheetName)
+                Utilities.CleanUpBadNamedRanges (DUMMY_WKB_NAME)
+            End If
+            
+            Dim vaTemp As Variant: vaTemp = VBA.Split(vecEQTicker.at(i))
+            asn = ActiveSheet.Name
+            
+            If UBound(vaTemp) <= 1 Then
+                Range("NX_M_" & asn & "_EquityName") = vaTemp(0)
+            Else
+                Range("NX_M_" & asn & "_EquityName") = vaTemp(0) & vaTemp(1)
+            End If
+            
+            'Range("NX_M_" & asn & "_EquityName") = IIf(UBound(vaTemp) = 1, vaTemp(0), vaTemp(0) & vaTemp(1))
+            Range("NX_M_" & asn & "_DomesticCurr") = vecEQCcy.at(i)
+            Range("NX_M_" & asn & "_In") = vecEQTicker.at(i)
+            'Set skip to FALSE
+            Range("NX_M_" & asn & "_Skip") = "False"
+        End If
+    Next i
+    
+    If blnHasDummyDataReq Then
+        Workbooks(DUMMY_WKB_NAME).Close False
+    End If
+    
+    If blnHasBBGDataReq Then
+        Workbooks(NBE_TEMPLATE_WKB_NAME).Close False
+    End If
+    
+    'Update Bloomberg workbook if there is BBG data source request
+   ' blnHasBBGDataReq = TableInterface.hasSpecificDataRequest(wksControl, "BLOOMBERG")
+    If blnHasBBGDataReq Then
+        wksControl.Activate
+        strStartDate = Range("C5")
+        'end date is TODAY
+        strEndDate = Range("C7")
+        
+        'add fixing worksheet only when
+        '1. startDate falls before TODAY
+        '2. there is bloomberg data source
+        '3. underlying models have indices
+        '
+        If CLng(DateValue(strStartDate)) <= CLng(DateValue(strEndDate)) And Not vecEQTicker.IsEmpty Then
+            'Call addFixings(wksControl)
+            Call addFixings(wksControl, strStartDate, strEndDate)
+            
+        End If
+    
+       ' Call updateBBGWorkbook
+       ' Call updateBBGSheetBySheet(wksControl)
+        Set vecErrMsg = updateBBGSheetBySheet2(wksControl)
+      
+    End If
+    
+    'create EQ Vol Surface
+    If Not vecEQTicker.IsEmpty Then
+        Call constructAllEQvol(vecEQTicker)
+    End If
+    
+    'construct all the market data objects
+    Application.Calculate
+    Application.Calculate
+    Application.Calculate
+    
+    wksControl.Activate
+    
+CleanUp:
+    Set addMarketDataSheets = vecErrMsg
+    
+'''    If Not Workbooks(DUMMY_WKB_NAME) Is Nothing Then
+'''        Workbooks(DUMMY_WKB_NAME).Close False
+'''    End If
+'''
+'''    If Not Workbooks(NBE_TEMPLATE_WKB_NAME) Is Nothing Then
+'''        Workbooks(NBE_TEMPLATE_WKB_NAME).Close False
+'''    End If
+    
+    Set vecErrMsg = Nothing
+    Set vecIR = Nothing
+    Set vecFXVol = Nothing
+    Set vecEQCcy = Nothing
+    Set vecEQTicker = Nothing
+    Set vecIRSource = Nothing
+    Set vecFXVolSource = Nothing
+    Set vecEQSource = Nothing
+    Set wkbDummy = Nothing
+End Function
+
+
+Public Function addCorrelation(wksControl As Worksheet, _
+                                vecCorrelationNames As vector_var, _
+                                vecCorrelationTickers As vector_var, _
+                                ByVal strDateFrom As String, _
+                                ByVal strDateTo As String, _
+                                vecErrMsg As vector_var) As Worksheet
+                                
+    Dim wkbNBE As Workbook: Set wkbNBE = Nothing
+    Dim wksCorrelation As Worksheet: Set wksCorrelation = Nothing
+    Dim strPath$: strPath = Utilities.GetDependencyFolderPath
+    strPath = Utilities.AppendPathSeparator(strPath)
+    Dim strNBEWkbFullName$: strNBEWkbFullName = strPath & NBE_TEMPLATE_WKB_NAME
+    Dim lngStartDate As Long, lngEndDate As Long, tempDate As Variant
+    Dim rngInputAnchor As Range: Set rngInputAnchor = Nothing
+    Dim asn$
+    Dim i As Long
+    Dim blnUpdateSuccess As Boolean: blnUpdateSuccess = True
+    Dim TimeStart As Double
+    
+    On Error Resume Next
+        Workbooks.Open strNBEWkbFullName
+        Set wkbNBE = ActiveWorkbook
+    On Error GoTo CleanUp
+        
+    wksControl.Activate
+        
+    'Application.Run "CopyWorksheetByName", "nxprotoCorrelation", "Correlation"
+    Application.Run "CopyWorksheet", wkbNBE.Worksheets("nxprotoCorrelation"), "Correlation"
+    'Rename copied Worksheet
+    If wkbNBE.Worksheets("nxprotoCorrelation").Name <> "Fixings" Then
+        Utilities.RenameWorksheet ActiveSheet, wkbNBE.Worksheets("nxprotoCorrelation").Name, "Correlation"
+    End If
+    Utilities.CleanUpBadNamedRanges (NBE_TEMPLATE_WKB_NAME)
+    
+    Set wksCorrelation = ActiveSheet
+    asn = ActiveSheet.Name
+    
+    'Set Start Date and End Date
+    lngStartDate = DateValue(strDateFrom)
+    lngEndDate = DateValue(strDateTo)
+    If lngStartDate >= lngEndDate Then
+        tempDate = Application.Run("nxLibSubTenor", lngEndDate, "1Y", "NONE", "NONE")
+        strDateFrom = Format(tempDate(1), "MM/DD/YYYY")
+    End If
+    
+    Range("NX_M_" & asn & "_DateFrom") = strDateFrom
+    Range("NX_M_" & asn & "_DateTo") = strDateTo
+    
+    'Set skip to False
+    Range("NX_M_" & asn & "_Skip") = "FALSE"
+    
+    Set rngInputAnchor = Range("B15")
+   ' Set rngOutputAnchor = wksCorrelation.Range("F15")
+    
+    For i = 1 To vecCorrelationNames.size
+        rngInputAnchor.Offset(i, 0) = vecCorrelationNames.at(i)
+        rngInputAnchor.Offset(i, 1) = vecCorrelationTickers.at(i)
+    Next i
+    
+    On Error Resume Next
+    wksCorrelation.Activate
+    Application.Run ("Numerix_Bloomberg_Data.updateSheet")
+            
+    TimeStart = Now
+    Do While InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 And Now - TimeStart < TimeSerial(0, 0, 15)
+        DoEvents
+    Loop
+    If InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 Then
+        blnUpdateSuccess = False
+    End If
+
+    If Not blnUpdateSuccess Then
+        vecErrMsg.push_back ("Numerix Bloomberg Updates Failure on worksheet: " & wksCorrelation.Name)
+    End If
+    
+    Set addCorrelation = wksCorrelation
+CleanUp:
+   
+    If Not Workbooks(NBE_TEMPLATE_WKB_NAME) Is Nothing Then
+        Workbooks(NBE_TEMPLATE_WKB_NAME).Close False
+    End If
+    
+    Set wksCorrelation = Nothing
+    Set rngInputAnchor = Nothing
+    Set wkbNBE = Nothing
+    
+End Function
+
+
+
+Private Sub addFixings(wksControl As Worksheet, ByVal strDateFrom As String, _
+                                ByVal strDateTo As String)
+
+    Dim wkbNBE As Workbook: Set wkbNBE = Nothing
+    Dim strPath$: strPath = Utilities.GetDependencyFolderPath
+    strPath = Utilities.AppendPathSeparator(strPath)
+    
+    Dim strNBEWkbFullName$: strNBEWkbFullName = strPath & NBE_TEMPLATE_WKB_NAME
+    
+    Dim rngInputAnchor As Range: Set rngInputAnchor = Nothing
+    Dim vecFixingTicker As vector_var: Set vecFixingTicker = New vector_var
+    Dim vecFixingPrefix As vector_var: Set vecFixingPrefix = New vector_var
+    Dim vecFixingName As vector_var: Set vecFixingName = New vector_var
+    Dim vecScalingFactor As vector_var: Set vecScalingFactor = New vector_var
+    
+    Dim iCountRow%: iCountRow = 1
+    Dim strAssetClass$, strCcy$, strTicker$, strIndexType$, strIndexTenor$
+    Dim i As Long
+    Dim strStartDate$
+    Dim hasIndex As Boolean: hasIndex = False
+    Dim asn$
+    Dim lngStartDate As Long, lngEndDate As Long, tempDate As Variant
+    
+    On Error Resume Next
+        Workbooks.Open strNBEWkbFullName
+        Set wkbNBE = ActiveWorkbook
+    On Error GoTo CleanUp
+    
+    
+    wksControl.Activate
+    strStartDate = Range("C5")
+    Set rngInputAnchor = Range("rngInputAnchor")
+       
+    Do While trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS)) <> ""
+        strAssetClass = rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS)
+        strCcy = trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY))
+        strTicker = trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER))
+        strIndexType = rngInputAnchor.Offset(iCountRow, COL_OFFSET_INDEX_TYPE)
+        strIndexTenor = rngInputAnchor.Offset(iCountRow, COL_OFFSET_INDEX_TENOR)
+        
+        If strIndexType <> "" Then
+            hasIndex = True
+            vecFixingPrefix.push_back ("FIXINGS." & UCase(VBA.Replace(strCcy, "/", "")))
+            
+            Select Case UCase(strAssetClass)
+                Case "IR"
+                    vecFixingName.push_back (strIndexType & strIndexTenor)
+                    'Parse IR fixing ticker
+                    strTicker = ParseIRFixingTicker(strCcy, strIndexType, strIndexTenor)
+                    vecFixingTicker.push_back (strTicker)
+                Case "EQ"
+                    vecFixingName.push_back (strTicker)
+                    vecFixingTicker.push_back (strTicker)
+                Case "FX"
+                    vecFixingName.push_back (strTicker)
+                    vecFixingTicker.push_back (strTicker)
+            End Select
+            
+            'scaling factor
+            If StrComp(strAssetClass, "IR", vbTextCompare) = 0 Then
+                vecScalingFactor.push_back (100)
+            ElseIf StrComp(strAssetClass, "EQ", vbTextCompare) = 0 And StrComp(strCcy, "GBp", vbBinaryCompare) = 0 Then
+                vecScalingFactor.push_back (100)
+            Else
+                vecScalingFactor.push_back (1)
+            End If
+                                
+        End If
+        
+        iCountRow = iCountRow + 1
+    Loop
+    
+    'only when index object needs to be created, should the fixing page be added
+    If Not hasIndex Then
+        GoTo CleanUp
+    End If
+    
+    'Application.Run "CopyWorksheetByName", "nxprotoFixings", "Fixings"
+    Application.Run "CopyWorksheet", wkbNBE.Worksheets("nxprotoFixings"), "Fixings"
+    'Rename copied Worksheet
+     If wkbNBE.Worksheets("nxprotoFixings").Name <> "Fixings" Then
+         Utilities.RenameWorksheet ActiveSheet, wkbNBE.Worksheets("nxprotoFixings").Name, "Fixings"
+     End If
+    Utilities.CleanUpBadNamedRanges (NBE_TEMPLATE_WKB_NAME)
+    
+    'set skip to FALSE
+    Range("C4") = "FALSE"
+    Range("C5").ClearContents
+    'Set start Date
+    Range("C6") = strStartDate
+    Range("B10:C2000").Select
+    Selection.Copy
+    For i = 1 To vecFixingTicker.size
+        If trim(Range("C10").Offset(0, 3 * (i - 1))) = "" Then
+            Range("C10").Offset(0, 3 * (i - 1) - 1).Select
+            ActiveSheet.Paste
+        End If
+            'Name
+            Range("C10").Offset(0, 3 * (i - 1)) = vecFixingName.at(i)
+            'Prefix
+            Range("C10").Offset(1, 3 * (i - 1)) = vecFixingPrefix.at(i)
+            'Ticker
+            Range("C10").Offset(5, 3 * (i - 1)) = vecFixingTicker.at(i)
+            'Scaling Factor
+            Range("C10").Offset(8, 3 * (i - 1)) = vecScalingFactor.at(i)
+    Next i
+    
+    asn = ActiveSheet.Name
+     'Set Start Date and End Date
+    lngStartDate = DateValue(strDateFrom)
+    lngEndDate = DateValue(strDateTo)
+    If lngStartDate >= lngEndDate Then
+        tempDate = Application.Run("nxLibSubTenor", lngEndDate, "1Y", "NONE", "NONE")
+        strDateFrom = Format(tempDate(1), "MM/DD/YYYY")
+    End If
+    
+    Range("NX_M_" & asn & "_DateFrom") = strStartDate
+    Range("NX_M_" & asn & "_DateTo") = strDateTo
+
+    'Set skip to False
+    Range("NX_M_" & asn & "_Skip") = "FALSE"
+
+    Set rngInputAnchor = Range("rngInputAnchor")
+    'clear the rest fixing input template
+
+    i = vecFixingTicker.size
+    Do While trim(Range("C10").Offset(0, 3 * i)) <> ""
+        i = i + 1
+    Loop
+    Range(Range("C10").Offset(0, 3 * vecFixingTicker.size - 1), Range("C21").Offset(0, 3 * i)).ClearContents
+    
+CleanUp:
+    If Not Workbooks(NBE_TEMPLATE_WKB_NAME) Is Nothing Then
+        Workbooks(NBE_TEMPLATE_WKB_NAME).Close False
+    End If
+    
+    Set wkbNBE = Nothing
+    Set rngInputAnchor = Nothing
+    Set vecFixingTicker = Nothing
+    Set vecFixingPrefix = Nothing
+    Set vecFixingName = Nothing
+
+
+End Sub
+
+
+Private Function ParseIRFixingTicker(strCcy As String, strIndexType As String, strIndexTenor As String) As String
+    Dim strFixingTicker$
+    Dim strTickerPrefix$: strTickerPrefix = ""
+    Dim strTickerTenor$: strTickerTenor = ""
+    
+    If StrComp(strIndexType, "LIBOR", vbTextCompare) = 0 Then
+    
+    
+        Select Case UCase(strCcy)
+            Case "USD":
+                strTickerPrefix = "US"
+            Case "GBP":
+                strTickerPrefix = "BP"
+            Case "EUR":
+                strTickerPrefix = "EE"
+            Case "CAD":
+                strTickerPrefix = "CD"
+            Case "CHF"
+                strTickerPrefix = "SF"
+            Case "AUD"
+                strTickerPrefix = "AU"
+            Case "JPY"
+                strTickerPrefix = "JY"
+            Case "DKK"
+                strTickerPrefix = "DK"
+            Case "NOK"
+                strTickerPrefix = "NK"
+            Case "SEK"
+                strTickerPrefix = "SK"
+                
+        End Select
+        
+        Select Case UCase(strIndexTenor)
+            Case "1W":
+                strTickerTenor = "0001W Index"
+            Case "2W":
+                strTickerTenor = "0002W Index"
+            Case "1M":
+                strTickerTenor = "0001M Index"
+            Case "2M":
+                strTickerTenor = "0002M Index"
+            Case "3M":
+                strTickerTenor = "0003M Index"
+            Case "4M"
+                strTickerTenor = "0004M Index"
+            Case "5M"
+                strTickerTenor = "0005M Index"
+            Case "6M":
+                strTickerTenor = "0006M Index"
+            Case "7M"
+                strTickerTenor = "0007M Index"
+            Case "8M"
+                strTickerTenor = "0008M Index"
+            Case "9M"
+                strTickerTenor = "0009M Index"
+            Case "10M"
+                strTickerTenor = "0010M Index"
+            Case "11M"
+                strTickerTenor = "0011M Index"
+            Case "12M":
+                strTickerTenor = "0012M Index"
+        End Select
+        
+    ElseIf StrComp(strIndexType, "CMS", vbTextCompare) = 0 Then
+    
+        Select Case UCase(strCcy)
+            Case "USD":
+                strTickerPrefix = "USSW"
+            Case "GBP":
+                strTickerPrefix = "BPSW"
+            Case "EUR":
+                strTickerPrefix = "EUSW"
+            Case "CAD":
+                strTickerPrefix = "CDSW"
+            Case "CHF"
+                strTickerPrefix = "SFSW"
+            Case "AUD"
+                strTickerPrefix = "ADSW"
+            Case "JPY"
+                strTickerPrefix = "JYSW"
+            Case "DKK"
+                strTickerPrefix = "DKSW"
+            Case "NOK"
+                strTickerPrefix = "NKSW"
+                
+        End Select
+        
+        If StrComp(strCcy, "EUR", vbTextCompare) = 0 Then
+            strTickerTenor = Replace(strIndexTenor, "Y", "", , , vbTextCompare) & "V3 Curncy"
+        Else
+            strTickerTenor = Replace(strIndexTenor, "Y", "", , , vbTextCompare) & " Curncy"
+        End If
+        
+        
+    End If
+    
+    strFixingTicker = strTickerPrefix & strTickerTenor
+    
+    ParseIRFixingTicker = strFixingTicker
+    
+End Function
+
+
+
+
+
+
+Private Sub getRequiredDataList(wksControl As Worksheet, vecIR As vector_var, vecEQCcy As vector_var, _
+                                                        vecEQTicker As vector_var, vecFXVol As vector_var, _
+                                                        vecIRSource As vector_var, vecEQSource As vector_var, _
+                                                        vecFXVolSource As vector_var)
+                                    
+    On Error GoTo CleanUp
+    wksControl.Activate
+    Dim rngAnchor As Range: Set rngAnchor = Range("rngInputAnchor")
+    Dim strAssetClass$, strCcy$, strTicker$
+    Dim strDomCcy$, strForeignCcy$
+    Dim strDataSource$
+    
+    Dim lRow As Long: lRow = 1
+    'get the required market data list
+    Do While trim(rngAnchor.Offset(lRow, 0)) <> ""
+        strAssetClass = trim(rngAnchor.Offset(lRow, 0))
+        strCcy = trim(rngAnchor.Offset(lRow, COL_OFFSET_CCY))
+        strTicker = trim(rngAnchor.Offset(lRow, COL_OFFSET_TICKER))
+        strDataSource = trim(rngAnchor.Offset(lRow, COL_OFFSET_DATASOURCE))
+        
+        Select Case UCase(strAssetClass)
+            Case "IR":
+                If vecIR.Location(strCcy) = -1 Then
+                    vecIR.push_back (strCcy)
+                    'Data Source - Dummy/Bloomberg
+                    vecIRSource.push_back (strDataSource)
+                    
+                End If
+                            
+            Case "FX":
+                strDomCcy = Left(strCcy, 3)
+                strForeignCcy = Right(strCcy, 3)
+                If vecFXVol.Location(strDomCcy & strForeignCcy) = -1 Then
+                    vecFXVol.push_back (strDomCcy & strForeignCcy)
+                    'Data Source - Dummy/Bloomberg
+                    vecFXVolSource.push_back (strDataSource)
+                    
+                    'Add dependent IR Market Data
+                    If vecIR.Location(strDomCcy) = -1 Then
+                        vecIR.push_back (strDomCcy)
+                        vecIRSource.push_back (strDataSource)
+                    End If
+                    If vecIR.Location(strForeignCcy) = -1 Then
+                        vecIR.push_back (strForeignCcy)
+                        vecIRSource.push_back (strDataSource)
+                    End If
+                End If
+                
+            Case "EQ":
+                If vecEQCcy.Location(strCcy) = -1 Or vecEQTicker.Location(strTicker) = -1 Then
+                    vecEQCcy.push_back (strCcy)
+                    vecEQTicker.push_back (strTicker)
+                    'Data Source - Dummy/Bloomberg
+                    vecEQSource.push_back (strDataSource)
+                    
+                    'Add dependent IR market data
+                    If vecIR.Location(strCcy) = -1 Then
+                        vecIR.push_back (strCcy)
+                        'Data Source - Dummy/Bloomberg
+                        vecIRSource.push_back (strDataSource)
+                    End If
+                End If
+        End Select
+        lRow = lRow + 1
+    Loop
+
+CleanUp:
+    Set rngAnchor = Nothing
+
+End Sub
+
+Private Sub addSingleDummySheet(wkbDummy As Workbook, wksControl As Worksheet, strSheetName As String, strNewSheetName As String)
+    Dim wksCopied As Worksheet: Set wksCopied = Nothing
+    Dim wksActive As Worksheet: Set wksActive = Nothing
+   ' wksControl.Activate
+    'avoid duplicate worksheets
+    If Not IsWorksheetExist(strNewSheetName) Then
+        On Error GoTo CleanUp:
+        Set wksCopied = wkbDummy.Worksheets(strSheetName)
+        wksCopied.Copy after:=wksControl
+        Set wksActive = ActiveSheet
+        'Rename worksheet
+        If strSheetName <> strNewSheetName Then
+            'Application.Run "Numerix_Bloomberg_Data.RenameWorksheet", wksActive, strSheetName, strNewSheetName
+            Utilities.RenameWorksheet wksActive, strSheetName, strNewSheetName
+        End If
+    End If
+    
+CleanUp:
+    Set wksCopied = Nothing
+    Set wksActive = Nothing
+
+End Sub
+
+Private Function IsWorksheetExist(strName As String) As Boolean
+    Dim wks As Worksheet: Set wks = Nothing
+    On Error Resume Next
+    Set wks = Worksheets(strName)
+    On Error GoTo 0
+    If wks Is Nothing Then
+        IsWorksheetExist = False
+    Else
+        IsWorksheetExist = True
+    End If
+    
+    Set wks = Nothing
+End Function
+
+
+Private Function updateBBGWorkbook() As Boolean
+    Dim blnUpdateSuccess As Boolean: blnUpdateSuccess = False
+    Dim TimeStart As Double
+    Application.Run ("updateBook")
+    TimeStart = Now
+    Do While InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 And Now - TimeStart < TimeSerial(0, 0, 30)
+        DoEvents
+    Loop
+    If InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 Then
+        blnUpdateSuccess = False
+    Else
+        blnUpdateSuccess = True
+    End If
+    updateBBGWorkbook = blnUpdateSuccess
+End Function
+
+Private Function updateBBGSheetBySheet(wksControl As Worksheet) As Boolean
+    Dim blnUpdateSuccess As Boolean: blnUpdateSuccess = True
+    Dim wks As Worksheet
+    Dim TimeStart As Double
+    
+    'weird problem: fx spot updating: excel error 1004, weekday function of worksheetfunction class
+    On Error Resume Next
+    For Each wks In wksControl.Parent.Worksheets
+        wks.Activate
+        If InStr(1, wks.CodeName, "NXBBG", vbTextCompare) <> 0 Then
+            Application.Run ("Numerix_Bloomberg_Data.updateSheet")
+            
+            TimeStart = Now
+            Do While InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 And Now - TimeStart < TimeSerial(0, 0, 15)
+                DoEvents
+            Loop
+            If InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 Then
+                blnUpdateSuccess = False
+               ' Application.Run ("Numerix_Bloomberg_Data.KillUpdate")
+            End If
+        End If
+    Next wks
+    updateBBGSheetBySheet = blnUpdateSuccess
+End Function
+
+
+Private Function updateBBGSheetBySheet2(wksControl As Worksheet) As vector_var
+    Dim vecErrMsg As vector_var: Set vecErrMsg = Nothing
+    Dim strErrMsg$
+    Dim wks As Worksheet
+    Dim TimeStart As Double
+    
+    'weird problem: fx spot updating: excel error 1004, weekday function of worksheetfunction class
+    On Error Resume Next
+    Set vecErrMsg = New vector_var
+    For Each wks In wksControl.Parent.Worksheets
+        wks.Activate
+        If InStr(1, wks.CodeName, "NXBBG", vbTextCompare) <> 0 Then
+            Application.Run ("Numerix_Bloomberg_Data.updateSheet")
+            
+            TimeStart = Now
+            Do While InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 And Now - TimeStart < TimeSerial(0, 0, 15)
+                DoEvents
+            Loop
+            If InStr(1, Application.StatusBar, "Outstanding", vbTextCompare) <> 0 Then
+                strErrMsg = "Numerix Bloomberg Updates Failure on worksheet: " & ActiveSheet.Name
+                vecErrMsg.push_back (strErrMsg)
+               ' Application.Run ("Numerix_Bloomberg_Data.KillUpdate")
+            End If
+        End If
+    Next wks
+    Set updateBBGSheetBySheet2 = vecErrMsg
+End Function
+
+
+
+Private Sub constructAllEQvol(ByRef vecEQTicker As vector_var)
+    Dim wksEQ As Worksheet
+    Dim wksName$
+    Dim i As Long
+    For i = 1 To vecEQTicker.size
+        'strange tickers : BP/ LN Equity
+        wksName = VBA.Replace$(VBA.Replace$(vecEQTicker.at(i), " ", ""), "/", "")
+        If IsWorksheetExist(wksName) Then
+            Set wksEQ = Worksheets(wksName)
+            wksEQ.Activate
+            EquityMarketDAtaModule.ConstructEQVolSurface
+        End If
+    Next i
+    
+    
+End Sub
+
+
+
+
+
+
+Attribute VB_Name = "ModelControlModule"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+Private Const MODEL_REPOSITORY_WKB_NAME As String = "ModelRepository.xls"
+Private Const INDEX_TEMPLATE_WKB_NAME As String = "ModelRepository.xls"
+Private Const COL_OFFSET_ASSET_CLASS As Integer = 0
+Private Const COL_OFFSET_MODEL As Integer = 1
+Private Const COL_OFFSET_CCY As Integer = 2
+Private Const COL_OFFSET_NAME As Integer = 3
+Private Const COL_OFFSET_TICKER As Integer = 4
+Private Const COL_OFFSET_DATA_SOURCE As Integer = 5
+Private Const COL_OFFSET_INDEX_TYPE As Integer = 6
+Private Const COL_OFFSET_INDEX_TENOR As Integer = 7
+Private Const COL_OFFSET_CALIBRATION_CHOICE As Integer = 9
+Private Const COL_OFFSET_MODELID As Integer = 10
+Private Const COL_OFFSET_COMMENT As Integer = 11
+Private Const COL_OFFSET_INDEXID As Integer = 12
+
+
+Public Sub completeFXModelInputs(wksControl As Worksheet)
+    Dim strHYModelCcy$, strAssetClass$, strCcy$
+    
+    Dim rngInputAnchor As Range: Set rngInputAnchor = Nothing
+    Dim rngOutputAnchor As Range: Set rngOutputAnchor = Nothing
+    Dim vecIRModelCcy As vector_var: Set vecIRModelCcy = Nothing
+    Dim vecFXModelCcy As vector_var: Set vecFXModelCcy = Nothing
+    Dim iCountRow%: iCountRow = 1
+    Dim blnIsCCModel: blnIsCCModel = False
+    Dim i As Long
+    
+    On Error GoTo CleanUp
+    Set vecIRModelCcy = New vector_var
+    Set vecFXModelCcy = New vector_var
+    wksControl.Activate
+    strHYModelCcy = Range("rngHYCcy").Value
+    Set rngInputAnchor = Range("rngInputAnchor")
+    Set rngOutputAnchor = Range("rngOutputAnchor")
+    
+    Do While trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS) <> "")
+        strAssetClass = rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS)
+        strCcy = UCase(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY))
+        
+        If StrComp(strCcy, strHYModelCcy, vbTextCompare) <> 0 Then
+            blnIsCCModel = True
+        End If
+        
+        If StrComp(strAssetClass, "IR", vbTextCompare) = 0 Then
+            If vecIRModelCcy.Location(UCase(strCcy)) = -1 Then
+                vecIRModelCcy.push_back (UCase(strCcy))
+            End If
+        End If
+        
+        If StrComp(strAssetClass, "FX", vbTextCompare) = 0 Then
+            If vecFXModelCcy.Location(UCase(strCcy)) = -1 Then
+                vecFXModelCcy.push_back (UCase(strCcy))
+            End If
+        End If
+        iCountRow = iCountRow + 1
+    Loop
+    
+    'need to complete FX models if user fails to provide any
+    If blnIsCCModel Then
+        For i = 1 To vecIRModelCcy.size
+            If StrComp(vecIRModelCcy.at(i), strHYModelCcy, vbTextCompare) <> 0 Then
+                strCcy = strHYModelCcy & "/" & vecIRModelCcy.at(i)
+                If vecFXModelCcy.Location(UCase(strCcy)) = -1 Then
+                    rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS) = "FX"
+                    rngInputAnchor.Offset(iCountRow, COL_OFFSET_MODEL) = "BLACK"
+                    rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY) = strCcy
+                    rngInputAnchor.Offset(iCountRow, COL_OFFSET_NAME) = strHYModelCcy & vecIRModelCcy.at(i)
+                    rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER) = vecIRModelCcy.at(i) & strHYModelCcy & " Curncy"
+                    rngInputAnchor.Offset(iCountRow, COL_OFFSET_DATA_SOURCE) = rngInputAnchor.Offset(iCountRow - 1, COL_OFFSET_DATA_SOURCE)
+                    rngInputAnchor.Offset(iCountRow, COL_OFFSET_CALIBRATION_CHOICE) = "ATM"
+                    iCountRow = iCountRow + 1
+                End If
+            End If
+        Next i
+        
+    End If
+
+
+CleanUp:
+
+Set rngInputAnchor = Nothing
+Set rngOutputAnchor = Nothing
+Set vecIRModelCcy = Nothing
+Set vecFXModelCcy = Nothing
+
+
+End Sub
+
+
+Public Function createHYModel(wksControl As Worksheet, vecErrMsg As vector_var) As String
+    
+    Dim wkbModelRepository As Workbook: Set wkbModelRepository = Nothing
+    Dim wksCopied As Worksheet: Set wksCopied = Nothing
+    Dim wksModelSheet As Worksheet: Set wksModelSheet = Nothing
+    Dim wksCorrelation As Worksheet: Set wksCorrelation = Nothing
+    
+    
+    Dim strPath$: strPath = Utilities.GetDependencyFolderPath
+    strPath = Utilities.AppendPathSeparator(strPath)
+        
+    Dim strModelWkbFullName As String: strModelWkbFullName = strPath & MODEL_REPOSITORY_WKB_NAME
+    Dim strHYModelType$, strHYModelCcy$, strDomesticModelIDAddr$, strHYModelAddr$
+
+    Dim iCountRow%
+    Dim vecForeignModelIDAddr As New vector_var
+    Dim vecForeignModelCcy As New vector_var
+    Dim vecEQModelIDAddr As New vector_var
+    Dim vecEQModelNameAddr As New vector_var
+    Dim vecCMDTYModelIDAddr As New vector_var
+    Dim vecCMDTYModelNameAddr As New vector_var
+    Dim vecFXModelIDAddr As New vector_var
+    
+    Dim vecCorrelationTickers As vector_var: Set vecCorrelationTickers = New vector_var
+    Dim vecCorrelationNames As vector_var: Set vecCorrelationNames = New vector_var
+    Dim rngModelCorrAnchor As Range: Set rngModelCorrAnchor = Nothing
+    Dim rngNBECorrAnchor As Range: Set rngNBECorrAnchor = Nothing
+    Dim strDateFrom$, strDateTo$
+    Dim numCorrRows, i, j As Long
+    
+    
+    
+    'get underlying model inputs for hybrid model
+    Call getHYModelInputs(wksControl, strHYModelCcy, strDomesticModelIDAddr, vecForeignModelIDAddr, vecForeignModelCcy, vecEQModelIDAddr, vecEQModelNameAddr, _
+                        vecCMDTYModelIDAddr, vecCMDTYModelNameAddr, vecFXModelIDAddr)
+                        
+    'Infer hybrid model type
+    strHYModelType = getHYModelType(strDomesticModelIDAddr, vecEQModelIDAddr, vecCMDTYModelIDAddr, vecFXModelIDAddr)
+     
+    If StrComp(strHYModelType, "UNKNOWN", vbTextCompare) = 0 Then
+        strHYModelAddr = "unknown hybrid model type"
+        GoTo CleanUp
+    End If
+            
+    On Error Resume Next
+    'Open model repository workbook
+    Set wkbModelRepository = Application.Workbooks.Open(strModelWkbFullName)
+
+    On Error GoTo errorHandler
+    If wkbModelRepository Is Nothing Then
+        MsgBox (strModelWkbFullName & " Not Exist!")
+        GoTo errorHandler
+    End If
+    
+    'Insert HY model page
+    Set wksCopied = wkbModelRepository.Worksheets(strHYModelType)
+    If wksCopied Is Nothing Then
+        strHYModelAddr = "NO MODEL PAGE"
+        GoTo CleanUp
+    Else
+        wksCopied.Copy after:=wksControl
+        Utilities.CleanUpBadNamedRanges (MODEL_REPOSITORY_WKB_NAME)
+    End If
+    
+    Set wksModelSheet = ActiveSheet
+    Range("NX_" & ActiveSheet.Name & "_M_Currency") = strHYModelCcy
+    Range("NX_" & ActiveSheet.Name & "_M_DomesticModel") = strDomesticModelIDAddr
+    strHYModelAddr = "=" & wksModelSheet.Name & "!" & Range("NX_" & ActiveSheet.Name & "_M_ModelID").Address
+        
+    Select Case strHYModelType
+    
+        Case "IR_EQB"
+            Call CalibrationHYModule.Resize_IR_EQB(vecEQModelIDAddr, vecEQModelNameAddr)
+            Call CalibrationHYModule.Create_IR_EQB
+        
+        Case "CC_EQB"
+            Call CalibrationHYModule.Resize_CC_EQB(vecForeignModelIDAddr, vecFXModelIDAddr, vecEQModelIDAddr, vecEQModelNameAddr)
+            Call CalibrationHYModule.Create_CC_EQB
+            
+    End Select
+   
+    Application.Workbooks(MODEL_REPOSITORY_WKB_NAME).Close False
+    
+    'If NBE installed and has Bloomberg data request - download correlation matrix
+    If Utilities.IsNumerixBloombergInstalled And TableInterface.hasSpecificDataRequest(wksControl, "BLOOMBERG") Then
+        Set vecCorrelationTickers = getCorrelationTickerList(wksControl, strHYModelCcy)
+        wksModelSheet.Activate
+        Set rngModelCorrAnchor = Range("NX_" & wksModelSheet.Name & "_M_CorrAnchor")
+        
+        iCountRow = 1
+        Do While rngModelCorrAnchor.Offset(iCountRow, 0) <> ""
+            vecCorrelationNames.push_back (rngModelCorrAnchor.Offset(iCountRow, 0))
+            iCountRow = iCountRow + 1
+        Loop
+        
+        numCorrRows = iCountRow - 1
+        wksControl.Activate
+        strDateFrom = Range("C5")
+        strDateTo = Range("c7")
+        
+        Set wksCorrelation = MarketDataModule.addCorrelation(wksControl, vecCorrelationNames, vecCorrelationTickers, strDateFrom, strDateTo, vecErrMsg)
+        wksCorrelation.Activate
+        Set rngNBECorrAnchor = Range("F15")
+        
+        'populate the NBE correlation matrix into the HY model sheet
+        Application.EnableEvents = False
+        wksModelSheet.Activate
+        For i = 1 To numCorrRows
+            For j = 1 To numCorrRows
+                rngModelCorrAnchor.Offset(i, j) = "=" & wksCorrelation.Name & "!" & rngNBECorrAnchor.Offset(i, j).Address
+            Next j
+        Next i
+    End If
+    
+    wksModelSheet.Activate
+    wksModelSheet.Calculate
+    'Save fatal error msg to vector if any
+    Dim strHYModelID$: strHYModelID = Range("NX_" & ActiveSheet.Name & "_M_ModelID")
+    If Utilities.hasFatalError(strHYModelID) Then
+        vecErrMsg.push_back ("Error in creating Hybrid model: " & wksModelSheet.Name)
+    End If
+    
+CleanUp:
+    Set wkbModelRepository = Nothing
+    Set wksCopied = Nothing
+    Set wksModelSheet = Nothing
+    Set vecForeignModelIDAddr = Nothing
+    Set vecForeignModelCcy = Nothing
+    Set vecEQModelIDAddr = Nothing
+    Set vecEQModelNameAddr = Nothing
+    Set vecCMDTYModelIDAddr = Nothing
+    Set vecCMDTYModelNameAddr = Nothing
+    Set vecFXModelIDAddr = Nothing
+    Set vecCorrelationNames = Nothing
+    Set vecCorrelationTickers = Nothing
+    Set rngNBECorrAnchor = Nothing
+    Set rngModelCorrAnchor = Nothing
+    
+    Application.EnableEvents = True
+    createHYModel = strHYModelAddr
+    Exit Function
+    
+errorHandler:
+    If Not Workbooks(MODEL_REPOSITORY_WKB_NAME) Is Nothing Then
+        Application.Workbooks(MODEL_REPOSITORY_WKB_NAME).Close False
+    End If
+       
+    Resume CleanUp
+End Function
+
+
+' get cell address of model NAME and ID from underlying input table
+Private Function getHYModelInputs(wksControl As Worksheet, _
+                            strHYModelCcy As String, strDomesticModelIDAddr As String, _
+                            vecForeignModelIDAddr As vector_var, vecForeignModelCcy As vector_var, _
+                            vecEQModelIDAddr As vector_var, vecEQModelNameAddr As vector_var, _
+                            vecCMDTYModelIDAddr As vector_var, vecCMDTYModelNameAddr As vector_var, _
+                            vecFXModelIDAddr As vector_var) As String
+                            
+    Dim rngInputAnchor As Range
+    Dim vecIRModelIDAddr As vector_var: Set vecIRModelIDAddr = New vector_var
+    Dim vecIRModelCcy As vector_var: Set vecIRModelCcy = New vector_var
+    Dim vecTempFXModelIDAddr As vector_var: Set vecTempFXModelIDAddr = New vector_var
+    Dim vecTempFXModelCcy As vector_var: Set vecTempFXModelCcy = New vector_var
+    
+
+    
+    Dim iCountRow As Integer: iCountRow = 1
+    Dim i As Long, j As Long
+    Dim strFXModelCcy$
+    
+    wksControl.Activate
+    Set rngInputAnchor = Range("rngInputAnchor")
+    strHYModelCcy = Range("rngHYCcy")
+    
+    Do While rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS) <> ""
+        
+        'IR Model
+        'Not adding any duplicate currency entries, in case of multiple indices on one model page
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "IR", vbTextCompare) = 0 _
+            And vecIRModelCcy.Location(UCase(trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY)))) = -1 Then
+        
+            vecIRModelIDAddr.push_back ("=" & wksControl.Name & "!" & rngInputAnchor.Offset(iCountRow, COL_OFFSET_MODELID).Address)
+            vecIRModelCcy.push_back (UCase(trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY))))
+        End If
+        
+        'EQ Models
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "EQ", vbTextCompare) = 0 Then
+            vecEQModelIDAddr.push_back ("=" & wksControl.Name & "!" & rngInputAnchor.Offset(iCountRow, COL_OFFSET_MODELID).Address)
+            vecEQModelNameAddr.push_back ("=" & wksControl.Name & "!" & rngInputAnchor.Offset(iCountRow, COL_OFFSET_NAME).Address)
+        End If
+        
+        'CMDTY Models
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "CMDTY", vbTextCompare) = 0 Then
+            vecCMDTYModelIDAddr.push_back ("=" & wksControl.Name & "!" & rngInputAnchor.Offset(iCountRow, COL_OFFSET_MODELID).Address)
+            vecCMDTYModelNameAddr.push_back ("=" & wksControl.Name & "!" & rngInputAnchor.Offset(iCountRow, COL_OFFSET_NAME).Address)
+        End If
+        
+        'FX Models, order need to be adjusted to match foreign model currency order
+        'exclude any duplicate currency pair entries, take multiple indices on one page into consideration
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "FX", vbTextCompare) = 0 _
+        And vecTempFXModelCcy.Location(UCase(trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY)))) = -1 Then
+            vecTempFXModelIDAddr.push_back ("=" & wksControl.Name & "!" & rngInputAnchor.Offset(iCountRow, COL_OFFSET_MODELID).Address)
+            vecTempFXModelCcy.push_back (UCase(trim(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY))))
+        End If
+        
+        iCountRow = iCountRow + 1
+    Loop
+    
+    'separate foreign models and domestic model ID from IR model list
+    For i = 1 To vecIRModelCcy.size
+        If StrComp(vecIRModelCcy.at(i), strHYModelCcy, vbTextCompare) <> 0 Then
+            vecForeignModelCcy.push_back (vecIRModelCcy.at(i))
+            vecForeignModelIDAddr.push_back (vecIRModelIDAddr.at(i))
+        Else
+            strDomesticModelIDAddr = vecIRModelIDAddr.at(i)
+        End If
+    Next i
+    
+    
+    'adjust order of fx models to match the currency order of foreign models
+    For i = 1 To vecForeignModelCcy.size
+        strFXModelCcy = strHYModelCcy & "/" & vecForeignModelCcy.at(i)
+        j = vecTempFXModelCcy.Location(UCase(strFXModelCcy))
+        vecFXModelIDAddr.push_back (vecTempFXModelIDAddr.at(j))
+    Next i
+    
+   
+    Set rngInputAnchor = Nothing
+    Set vecIRModelIDAddr = Nothing
+    Set vecIRModelCcy = Nothing
+    Set vecTempFXModelIDAddr = Nothing
+    Set vecTempFXModelCcy = Nothing
+    
+    
+End Function
+
+
+
+'get the ticker list used to query NBE CORRELATION page
+Private Function getCorrelationTickerList(wksControl As Worksheet, strHYModelCcy As String) As vector_var
+
+    'Tickers used to query NBE correlation matrix
+    Dim vecTickers As vector_var: Set vecTickers = Nothing
+    Dim rngInputAnchor As Range: Set rngInputAnchor = Nothing
+    
+    Dim iCountRow As Integer
+    Dim i As Long, j As Long
+    
+    On Error GoTo CleanUp
+    wksControl.Activate
+    Set rngInputAnchor = Range("rngInputAnchor")
+    Set vecTickers = New vector_var
+    
+    'get domestic IR model ticker
+    iCountRow = 1
+    Do While rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS) <> ""
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "IR", vbTextCompare) = 0 And _
+            StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY), strHYModelCcy, vbTextCompare) = 0 Then
+            
+            vecTickers.push_back (rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER))
+            Exit Do
+        End If
+        iCountRow = iCountRow + 1
+    Loop
+    
+    'get foreign model tickers
+    'has excluded the duplicate case caused by multiple indices on a single model page
+    iCountRow = 1
+    Do While rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS) <> ""
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "IR", vbTextCompare) = 0 And _
+            StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_CCY), strHYModelCcy, vbTextCompare) <> 0 And _
+            vecTickers.Location(rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER)) = -1 Then
+            
+            vecTickers.push_back (rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER))
+        End If
+        iCountRow = iCountRow + 1
+    Loop
+    
+    'get FX model tickers
+    'has excluded the duplicate case caused by multiple indices on a single model page
+    iCountRow = 1
+    Do While rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS) <> ""
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "FX", vbTextCompare) = 0 And _
+              vecTickers.Location(rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER)) = -1 Then
+              
+            vecTickers.push_back (rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER))
+        End If
+        iCountRow = iCountRow + 1
+    Loop
+    
+    'get EQ model tickers
+    'has excluded the duplicate case caused by multiple indices on a single model page
+    iCountRow = 1
+    Do While rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS) <> ""
+        If StrComp(rngInputAnchor.Offset(iCountRow, COL_OFFSET_ASSET_CLASS), "EQ", vbTextCompare) = 0 And _
+              vecTickers.Location(rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER)) = -1 Then
+              
+            vecTickers.push_back (rngInputAnchor.Offset(iCountRow, COL_OFFSET_TICKER))
+        End If
+        iCountRow = iCountRow + 1
+    Loop
+       
+
+    Set getCorrelationTickerList = vecTickers
+CleanUp:
+    Set vecTickers = Nothing
+    Set rngInputAnchor = Nothing
+End Function
+
+
+
+'get HY Model type
+Private Function getHYModelType(strDomesticModelIDAddr As String, _
+                                vecEQModelIDAddr As vector_var, _
+                                vecCMDTYModelIDAddr As vector_var, _
+                                vecFXModelIDAddr As vector_var) As String
+    Dim strHYModelType$
+    
+    If trim(strDomesticModelIDAddr) = "" Then
+        getHYModelType = "UNKNOWN"
+        Exit Function
+    End If
+    
+    If vecFXModelIDAddr.IsEmpty Then
+        strHYModelType = "IR"
+    Else
+        strHYModelType = "CC"
+    End If
+    
+    If Not vecEQModelIDAddr.IsEmpty Then
+        strHYModelType = strHYModelType & "_" & "EQB"
+    End If
+    
+    If Not vecCMDTYModelIDAddr.IsEmpty Then
+        strHYModelType = strHYModelType & "_" & "CMDTYB"
+    End If
+    
+    getHYModelType = strHYModelType
+End Function
+
+
+Public Sub calibrateAllModels(wkbControl As Workbook, wksControl As Worksheet, vecErrMsg As vector_var)
+    Application.ScreenUpdating = False
+    
+    
+    Dim wkbModelRepository As Workbook: Set wkbModelRepository = Nothing
+    Dim wksModelSheet As Worksheet: Set wksModelSheet = Nothing
+    Dim wkbIndexTemplate As Workbook: Set wkbIndexTemplate = Nothing
+    Dim wksIndexTemplate As Worksheet: Set wksIndexTemplate = Nothing
+    Dim rngAnchor As Range: Set rngAnchor = Nothing
+    
+    Dim strPath As String: strPath = Utilities.GetDependencyFolderPath
+    strPath = Utilities.AppendPathSeparator(strPath)
+    Dim strModelWkbFullName As String: strModelWkbFullName = strPath & MODEL_REPOSITORY_WKB_NAME
+    Dim strIndexTemplateWkbFullName As String: strIndexTemplateWkbFullName = strPath & INDEX_TEMPLATE_WKB_NAME
+    
+    Dim lRow As Long: lRow = 1
+    Dim strModelName$, strNewModelSheetName$
+    Dim strAssetClass$, strModelType$, strCurncy$, strUnderlyingName$, strTicker$, strModelAddr$, strIndexType$, strTenor$
+    Dim strIndexName$
+    Dim wksCopied As Worksheet
+    Dim wksTemp As Worksheet
+    Dim iCountIndex As Integer
+    Dim strIndexAddr$
+    Dim strStartDate$, strEndDate$
+    Dim blnNBEAddInInstalled As Boolean: blnNBEAddInInstalled = Utilities.IsNumerixBloombergInstalled
+    
+    'only option instruments within this date range will be used to calibrate
+    'Start Date:TODAY
+    wksControl.Activate
+    strStartDate = trim(Range("C7"))
+    strEndDate = trim(Range("C6"))
+    
+    On Error Resume Next
+    'Open model repository workbook
+    Set wkbModelRepository = Application.Workbooks.Open(strModelWkbFullName)
+    'Open Index Template workbook
+    If StrComp(INDEX_TEMPLATE_WKB_NAME, MODEL_REPOSITORY_WKB_NAME, vbTextCompare) = 0 Then
+        Set wkbIndexTemplate = wkbModelRepository
+    Else
+        Set wkbIndexTemplate = Application.Workbooks.Open(strIndexTemplateWkbFullName)
+    End If
+    
+    Set wksIndexTemplate = wkbIndexTemplate.Worksheets("SampleIndices")
+        
+    On Error GoTo errorHandler
+    If wkbModelRepository Is Nothing Then
+        MsgBox (strModelWkbFullName & " Not Exist!")
+        GoTo errorHandler
+    End If
+    
+    If wkbIndexTemplate Is Nothing Or wksIndexTemplate Is Nothing Then
+        MsgBox (strIndexTemplateWkbFullName & " Not Exist!")
+        GoTo errorHandler
+    End If
+
+    wksControl.Activate
+    Set rngAnchor = Range("rngInputAnchor")
+    
+    Do While trim(rngAnchor.Offset(lRow, 0)) <> ""
+        Set wksTemp = Nothing
+
+        strAssetClass = rngAnchor.Offset(lRow, COL_OFFSET_ASSET_CLASS)
+        strModelType = rngAnchor.Offset(lRow, COL_OFFSET_MODEL)
+        strCurncy = rngAnchor.Offset(lRow, COL_OFFSET_CCY)
+        strUnderlyingName = rngAnchor.Offset(lRow, COL_OFFSET_NAME)
+        strTicker = rngAnchor.Offset(lRow, COL_OFFSET_TICKER)
+        strIndexType = rngAnchor.Offset(lRow, COL_OFFSET_INDEX_TYPE)
+        strTenor = rngAnchor.Offset(lRow, COL_OFFSET_INDEX_TENOR)
+        
+        strModelName = strAssetClass & "_" & strModelType
+        If UCase(strAssetClass) = "EQ" Then
+            strNewModelSheetName = VBA.Replace$(strModelName, "_", "") & "_" & _
+                                    VBA.Replace$(strCurncy, "/", "") & "_" & _
+                                    VBA.Replace$(VBA.Replace$(strTicker, " ", ""), "/", "")
+        Else
+            strNewModelSheetName = VBA.Replace$(strModelName, "_", "") & "_" & _
+                                    VBA.Replace$(strCurncy, "/", "")
+        End If
+                       
+        'try to get the calibration model sheet in control workbook
+        On Error Resume Next
+        Set wksTemp = wkbControl.Worksheets(strNewModelSheetName)
+        On Error GoTo errorHandler
+        
+        'avoid adding duplicate calibration model sheet in control workbook
+        If wksTemp Is Nothing Then
+            iCountIndex = 1
+        
+           'try to get model sheet in Model Repository workbook
+           On Error Resume Next
+           Set wksModelSheet = wkbModelRepository.Worksheets(strModelName)
+           On Error GoTo errorHandler
+           
+           If wksModelSheet Is Nothing Then
+               rngAnchor.Offset(lRow, COL_OFFSET_COMMENT) = "NO MODEL PAGE"
+           Else
+               wkbControl.Activate
+                            
+               'Copy model sheets from model repository and rename the name range
+               If blnNBEAddInInstalled Then
+                    Application.Run "CopyWorksheet", wksModelSheet, strNewModelSheetName
+                    Utilities.RenameWorksheet ActiveSheet, wksModelSheet.Name, strNewModelSheetName
+               Else
+                    wksModelSheet.Copy after:=wksControl
+                    Utilities.RenameWorksheet ActiveSheet, wksModelSheet.Name, strNewModelSheetName
+               End If
+               
+               Utilities.CleanUpBadNamedRanges (MODEL_REPOSITORY_WKB_NAME)
+               
+               Set wksCopied = ActiveSheet
+               
+               Select Case UCase(strAssetClass)
+                    Case "EQ":
+                        If StrComp(strModelType, "Black", vbTextCompare) = 0 Then
+                            strModelAddr = CalibrationEQModule.calibrateEQModel(wksCopied, strCurncy, strTicker, strModelType, strStartDate, strEndDate, vecErrMsg)
+                        End If
+                    Case "FX":
+                        If StrComp(strModelType, "Black", vbTextCompare) = 0 Then
+                            strModelAddr = CalibrationFXModule.calibrateFXModel(wksCopied, strCurncy, strModelType, vecErrMsg)
+                        End If
+                    Case "IR":
+                        If StrComp(strModelType, "Det", vbTextCompare) = 0 Then
+                            strModelAddr = CalibrationIRModule.createIRDetModel(wksCopied, strCurncy, strModelType, vecErrMsg)
+                        Else
+                            strModelAddr = CalibrationIRModule.calibrateIRModel(wksCopied, strCurncy, strModelType, vecErrMsg)
+                        End If
+                        
+                   Case Else:
+               End Select
+    
+               'output ModelID and build the hyperlink
+               wksControl.Activate
+               rngAnchor.Offset(lRow, COL_OFFSET_MODELID) = "=" & strNewModelSheetName & "!" & strModelAddr
+               rngAnchor.Offset(lRow, COL_OFFSET_COMMENT).Select
+               ActiveSheet.Hyperlinks.Add anchor:=Selection, Address:="", SubAddress:=strNewModelSheetName & "!" & strModelAddr, _
+                                                       TextToDisplay:="=" & strNewModelSheetName & "!" & strModelAddr
+           End If
+            
+            'set wksTemp reference to newly added model page
+            Set wksTemp = wksCopied
+            
+        Else
+            iCountIndex = iCountIndex + 1
+        End If
+        
+        'Create Index on the model page
+        If trim(strIndexType) <> "" Then
+            'Change Index Name convention for IR type to avoid duplicate
+            If StrComp(strIndexType, "CMS", vbTextCompare) = 0 Or StrComp(strIndexType, "LIBOR", vbTextCompare) = 0 Then
+                strIndexName = strUnderlyingName & "." & strIndexType & "." & strTenor
+            Else
+                strIndexName = strUnderlyingName
+            End If
+            
+            'strIndexAddr = CreateIndexModule.createIndex(wksTemp, wksIndexTemplate, strCurncy, strTicker, strIndexType, strTenor, strUnderlyingName, iCountIndex)
+            strIndexAddr = CreateIndexModule.createIndex(wksTemp, wksIndexTemplate, strCurncy, strTicker, strIndexType, strTenor, strIndexName, iCountIndex)
+            rngAnchor.Offset(lRow, COL_OFFSET_INDEXID) = strIndexAddr
+        End If
+        lRow = lRow + 1
+    Loop
+            
+    wksControl.Activate
+    Application.Workbooks(MODEL_REPOSITORY_WKB_NAME).Close False
+    If StrComp(INDEX_TEMPLATE_WKB_NAME, MODEL_REPOSITORY_WKB_NAME, vbTextCompare) <> 0 Then
+        Application.Workbooks(INDEX_TEMPLATE_WKB_NAME).Close False
+    End If
+    
+    
+CleanUp:
+    Application.ScreenUpdating = True
+    
+    Set wkbModelRepository = Nothing
+    Set wksModelSheet = Nothing
+    Set wkbIndexTemplate = Nothing
+    Set wksIndexTemplate = Nothing
+    Set rngAnchor = Nothing
+    Set wksCopied = Nothing
+    Set wksTemp = Nothing
+    
+    Exit Sub
+    
+errorHandler:
+    If Not Workbooks(MODEL_REPOSITORY_WKB_NAME) Is Nothing Then
+        Application.Workbooks(MODEL_REPOSITORY_WKB_NAME).Close False
+    End If
+    
+    If Not Workbooks(INDEX_TEMPLATE_WKB_NAME) Is Nothing Then
+        Application.Workbooks(INDEX_TEMPLATE_WKB_NAME).Close False
+    End If
+        
+    Resume CleanUp
+    
+End Sub
+Attribute VB_Name = "Payoff"
+Option Explicit
+
+Private Const PAYOFF_PAGE_NAME As String = "Payoff"
+Private Const PAYOFF_PAGE_EXTENSION As String = ".xls"
+Private Const PAYOFF_WKB_NAME As String = "ModelRepository"
+Private Const EMPTY_NUMERIX_PAGE_NAME As String = "empty_numerix_page"
+Private Const INDEX_TABLE_TEMPLATE_SHEET_NAME As String = "SampleIndices"
+
+Private Const PAYOFF_START_RANGE = "B5"
+Private Const SAMPLE_INDEX_TABLE_RANGE_NAME = "NX_M_SampleIndices_IndexArray"
+Private Const INDEX_TABLE_COUNT As Integer = 3
+Private Const INDICES_OBJECT_START_RANGE = "C17"
+Private Const INDEX_PREFIX_RANGE_NAME = "rngIndexPrefix"
+
+Private Const INDEX_TAG As String = "INDEX"
+Private Const EQ_TAG As String = "EQ"
+
+'Private Const INDEX_PREFIX As String = "MyDeal"
+Private Const INDEX_TYPE_ARRAY As String = "ARRAY"
+Private Const INDEX_TYPE_INTEGER As String = "INTEGER"
+Private Const INDEX_NAME_INDICES As String = "Indices"
+Private Const INDEX_NAME_NINDICES As String = "nIndices"
+Private Const INDEX_NAME_WEIGHTS As String = "Weights"
+Private Const INDEX_INPUT_NAME_DATA As String = "DATA"
+Private Const INDEX_INPUT_NAME_INDICES As String = "INDICES"
+
+'
+' Create a payoff page with index tables on it
+'
+Public Sub CreatePayoffPage(wkbControl As Workbook, wksControl As Worksheet, rngSelected As Range)
+    Dim wksPayoff As Worksheet: Set wksPayoff = Nothing
+    Dim wkbPayoff As Workbook: Set wkbPayoff = Nothing
+    Dim strNewSheetName As String
+    Dim blnIsPayoffTempExist As Boolean
+    
+    On Error GoTo CleanUp
+    Dim strPath As String: strPath = Utilities.GetDependencyFolderPath
+    strPath = Utilities.AppendPathSeparator(strPath)
+    
+    Dim strPayoffWkbName As String: strPayoffWkbName = strPath & PAYOFF_WKB_NAME
+    blnIsPayoffTempExist = isWorkbookExist(strPayoffWkbName, PAYOFF_PAGE_EXTENSION)
+    
+    If IsWorksheetExist(PAYOFF_PAGE_NAME) Then
+        wkbControl.Worksheets(PAYOFF_PAGE_NAME).Delete
+    End If
+    
+    'Open payoff workbook
+    If blnIsPayoffTempExist Then
+        Workbooks.Open strPayoffWkbName
+        Set wkbPayoff = ActiveWorkbook
+    End If
+
+    Call AddEmptyPayoffPage(wksControl, wkbPayoff, EMPTY_NUMERIX_PAGE_NAME, PAYOFF_PAGE_NAME)
+    Set wksPayoff = wkbControl.Worksheets(PAYOFF_PAGE_NAME)
+    Call AddIndexTables(wksControl, wkbPayoff, wksPayoff, INDEX_TABLE_TEMPLATE_SHEET_NAME, rngSelected)
+    
+    'set table width
+    Range(Range(PAYOFF_START_RANGE).Offset(0, 1), Range(PAYOFF_START_RANGE).Offset(10, 3)).Columns.AutoFit
+    
+    wksPayoff.Activate
+    Range("A1").Select
+    
+CleanUp:
+    If Not Workbooks(PAYOFF_WKB_NAME & PAYOFF_PAGE_EXTENSION) Is Nothing Then
+        Workbooks(PAYOFF_WKB_NAME & PAYOFF_PAGE_EXTENSION).Close False
+    End If
+Debug.Print Err.Description
+    Set wksPayoff = Nothing
+    Set wkbPayoff = Nothing
+End Sub
+
+'
+' Add a new payoff page into workbook
+'
+Private Sub AddEmptyPayoffPage(wksControl As Worksheet, wkbPayoff As Workbook, strSheetName As String, strNewSheetName As String)
+    Dim wksCopied As Worksheet: Set wksCopied = Nothing
+    Dim wksActive As Worksheet: Set wksActive = Nothing
+
+    On Error GoTo CleanUp
+    
+    'Add payoff sheet to current workbook
+    Set wksCopied = wkbPayoff.Worksheets(strSheetName)
+    wksCopied.Copy before:=wksControl
+    Set wksActive = ActiveSheet
+        
+    'Rename worksheet
+    If strSheetName <> strNewSheetName Then
+        Utilities.RenameWorksheet wksActive, strSheetName, strNewSheetName
+    End If
+    
+CleanUp:
+    Set wksCopied = Nothing
+    Set wksActive = Nothing
+End Sub
+
+'
+' Add index tables into payoff
+'
+Private Sub AddIndexTables(wksControl As Worksheet, wkbPayoff As Workbook, wksPayoff As Worksheet, strSheetName As String, rngSelected As Range)
+    Dim wksIndexTableTemp As Worksheet: Set wksIndexTableTemp = Nothing
+    Dim strIndexID As String
+    Dim strIndexInputIndices As String
+    Dim strIndexPrefixAddr As String
+    Dim iIDCount As Integer
+    Dim iIndexInputData As Integer
+    Dim vecIDAddr As vector_var: Set vecIDAddr = New vector_var
+    Dim vecIDName As vector_var: Set vecIDName = New vector_var
+    Dim vecName As vector_var: Set vecName = New vector_var
+   
+    'get index prefix
+    wksControl.Activate
+    strIndexPrefixAddr = "=" & wksControl.Name & "!" & Range(INDEX_PREFIX_RANGE_NAME).Address
+   
+    'get inputs
+    Call GetIndexInput(wksControl, rngSelected, vecIDAddr, vecName, vecIDName)
+    iIDCount = vecIDAddr.size
+    iIndexInputData = iIDCount
+    
+    'copy sample index table
+    Set wksIndexTableTemp = wkbPayoff.Worksheets(strSheetName)
+    wksIndexTableTemp.Activate
+    Range(SAMPLE_INDEX_TABLE_RANGE_NAME).Copy
+    
+    wksPayoff.Activate
+    
+    'Set first EQ Indicies table
+    Range(PAYOFF_START_RANGE).Select
+    wksPayoff.Paste
+    Call SetIndexField_GeneralField(Range(PAYOFF_START_RANGE).Offset(0, 1), strIndexPrefixAddr, INDEX_NAME_INDICES, INDEX_TYPE_ARRAY, INDEX_INPUT_NAME_INDICES)
+
+    Dim i As Long
+    For i = 1 To vecName.size
+        strIndexID = strIndexID & """" & vecIDName.at(i) & """" & ","
+    Next
+    strIndexID = Left(strIndexID, Len(strIndexID) - 1)
+
+    strIndexInputIndices = "=nxLibData(""ID"", " _
+                            & "{" & strIndexID & "}" & ", " _
+                            & Range(PAYOFF_START_RANGE).Offset(1, 1).Address & "&"".Data"", " _
+                            & Range(PAYOFF_START_RANGE).Offset(0, 1).Address & ")"
+    strIndexInputIndices = Replace(strIndexInputIndices, "$", "")
+    Call SetIndexField_SpecialField(Range(PAYOFF_START_RANGE).Offset(0, 1), strIndexInputIndices)
+    
+    'second table
+    Range(PAYOFF_START_RANGE).Offset(0, 2).Select
+    'wksPayoff.Paste
+    Call SetIndexField_GeneralField(Range(PAYOFF_START_RANGE).Offset(0, 2), strIndexPrefixAddr, INDEX_NAME_NINDICES, INDEX_TYPE_INTEGER, INDEX_INPUT_NAME_DATA)
+    Call SetIndexField_SpecialField(Range(PAYOFF_START_RANGE).Offset(0, 2), iIndexInputData)
+    
+    'third table
+    Range(PAYOFF_START_RANGE).Offset(0, 3).Select
+    'wksPayoff.Paste
+    strIndexInputIndices = CreateIndicesDataTable(Range(INDICES_OBJECT_START_RANGE), iIDCount, vecIDAddr, vecName)
+    
+    Call SetIndexField_GeneralField(Range(PAYOFF_START_RANGE).Offset(0, 3), strIndexPrefixAddr, INDEX_NAME_WEIGHTS, INDEX_TYPE_ARRAY, INDEX_INPUT_NAME_INDICES)
+    Call SetIndexField_SpecialField(Range(PAYOFF_START_RANGE).Offset(0, 3), strIndexInputIndices)
+    wksPayoff.Calculate
+    
+CleanUp:
+    Set wksIndexTableTemp = Nothing
+    Set vecIDAddr = Nothing
+    Set vecIDName = Nothing
+    Set vecName = Nothing
+End Sub
+
+'
+' Get index inputs from Underlying table
+'
+Private Sub GetIndexInput(wksControl As Worksheet, rngSelected As Range, vecIDAddr As vector_var, vecName As vector_var, vecIDName As vector_var)
+    wksControl.Activate
+    Dim cell As Variant
+    For Each cell In rngSelected
+        If InStr(1, trim(cell.Value), INDEX_TAG, vbTextCompare) <> 0 And _
+           InStr(1, trim(cell.Value), EQ_TAG, vbTextCompare) <> 0 Then
+            vecIDAddr.push_back (wksControl.Name & "!" & cell.Address)
+            vecName.push_back (wksControl.Name & "!" & cell.Offset(0, -9).Address)
+            vecIDName.push_back (cell.Value)
+        End If
+    Next cell
+End Sub
+
+'
+' Set fields of index table
+'
+Private Sub SetIndexField_GeneralField(rngStartCell As Range, strPrefix As String, strName As String, strType As String, strInputName As String)
+    rngStartCell.Offset(0, 0) = strPrefix
+    rngStartCell.Offset(1, 0) = strName
+    rngStartCell.Offset(3, 0) = strType
+    'rngStartCell.Offset(6, 0) = strInputName
+End Sub
+
+'
+' Set fields of index table
+'
+Private Sub SetIndexField_SpecialField(rngStartCell As Range, strInput As Variant)
+    If VarType(strInput) = vbInteger Then
+        rngStartCell.Offset(7, 0).Value = strInput
+    Else
+        rngStartCell.Offset(6, 0).Formula = strInput
+    End If
+End Sub
+
+'
+' Create indices data table
+'
+Private Function CreateIndicesDataTable(rngStartCell As Range, iIDCount As Integer, vecIDAddr As vector_var, vecName As vector_var) As String
+    Dim i As Long
+    Dim iWeights As Double: iWeights = 1 / iIDCount
+    Dim strFormula As String
+    
+    rngStartCell.Offset(0, 0) = "Name"
+    rngStartCell.Offset(0, 1) = "Weights"
+    rngStartCell.Offset(0, 2) = "ID"
+    
+    For i = 1 To iIDCount
+        rngStartCell.Offset(i, 0) = "=" & vecName.at(i)
+        rngStartCell.Offset(i, 1) = iWeights
+        rngStartCell.Offset(i, 2) = "=" & vecIDAddr.at(i)
+    Next
+
+    strFormula = "=nxLibData(" & rngStartCell.Offset(0, 2).Address & ", " _
+                        & rngStartCell.Offset(1, 2).Address & ":" & rngStartCell.Offset(iIDCount, 2).Address & ", " _
+                        & rngStartCell.Offset(-11, 2).Address & "&"".Data""" & ", " _
+                        & rngStartCell.Offset(-12, 2).Address & ")"
+    strFormula = Replace(strFormula, "$", "")
+    
+    'set table format
+    Range(rngStartCell.Offset(0, 0), rngStartCell.Offset(0, 2)).Select
+    Selection.Interior.ColorIndex = 11
+    Selection.Font.ColorIndex = 2
+    
+    Range(rngStartCell.Offset(1, 0), rngStartCell.Offset(iIDCount, 2)).Select
+    Selection.Interior.ColorIndex = 2
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    
+    Range(rngStartCell.Offset(0, 0), rngStartCell.Offset(iIDCount, 2)).Select
+    Selection.HorizontalAlignment = xlCenter
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous: .Weight = xlThin: .ColorIndex = xlAutomatic
+    End With
+    
+    Range(rngStartCell.Offset(0, 0), rngStartCell.Offset(iIDCount, 2)).Columns.AutoFit
+    
+    CreateIndicesDataTable = strFormula
+    
+End Function
+
+'
+' Return true is workbook existed, false otherwise
+'
+Private Function isWorkbookExist(strWkbName As String, strWkbExtension As String) As Boolean
+    Dim strWkbFullName As String: strWkbFullName = strWkbName & strWkbExtension
+    isWorkbookExist = Dir(strWkbFullName) <> ""
+End Function
+
+'
+' Return true is worksheet existed, false otherwise
+'
+Private Function IsWorksheetExist(strName As String) As Boolean
+    Dim wks As Worksheet: Set wks = Nothing
+    On Error Resume Next
+    Set wks = Worksheets(strName)
+    On Error GoTo 0
+    If wks Is Nothing Then
+        IsWorksheetExist = False
+    Else
+        IsWorksheetExist = True
+    End If
+    
+    Set wks = Nothing
+End Function
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "SubControl"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+
+Option Explicit
+
+'The main function
+Public Sub createModels()
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+    
+    Dim vecErrMsg As vector_var: Set vecErrMsg = Nothing
+    Dim wkbControl As Workbook: Set wkbControl = Nothing
+    Dim wksControl As Worksheet: Set wksControl = Nothing
+    Dim wkbModelRepository As Workbook: Set wkbModelRepository = Nothing
+    Dim rngErrOutputAnchor As Range: Set rngErrOutputAnchor = Nothing
+    
+    Dim blnHasInputError As Boolean
+    Dim strHYModelIDAddr$
+    Dim rngHYModelCcy As Range
+    Dim rngHYModelID As Range
+    Dim rngHYModelLink As Range
+    Dim i As Long
+        
+    On Error GoTo CleanUp
+    Set wkbControl = ActiveWorkbook
+    Set wksControl = wkbControl.Worksheets("UnderlyingTable")
+    wksControl.Activate
+    Set rngErrOutputAnchor = Range("rngOutputAnchor")
+    
+    Set rngHYModelCcy = Range("rngHYCcy")
+    Set rngHYModelID = rngHYModelCcy.Offset(0, 1)
+    Set rngHYModelLink = rngHYModelCcy.Offset(0, 2)
+    
+    'Remove all the existing underlying model pages
+    'Remove links, comments and error logs in the control page
+    'Delete all the invalid name ranges
+    Call CleanWorkbook
+    
+    'To Do - write a function to load automatic workbooks - Calendar and Convention
+    
+    If TableInterface.isSinlgeTableInput(wksControl) Then
+        'Process single inputs
+        'Check table inputs
+        If TableInterface.checkTableInputs(wksControl) Then
+            wksControl.Activate
+            Application.GoTo Range("B52"), True
+            GoTo CleanUp
+        End If
+        
+        'Calculate to create market objects
+        Set vecErrMsg = MarketDataModule.addMarketDataSheets(wksControl)
+        
+        'calibrate every underlying model
+        Call ModelControlModule.calibrateAllModels(wkbControl, wksControl, vecErrMsg)
+    Else
+        'Process mutilple inputs
+        'Check table input
+        blnHasInputError = TableInterface.checkTableInputs(wksControl)
+        If blnHasInputError Then
+            wksControl.Activate
+            Application.GoTo Range("B52"), True
+            GoTo CleanUp
+        End If
+        
+        If Len(trim(rngHYModelCcy.Value)) = 3 Then
+            'For CC hybrid models add all the FX models user fails to provide
+            Call ModelControlModule.completeFXModelInputs(wksControl)
+        End If
+            
+        
+        'Add NBE/Dummy market data pages
+        'update workbook if there is Bloomberg in the datasource column
+        'Calculate to create market objects
+        Set vecErrMsg = MarketDataModule.addMarketDataSheets(wksControl)
+        
+        'calibrate every underlying model
+        Call ModelControlModule.calibrateAllModels(wkbControl, wksControl, vecErrMsg)
+        
+        If Len(trim(rngHYModelCcy.Value)) = 3 Then
+            'create hybrid model and get model ID address
+            strHYModelIDAddr = ModelControlModule.createHYModel(wksControl, vecErrMsg)
+            wksControl.Activate
+            rngHYModelID = strHYModelIDAddr
+            rngHYModelLink.Select
+            ActiveSheet.Hyperlinks.Add anchor:=Selection, Address:="", SubAddress:=strHYModelIDAddr, _
+                                                           TextToDisplay:=strHYModelIDAddr
+                    
+        End If
+    End If
+    
+        
+    If vecErrMsg Is Nothing Then
+        rngErrOutputAnchor.Offset(1, 0) = "No Errors."
+    Else
+        If Not vecErrMsg.IsEmpty Then
+            For i = 1 To vecErrMsg.size
+                rngErrOutputAnchor.Offset(i, 0) = vecErrMsg.at(i)
+            Next i
+        Else
+            rngErrOutputAnchor.Offset(1, 0) = "No Errors."
+        End If
+    End If
+    
+    wksControl.Activate
+    Range("A1").Select
+    
+CleanUp:
+    Set wksControl = Nothing
+    Set wkbControl = Nothing
+    Set wkbModelRepository = Nothing
+    Set rngErrOutputAnchor = Nothing
+    Set rngHYModelCcy = Nothing
+    Set rngHYModelID = Nothing
+    Set rngHYModelLink = Nothing
+    Set vecErrMsg = Nothing
+
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Exit Sub
+    
+    
+errorHandler:
+
+    Resume CleanUp
+    
+End Sub
+
+
+Private Sub removeOldSheets(wkbControl As Workbook, wksControl As Worksheet)
+    Application.DisplayAlerts = False
+    Dim wksTemp As Worksheet
+    For Each wksTemp In wkbControl.Worksheets
+        'skip control table and documentation page
+        If wksTemp.Name <> wksControl.Name And _
+           StrComp(wksTemp.Name, "Documentation", vbTextCompare) <> 0 Then
+        wksTemp.Delete
+        End If
+    Next wksTemp
+    Application.DisplayAlerts = True
+
+End Sub
+
+
+ '--------------------------------------------------------------------------
+    ''' <summary>
+    '''     Deletes invalid named ranges in the active workbook.
+    ''' </summary>
+Private Function DeleteInvalidNames(wkb As Workbook)
+    
+        On Error GoTo errorHandler
+'        Dim wkb As Workbook: Set wkb = Application.ActiveWorkbook
+        Dim objName As Name: Set objName = Nothing
+        
+        If (Not wkb Is Nothing) Then
+        
+            '
+            ' delete the invalid named ranges
+            '
+            For Each objName In wkb.Names
+            
+                If (InStr(1, objName.Value, "#REF!", vbBinaryCompare) > 0) Then
+                
+                    Call objName.Delete
+                
+                End If
+            
+            Next objName
+
+        End If
+        
+errorHandler:
+    
+    End Function
+    
+'
+'Remove all the model page and market data page
+'Delete the invalid name ranges
+'Clean the Underlying Table worksheet
+'
+Public Sub CleanWorkbook()
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    Dim wkbControl As Workbook: Set wkbControl = Nothing
+    Dim wksControl As Worksheet: Set wksControl = Nothing
+    Dim rngHYModelCcy As Range
+    Dim rngHYModelID As Range
+    Dim rngHYModelLink As Range
+        
+    On Error GoTo CleanUp
+    Set wkbControl = ThisWorkbook
+    Set wksControl = wkbControl.Worksheets("UnderlyingTable")
+    wksControl.Activate
+    Set rngHYModelCcy = Range("rngHYCcy")
+    Set rngHYModelID = rngHYModelCcy.Offset(0, 1)
+    Set rngHYModelLink = rngHYModelCcy.Offset(0, 2)
+    
+    rngHYModelID.ClearContents
+    rngHYModelLink.ClearContents
+        
+    'Remove all the existing model calibration pages
+    Call removeOldSheets(wkbControl, wksControl)
+    'Remove links and comments in control page
+    Range("rngOutput").ClearContents
+    'Remove all the error logs
+    Range("rngErrorLogs").ClearContents
+    'Delete all the invalid name ranges
+    Call DeleteInvalidNames(wkbControl)
+    
+    Application.Calculate
+
+CleanUp:
+    Set wksControl = Nothing
+    Set wkbControl = Nothing
+    Set rngHYModelCcy = Nothing
+    Set rngHYModelID = Nothing
+    Set rngHYModelLink = Nothing
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+
+End Sub
+
+
+Public Sub CreatePayoffPage()
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+    
+    Dim wkbControl As Workbook: Set wkbControl = Nothing
+    Dim wksControl As Worksheet: Set wksControl = Nothing
+    Dim blnHasPayoffReq As Boolean
+    Dim blnHasIndexID As Boolean
+    Dim rng As Range: Set rng = Selection
+    
+    On Error GoTo CleanUp
+    Set wkbControl = ThisWorkbook
+    Set wksControl = wkbControl.Worksheets("UnderlyingTable")
+    
+    'check index ID
+    blnHasIndexID = TableInterface.hasIndexID(Selection)
+  
+    If blnHasIndexID Then
+        Call Payoff.CreatePayoffPage(wkbControl, wksControl, Selection)
+    Else
+        MsgBox "Cannot create payoff page without valid Equity Index selection"
+    End If
+        
+CleanUp:
+    Set wksControl = Nothing
+    Set wkbControl = Nothing
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+End Sub
+Attribute VB_Name = "TableInterface"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+Private Const MODEL_TABLE_WKB_NAME As String = "Interface Template.xls"
+Private Const COL_OFFSET_ASSET_CLASS As Integer = 0
+Private Const COL_OFFSET_MODEL As Integer = 1
+Private Const COL_OFFSET_CCY As Integer = 2
+Private Const COL_OFFSET_NAME As Integer = 3
+Private Const COL_OFFSET_TICKER As Integer = 4
+Private Const COL_OFFSET_DATA_SOURCE As Integer = 5
+Private Const COL_OFFSET_INDEX_TYPE As Integer = 6
+Private Const COL_OFFSET_INDEX_TENOR As Integer = 7
+Private Const COL_OFFSET_INDEX_ID_IN_OUTPUT_RANGE As Integer = 3
+Private Const INDEX_TAG As String = "INDEX"
+Private Const EQ_TAG As String = "EQ"
+
+
+Public Sub AddTableInterface()
+    Application.DisplayAlerts = False
+    'add a new workbook as control workbook
+    Dim wkbControl As Workbook: Set wkbControl = Workbooks.Add
+    Dim wkbCopied As Workbook: Set wkbCopied = Nothing
+    Dim strPath$: strPath = ThisWorkbook.Path
+    Dim strFullPath$: strFullPath = strPath & "\" & MODEL_TABLE_WKB_NAME
+        
+    On Error GoTo errorHandler_WkbNotFound
+    Workbooks.Open strFullPath
+    On Error GoTo CleanUp
+    Set wkbCopied = ActiveWorkbook
+    
+    'Copy Model Table Interface from target workbook
+    wkbCopied.Sheets("UnderlyingTable").Copy _
+                    before:=wkbControl.Sheets("Sheet1")
+    wkbCopied.Close False
+        
+    'Delete irrelevant pages from wkbControl
+    wkbControl.Activate
+    Dim wksTemp As Worksheet
+    For Each wksTemp In wkbControl.Worksheets
+        If wksTemp.Name <> "UnderlyingTable" Then
+            wksTemp.Delete
+        End If
+    Next wksTemp
+
+CleanUp:
+    On Error Resume Next
+    Set wkbControl = Nothing
+    Set wkbCopied = Nothing
+    Application.DisplayAlerts = True
+    If Not Workbooks(MODEL_TABLE_WKB_NAME) Is Nothing Then
+        wkbCopied.Close False
+    End If
+    Exit Sub
+    
+errorHandler_WkbNotFound:
+    Call MsgBox("Multiple Underlier Model Calibration.xls not found in " & strPath, vbCritical, "Not Found Workbook")
+    Resume CleanUp
+
+End Sub
+        
+    '--------------------------------------------------------------------------
+    ''' <summary>
+    '''     check if the inputs of the control table
+    '''     is single
+    ''' </summary>
+    ''' <param name="wksControl">
+    '''     the control table
+    ''' </param>
+    ''' <returns>
+    '''     return True if there's only one single input
+    '''     return False if there's multiple inputs
+    ''' </returns>
+Public Function isSinlgeTableInput(wksControl As Worksheet) As Boolean
+    Dim rngInputAnchor As Range: Set rngInputAnchor = Nothing
+    Dim iRowCount As Integer: iRowCount = 1
+    Dim iInputCount As Integer: iInputCount = 0
+    Dim isSingleInput As Boolean: isSingleInput = False
+
+    On Error GoTo CleanUp
+    wksControl.Activate
+    Set rngInputAnchor = Range("rngInputAnchor")
+    
+    Do While rngInputAnchor.Offset(iRowCount, 0) <> ""
+        iRowCount = iRowCount + 1
+        iInputCount = iInputCount + 1
+    Loop
+    
+    If iInputCount = 1 Then
+        isSingleInput = True
+    End If
+        
+CleanUp:
+    isSinlgeTableInput = isSingleInput
+End Function
+
+    '--------------------------------------------------------------------------
+    ''' <summary>
+    '''     check the single input of the control table
+    '''     output error logs if any
+    ''' </summary>
+    ''' <param name="wksControl">
+    '''     the control table
+    ''' </param>
+    ''' <returns>
+    '''     return True if no input errors
+    '''     return False if input error exists
+    ''' </returns>
+Public Function checkSingleTableInput(wksControl As Worksheet) As Boolean
+    Dim rngInputAnchor As Range: Set rngInputAnchor = Nothing
+    Dim rngOutputAnchor As Range: Set rngOutputAnchor = Nothing
+    Dim collectionDupRows As Collection: Set collectionDupRows = Nothing
+    Dim strAssetClass$, strModel$, strCcy$, strName$, strTicker$, strDataSource$, strIndexType$, strIndexTenor$
+    Dim strErrMsg$: strErrMsg = ""
+    Dim blnHasError As Boolean: blnHasError = False
+    Dim iRowCount As Integer: iRowCount = 1
+    Dim iErrorRowCount As Integer: iErrorRowCount = 1
+    Dim i, iDupRow As Integer
+    Dim strTempIndexType$, strTempIndexTenor$
+    Dim strStartDate$, strEndDate$, strTodayDate$, strHYCcy$
+    Dim vecExistIRModelCcy As vector_var: Set vecExistIRModelCcy = New vector_var
+    Dim vecDesiredIRModelCcy As vector_var: Set vecDesiredIRModelCcy = New vector_var
+    
+    On Error GoTo CleanUp
+    wksControl.Activate
+    Set rngInputAnchor = Range("rngInputAnchor")
+    Set rngOutputAnchor = Range("rngOutputAnchor")
+    
+    strStartDate = Range("C5")
+    strEndDate = Range("C6")
+    strTodayDate = Range("C7")
+    
+    'Check dates
+    If Not VBA.IsDate(strStartDate) Or Not VBA.IsDate(strEndDate) Or Not VBA.IsDate(strTodayDate) Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Must enter valid Start Date, End Date and Today's Date"
+        blnHasError = True
+        iErrorRowCount = iErrorRowCount + 1
+    End If
+    
+    If CLng(DateValue(strTodayDate)) > CLng(DateValue(strEndDate)) Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Today's date must fall before End Date"
+        blnHasError = True
+        iErrorRowCount = iErrorRowCount + 1
+    End If
+    
+    If CLng(DateValue(strStartDate)) > CLng(DateValue(strEndDate)) Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Start Date must fall before End Date"
+        blnHasError = True
+        iErrorRowCount = iErrorRowCount + 1
+    End If
+    
+    strHYCcy = Range("rngHYCcy").Value
+    If (Len(trim(strHYCcy)) <> 0) Then
+        vecDesiredIRModelCcy.push_back (trim(strHYCcy))
+    End If
+    
+    strAssetClass = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_ASSET_CLASS)))
+    strModel = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_MODEL)))
+    strCcy = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_CCY)))
+    strName = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_NAME)))
+    strTicker = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_TICKER)))
+    strDataSource = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_DATA_SOURCE)))
+    strIndexType = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_INDEX_TYPE)))
+    strIndexTenor = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_INDEX_TENOR)))
+                
+    If (StrComp(strAssetClass, "IR", vbTextCompare) = 0) Then
+        vecExistIRModelCcy.push_back (strCcy)
+    End If
+    
+    If (StrComp(strAssetClass, "EQ", vbTextCompare) = 0) Then
+        vecDesiredIRModelCcy.push_back (strCcy)
+    End If
+                
+    'Check Model column
+    If strModel = "" Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row " & CStr(iRowCount) & ": Model Type Empty"
+        iErrorRowCount = iErrorRowCount + 1
+        blnHasError = True
+    End If
+    
+    'Check Currency Column
+    If strAssetClass = "FX" And (Len(strCcy) <> 7 Or InStr(strCcy, "/") = 0) Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": FX Currency Wrong Input, input currency pair(domestic/foreign), for example USD/EUR"
+        iErrorRowCount = iErrorRowCount + 1
+        blnHasError = True
+    End If
+    
+    If strAssetClass <> "FX" And Len(strCcy) <> 3 Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": Currency Wrong Input, input currency code, for example USD"
+        iErrorRowCount = iErrorRowCount + 1
+        blnHasError = True
+    End If
+    
+    'Check Ticker Column
+    If strDataSource = "BLOOMBERG" Then
+        If (strAssetClass = "EQ" And InStr(1, strTicker, "INDEX", vbTextCompare) = 0 And InStr(1, strTicker, "EQUITY", vbTextCompare) = 0) _
+         Or ((strAssetClass = "IR" Or strAssetClass = "FX") And InStr(1, strTicker, "Curncy", vbTextCompare) = 0) Then
+            rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": Ticker Wrong Input"
+            iErrorRowCount = iErrorRowCount + 1
+            blnHasError = True
+        End If
+    End If
+    
+    'Check Data Source Column
+    If strDataSource = "" Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row " & CStr(iRowCount) & ": Data Source Empty"
+        iErrorRowCount = iErrorRowCount + 1
+        blnHasError = True
+    End If
+    
+    'Check Name Column
+    If strName = "" Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": NAME Empty"
+        iErrorRowCount = iErrorRowCount + 1
+        blnHasError = True
+    End If
+        
+    'Check the data source
+    If hasSpecificDataRequest(wksControl, "BLOOMBERG") And Not Utilities.IsNumerixBloombergInstalled Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Numerix Bloomberg add-in is not installed, please change the Data Source to Dummy"
+        iErrorRowCount = iErrorRowCount + 1
+        blnHasError = True
+    End If
+    
+CleanUp:
+    checkSingleTableInput = blnHasError
+    Set rngInputAnchor = Nothing
+    Set rngOutputAnchor = Nothing
+End Function
+
+
+    '--------------------------------------------------------------------------
+    ''' <summary>
+    '''     check the inputs of the control table
+    '''     output error logs if any
+    ''' </summary>
+    ''' <param name="wksControl">
+    '''     the control table
+    ''' </param>
+    ''' <returns>
+    '''     return True if no input errors
+    '''     return False if input error exists
+    ''' </returns>
+Public Function checkTableInputs(wksControl As Worksheet) As Boolean
+    Dim rngInputAnchor As Range: Set rngInputAnchor = Nothing
+    Dim rngOutputAnchor As Range: Set rngOutputAnchor = Nothing
+    Dim collectionDupRows As Collection: Set collectionDupRows = Nothing
+    Dim strAssetClass$, strModel$, strCcy$, strName$, strTicker$, strDataSource$, strIndexType$, strIndexTenor$
+    Dim strErrMsg$: strErrMsg = ""
+    Dim blnHasError As Boolean: blnHasError = False
+    Dim iRowCount As Integer: iRowCount = 1
+    Dim iErrorRowCount As Integer: iErrorRowCount = 1
+    Dim i, iDupRow As Integer
+    Dim strTempIndexType$, strTempIndexTenor$
+    Dim strStartDate$, strEndDate$, strTodayDate$, strHYCcy$
+    Dim vecExistIRModelCcy As vector_var: Set vecExistIRModelCcy = New vector_var
+    Dim vecDesiredIRModelCcy As vector_var: Set vecDesiredIRModelCcy = New vector_var
+    Dim iInputCount As Integer: iInputCount = 0
+    
+    On Error GoTo CleanUp
+    wksControl.Activate
+    Set rngInputAnchor = Range("rngInputAnchor")
+    Set rngOutputAnchor = Range("rngOutputAnchor")
+    
+    strStartDate = Range("C5")
+    strEndDate = Range("C6")
+    strTodayDate = Range("C7")
+    
+    'Check dates
+    If Not VBA.IsDate(strStartDate) Or Not VBA.IsDate(strEndDate) Or Not VBA.IsDate(strTodayDate) Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Must enter valid Start Date, End Date and Today's Date"
+        blnHasError = True
+        iErrorRowCount = iErrorRowCount + 1
+    End If
+    
+    If CLng(DateValue(strTodayDate)) > CLng(DateValue(strEndDate)) Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Today's date must fall before End Date"
+        blnHasError = True
+        iErrorRowCount = iErrorRowCount + 1
+    End If
+    
+    If CLng(DateValue(strStartDate)) > CLng(DateValue(strEndDate)) Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Start Date must fall before End Date"
+        blnHasError = True
+        iErrorRowCount = iErrorRowCount + 1
+    End If
+    
+    strHYCcy = Range("rngHYCcy").Value
+    If (Len(trim(strHYCcy)) <> 0) Then
+        vecDesiredIRModelCcy.push_back (trim(strHYCcy))
+    End If
+    
+    Do While rngInputAnchor.Offset(iRowCount, 0) <> ""
+        strAssetClass = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_ASSET_CLASS)))
+        strModel = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_MODEL)))
+        strCcy = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_CCY)))
+        strName = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_NAME)))
+        strTicker = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_TICKER)))
+        strDataSource = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_DATA_SOURCE)))
+        strIndexType = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_INDEX_TYPE)))
+        strIndexTenor = UCase(trim(rngInputAnchor.Offset(iRowCount, COL_OFFSET_INDEX_TENOR)))
+                    
+        If (StrComp(strAssetClass, "IR", vbTextCompare) = 0) Then
+            vecExistIRModelCcy.push_back (strCcy)
+        End If
+        
+        If (StrComp(strAssetClass, "EQ", vbTextCompare) = 0) Then
+            vecDesiredIRModelCcy.push_back (strCcy)
+        End If
+                    
+        'Check Model column
+        If strModel = "" Then
+            rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row " & CStr(iRowCount) & ": Model Type Empty"
+            iErrorRowCount = iErrorRowCount + 1
+            blnHasError = True
+        End If
+        
+        'Check Currency Column
+        If strAssetClass = "FX" And (Len(strCcy) <> 7 Or InStr(strCcy, "/") = 0) Then
+            rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": FX Currency Wrong Input, input currency pair(domestic/foreign), for example USD/EUR"
+            iErrorRowCount = iErrorRowCount + 1
+            blnHasError = True
+        End If
+        
+        If strAssetClass <> "FX" And Len(strCcy) <> 3 Then
+            rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": Currency Wrong Input, input currency code, for example USD"
+            iErrorRowCount = iErrorRowCount + 1
+            blnHasError = True
+        End If
+        
+        'Check Ticker Column
+        If strDataSource = "BLOOMBERG" Then
+            If (strAssetClass = "EQ" And InStr(1, strTicker, "INDEX", vbTextCompare) = 0 And InStr(1, strTicker, "EQUITY", vbTextCompare) = 0) _
+             Or ((strAssetClass = "IR" Or strAssetClass = "FX") And InStr(1, strTicker, "Curncy", vbTextCompare) = 0) Then
+                rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": Ticker Wrong Input"
+                iErrorRowCount = iErrorRowCount + 1
+                blnHasError = True
+            End If
+        End If
+        
+        'Check Data Source Column
+        If strDataSource = "" Then
+            rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row " & CStr(iRowCount) & ": Data Source Empty"
+            iErrorRowCount = iErrorRowCount + 1
+            blnHasError = True
+        End If
+        
+        'Check Name Column
+        If strName = "" Then
+            rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row" & CStr(iRowCount) & ": NAME Empty"
+            iErrorRowCount = iErrorRowCount + 1
+            blnHasError = True
+        End If
+        
+        'Check duplicate inputs
+        'EQ model page also needs to compare NAME column
+        If strAssetClass = "EQ" Then
+            Set collectionDupRows = getAllDuplicateEntryRowNumbers(rngInputAnchor, iRowCount - 1, strAssetClass, strModel, strCcy, strName)
+        Else
+            Set collectionDupRows = getAllDuplicateEntryRowNumbers(rngInputAnchor, iRowCount - 1, strAssetClass, strModel, strCcy)
+        End If
+            
+        For i = 1 To collectionDupRows.count
+            iDupRow = collectionDupRows.Item(i)
+            strTempIndexType = UCase(trim(rngInputAnchor.Offset(iDupRow, COL_OFFSET_INDEX_TYPE)))
+            strTempIndexTenor = UCase(trim(rngInputAnchor.Offset(iDupRow, COL_OFFSET_INDEX_TENOR)))
+                
+            If strIndexType = "" Or _
+                strIndexType = "FX" Or _
+                strIndexType = "EQUITY" Or _
+                strIndexType = "LIBOR" And (strIndexTenor = "" Or strTempIndexTenor = strIndexTenor) Then
+                    rngOutputAnchor.Offset(iErrorRowCount, 0) = "Row " & CStr(iDupRow) & " and Row " & CStr(iRowCount) & " :Duplicate entries"
+                    iErrorRowCount = iErrorRowCount + 1
+                    blnHasError = True
+            End If
+        Next i
+        
+        iRowCount = iRowCount + 1
+        iInputCount = iInputCount + 1
+    Loop
+    
+    'Check the data source
+    If hasSpecificDataRequest(wksControl, "BLOOMBERG") And Not Utilities.IsNumerixBloombergInstalled Then
+        rngOutputAnchor.Offset(iErrorRowCount, 0) = "Numerix Bloomberg add-in is not installed, please change the Data Source to Dummy"
+        iErrorRowCount = iErrorRowCount + 1
+        blnHasError = True
+    End If
+    
+    If iInputCount > 1 Then
+        'Check whether the IR model list is complete based on the EQ models specified
+        If IsIRModelMissing(rngOutputAnchor.Offset(iErrorRowCount, 0), vecExistIRModelCcy, vecDesiredIRModelCcy) Then
+            blnHasError = True
+        End If
+    End If
+    
+CleanUp:
+    checkTableInputs = blnHasError
+    Set rngInputAnchor = Nothing
+    Set rngOutputAnchor = Nothing
+
+End Function
+
+'--------------------------------------------------------------------------
+''' <summary>
+'''     check whether there is any IR model missing from the underlying inputs
+'''     - i.e. for each EQ model currency and final hybrid model currency, there
+'''     should be corresponding IR model with same currencies
+''' </summary>
+''' <param name="rngOutputAnchor">
+'''     the anchor of the error(if any) output range
+''' </param>
+''' <param name="vecExistIRModelCcy">
+'''     the existing currencies of IR models
+''' </param>
+''' <param name="vecDesiredIRModelCcy">
+'''     the desired currencies of IR Models
+''' </param>
+Private Function IsIRModelMissing(rngOutputAnchor As Range, _
+                                    vecExistIRModelCcy As vector_var, _
+                                    vecDesiredIRModelCcy As vector_var) As Boolean
+    Dim i As Long
+    Dim strDesiredIRModelCcy$
+    Dim strErrMsg$: strErrMsg = "Interest Rate Models with currency "
+    Dim hasMissingIRModel As Boolean: hasMissingIRModel = False
+    
+    For i = 1 To vecDesiredIRModelCcy.size
+        strDesiredIRModelCcy = vecDesiredIRModelCcy.at(i)
+        If (vecExistIRModelCcy.Location(strDesiredIRModelCcy) = -1) Then
+            strErrMsg = strErrMsg & strDesiredIRModelCcy & ","
+            hasMissingIRModel = True
+        End If
+    Next i
+    If hasMissingIRModel Then
+        strErrMsg = strErrMsg & "are required underliers to create the hybrid model"
+        rngOutputAnchor = strErrMsg
+    End If
+    IsIRModelMissing = hasMissingIRModel
+End Function
+
+'--------------------------------------------------------------------------
+''' <summary>
+'''     get all the row numbers of duplicate entry with same Asset Class, Model and Currency for IR, FX
+'''     and also check Ticker for EQ
+'''     starting from row 1 to iEndRow
+''' </summary>
+''' <param name="strTargetAsset">
+'''     the target asset class
+''' </param>
+''' <param name="strTargetModel">
+'''     the target model type
+''' </param>
+''' <param name="strTargetCcy">
+'''     the target model currency
+''' </param>
+''' <param name="iEndRow">
+''' the row number to end scanning
+''' </param>
+''' <param name="rngAnchor">
+'''     start range anchor
+''' </param>
+''' <returns>
+''' return all the duplicate row numbers in a collection
+''' </returns>
+Private Function getAllDuplicateEntryRowNumbers(rngAnchor As Range, iEndRow As Integer, _
+                                                    strTargetAsset As String, _
+                                                    strTargetModel As String, _
+                                                    strTargetCcy As String, _
+                                                    Optional vaTargetName As Variant) As Collection
+                                                
+    Dim collectionDupRows As Collection: Set collectionDupRows = New Collection
+    Dim iStartRow As Integer: iStartRow = 1
+    Dim iDupRow As Integer
+        
+    Do While (iStartRow <= iEndRow)
+        If IsMissing(vaTargetName) Then
+            iDupRow = getFirstDuplicateEntryRowNumber(rngAnchor, iStartRow, iEndRow, strTargetAsset, strTargetModel, strTargetCcy)
+        Else
+            iDupRow = getFirstDuplicateEntryRowNumber(rngAnchor, iStartRow, iEndRow, strTargetAsset, strTargetModel, strTargetCcy, vaTargetName)
+        End If
+        If iDupRow <> 0 Then
+            collectionDupRows.Add (iDupRow)
+            iStartRow = iDupRow + 1
+        Else
+            Exit Do
+        End If
+    Loop
+    Set getAllDuplicateEntryRowNumbers = collectionDupRows
+End Function
+
+'--------------------------------------------------------------------------
+''' <summary>
+'''     get the first row number of duplicate entry with same Asset Class, Model and Currency starting from a specified row
+''' </summary>
+''' <param name="strTargetAsset">
+'''
+''' </param>
+''' <param name="strTargetModel">
+'''
+''' </param>
+''' <param name="strTargetCcy">
+'''
+''' </param>
+''' <param name="iStartRow">
+''' the row number from which to start scanning
+''' </param>
+''' <param name="iEndRow">
+''' the row number to end scanning
+''' </param>
+''' <param name="rngAnchor">
+'''
+''' </param>
+''' <returns>
+''' return the duplicate row number
+''' Return 0 if no duplicate row found
+''' </returns>
+Private Function getFirstDuplicateEntryRowNumber(rngAnchor As Range, iStartRow As Integer, iEndRow As Integer, _
+                                                    strTargetAsset As String, _
+                                                    strTargetModel As String, _
+                                                    strTargetCcy As String, _
+                                                    Optional vaTargetName As Variant) As Integer
+    
+    Dim iRowCount As Integer: iRowCount = iStartRow
+    Dim strAsset$, strModel$, strCcy$, strName$
+    
+    Dim iDuplicateRow As Integer: iDuplicateRow = 0
+    
+    Do While (iRowCount <= iEndRow And trim(rngAnchor.Offset(iRowCount, 0)) <> "")
+        strAsset = UCase(trim(rngAnchor.Offset(iRowCount, COL_OFFSET_ASSET_CLASS)))
+        strModel = UCase(trim(rngAnchor.Offset(iRowCount, COL_OFFSET_MODEL)))
+        strCcy = UCase(trim(rngAnchor.Offset(iRowCount, COL_OFFSET_CCY)))
+        strName = UCase(trim(rngAnchor.Offset(iRowCount, COL_OFFSET_NAME)))
+        
+        If (strAsset = UCase(strTargetAsset) And strModel = UCase(strTargetModel) And strCcy = UCase(strTargetCcy)) Then
+            If Not IsMissing(vaTargetName) Then
+                If (CStr(vaTargetName) = UCase(strName)) Then
+                    iDuplicateRow = iRowCount
+                    Exit Do
+                End If
+            Else
+                iDuplicateRow = iRowCount
+                Exit Do
+            End If
+        End If
+        iRowCount = iRowCount + 1
+    Loop
+    getFirstDuplicateEntryRowNumber = iDuplicateRow
+End Function
+
+'--------------------------------------------------------------------------
+''' <summary>
+'''     check whether there is "Bloomberg" in the DataSource Column
+''' </summary>
+''' <param name="wksControl">
+''' worksheet of control table
+''' </param>
+''' <returns>
+''' return True if find Bloomberg
+''' </returns>
+Public Function hasSpecificDataRequest(wksControl As Worksheet, strRequestType As String) As Boolean
+    Dim lRowCount As Long: lRowCount = 1
+    Dim rngAnchor As Range: Set rngAnchor = Nothing
+    Dim blnHasSpecificDataReq As Boolean: blnHasSpecificDataReq = False
+    wksControl.Activate
+    Set rngAnchor = Range("rngInputAnchor")
+    Do While trim(rngAnchor.Offset(lRowCount, 0)) <> ""
+        If StrComp(trim(rngAnchor.Offset(lRowCount, COL_OFFSET_DATA_SOURCE)), strRequestType, vbTextCompare) = 0 Then
+            blnHasSpecificDataReq = True
+            Exit Do
+        End If
+        lRowCount = lRowCount + 1
+    Loop
+    hasSpecificDataRequest = blnHasSpecificDataReq
+End Function
+
+
+Public Function hasIndexID(selectedRange As Range) As Boolean
+    Dim indexIDCount As Integer: indexIDCount = 0
+    Dim iRowCount As Integer: iRowCount = 1
+    Dim isValidIndexID As Boolean: isValidIndexID = False
+    Dim rngOutput As Range: Set rngOutput = Nothing
+    Set rngOutput = Range("rngOutput")
+    
+    On Error GoTo clearup
+    
+    If selectedRange Is Nothing Or Intersect(selectedRange, rngOutput) Is Nothing Then
+        isValidIndexID = False
+        Exit Function
+    Else
+        'check index IDs inside specific range
+        Dim cell As Variant
+        For Each cell In selectedRange.Cells
+            If cell.Value <> "" And _
+               InStr(1, trim(cell.Value), INDEX_TAG, vbTextCompare) <> 0 And _
+               InStr(1, trim(cell.Value), EQ_TAG, vbTextCompare) <> 0 Then
+                indexIDCount = indexIDCount + 1
+            End If
+        Next cell
+    End If
+    
+    If indexIDCount > 0 Then
+        isValidIndexID = True
+    Else
+        isValidIndexID = False
+    End If
+        
+clearup:
+    hasIndexID = isValidIndexID
+    Set rngOutput = Nothing
+    
+End Function
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Utilities"
+'==============================================================================
+' Copyright (C) 1996-2012 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+Option Explicit
+
+Private Const NUMERIX_BLOOMBERG_ADDIN_NAME As String = "Numerix Bloomberg Data"
+Private Const NUMERIX_BLOOMBERG_ADDIN_NAME2 As String = "Numerix_Bloomberg_Data"
+Private Const NUMERIX_TOOLBAR_ADDIN_NAME As String = "Numerix Toolbar"
+Private Const DEPENDENCY_FILE_RELATIVE_PATH As String = "..\Numerix Solutions\Solutions\Model Builder\Dependency\"
+
+#If (VBA7) Then
+
+    Private Declare PtrSafe Function GetTempPathA Lib "kernel32" (ByVal nBufferLength As Long, _
+                                                                  ByVal lpBuffer As String) As Long
+
+#Else
+
+    Private Declare Function GetTempPathA Lib "kernel32" (ByVal nBufferLength As Long, _
+                                                          ByVal lpBuffer As String) As Long
+
+#End If
+
+'Determines whether a Numerix Object has fatal errors
+Public Function hasFatalError(strObjectID As String) As Boolean
+    Dim i As Long, j As Long
+    Dim vaViewResults As Variant
+    Dim blnHasFatalError As Boolean: blnHasFatalError = False
+    
+    vaViewResults = Application.Run("nxLibViewWarnings", strObjectID)
+    On Error GoTo CleanUp
+    For i = LBound(vaViewResults) To UBound(vaViewResults)
+        If StrComp(vaViewResults(i, 1), "FATAL", vbTextCompare) = 0 Then
+            blnHasFatalError = True
+            Exit For
+        End If
+    Next i
+    
+CleanUp:
+    hasFatalError = blnHasFatalError
+
+End Function
+
+
+'---------------------------------------------------------------------------
+' <summary>
+'     Determines whether Numerix Bloomberg Add-in is installed
+' </summary>
+' <returns>
+'     True if Numerix Bloomberg add-in is installed
+'     False, otherwise
+' </returns>
+
+Public Function IsNumerixBloombergInstalled() As Boolean
+    Dim blnAddInInstalled As Boolean
+    Dim objAddIn As AddIn
+    Dim objAddIn2 As AddIn
+    
+    Set objAddIn = Application.Run("GetInstalledNumerixAddIn", NUMERIX_BLOOMBERG_ADDIN_NAME)
+    Set objAddIn2 = Application.Run("GetInstalledNumerixAddIn", NUMERIX_BLOOMBERG_ADDIN_NAME2)
+    
+    If (Not objAddIn Is Nothing) Or (Not objAddIn2 Is Nothing) Then
+        blnAddInInstalled = True
+    Else
+        blnAddInInstalled = False
+    End If
+       
+    IsNumerixBloombergInstalled = blnAddInInstalled
+
+End Function
+
+Private Function GetInstallationPath() As String
+    Dim objToolbarAddIn As AddIn
+    Dim strBinFolderPath$
+    
+    Set objToolbarAddIn = Application.Run("GetInstalledNumerixAddIn", NUMERIX_TOOLBAR_ADDIN_NAME)
+    strBinFolderPath = objToolbarAddIn.Path
+    GetInstallationPath = strBinFolderPath
+End Function
+
+Public Function GetDependencyFolderPath() As String
+    Dim strBinPath$, strDependencyPath$
+    
+    strBinPath = GetInstallationPath
+    
+    strBinPath = AppendPathSeparator(strBinPath)
+    strDependencyPath = strBinPath & DEPENDENCY_FILE_RELATIVE_PATH
+    GetDependencyFolderPath = strDependencyPath
+End Function
+
+'''Public Sub test()
+'''
+'''    Dim strTemp$: strTemp = GetDependencyFolderPath
+'''    Dim i As Integer: i = 1
+'''
+'''
+'''End Sub
+
+
+Public Sub RenameWorksheet(ByRef wks As Worksheet, oldSheetName$, newSheetName$)
+    wks.Select
+    Dim strName As String: strName = newSheetName$
+    Dim strNewName As String: strNewName = ""
+    Dim strNewValue As String: strNewValue = ""
+    Dim blnNameValid As Boolean: blnNameValid = True
+    Dim objName As Name: Set objName = Nothing
+    Dim lngExclamationIndex As Long: lngExclamationIndex = 0&
+
+    '
+    ' get the worksheet name, if necessary
+    '
+    If (doesWorksheetExist(strName)) Then Call MsgBox(("A worksheet named """ & newSheetName & """ already exists."), (vbOKOnly + vbExclamation), "Worksheet Already Exists")
+start:
+    Do While (doesWorksheetExist(strName) Or (Not blnNameValid))
+        strName = InputBox$("Please enter a name for the added worksheet:", "Enter Worksheet Name", strName)
+        If (Len(strName) = 0) Then Exit Sub
+        If (doesWorksheetExist(strName)) Then Call MsgBox(("A worksheet named """ & newSheetName & """ already exists."), (vbOKOnly + vbExclamation), "Worksheet Already Exists")
+    Loop
+
+    '
+    ' rename the worksheet
+    '
+    On Error GoTo renameErrorHandler
+    wks.Name = strName
+    On Error GoTo 0
+
+    '
+    ' change named ranges from *_OldName_* to *_NewName_*
+    '
+    For Each objName In wks.Parent.Names
+
+        strNewName = GetNewNamedRangeName(objName.Name, _
+                                          oldSheetName$, _
+                                          strName)
+        If (Len(strNewName) > 0) Then
+
+            lngExclamationIndex = FindLastSubstring(strNewName, "!")
+            If (lngExclamationIndex > 0&) Then
+
+                strNewName = VBA.Mid$(strNewName, (lngExclamationIndex + 1&))
+
+            End If
+
+            'objName.Name = strNewName
+            If objName.Name <> strNewName Then
+                ActiveWorkbook.Names.Add strNewName, objName.RefersTo
+                objName.Delete
+            End If
+
+        End If
+
+    Next objName
+
+    Exit Sub
+
+renameErrorHandler:
+
+    blnNameValid = False
+    Call MsgBox(("The worksheet name """ & strName & """ is invalid."), (vbOKOnly + vbExclamation), "Invalid Worksheet Name")
+    GoTo start
+
+End Sub
+
+Private Function doesWorksheetExist(ByVal strName As String) As Boolean
+    On Error GoTo errorHandler
+    Dim wks As Worksheet: Set wks = ActiveWorkbook.Sheets(strName)
+    doesWorksheetExist = True
+    Exit Function
+errorHandler:
+    doesWorksheetExist = False
+    Exit Function
+End Function
+
+'------------------------------------------------------------------------------
+''' <summary>
+'''     Gets the new name for a named range.
+''' </summary>
+''' <param name="strOldNamedRangeName">
+'''     the old name for the named range
+''' </param>
+''' <param name="strOldWorksheetName">
+'''     the old worksheet name
+''' </param>
+''' <param name="strNewWorksheetName">
+'''     the new worksheet name
+''' </param>
+''' <returns>
+'''     the new name for the named range, or <c>""</c> if the new name
+'''     is the same as the old name
+''' </returns>
+Private Function GetNewNamedRangeName(ByVal strOldNamedRangeName As String, _
+                                      ByVal strOldWorksheetName As String, _
+                                      ByVal strNewWorksheetName As String) _
+                                      As String
+
+    Dim strName As String: strName = ""
+    Dim lngSheetNameIndex As Long: lngSheetNameIndex = InStr(1, _
+                                                             strOldNamedRangeName, _
+                                                             strOldWorksheetName, _
+                                                             vbTextCompare)
+
+    If (lngSheetNameIndex > 0&) Then
+
+        strName = ReplaceSubstring(strOldNamedRangeName, _
+                                   strOldWorksheetName, _
+                                   strNewWorksheetName, _
+                                   False)
+
+    End If
+
+    GetNewNamedRangeName = strName
+    Exit Function
+
+End Function
+'------------------------------------------------------------------------------
+''' <summary>
+'''     Finds the last occurrence of a specified substring within a
+'''     specified string.
+''' </summary>
+''' <param name="strSearch">
+'''     the string to search
+''' </param>
+''' <param name="strSubstring">
+'''     the substring to find
+''' </param>
+''' <param name="blnConsiderCase">
+'''     if <c>True</c>, this function should consider case when making
+'''     string comparisons; if <c>False</c>, this function should not
+'''     consider case when making string comparisons
+''' </param>
+''' <returns>
+'''     the index of the last occurrence of the specified substring within
+'''     the specified string, or zero if the specified string does not have
+'''     the specified substring
+''' </returns>
+Private Function FindLastSubstring(ByVal strSearch As String, _
+                                   ByVal strSubstring As String, _
+                                   Optional ByVal blnConsiderCase As String = False) _
+                                   As Long
+
+    Dim lngResult As Long: lngResult = 0&
+    Dim i As Long: i = 0&
+    Dim j As Long: j = 0&
+    Dim lngSearchLength As Long: lngSearchLength = VBA.Len(strSearch)
+    Dim lngSubstringLength As Long: lngSubstringLength = VBA.Len(strSubstring)
+    Dim blnMatch As Boolean: blnMatch = False
+    Dim vntComparison As Variant: vntComparison = IIf(blnConsiderCase, vbBinaryCompare, vbTextCompare)
+
+    If ((lngSearchLength > 0&) And (lngSubstringLength > 0&)) Then
+
+        For i = 1& To lngSearchLength
+
+            blnMatch = True
+            For j = 1& To lngSubstringLength
+
+                If (VBA.StrComp(VBA.Mid$(strSearch, (i + j - 1), 1), _
+                                VBA.Mid$(strSubstring, j, 1), _
+                                vntComparison) <> 0) Then
+
+                    blnMatch = False
+                    Exit For
+
+                End If
+
+            Next j
+            If (blnMatch) Then
+
+                lngResult = i
+
+            End If
+
+        Next i
+
+    End If
+
+    FindLastSubstring = lngResult
+    Exit Function
+
+End Function
+
+'------------------------------------------------------------------------------
+''' <summary>
+'''     Replaces all occurrences of a specified search substring in a
+'''     specified string with a specified replacement string.  For
+'''     example, if the specified source string is
+'''     <c>the quick brown fox jumped over the lazy dogs</c>, the
+'''     specified search substring is <c>the</c>, and the specified
+'''     replacement substring is <c>a</c>, this function will return
+'''     <c>a quick brown fox jumped over a lazy dogs</c>.
+''' </summary>
+''' <param name="strSource">
+'''     the source string to use
+''' </param>
+''' <param name="strSearchSubstring">
+'''     the substring for which to search and replace
+''' </param>
+''' <param name="strReplacementSubstring">
+'''     the substring with which to replace the search substring
+''' </param>
+''' <param name="blnConsiderCase">
+'''     if <c>True</c>, this function should consider case when making
+'''     string comparisons; if <c>False</c>, this function should not
+'''     consider case when making string comparisons
+''' </param>
+''' <returns>
+'''     a copy of the specified source string, with all occurrences of the
+'''     specified search substring replace with the specified replacement
+'''     substring
+''' </returns>
+Private Function ReplaceSubstring(ByVal strSource As String, _
+                                  ByVal strSearchSubstring As String, _
+                                  ByVal strReplacementSubstring As String, _
+                                  ByVal blnConsiderCase As Boolean) _
+                                  As String
+
+    Dim strResult As String: strResult = ""
+    Dim ch As String * 1: ch = ""
+    Dim i As Long: i = 0&
+    Dim j As Long: j = 0&
+    Dim lngSourceLength As Long: lngSourceLength = Len(strSource)
+    Dim lngSearchSubstringLength As Long: lngSearchSubstringLength = Len(strSearchSubstring)
+    Dim blnMatch As Boolean: blnMatch = False
+    Dim vntComparison As Variant: vntComparison = IIf(blnConsiderCase, vbBinaryCompare, vbTextCompare)
+
+    If ((lngSourceLength > 0&) And (lngSearchSubstringLength > 0&)) Then
+
+        i = 1&
+        Do While (i <= lngSourceLength)
+
+            ch = Mid$(strSource, i, 1)
+            If (StrComp(ch, Mid$(strSearchSubstring, 1, 1), vntComparison) = 0) Then
+
+                blnMatch = True
+                For j = (i + 1) To (i + lngSearchSubstringLength - 1)
+
+                    If (j > lngSourceLength) Then
+
+                        blnMatch = False
+                        Exit For
+
+                    Else
+
+                        If (StrComp(Mid$(strSource, j, 1), Mid$(strSearchSubstring, (j - i + 1), 1), vntComparison) <> 0) Then
+
+                            blnMatch = False
+                            Exit For
+
+                        End If
+
+                    End If
+
+                Next j
+                If (blnMatch) Then
+
+                    strResult = (strResult & strReplacementSubstring)
+                    i = (i + lngSearchSubstringLength)
+
+                Else
+
+                    strResult = (strResult & ch)
+                    i = (i + 1&)
+
+                End If
+
+            Else
+
+                strResult = (strResult & ch)
+                i = (i + 1&)
+
+            End If
+
+        Loop
+
+    End If
+
+    ReplaceSubstring = strResult
+
+End Function
+
+    '--------------------------------------------------------------------------
+    ''' <summary>
+    '''     Appends a path separator to the end of a specified path name, if
+    '''     the specified path name does not already end with a path
+    '''     separator.  For example, if the specified path name is
+    '''     <c>C:\MyDirectory</c> or <c>C:\MyDirectory\</c>, this function
+    '''     will return <c>C:\MyDirectory\</c>.
+    ''' </summary>
+    ''' <param name="strPathName">
+    '''     the path name to use
+    ''' </param>
+    ''' <returns>
+    '''     a copy of the specified path name, ending with a path separator
+    ''' </returns>
+    Public Function AppendPathSeparator(ByVal strPathName As String) As String
+    
+        Dim strResult As String: strResult = strPathName
+    
+        If (Len(strPathName) > 0&) Then
+        
+            If (StrComp(Right$(strPathName, 1&), "\", vbBinaryCompare) <> 0) Then
+            
+                strResult = (strResult & "\")
+                
+            End If
+            
+        End If
+        
+        AppendPathSeparator = strResult
+    
+    End Function
+
+
+'clean all the range names with external reference from other files
+Public Sub CleanUpBadNamedRanges(strGarbageWkbName As String)
+    On Error GoTo errorHandler
+    Dim i As Integer: i = 1
+    'Dim twbn$: twbn = ThisWorkbook.Name
+    Do While i <= ActiveWorkbook.Names.count
+        If ActiveWorkbook.Names(i).RefersTo Like "*" & strGarbageWkbName & "*" Then
+            ActiveWorkbook.Names(i).Delete
+        Else
+            i = i + 1
+        End If
+    Loop
+errorHandler:
+End Sub
+
+Attribute VB_Name = "vector_var"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'==============================================================================
+' Copyright (C) 1996-2010 Numerix LLC. All rights reserved.
+'
+' This software comprises valuable trade secrets and may be used, copied,
+' transmitted, stored, and distributed only in accordance with the terms
+' of a written license or trial agreement and with the inclusion of this
+' copyright notice.
+'==============================================================================
+
+'------------------------------------------------------------------------------
+'
+'
+'
+' Summary :vector style class with first element = .at(1)
+' Author  : David Davies, Numerix LLC
+' Version : 1.1.0.0, 2007/08/23
+'
+'------------------------------------------------------------------------------
+
+Option Explicit
+Option Base 1
+Private module
+
+Private a() As Variant
+Private m_cap As Long
+Private m_util As Long
+
+Public Property Get capacity() As Long
+    capacity = m_cap
+End Property
+
+Public Property Get size() As Long
+    size = m_util
+End Property
+
+' read accessor
+Public Property Get at(where As Long) As Variant
+    If where <= m_cap Then
+        If where > m_util Then
+            Debug.Print "Vector::at accessing element beyond size"
+        End If
+        at = a(where)
+    Else
+        Debug.Print "Vector::at bounds error in lookup"
+    End If
+End Property
+
+' write accessor
+Public Property Let at(where As Long, what As Variant)
+    If where <= m_cap Then
+        If where > m_util Then
+            Debug.Print "Vector::at setting element beyond size"
+        End If
+        a(where) = what
+        
+    Else
+        Debug.Print "Vector::at bounds error in set"
+    End If
+End Property
+
+Public Property Get IsEmpty() As Boolean
+    IsEmpty = (m_util = 0)
+End Property
+
+Public Sub reserve(size As Long)
+    m_cap = size
+    ReDim Preserve a(1 To size)
+End Sub
+
+Public Sub trim()
+    reserve m_util
+End Sub
+
+Public Sub Clear()
+    m_cap = 1: m_util = 0
+    ReDim a(1 To 1)
+End Sub
+
+Public Sub push_back(x As Variant)
+    If (m_util = m_cap) Then reAlloc
+    m_util = m_util + 1
+    On Error GoTo errorHand
+    a(m_util) = x
+    Exit Sub
+errorHand:
+    Set a(m_util) = x
+End Sub
+Public Function pop_back() As Variant
+    If IsEmpty() Then
+        Debug.Print "Vector::pop_back error empty vector"
+        Exit Function
+    Else
+        pop_back = a(m_util)
+        m_util = m_util - 1
+    End If
+End Function
+
+Private Sub reAlloc()
+    reserve (2 * m_cap)
+End Sub
+
+Private Sub Class_Initialize()
+    reserve 1
+End Sub
+
+Public Function Clone() As vector_var
+    Dim retVec As vector_var: Set retVec = New vector_var
+    Dim i As Long, inSize As Long: inSize = Me.size
+    retVec.reserve (inSize)
+    For i = 1 To inSize
+        retVec.push_back (Me.at(i))
+    Next
+    Set Clone = retVec
+End Function
+
+Public Sub insert(where As Long, what As Variant)
+    If where > m_util Then
+        Debug.Print "Vector::insert attempted to insert after vector end"
+        Exit Sub
+    Else
+        If m_util = m_cap Then reAlloc
+        Dim i As Long
+        For i = m_util To where Step -1
+            a(i + 1) = a(i)
+        Next
+        a(where) = what
+    End If
+End Sub
+
+Public Sub eraser(where As Long)
+    If where > m_util Then
+        Debug.Print "Vector::insert attempted to erase after vector end"
+        Exit Sub
+    ElseIf where = m_util Then
+        m_util = m_util - 1
+    Else
+        Dim i As Long
+        For i = where To m_util - 1
+            a(i) = a(i + 1)
+        Next
+        m_util = m_util - 1
+    End If
+End Sub
+
+Public Sub range_eraser(whereFrom As Long, whereTo As Long)
+    If whereFrom >= whereTo Then
+        Debug.Print "Vector::range_eraser error impossible range"
+        Exit Sub
+    ElseIf whereFrom >= m_util Or whereTo > m_util Then
+        Debug.Print "Vector::range_eraser error erasing rquest beyond end of vector"
+        Exit Sub
+    Else
+        Dim temp As Long: temp = whereTo - whereFrom
+        Dim i As Integer
+        For i = whereTo To m_util
+            a(i - temp) = a(i)
+        Next
+        m_util = m_util - temp
+    End If
+End Sub
+
+' unsorted lookup O(N)
+Public Function Location(query As Variant) As Integer
+    Dim i As Integer
+    Location = -1
+    For i = 1 To m_util
+        If a(i) = query Then
+            Location = i
+            Exit For
+        End If
+    Next
+End Function
+
+' quick sort O(N log N)
+Public Sub inPlaceSort()
+    If (Not Me.IsEmpty) Then
+        Call quicksort(1, Me.size)
+    End If
+End Sub
+
+Public Sub writeToSheet(AnchorCell As Range, Optional Vertical As Boolean = True)
+    Dim i As Integer
+    For i = 1 To m_util
+        If Vertical Then
+            AnchorCell.Offset(i - 1, 0) = a(i)
+        Else
+            AnchorCell.Offset(0, i - 1) = a(i)
+        End If
+    Next
+End Sub
+
+Public Function ToString() As String
+
+    Dim strRepresentation As String: strRepresentation = ""
+    Dim i As Long: i = 0&
+    
+    For i = 1& To m_util
+        strRepresentation = (strRepresentation & """" & VBA.CStr$(a(i)) & """")
+        If (i < m_util) Then
+            strRepresentation = (strRepresentation & ",")
+        End If
+    Next i
+    
+    ToString = strRepresentation
+    Exit Function
+
+End Function
+
+Private Function partition(ByVal lngLeft As Long, ByVal lngRight As Long, ByVal lngPivotIndex As Long) As Long
+
+    Dim i As Long: i = 0&
+    Dim lngStoreIndex As Long: lngStoreIndex = lngLeft
+    Dim vntPivotValue As Variant: vntPivotValue = a(lngPivotIndex)
+    
+    Call swap(lngPivotIndex, lngRight)
+    For i = lngLeft To (lngRight - 1)
+    
+        If (a(i) <= vntPivotValue) Then
+        
+            Call swap(lngStoreIndex, i)
+            lngStoreIndex = (lngStoreIndex + 1&)
+        
+        End If
+    
+    Next i
+    Call swap(lngRight, lngStoreIndex)
+
+    partition = lngStoreIndex
+    
+End Function
+
+Private Sub quicksort(ByVal lngLeft As Long, ByVal lngRight As Long)
+
+    Dim lngPivotIndex As Long: lngPivotIndex = ((lngLeft + lngRight) / 2)
+                                 
+    If (lngRight > lngLeft) Then
+    
+        lngPivotIndex = partition(lngLeft, lngRight, lngPivotIndex)
+        Call quicksort(lngLeft, (lngPivotIndex - 1))
+        Call quicksort((lngPivotIndex + 1), lngRight)
+    
+    End If
+
+End Sub
+
+Private Sub swap(ByVal i As Long, ByVal j As Long)
+
+    Dim temp As Variant
+    
+    temp = a(i)
+    a(i) = a(j)
+    a(j) = temp
+
+End Sub
+
+
+' InQuest injected base64 decoded content
+' ^Rw^
+' YMjg
+
+INQUEST-PP=macro

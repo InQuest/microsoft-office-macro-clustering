@@ -1,0 +1,674 @@
+Attribute VB_Name = "Helper"
+Public Const CLIENTFIELD As String = "CLIENTID"
+Public Const FILEFIELD As String = "FILEID"
+
+Public Function FindWorkspace(DMS As IManDMS, doc As Document) As IManFolder
+
+
+     Dim oSess As IManage.IManSession
+     Set oSess = DMS.Sessions.ItemByIndex(1)
+   
+    Dim client As Long
+    Dim file As Long
+    
+    MCAddinWrapper.CheckIsCompanyDocument doc
+    On Error Resume Next
+        client = MCAddinWrapper.GetDocumentVariableLong(doc, CLIENTFIELD)
+        file = MCAddinWrapper.GetDocumentVariableLong(doc, FILEFIELD)
+    Err.Clear
+    On Error GoTo 0
+    
+    If client = 0 Or file = 0 Then
+        Dim assoc As Variant
+        assoc = MCAddinWrapper.SelectAssociate
+        If Not IsEmpty(assoc) Then
+            MCAddinWrapper.AttachDocumentVars doc, CLng(assoc)
+        End If
+        On Error Resume Next
+            Set oCustomProps = doc.Variables
+             client = MCAddinWrapper.GetDocumentVariableLong(doc, CLIENTFIELD)
+        file = MCAddinWrapper.GetDocumentVariableLong(doc, FILEFIELD)
+            Err.Clear
+        On Error GoTo 0
+    End If
+    
+    
+    If client <> 0 And file <> 0 Then
+        On Error Resume Next
+        
+        Dim clientNo As String
+        Dim fileNo As String
+        
+        If CheckValue("UseIntegrationMapping") = "True" Then
+        
+            Dim ids As String
+            ids = MCAddinWrapper.GetIManageID("File", file)
+            
+            Dim pos As Integer
+            pos = InStr(ids, "|")
+            
+            clientNo = Left(ids, pos - 1)
+            
+            fileNo = Right(ids, Len(ids) - pos)
+       Else
+            clientNo = MCAddinWrapper.GetClientNoFromId(CLng(client))
+            fileNo = MCAddinWrapper.GetFileNoFromId(CLng(file))
+       
+        End If
+        
+        
+        Dim prof As IManage.IManProfileSearchParameters
+        Set prof = DMS.CreateProfileSearchParameters
+        
+        Dim folder As IManage.IManWorkspaceSearchParameters
+        Set folder = DMS.CreateWorkspaceSearchParameters
+        
+        prof.Add imProfileCustom1, clientNo
+        prof.Add imProfileCustom2, fileNo
+        
+        Dim workspaces As IManFolders
+        
+        For i = 1 To oSess.Databases.Count
+        
+            Set workspaces = oSess.Databases.ItemByIndex(i).SearchWorkspaces(prof, folder)
+            
+            If workspaces.Count > 0 Then
+                 Set FindWorkspace = workspaces.ItemByIndex(1)
+                Exit Function
+            End If
+           
+        Next
+        
+        MsgBox "No Workspace Found"
+        
+        
+        Err.Clear
+        On Error GoTo 0
+    End If
+    
+End Function
+
+Function CheckValue(val As String) As Variant
+    CheckValue = CheckSubValue("", val, NOVALUE)
+End Function
+Private Function CheckSubValue(key As String, val As String, Optional def As String) As Variant
+    Dim ret As Variant
+    On Error GoTo err_occured
+    
+    If IsMissing(def) Then
+        def = NOVALUE
+    End If
+    
+    Dim polkey As String
+    polkey = policiesKey
+    If (Len(key) > 0) Then
+        polkey = polkey + "\" + key
+    End If
+    
+    Dim softkey As String
+    softkey = softwareKey
+    If (Len(key) > 0) Then
+        softkey = softkey + "\" + key
+    End If
+    
+    'Check HKLM Policies
+    ret = QueryValue(HKEY_LOCAL_MACHINE, polkey, val)
+    If ret = NOVALUE Then
+        ret = QueryValue(HKEY_CURRENT_USER, polkey, val)
+        If ret = NOVALUE Then
+            ret = QueryValue(HKEY_LOCAL_MACHINE, softkey, val)
+            If ret = NOVALUE Then
+                ret = QueryValue(HKEY_CURRENT_USER, softkey, val)
+            End If
+        End If
+    End If
+    
+    If ret = NOVALUE Then
+        ret = def
+    End If
+    
+    CheckSubValue = ret
+Exit Function
+err_occured:
+    'Error occured so return false
+End Function
+
+
+
+Attribute VB_Name = "MCAddinWrapper"
+Public omsfwvbaddin As Object
+Public Enum Status
+    LoggedIn
+    Connected
+    Disconnected
+End Enum
+
+Private Function Status() As Status
+    Status = Disconnected
+    
+     If omsfwvbaddin Is Nothing Then
+           
+        omsaddincom = CheckValue("OMSADDINCOM")
+        
+        If omsaddincom = NOVALUE Then
+            omsaddincom = "OMSOfficeXP.Connect"
+        End If
+        
+        Set omsfwvbaddin = Application.COMAddIns(omsaddincom).Object
+    End If
+    
+    If omsfwvbaddin Is Nothing Then
+        Exit Function
+    End If
+
+    If omsfwvbaddin.Online Then
+        Status = LoggedIn
+    Else
+        Status = Connected
+    End If
+    
+End Function
+Function RunCommand(command As String) As Object
+    
+    Set RunCommand = Nothing
+    
+    If Status = LoggedIn Then
+        Set RunCommand = omsfwvbaddin.RunCommand(command, Application)
+    End If
+    
+End Function
+Function RunScript(commandName As String, fieldNames() As String, values() As Variant) As String
+    
+      RunScript = ""
+    
+    If Status = LoggedIn Then
+        RunScript = omsfwvbaddin.RunScript(commandName, fieldNames, values)
+    End If
+    
+End Function
+Function CheckIsCompanyDocument(doc As Document) As Boolean
+    
+    CheckIsCompanyDocument = True
+    
+    If Not Status = LoggedIn Then
+        Exit Function
+    End If
+    
+    If Not omsfwvbaddin.IsCompanyDocument(doc) Then
+        CheckIsCompanyDocument = False
+    End If
+
+End Function
+Sub AttachDocumentVars(doc As Document, assocId As Long)
+
+    If Not Status = LoggedIn Then
+        Exit Sub
+    End If
+
+    omsfwvbaddin.AttachDocumentVars doc, assocId
+End Sub
+Sub AttachDocumentVariables(doc As Document, clientNo As String, fileNo As String)
+    
+    If Not Status = LoggedIn Then
+        Exit Sub
+    End If
+
+    omsfwvbaddin.AttachDocumentVariables doc, clientNo, fileNo
+    
+End Sub
+Function SelectAssociate() As Variant
+
+    If Not Status = LoggedIn Then
+        Exit Function
+    End If
+    
+    'Call omsfwvbaddin.SelectAssociate
+    Dim assoc As Object
+    Set assoc = omsfwvbaddin.SelectAssociate
+    If Not assoc Is Nothing Then
+        SelectAssociate = assoc.ID
+    End If
+
+
+
+End Function
+Function GetFileNoFromId(fileID As Long) As String
+
+    If Not Status = LoggedIn Then
+        Exit Function
+    End If
+    
+    'Call omsfwvbaddin.SelectAssociate
+    Dim file As Object
+    Set file = omsfwvbaddin.GetFile(fileID)
+    If Not file Is Nothing Then
+        GetFileNoFromId = file.fileNo
+    End If
+
+
+
+End Function
+Function GetClientNoFromId(clientID As Long) As String
+
+    If Not Status = LoggedIn Then
+        Exit Function
+    End If
+    
+    'Call omsfwvbaddin.SelectAssociate
+    Dim client As Object
+    Set client = omsfwvbaddin.GetClient(clientID)
+    If Not client Is Nothing Then
+        GetClientNoFromId = client.clientNo
+    End If
+
+
+
+End Function
+Sub RemoveDocVariable(doc As Document, name As String)
+
+    If Not Status = LoggedIn Then
+        Exit Sub
+    End If
+
+    omsfwvbaddin.RemoveDocVariable doc, name
+End Sub
+Function GetDocumentVariableLong(doc As Document, name As String) As Long
+
+    If Not Status = LoggedIn Then
+        Exit Function
+    End If
+    
+    GetDocumentVariableLong = omsfwvbaddin.GetDocumentVariableN(doc, name, 0)
+
+End Function
+Function GetMappingManager() As Object
+
+    If Not Status = LoggedIn Then
+        Exit Function
+    End If
+    
+    Set GetMappingManager = omsfwvbaddin.GetMappingManager
+
+End Function
+Function GetIManageID(objectType As String, mcID As Long) As String
+
+
+    Dim manager As Object
+    Set manager = MCAddinWrapper.GetMappingManager
+
+    GetIManageID = manager.GetExternalID("Interwoven", objectType, CStr(mcID))
+
+End Function
+Function GetMCID(objectType As String, imanageID As String) As String
+
+
+    Dim manager As Object
+    Set manager = MCAddinWrapper.GetMappingManager
+
+    GetMCID = manager.GetInternalID("Interwoven", objectType, imanageID)
+
+End Function
+Attribute VB_Name = "MCIManInt"
+Private mcimSink As MCIManSink
+
+
+Public Sub AutoExec()
+    Dim objIManageExtensibility As iManageExtensibility
+    
+    'addinname = "WorkSiteOffice2007Addins.Connect"
+    addinname = CheckValue("IMANADDINCOMWORD")
+
+    If addinname = NOVALUE Then
+        addinname = "WorkSiteOffice2007Addins.Connect"
+    End If
+
+    Set objIManageExtensibility = Application.COMAddIns(addinname).Object
+    
+    Set mcimSink = New MCIManSink
+    mcimSink.SetIManageExtensibility objIManageExtensibility
+    
+End Sub
+
+Attribute VB_Name = "MCIManSink"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private WithEvents objExtensibilitySink As iManageExtensibility
+Attribute objExtensibilitySink.VB_VarHelpID = -1
+Private WithEvents objIManFileSaveCmdSink As IMANEXT2Lib.IManFileSaveCmd
+Attribute objIManFileSaveCmdSink.VB_VarHelpID = -1
+
+Private WithEvents objApplication As Word.Application
+Attribute objApplication.VB_VarHelpID = -1
+
+' Set a sink on the iManageExtensibility object
+Public Sub SetIManageExtensibility(objExtensibility As iManageExtensibility)
+    Set objExtensibilitySink = objExtensibility
+    
+    Set objApplication = Word.Application
+
+End Sub
+
+Private Function GetIManageDocument(Optional doc As Document) As IManDocument
+        
+    If IsMissing(doc) Or doc Is Nothing Then
+        Set doc = objApplication.ActiveDocument
+    End If
+                
+    Set GetIManageDocument = objExtensibilitySink.GetDocumentFromPath(doc.FullName)
+        
+End Function
+
+' Get a document
+Private Sub objApplication_DocumentOpen(ByVal doc As Document)
+
+    Dim oCustomProps As Object
+    Set oCustomProps = doc.Variables
+
+    Dim client As Long
+    Dim file As Long
+    On Error Resume Next
+        client = MCAddinWrapper.GetDocumentVariableLong(doc, CLIENTFIELD)
+        file = MCAddinWrapper.GetDocumentVariableLong(doc, FILEFIELD)
+    Err.Clear
+    On Error GoTo 0
+    
+    If client <> 0 And file <> 0 Then
+        Exit Sub
+    End If
+
+    Dim objDocument As IManage.IManDocument
+    Set objDocument = GetIManageDocument(doc)
+    
+    If objDocument Is Nothing Then
+        Exit Sub
+    End If
+    
+    Dim clientNo As String
+    Dim fileNo As String
+    
+    clientNo = objDocument.GetAttributeValueByID(imProfileCustom1)
+    fileNo = objDocument.GetAttributeValueByID(imProfileCustom2)
+    
+    If CheckValue("UseIntegrationMapping") = "True" Then
+        fileNo = MCAddinWrapper.GetMCID("File", clientNo + "|" + fileNo) 'Get FileID from MC
+        fileNo = MCAddinWrapper.GetFileNoFromId(CLng(fileNo)) 'convert to FileNo
+        
+        clientNo = MCAddinWrapper.GetMCID("Client", clientNo)
+        clientNo = MCAddinWrapper.GetClientNoFromId(CLng(clientNo))
+    End If
+
+    MCAddinWrapper.AttachDocumentVariables doc, clientNo, fileNo
+        
+End Sub
+
+Private Sub objExtensibilitySink_OnIManFileSave(ByVal objIManFileSaveCmd As Variant)
+     Set objIManFileSaveCmdSink = objIManFileSaveCmd
+End Sub
+
+Private Sub objIManFileSaveCmdSink_OnCancel(ByVal pMyInterface As Object)
+    Scripting.OnSaveDialogCancel
+End Sub
+
+'OBJECT : SaveCmd
+Private Sub objIManFileSaveCmdSink_OnInitDialog(ByVal pMyInterface As Object)
+    
+    Dim DMS As IManage.IManDMS
+    Dim oSess As IManage.IManSession
+    Dim odlg As IManFileSaveDlg
+    Dim doc As Document
+    Dim workspace As IManWorkspace
+    
+    Set doc = objApplication.ActiveDocument
+    
+    Call SetupDocProps(doc, True)
+        
+    Set odlg = pMyInterface
+    Set DMS = objIManFileSaveCmdSink.Context.Item("NRTDMS")
+    Set oSess = DMS.Sessions.ItemByIndex(1)
+    Set workspace = Helper.FindWorkspace(DMS, doc)
+        
+    If Not workspace Is Nothing Then
+        odlg.DocOpenLocation = "\" & oSess.ServerName & ":Search Results\" & workspace.ObjectID
+    End If
+    
+    odlg.SetAttributeValueByID imProfileAuthor, oSess.UserId, True
+    
+    'Entry point for user to add additional code
+    Scripting.OnSaveDialogInit odlg
+    
+End Sub
+
+
+
+' Set up to catch the PostOnOK event on the IManFileSaveCmd object to add a footer to the document when it is saved
+Private Sub objIManFileSaveCmdSink_PostOnOK(ByVal pMyInterface As Object)
+    Scripting.OnSaveDialogOK
+End Sub
+
+
+Sub SetupDocProps(doc As Document, ClearIfExisting As Boolean)
+
+    Dim clearvars As Boolean
+    clearvars = False
+
+    If ClearIfExisting Then
+        
+        Dim imdoc As IManDocument
+        Set imdoc = GetIManageDocument(doc)
+        
+        If Not imdoc Is Nothing Then
+            clearvars = True
+        End If
+        
+    End If
+    
+    If Not clearvars Then
+    
+        If Not CheckIsCompanyDocument(doc) Then
+            clearvars = True
+        End If
+    
+    End If
+    
+    If clearvars Then
+        MCAddinWrapper.RemoveDocVariable doc, FILEFIELD
+        MCAddinWrapper.RemoveDocVariable doc, CLIENTFIELD
+    End If
+
+End Sub
+Attribute VB_Name = "Scripting"
+Public Sub OnSaveDialogInit(ByRef val As IManFileSaveDlg)
+    'used to set additional properties on the document save wizard
+
+End Sub
+Public Sub OnSaveDialogOK()
+    'When a succesful save has been complete
+End Sub
+Public Sub OnSaveDialogCancel()
+    'When a save dialog has been canceled
+End Sub
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "basRegistry"
+Option Explicit
+
+Private Declare Function RegCloseKey Lib "advapi32.dll" (ByVal HKEY As Long) As Long
+Private Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" (ByVal HKEY As Long, ByVal lpSubKey As String, ByVal ulOptions As Long, ByVal samDesired As Long, phkResult As Long) As Long
+
+Private Declare Function RegCreateKeyEx Lib "advapi32.dll" Alias "RegCreateKeyExA" (ByVal HKEY As Long, ByVal lpSubKey As String, ByVal Reserved As Long, ByVal lpClass As String, ByVal dwOptions As Long, ByVal samDesired As Long, ByVal lpSecurityAttributes As Long, phkResult As Long, lpdwDisposition As Long) As Long
+
+Private Declare Function RegQueryValueExString Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal HKEY As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As String, lpcbData As Long) As Long
+Private Declare Function RegQueryValueExLong Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal HKEY As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, lpData As Long, lpcbData As Long) As Long
+Private Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal HKEY As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As Long, lpcbData As Long) As Long
+
+Private Declare Function RegSetValueExString Lib "advapi32.dll" Alias "RegSetValueExA" (ByVal HKEY As Long, ByVal lpValueName As String, ByVal Reserved As Long, ByVal dwType As Long, ByVal lpValue As String, ByVal cbData As Long) As Long
+Private Declare Function RegSetValueExLong Lib "advapi32.dll" Alias "RegSetValueExA" (ByVal HKEY As Long, ByVal lpValueName As String, ByVal Reserved As Long, ByVal dwType As Long, lpValue As Long, ByVal cbData As Long) As Long
+
+Private Declare Function RegDeleteKey& Lib "advapi32.dll" Alias "RegDeleteKeyA" (ByVal HKEY As Long, ByVal lpSubKey As String)
+Private Declare Function RegDeleteValue& Lib "advapi32.dll" Alias "RegDeleteValueA" (ByVal HKEY As Long, ByVal lpValueName As String)
+
+'Value Types.
+Public Const REG_SZ As Long = 1
+Public Const REG_BINARY As Long = 3
+Public Const REG_DWORD As Long = 4
+
+'Hot Keys.
+Public Const HKEY_CLASSES_ROOT = &H80000000
+Public Const HKEY_CURRENT_USER = &H80000001
+Public Const HKEY_LOCAL_MACHINE = &H80000002
+Public Const HKEY_USERS = &H80000003
+
+
+'Return Values.
+Public Const ERROR_NONE = 0
+Public Const ERROR_BADDB = 1
+Public Const ERROR_BADKEY = 2
+Public Const ERROR_CANTOPEN = 3
+Public Const ERROR_CANTREAD = 4
+Public Const ERROR_CANTWRITE = 5
+Public Const ERROR_OUTOFMEMORY = 6
+Public Const ERROR_INVALID_PARAMETER = 7
+Public Const ERROR_ACCESS_DENIED = 8
+Public Const ERROR_INVALID_PARAMETERS = 87
+Public Const ERROR_NO_MORE_ITEMS = 259
+
+'Permission Constants.
+Public Const KEY_ALL_ACCESS = &H3F
+Public Const KEY_QUERY_VALUE = &H1
+Public Const REG_OPTION_NON_VOLATILE = 0
+
+Public Const policiesKey As String = "SOFTWARE\POLICIES\FWBS\OMS\2.0"
+Public Const softwareKey As String = "SOFTWARE\FWBS\OMS\2.0"
+Public Const NOVALUE As String = "NO VALUE"
+
+
+
+Public Function DeleteKey(HKEY As Long, strKeyName As String) As Boolean
+    Dim lRetVal As Long
+    lRetVal = RegDeleteKey(HKEY, strKeyName)
+    If lRetVal = ERROR_NONE Then
+        DeleteKey = True
+    Else
+        DeleteKey = False
+    End If
+End Function
+
+Public Function CreateKey(HKEY As Long, strNewKeyName As String) As Boolean
+    Dim hNewKey As Long         'handle to the new key
+    Dim lRetVal As Long         'result of the RegCreateKeyEx function
+    lRetVal = RegCreateKeyEx(HKEY, strNewKeyName, 0&, vbNullString, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, 0&, hNewKey, lRetVal)
+    If lRetVal = ERROR_NONE Then
+        CreateKey = True
+    Else
+        CreateKey = False
+    End If
+    lRetVal = RegCloseKey(hNewKey)
+End Function
+
+Public Function SetValue(HKEY As Long, strKeyName As String, strValueName As String, vNewValue As Variant, lngValueType As Long) As Boolean
+    Dim lRetVal As Long
+    Dim lngKey As Long       'Handle of open key
+    
+    On Error Resume Next
+    
+    lRetVal = RegOpenKeyEx(HKEY, strKeyName, 0, KEY_ALL_ACCESS, lngKey)
+
+    Select Case lngValueType
+        Case REG_SZ
+            lRetVal = RegSetValueExString(lngKey, strValueName, 0&, lngValueType, CStr(vNewValue), Len(vNewValue))
+        Case REG_DWORD
+            lRetVal = RegSetValueExLong(lngKey, strValueName, 0&, lngValueType, CLng(vNewValue), 4)
+        Case REG_BINARY
+            lRetVal = RegSetValueExLong(lngKey, strValueName, 0&, lngValueType, CLng(vNewValue), 4)
+    End Select
+    
+    If lRetVal = ERROR_NONE Then
+        SetValue = True
+    Else
+        SetValue = False
+    End If
+    
+    lRetVal = RegCloseKey(lngKey)
+    
+End Function
+
+
+Public Function DeleteValue(HKEY As Long, strKeyName As String, strValueName As String) As Boolean
+    Dim lRetVal As Long      'result of the SetValueEx function
+    Dim lngKey As Long       'Handle of open key
+    lRetVal = RegOpenKeyEx(HKEY, strKeyName, 0, KEY_ALL_ACCESS, lngKey)
+    lRetVal = RegDeleteValue(lngKey, strValueName)
+    If lRetVal = ERROR_NONE Then
+        DeleteValue = True
+    Else
+        DeleteValue = False
+    End If
+    lRetVal = RegCloseKey(lngKey)
+End Function
+
+
+
+Public Function QueryValue(HKEY As Long, strKeyName As String, strValueName As String) As Variant
+    Dim lRetVal As Long      'result of the API functions
+    Dim lngKey As Long       'handle of opened key
+    Dim vValue As Variant    'setting of queried value
+    Dim cch As Long
+    Dim strValue As String
+    Dim lngValue As Long
+    Dim lngValueType As Long
+    
+    On Error Resume Next
+    
+    vValue = NOVALUE
+    
+    lRetVal = RegOpenKeyEx(HKEY, strKeyName, 0, KEY_QUERY_VALUE, lngKey)
+        
+    lRetVal = RegQueryValueExNULL(lngKey, strValueName, 0&, lngValueType, 0&, cch)
+    If lRetVal <> ERROR_NONE Then Error 5
+    
+    Select Case lngValueType
+        Case REG_SZ:
+            strValue = String(cch, 0)
+            lRetVal = RegQueryValueExString(lngKey, strValueName, 0&, lngValueType, strValue, cch)
+            If lRetVal = ERROR_NONE Then vValue = Left$(strValue, cch)
+        Case REG_DWORD:
+            lRetVal = RegQueryValueExLong(lngKey, strValueName, 0&, lngValueType, lngValue, cch)
+            If lRetVal = ERROR_NONE Then vValue = lngValue
+        Case REG_BINARY
+            lRetVal = RegQueryValueExLong(lngKey, strValueName, 0&, lngValueType, lngValue, cch)
+            If lRetVal = ERROR_NONE Then vValue = lngValue
+    End Select
+
+    If Right(vValue, 1) = Chr(0) Then
+        QueryValue = Left(vValue, Len(vValue) - 1)
+    Else
+        QueryValue = vValue
+    End If
+    RegCloseKey (lngKey)
+       
+End Function
+
+
+
+
+
+
+' InQuest injected base64 decoded content
+' z{Uj
+' J+^9
+
+INQUEST-PP=macro

@@ -1,0 +1,324 @@
+Attribute VB_Name = "Chart1"
+Attribute VB_Base = "0{00020821-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Module1"
+'************************************************************************************************
+' Programa de analisis de datos de Weldcheck
+' Modulo de importacion de datos
+' Antonio Peiro
+' Dec 2019
+'************************************************************************************************
+
+Option Explicit
+
+Dim MAX_X As Double
+Dim MIN_X As Double
+Dim MAX_Y As Double
+Dim MIN_Y As Double
+'
+
+Public Sub ImportarFichero()
+
+    ' Identificamos el fichero y su ruta para importarlo
+
+    Dim RutaArchivo As String
+
+    ' Damos valor a la variable Filename
+    ' ademas hemos cambiado el titulo que aparecera en la ventana de dialogo
+    ' y forzamos para que solo abra ficheros del tipo .etd
+    RutaArchivo = Application.GetOpenFilename(Title:="Selecciona el fichero a importar", _
+                                              filefilter:="WeldCheck files(*.etd),*.etd")
+    
+    ' si hemos seleccionado algun archivo muestra un cuadro mensaje
+    If Not RutaArchivo = "False" Then
+        Call LeerArchivo(RutaArchivo)
+        Call BuscaMaximos
+        Call CompruebaDist
+    End If
+
+End Sub
+
+Public Sub LeerArchivo(fichero As String)
+
+    Dim linea As String
+    Dim puntero As Long
+    Dim n As Long
+    Dim x As Long
+    Dim xx As Double
+    Dim y As Long
+    Dim yy As Double
+    Dim modulo As Double
+    Dim modulo2 As Double
+    
+    MAX_X = -2147483647
+    MIN_X = 2147483647
+    
+    ActiveWorkbook.Worksheets("Datos").Cells.ClearContents ' Borramos toda la hoja
+    
+    ActiveWorkbook.Worksheets("Datos").Cells(2, 1).Value = "N|fffd|"
+    ActiveWorkbook.Worksheets("Datos").Cells(2, 2).Value = "Valor"
+    ActiveWorkbook.Worksheets("Datos").Range("A2:C2").Font.Bold = True
+    
+    Open fichero For Input As #1 ' Leemos en modo texto la cabecera
+    
+        Line Input #1, linea
+    
+        If Not linea = "<RAW_DATA>" Then ' Si la cabecera no est|fffd| damos un error
+            MsgBox ("El fichero no parece tener el formato adecuado")
+        End If
+
+        Do Until (EOF(1) Or linea = "</RAW_DATA>") ' Cuando encontramos el final de la cabecera...
+            Line Input #1, linea
+        Loop
+    
+        puntero = Seek(1) ' ...guardamos el puntero del fichero
+    
+    Close #1
+    
+    Open fichero For Binary Access Read As #1 ' Ahora abrimos el fichero en modo binario
+    
+        Seek #1, puntero ' Apuntamos a donde empiezan los datos
+        n = 3
+        
+        If (Not EOF(1)) Then ' Leemos los primeros valores para el filtro paso bajo
+        
+            Get #1, , x
+            x = Convierte(x)
+            xx = x / 256
+        
+            Get #1, , y
+            y = Convierte(y)
+            yy = y / 256
+            
+            modulo = Sqr(xx * xx + yy * yy)
+            modulo2 = modulo
+            
+        End If
+    
+        Do While (Not EOF(1))   ' Leemos el resto del fichero
+        
+            ActiveWorkbook.Worksheets("Datos").Cells(n, 1).Value = n
+        
+            Get #1, , x
+            x = Convierte(x)
+            xx = x / 256
+            
+            Get #1, , y
+            y = Convierte(y)
+            yy = y / 256
+            
+            modulo = Sqr(xx * xx + yy * yy)
+            modulo2 = 0.95 * modulo2 + 0.05 * modulo
+                      
+            ActiveWorkbook.Worksheets("Datos").Cells(n, 2).Value = modulo2
+            
+            If (MAX_X < modulo2) Then MAX_X = modulo2
+            If (MIN_X > modulo2) Then MIN_X = modulo2
+
+            n = n + 1
+            
+        Loop
+    
+    Close #1
+    
+    'MsgBox (CStr(MAX_X) & ", " & CStr(MIN_X) & ", " & CStr(MAX_Y) & ", " & CStr(MIN_Y))
+        
+End Sub
+
+Public Sub BuscaMaximos()
+
+    Dim n As Long
+    Dim m As Integer
+    Dim x As Double
+    Dim RuidoMax As Double
+    Dim RuidoMin As Double
+    Dim RuidoAmp As Double
+    Dim TriggerSup As Double
+    Dim TriggerInf As Double
+    Dim Maximo As Double
+    Dim Flag_Arriba As Boolean
+
+    ActiveWorkbook.Worksheets("Maximos").Cells.ClearContents ' Borramos toda la hoja de maximos
+    
+    ActiveWorkbook.Worksheets("Maximos").Cells(2, 1).Value = "N|fffd|"
+    ActiveWorkbook.Worksheets("Maximos").Cells(2, 2).Value = "Posicion"
+    ActiveWorkbook.Worksheets("Maximos").Cells(2, 3).Value = "Maximo"
+    ActiveWorkbook.Worksheets("Maximos").Range("A2:C2").Font.Bold = True
+
+    ' Primero analizamos el nivel de ruido en la primera decima de segundo (800 samples)
+    
+    RuidoMax = -1E+99
+    RuidoMin = 1E+99
+    Maximo = -1E+99
+    
+    For n = 103 To 703
+    
+        x = ActiveWorkbook.Worksheets("Datos").Cells(n, 2).Value
+        If (RuidoMax < x) Then RuidoMax = x
+        If (RuidoMin > x) Then RuidoMin = x
+    
+    Next n
+    
+    ' Calculamos los niveles de trigger para buscar un m|fffd|ximo
+    RuidoAmp = RuidoMax - RuidoMin
+    TriggerSup = RuidoMax + (MAX_X - RuidoMax) / 4 + RuidoAmp
+    TriggerInf = RuidoMax + (MAX_X - RuidoMax) / 4 - RuidoAmp
+    Flag_Arriba = False
+
+    'MsgBox (CStr(RuidoMax) & ", " & CStr(RuidoMin) & ", " & CStr(TriggerSup) & ", " & CStr(TriggerInf))
+
+    ' Recorremos los datos buscando los 19 m|fffd|ximos
+    
+    m = 1
+
+    Do
+        x = ActiveWorkbook.Worksheets("Datos").Cells(n, 2).Value
+        
+        If (x < TriggerInf) And (Flag_Arriba = False) Then
+        
+        End If
+        
+        If (x < TriggerInf) And (Flag_Arriba = True) Then
+            Flag_Arriba = False
+            ActiveWorkbook.Worksheets("Maximos").Cells(m + 2, 1).Value = m
+            ActiveWorkbook.Worksheets("Maximos").Cells(m + 2, 2).Value = n
+            ActiveWorkbook.Worksheets("Maximos").Cells(m + 2, 3).Value = Maximo
+            m = m + 1
+        End If
+        
+        If (x >= TriggerSup) And (Flag_Arriba = False) Then
+            Flag_Arriba = True
+            Maximo = -2147483647
+        End If
+        
+        If (x >= TriggerSup) And (Flag_Arriba = True) Then
+            If x > Maximo Then Maximo = x
+        End If
+        
+        n = n + 1
+        
+    Loop Until (IsEmpty(Worksheets("Datos").Cells(n, 1)))
+    
+End Sub
+
+Public Sub CompruebaDist()
+
+    Dim n As Integer
+    Dim Pos As Double
+    Dim Pos_Design As Double
+    Dim Tol_Pos As Double
+    Dim Dist_Min As Double
+    Dim Velocidad As Double
+    Dim Pos_Inicial As Double
+    Dim Pos_Ant As Double
+    
+    ' Se completan los titulos de la hoja
+    ActiveWorkbook.Worksheets("Maximos").Cells(2, 4).Value = "Posicion"
+    ActiveWorkbook.Worksheets("Maximos").Cells(2, 5).Value = "Dise|fffd|o"
+    ActiveWorkbook.Worksheets("Maximos").Cells(2, 6).Value = "Error"
+    ActiveWorkbook.Worksheets("Maximos").Cells(2, 7).Value = "Distancia"
+    ActiveWorkbook.Worksheets("Maximos").Range("D2:G2").Font.Bold = True
+    ActiveWorkbook.Worksheets("Maximos").Range("D2:G100").Font.Color = RGB(0, 0, 0)
+    
+    ' Se inicializan las variables
+    n = 3
+    Pos_Inicial = 0
+    Tol_Pos = ActiveWorkbook.Worksheets("Dise|fffd|o").Cells(2, 3).Value
+    Dist_Min = ActiveWorkbook.Worksheets("Dise|fffd|o").Cells(2, 4).Value
+    Velocidad = ActiveWorkbook.Worksheets("Dise|fffd|o").Cells(2, 5).Value
+    
+    'Para cada m|fffd|ximo encontrado
+    Do While (Not (IsEmpty(Worksheets("Maximos").Cells(n, 1))))
+    
+        Pos = ActiveWorkbook.Worksheets("Maximos").Cells(n, 2).Value * Velocidad 'Calcula la posicion absoluta
+        
+        If n = 3 Then ' si es el primer m|fffd|ximo se pone a cero y se guarda su posici|fffd|n
+            Pos_Inicial = Pos
+            Pos = 0
+        Else
+            Pos = Pos - Pos_Inicial ' Si no es el primero se calcula su posicion relativa
+        End If
+        
+        ActiveWorkbook.Worksheets("Maximos").Cells(n, 4).Value = Pos ' Dejamos constancia posicion
+        Pos_Design = ActiveWorkbook.Worksheets("Dise|fffd|o").Cells(n - 1, 2).Value ' Leemos la posici|fffd|n de dise|fffd|o
+        ActiveWorkbook.Worksheets("Maximos").Cells(n, 5).Value = Pos_Design ' Dejamos constancia de la posici|fffd|n de dise|fffd|o
+    
+        ActiveWorkbook.Worksheets("Maximos").Cells(n, 6).Value = Pos_Design - Pos ' y de su error
+        If Abs(Pos_Design - Pos) > Tol_Pos Then 'Si es mayor que la tolerancia, se marca en rojo
+            ActiveWorkbook.Worksheets("Maximos").Cells(n, 6).Font.Color = RGB(255, 0, 0)
+        End If
+        
+        If n <> 3 Then ' si no es el primer caso
+            ActiveWorkbook.Worksheets("Maximos").Cells(n, 7).Value = Pos - Pos_Ant ' dejamos la distancia al disco anterior
+            If (Pos - Pos_Ant) < Dist_Min Then ' Si es menor que lo aceptable, se marca en rojo
+                ActiveWorkbook.Worksheets("Maximos").Cells(n, 7).Font.Color = RGB(255, 0, 0)
+            End If
+        End If
+        
+        Pos_Ant = Pos
+        
+        n = n + 1
+    Loop
+
+End Sub
+
+Public Function Convierte(numero As Long) As Long
+
+    Dim hexadecimal As String
+    Dim n As Integer
+    
+    hexadecimal = Hex(numero)
+    n = Len(hexadecimal)
+    hexadecimal = Right("00000000", 8 - n) & hexadecimal
+    hexadecimal = "&H" & Right(hexadecimal, 6) & "00"
+    Convierte = CLng(hexadecimal)
+    
+End Function
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

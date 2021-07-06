@@ -1,0 +1,1270 @@
+Attribute VB_Name = "ConvertCSVToXML"
+Sub ConvertCSVToXML()
+    
+Dim Mldg, Stil, Titel, Antwort
+Dim i
+For i = 1 To 3
+    Beep
+Next i
+
+Mldg = "Do you really want to create the order?"
+Stil = vbYesNo + vbQuestion + vbDefaultButton2
+Titel = "for hang over days"
+Antwort = MsgBox(Mldg, Stil, Titel)
+
+If Antwort = vbYes Then
+
+    Dim RowCount As Integer
+    Dim bOrderActive As Boolean
+    Dim bOrderDetail As Boolean
+    Dim szOrderRef As String
+    Dim szFileName As String
+    Dim bOrderLines As Boolean
+    Dim bOrderLinesTotal As Boolean
+    Dim iUniqueCounter As Integer
+    Dim bFoundTotal As Boolean
+    Dim bActiveSplits As Boolean
+    Dim bActiveTotalOrder As Boolean
+    Dim iNumberOfOrders As Integer
+    
+    Sheets("SAP Direct").Activate
+    
+    '   Process the real order lines and generate XML output for each suborder
+    '
+    RowCount = 1
+    bOrderActive = False
+    bOrderDetail = False
+    bOrderLinesTotal = False
+    iUniqueCounter = 0
+    iNumberOfOrders = 0
+    
+    While Cells(RowCount, 1) <> ""
+        If Cells(RowCount, 1) = "h" And bOrderActive = False Then
+            '
+            '   We have found a header line, start a new XML order
+            '
+            Call LXMLCreateNewDocument("SFA_ORDER")
+    
+            Call LXMLAddHeaderItemString("ORDERTYPE", Cells(RowCount, 2).Value)
+    
+            Call LXMLAddHeaderItemInt("SALESORG", Cells(RowCount, 3).Value)
+    
+            Call LXMLAddHeaderItemString("DISTR_CHAN", Format(Cells(RowCount, 4).Value, "00"))
+    
+            Call LXMLAddHeaderItemString("DIVISION", Format(Cells(RowCount, 5).Value, "00"))
+    
+            Call LXMLAddHeaderItemString("ORDER_REASON", Cells(RowCount, 11).Value)
+    
+            Call LXMLAddHeaderItemString("PRICING_DATE", "")
+    
+            Call LXMLAddHeaderItemString("SOLDTO_PARTY", Cells(RowCount, 6).Value)
+            
+            Call LXMLAddHeaderItemString("SHIPTO_PARTY", Cells(RowCount, 12).Value)
+    
+            Call LXMLAddHeaderItemString("ORDER_REF", Cells(RowCount, 7).Value)
+            szOrderRef = Cells(RowCount, 7).Value
+            
+            Call LXMLAddHeaderItemString("REQ_DEL_DATE", Format(Cells(RowCount, 8).Value, "YYYYMMDD", vbUseSystemDayOfWeek))
+    
+            Call LXMLAddHeaderItemString("SHIPPING_INSTR", Cells(RowCount, 9).Value)
+    
+            Call LXMLAddHeaderItemString("ORDER_INSTR", Cells(RowCount, 10).Value)
+    
+            Call LXMLAddHeaderItemString("ORDER_METHOD", "SFA")
+            
+            Call LXMLAddHeaderItemString("PICKING_NOTE", Cells(RowCount, 14).Value)
+            
+            bOrderActive = True
+            bOrderDetail = False
+            bOrderLines = False
+        End If
+        If Cells(RowCount, 1).Value = "l" And bOrderActive = True Then
+            '
+            '   Add detail lines
+            '
+            If Cells(RowCount, 7).Value > 0 Then
+                LXMLPrepareNextDetailItem
+    
+                Call LXMLAddDetailItemString("MATNR", Cells(RowCount, 2).Value)
+                Call LXMLAddDetailItemInt("ORDER_QTY", Cells(RowCount, 7).Value)
+                bOrderLines = True
+                bOrderLinesTotal = True
+            End If
+            bOrderDetail = True
+                    
+        End If
+        If Cells(RowCount, 1).Value = "x" And bOrderActive = True And bOrderDetail = True Then
+            If bOrderLines = True Then
+                iUniqueCounter = iUniqueCounter + 1
+                szFileName = GetSpoolDir + "\" + GetUniqueXMLFileName
+                Call LXMLWriteDocumentToFile(szFileName)
+                iNumberOfOrders = iNumberOfOrders + 1
+            End If
+            bOrderActive = False
+        End If
+        RowCount = RowCount + 1
+    Wend
+    If Cells(RowCount, 1).Value = "" And bOrderActive = True And bOrderDetail = True Then
+        If bOrderLines = True Then
+            iUniqueCounter = iUniqueCounter + 1
+            szFileName = GetSpoolDir + "\" + GetUniqueXMLFileName
+            Call LXMLWriteDocumentToFile(szFileName)
+            iNumberOfOrders = iNumberOfOrders + 1
+        End If
+        bOrderActive = False
+    End If
+    If bOrderLinesTotal = False Then
+        Status = MsgBox("No order lines on order " + szOrderRef + ", please check order!", vbExclamation + vbOKOnly, "Error in order")
+    Else
+        Status = MsgBox("Successfully created " + Str(iNumberOfOrders) + " order files for SAP", vbInformation + vbOKOnly, "Order generation status")
+    End If
+    
+    Else
+
+End If
+
+End Sub
+
+Attribute VB_Name = "FTPFunctions"
+Private Declare Function InternetConnect Lib "wininet.dll" Alias _
+        "InternetConnectA" (ByVal hInternetSession As Long, _
+        ByVal sServerName As String, ByVal nServerPort As Integer, _
+        ByVal sUsername As String, ByVal sPassword As String, _
+        ByVal lService As Long, ByVal lFlags As Long, ByVal _
+        lContext As Long) As Long
+Private Declare Function InternetSetOption Lib "wininet.dll" Alias _
+        "InternetSetOptionA" (ByVal hInternetSession As Long, _
+        ByVal dwOption As Long, ByRef dwOptionValue As Long, _
+        ByVal dwOptionValueLen As Long) As Long
+
+Private Declare Function InternetOpen Lib "wininet.dll" Alias _
+        "InternetOpenA" (ByVal sAgent As String, ByVal lAccessType _
+        As Long, ByVal sProxyName As String, ByVal sProxyBypass _
+        As String, ByVal lFlags As Long) As Long
+       
+Private Declare Function InternetCloseHandle Lib "wininet.dll" _
+        (ByVal hInet As Long) As Integer
+
+Private Declare Function FtpSetCurrentDirectory Lib "wininet.dll" _
+        Alias "FtpSetCurrentDirectoryA" (ByVal hFtpSession As _
+        Long, ByVal lpszDirectory As String) As Long
+        
+Private Declare Function FtpFindFirstFile Lib "wininet.dll" _
+        Alias "FtpFindFirstFileA" (ByVal hFtpSession As Long, _
+        ByVal lpszSearchFile As String, lpFindFileData As _
+        WIN32_FIND_DATA, ByVal dwFlags As Long, ByVal dwContent _
+        As Long) As Long
+        
+Private Declare Function InternetFindNextFile Lib "wininet.dll" _
+        Alias "InternetFindNextFileA" (ByVal hFind As Long, _
+        lpvFindData As WIN32_FIND_DATA) As Long
+
+Private Declare Function FtpGetFile Lib "wininet.dll" Alias _
+        "FtpGetFileA" (ByVal hFtpSession As Long, ByVal _
+        lpszRemoteFile As String, ByVal lpszNewFile As String, _
+        ByVal fFailIfExists As Boolean, ByVal dwFlagsAndAttributes _
+        As Long, ByVal dwFlags As Long, ByVal dwContext As Long) _
+        As Long
+
+Private Declare Function FtpPutFile Lib "wininet.dll" Alias _
+        "FtpPutFileA" (ByVal hFtpSession As Long, ByVal _
+        lpszLocalFile As String, ByVal lpszRemoteFile As String, _
+        ByVal dwFlags As Long, ByVal dwContext As Long) As Long
+       
+Private Declare Function FtpDeleteFile Lib "wininet.dll" _
+        Alias "FtpDeleteFileA" (ByVal hFtpSession As Long, _
+        ByVal lpszFileName As String) As Long
+
+Private Declare Function FtpRenameFile Lib "wininet.dll" _
+        Alias "FtpRenameFileA" (ByVal hFtpSession As Long, _
+        ByVal lpszFromFileName As String, ByVal lpszToFileName _
+        As String) As Long
+        
+Private Declare Function FtpCreateDirectory Lib "wininet" _
+        Alias "FtpCreateDirectoryA" (ByVal hFtpSession As _
+        Long, ByVal lpszDirectory As String) As Long
+
+Private Declare Function FtpRemoveDirectory Lib "wininet" _
+        Alias "FtpRemoveDirectoryA" (ByVal hFtpSession As _
+        Long, ByVal lpszDirectory As String) As Long
+
+Private Declare Function InternetGetLastResponseInfo Lib _
+        "wininet.dll" Alias "InternetGetLastResponseInfoA" _
+        (lpdwError As Long, ByVal lpszBuffer As String, _
+        lpdwBufferLength As Long) As Long
+  
+Const ERROR_NO_MORE_FILES = 18
+Const ERROR_INTERNET_EXTENDED_ERROR = 12003
+
+Const FTP_TRANSFER_TYPE_BINARY = &H0
+Const FTP_TRANSFER_TYPE_ASCII = &H1
+
+Const INTERNET_FLAG_PASSIVE = &H8000000
+Const INTERNET_FLAG_RELOAD = &H80000000
+Const INTERNET_FLAG_KEEP_CONNECTION = &H400000
+Const INTERNET_FLAG_MULTIPART = &H200000
+
+Const INTERNET_OPEN_TYPE_PRECONFIG = 0
+Const INTERNET_OPEN_TYPE_DIRECT = 1
+Const INTERNET_OPEN_TYPE_PROXY = 3
+
+Const INTERNET_INVALID_PORT_NUMBER = 0
+
+Const INTERNET_SERVICE_FTP = 1
+Const INTERNET_SERVICE_GOPHER = 2
+Const INTERNET_SERVICE_HTTP = 3
+
+Const INTERNET_OPTION_DATA_SEND_TIMEOUT = 7
+Const INTERNET_OPTION_DATA_RECEIVE_TIMEOUT = 8
+Const INTERNET_OPTION_SEND_TIMEOUT = 5
+Const INTERNET_OPTION_RECEIVE_TIMEOUT = 6
+
+Private Declare Function FileTimeToSystemTime Lib "kernel32" _
+        (lpFileTime As FILETIME, lpSystemTime As SYSTEMTIME) _
+        As Long
+
+Const MAX_PATH = 260
+Const NO_ERROR = 0
+Const FILE_ATTRIBUTE_READONLY = &H1
+Const FILE_ATTRIBUTE_HIDDEN = &H2
+Const FILE_ATTRIBUTE_SYSTEM = &H4
+Const FILE_ATTRIBUTE_DIRECTORY = &H10
+Const FILE_ATTRIBUTE_ARCHIVE = &H20
+Const FILE_ATTRIBUTE_NORMAL = &H80
+Const FILE_ATTRIBUTE_TEMPORARY = &H100
+Const FILE_ATTRIBUTE_COMPRESSED = &H800
+Const FILE_ATTRIBUTE_OFFLINE = &H1000
+
+Private Type FILETIME
+  dwLowDateTime As Long
+  dwHighDateTime As Long
+End Type
+
+Private Type WIN32_FIND_DATA
+  dwFileAttributes As Long
+  ftCreationTime As FILETIME
+  ftLastAccessTime As FILETIME
+  ftLastWriteTime As FILETIME
+  nFileSizeHigh As Long
+  nFileSizeLow As Long
+  dwReserved0 As Long
+  dwReserved1 As Long
+  cFileName As String * MAX_PATH
+  cAlternate As String * 14
+End Type
+        
+Private Type SYSTEMTIME
+  wYear As Integer
+  wMonth As Integer
+  wDayOfWeek As Integer
+  wDay As Integer
+  wHour As Integer
+  wMinute As Integer
+  wSecond As Integer
+  wMilliseconds As Integer
+End Type
+
+Const FTP_UAgent = "FTP Excel Agent"
+
+Dim FTP_Server$, FTP_User$, FTP_PassW$
+Dim hOpen As Long, hConnection As Long
+Dim Transfer As Long
+Dim FileList() As WIN32_FIND_DATA
+Dim fData As WIN32_FIND_DATA
+
+Const FTP_TRANSFER_ASCII = 1
+Const FTP_TRANSFER_BINARY = 2
+
+Const INTERNET_DEFAULT_FTP_PORT = 21
+Const INTERNET_DEFAULT_HTTP_PORT = 80
+
+'
+'   Send a ASCII file via FTP, return TRUE if success and FALSE is failed
+'
+Private Function SendFileViaFtp(szServerName As String, iPortNo As Integer, szFileName As String, szDestFilename As String, szUserName As String, szPassword As String) As Boolean
+    Dim bFileName As String
+    Dim hIHandle As Long
+    Dim hConnHandle As Long
+    Dim dwErrorCode As Long
+    Dim szErrorText As String
+    Dim dwErrorTextLen As Long
+    Dim dwTimeOutVal As Long
+    
+    dwTimeOutVal = 60 * 100
+    
+    szErrorText = "                                                                                                                                                                                                                                                                       "
+    dwErrorTextLen = Len(szErrorText)
+    
+    hIHandle = 0
+    hConnHandle = 0
+    
+    If iPortNo = 0 Then iPortNo = INTERNET_DEFAULT_FTP_PORT
+    
+    hIHandle = InternetOpen(FTP_UAgent, INTERNET_OPEN_TYPE_DIRECT, "", "", 0)
+    If hIHandle <> 0 Then
+        '   Connect to server
+        hConnHandle = InternetConnect(hIHandle, szServerName, iPortNo, szUserName, szPassword, INTERNET_SERVICE_FTP, 0, 0)
+        If hConnHandle <> 0 Then
+'            status = InternetSetOption(hIHandle, INTERNET_OPTION_DATA_SEND_TIMEOUT, dwTimeOutVal, 4)
+'            status = InternetSetOption(hIHandle, INTERNET_OPTION_SEND_TIMEOUT, dwTimeOutVal, 4)
+'            status = InternetSetOption(hIHandle, INTERNET_OPTION_RECEIVE_TIMEOUT, dwTimeOutVal, 4)
+'            status = InternetSetOption(hIHandle, INTERNET_OPTION_DATA_RECEIVE_TIMEOUT, dwTimeOutVal, 4)
+            ' Connection made to server, send a file
+            Status = FtpPutFile(hConnHandle, szFileName, szDestFilename, FTP_TRANSFER_ASCII, 0)
+            If Status = 0 Then
+                Status = InternetGetLastResponseInfo(dwErrorCode, szErrorText, dwErrorTextLen)
+                Status = MsgBox("An error occured when sending file to the FTP Server : " + szServerName + Chr(13) + Chr(13) + szErrorText, vbOKOnly + vbCritical, "FTP Connection Error", 0, 0)
+                SendFileViaFtp = False
+            Else
+                SendFileViaFtp = True
+            End If
+        Else
+            Status = InternetGetLastResponseInfo(dwErrorCode, szErrorText, dwErrorTextLen)
+            Status = MsgBox("An error occured when connecting to the FTP Server : " + szServerName + Chr(13) + Chr(13) + szErrorText, vbOKOnly + vbCritical, "FTP Connection Error", 0, 0)
+            SendFileViaFtp = False
+        End If
+    End If
+    If hConnHandle <> 0 Then InternetCloseHandle (hConnHandle)
+    If hIHandle <> 0 Then InternetCloseHandle (hIHandle)
+End Function
+'
+'   Receive a ASCII file via FTP, return TRUE if success and FALSE is failed
+'
+Private Function GetFileViaFtp(szServerName As String, iPortNo As Integer, szSrcFilename As String, szDestFilename As String, szUserName As String, szPassword As String) As Boolean
+    Dim bFileName As String
+    Dim hIHandle As Long
+    Dim hConnHandle As Long
+    Dim dwErrorCode As Long
+    Dim szErrorText As String
+    Dim dwErrorTextLen As Long
+    
+    szErrorText = "                                                                                                                                                                                                                                                                       "
+    dwErrorTextLen = Len(szErrorText)
+    
+    hIHandle = 0
+    hConnHandle = 0
+    
+    If iPortNo = 0 Then iPortNo = INTERNET_DEFAULT_FTP_PORT
+    
+    hIHandle = InternetOpen(FTP_UAgent, INTERNET_OPEN_TYPE_DIRECT, "", "", 0)
+    If hIHandle <> 0 Then
+        '   Connect to server
+        hConnHandle = InternetConnect(hIHandle, szServerName, iPortNo, szUserName, szPassword, INTERNET_SERVICE_FTP, 0, 0)
+        If hConnHandle <> 0 Then
+            ' Connection made to server, send a file
+'            status = FtpPutFile(hConnHandle, szFilename, szDestFilename, FTP_TRANSFER_ASCII, 0)
+            Status = FtpGetFile(hConnHandle, szSrcFilename, szDestFilename, False, FTP_TRANSFER_ASCII, 0, 0)
+            If Status = 0 Then
+                Status = InternetGetLastResponseInfo(dwErrorCode, szErrorText, dwErrorTextLen)
+                Status = MsgBox("An error occured when receiving file to the FTP Server : " + szServerName + Chr(13) + Chr(13) + szErrorText, vbOKOnly + vbCritical, "FTP Connection Error", 0, 0)
+                GetFileViaFtp = False
+            Else
+                GetFileViaFtp = True
+            End If
+        Else
+            Status = InternetGetLastResponseInfo(dwErrorCode, szErrorText, dwErrorTextLen)
+            Status = MsgBox("An error occured when connecting to the FTP Server : " + szServerName + Chr(13) + Chr(13) + szErrorText, vbOKOnly + vbCritical, "FTP Connection Error", 0, 0)
+            GetFileViaFtp = False
+        End If
+    End If
+    If hConnHandle <> 0 Then InternetCloseHandle (hConnHandle)
+    If hIHandle <> 0 Then InternetCloseHandle (hIHandle)
+End Function
+
+Private Sub testftp()
+    Dim Status As Boolean
+    
+    Status = SendFileViaFtp("dkame1", 0, "sourcefile", "targetfile", "ftpusername", "ftppassword")
+    
+End Sub
+
+Public Function GetSpoolDir() As String
+  Dim localhost As String
+  localhost = RTrim(Environ("LOCALAPPDATA"))
+  If localhost = "" Then
+    ' Windows XP
+    GetSpoolDir = Environ("SystemDrive") & "\files\" & Environ("UserName") & "\SFASpooldir"
+  Else
+    ' Windows Vista
+    GetSpoolDir = localhost & "\SFASpooldir"
+  End If
+End Function
+
+Sub InitSpoolDir()
+    
+    If Dir(GetSpoolDir(), vbDirectory) = "" Then
+        MkDir (GetSpoolDir)
+    End If
+    If Dir(GetSpoolDir() + "\Archive", vbDirectory) = "" Then
+        MkDir (GetSpoolDir + "\Archive")
+    End If
+End Sub
+'
+'   Send all files in the SFA Spool directory
+'   After successfull sending move order files to archive directory
+'   in case we need to recover the files later
+'
+Sub SendFilesInSpool()
+    Dim szFileName As String
+    Dim szTimeDir As String
+    Dim bFirstTime As Boolean
+    Dim failedcnt As Integer
+    Dim transcnt As Integer
+    Dim Status As Boolean
+    Dim newHour As Integer
+    Dim newMinute As Integer
+    Dim newSecond As Integer
+    Dim WaitTime As Variant
+    
+    '
+    '   Before sending merge all orders into one file
+    '
+    Status = XMLFunctions.MergeSFAOrders()
+    If Status = False Then
+        MsgBox "Merging of the SFA Orders failed, cannot proceed the sending of orders"
+    End If
+    
+    bFirstTime = True
+    
+    InitSpoolDir
+    
+    szFileName = Dir(GetSpoolDir + "\*.*", vbNormal)
+    szTimeDir = Format(Date, "yyyymmdd") + Format(Time, "hhmmss")
+    
+    failedcnt = 0
+    transcnt = 0
+    While (szFileName <> "")
+        Status = SendFileViaFtp(GetSAPBCHost, GetSAPBCPort, GetSpoolDir + "\" + szFileName, GetSAPBCDir + "/" + szFileName, GetSAPBCUser, GetSAPBCPass)
+        If Status = True Then
+            If bFirstTime = True Then
+                MkDir (GetSpoolDir + "\Archive\" + szTimeDir)
+                bFirstTime = False
+            End If
+            transcnt = transcnt + 1
+            Name GetSpoolDir + "\" + szFileName As GetSpoolDir + "\Archive\" + szTimeDir + "\" + szFileName
+        Else
+            failedcnt = failedcnt + 1
+        End If
+        '
+        '   Wait 2 seconds before next transfer
+        '
+        newHour = Hour(Now())
+        newMinute = Minute(Now())
+        newSecond = Second(Now()) + 2
+        WaitTime = TimeSerial(newHour, newMinute, newSecond)
+        Application.Wait WaitTime
+        '
+        '   Continue work
+        '
+        szFileName = Dir()
+    Wend
+    If failedcnt > 0 Then
+        Status = MsgBox("Number of successfull transfers " + Str(transcnt) + Chr(13) + "Number of failed transfers " + Str(failedcnt) + Chr(13) + Chr(13) + "Please retry transmission again later", vbExclamation + vbOKOnly, "Transmission status")
+    Else
+        If transcnt > 0 Then
+            Status = MsgBox("Number of successfull transfers " + Str(transcnt), vbOKOnly + vbInformation, "Transmission status")
+        Else
+            Status = MsgBox("Nothing found to send!", vbOKOnly + vbInformation, "Transmission status")
+        End If
+    End If
+   
+   
+
+End Sub
+'
+'   Launch the Settings dialog
+'
+Sub StartConfigDialog()
+    Dim Status As Integer
+    Dim szAppName As String
+    
+    szAppName = "SFAToolV1"
+    
+    UserSettings.SAPBCHost.Value = GetSetting(szAppName, "SAPBCSettings", "SAPBCHost", "dkaeb2.bll.dk.lego.com")
+    UserSettings.SAPBCPort.Value = GetSetting(szAppName, "SAPBCSettings", "SAPBCPort", "8021")
+    UserSettings.SAPBCDir.Value = GetSetting(szAppName, "SAPBCSettings", "SAPBCDir", "/ns/SFA/RECEIVE/sfa_prod")
+    UserSettings.SAPBCUser.Value = GetSetting(szAppName, "SAPBCSettings", "SAPBCUser", "")
+    UserSettings.SAPBCPass.Value = GetSetting(szAppName, "SAPBCSettings", "SAPBCPass", "")
+    
+    UserSettings.Show
+End Sub
+
+Function GetSAPBCHost() As String
+    Dim szAppName As String
+    
+    szAppName = "SFAToolV1"
+    
+    GetSAPBCHost = GetSetting(szAppName, "SAPBCSettings", "SAPBCHost", "")
+End Function
+Function GetSAPBCPort() As Integer
+    Dim szAppName As String
+    
+    szAppName = "SFAToolV1"
+    
+    GetSAPBCPort = Int(GetSetting(szAppName, "SAPBCSettings", "SAPBCPort", "0"))
+End Function
+Function GetSAPBCDir() As String
+    Dim szAppName As String
+    
+    szAppName = "SFAToolV1"
+    
+    GetSAPBCDir = GetSetting(szAppName, "SAPBCSettings", "SAPBCDir", "")
+End Function
+Function GetSAPBCUser() As String
+    Dim szAppName As String
+    
+    szAppName = "SFAToolV1"
+    
+    GetSAPBCUser = GetSetting(szAppName, "SAPBCSettings", "SAPBCUser", "")
+End Function
+Function GetSAPBCPass() As String
+    Dim szAppName As String
+    
+    szAppName = "SFAToolV1"
+    
+    GetSAPBCPass = GetSetting(szAppName, "SAPBCSettings", "SAPBCPass", "")
+End Function
+
+Function GetUniqueXMLFileName() As String
+    
+    GetUniqueXMLFileName = Format(Date, "yyyymmdd") + Format(Time, "hhmmss") + ".xml"
+
+End Function
+
+
+
+
+
+
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Worksheet_SelectionChange(ByVal Target As Excel.Range)
+
+End Sub
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+    Dim Kom As String
+    Worksheets("SAP Direct").Activate
+    Kom = "show me the XML Folder"
+    Cells(6, 12).Select
+    ActiveCell.FormulaR1C1 = Kom
+    ActiveSheet.Hyperlinks.Add Anchor:=Selection, Address:=GetSpoolDir()
+    Cells(1, 1).Select
+    Cells(1, 1).Select
+    Worksheets("ORDERLIST").Activate
+    Cells(1, 2).Select
+End Sub
+
+Attribute VB_Name = "XMLFunctions"
+'
+'   Some WIN32 API function declarations
+'
+' function prototypes, constants, and type definitions
+' for Windows 32-bit Registry API
+'//////////////////////////////////////////////////////////////////////
+'                                                                     //
+'                Registry API Constants                                //
+'                                                                     //
+' //////////////////////////////////////////////////////////////////////
+
+' Reg Data Types...
+Const REG_NONE = 0                       ' No value type
+Const REG_SZ = 1                         ' Unicode nul terminated string
+Const REG_EXPAND_SZ = 2                  ' Unicode nul terminated string
+Const REG_BINARY = 3                     ' Free form binary
+Const REG_DWORD = 4                      ' 32-bit number
+
+Const HKEY_CLASSES_ROOT = &H80000000
+Const HKEY_CURRENT_USER = &H80000001
+Const HKEY_LOCAL_MACHINE = &H80000002
+Const HKEY_USERS = &H80000003
+Const HKEY_PERFORMANCE_DATA = &H80000004
+Const HKEY_CURRENT_CONFIG = &H80000005
+Const HKEY_DYN_DATA = &H80000006
+' -----------------------------------------
+' Win32 API error code definitions
+' -----------------------------------------
+' This section contains the error code definitions for the Win32 API functions.
+
+' NO_ERROR
+Const NO_ERROR = 0 '  dderror
+
+' The configuration registry database operation completed successfully.
+Const ERROR_SUCCESS = 0&
+'
+Declare Function RegCloseKey Lib "advapi32.dll" (ByVal hKey As Long) As Long
+Declare Function RegOpenKey Lib "advapi32.dll" Alias "RegOpenKeyA" (ByVal hKey As Long, ByVal lpSubKey As String, phkResult As Long) As Long
+Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal ulOptions As Long, ByVal samDesired As Long, phkResult As Long) As Long
+Declare Function RegQueryValue Lib "advapi32.dll" Alias "RegQueryValueA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal lpValue As String, lpcbValue As Long) As Long
+' Note that if you declare the lpData parameter as String, you must pass it By Value.
+Declare Function RegQueryValueEx Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As String, lpcbData As Long) As Long
+'
+'   XML Sample
+'
+Option Explicit
+    Dim oEle As IXMLDOMElement
+    Dim oRoot As IXMLDOMElement
+    Dim oHeader As IXMLDOMElement
+    Dim oDetail As IXMLDOMElement
+    Dim oNode As IXMLDOMNode
+    Dim oDoc As DOMDocument
+'************************************************************************************
+'* Support functions for order creation
+'************************************************************************************
+Sub LXMLCreateNewDocument(szDocType As String)
+    Dim szUserName As String
+    Dim szHost As String
+    
+    Set oDetail = Nothing
+    Set oHeader = Nothing
+    Set oRoot = Nothing
+    
+    Set oDoc = New DOMDocument
+    oDoc.resolveExternals = True
+    
+' Create processing instruction and document root
+    Set oNode = oDoc.createProcessingInstruction("xml", "version='1.0' encoding='iso-8859-1'")
+    Set oNode = oDoc.insertBefore(oNode, oDoc.childNodes.Item(0))
+    
+' Create document root SFA_ORDER
+    Set oRoot = oDoc.createElement(szDocType)
+    Set oDoc.documentElement = oRoot
+'
+'   Create header element
+'
+    Set oHeader = oDoc.createElement("G_HEADER_REC")
+    oRoot.appendChild oHeader
+'
+'   Username
+'
+    Set oNode = oDoc.createElement("USERNAME")
+    szUserName = Environ("USERNAME")
+    If szUserName = "" Then szUserName = "Unknown"
+    oNode.Text = szUserName
+    oHeader.appendChild oNode
+'
+'   Nodename of PC
+'
+    Set oNode = oDoc.createElement("HOST")
+    szHost = Environ("COMPUTERNAME")
+    If szHost = "" Then szHost = "Unknown"
+    oNode.Text = szHost
+    oHeader.appendChild oNode
+
+End Sub
+
+Sub LXMLAddHeaderItemString(szItemName As String, szItemValue As String)
+
+    Set oNode = oDoc.createElement(szItemName)
+    oNode.Text = szItemValue
+    oHeader.appendChild oNode
+
+End Sub
+Sub LXMLAddHeaderItemInt(szItemName As String, szItemValue As Integer)
+    
+    Set oNode = oDoc.createElement(szItemName)
+    oNode.Text = Trim(Str(szItemValue))
+    oHeader.appendChild oNode
+
+End Sub
+Sub LXMLAddDetailItemString(szItemName As String, szItemValue As String)
+    
+    If oDetail Is Nothing Then
+'
+'   Create detail element
+'
+        Set oDetail = oDoc.createElement("G_LINE_REC")
+        oHeader.appendChild oDetail
+    End If
+    Set oNode = oDoc.createElement(szItemName)
+    oNode.Text = szItemValue
+    oDetail.appendChild oNode
+
+End Sub
+Sub LXMLAddDetailItemInt(szItemName As String, szItemValue As Integer)
+    
+    If oDetail Is Nothing Then
+'
+'   Create detail element
+'
+        Set oDetail = oDoc.createElement("G_LINE_REC")
+        oHeader.appendChild oDetail
+    End If
+    Set oNode = oDoc.createElement(szItemName)
+    oNode.Text = Trim(Str(szItemValue))
+    oDetail.appendChild oNode
+
+End Sub
+Sub LXMLPrepareNextDetailItem()
+'
+'   Create new detail element
+'
+    Set oDetail = oDoc.createElement("G_LINE_REC")
+    oHeader.appendChild oDetail
+
+End Sub
+'************************************************************************************
+'* Support functions for sales info request file
+'************************************************************************************
+Sub LXMLCreateNewSalesReqDocument(szDocType As String)
+    Dim szUserName As String
+    Dim szHost As String
+    Dim sListSep As String
+    
+    Set oDetail = Nothing
+    Set oHeader = Nothing
+    Set oRoot = Nothing
+    
+    Set oDoc = New DOMDocument
+    oDoc.resolveExternals = True
+    
+' Create processing instruction and document root
+    Set oNode = oDoc.createProcessingInstruction("xml", "version='1.0' encoding='iso-8859-1'")
+    Set oNode = oDoc.insertBefore(oNode, oDoc.childNodes.Item(0))
+    
+' Create document root SFA_REQUEST
+    Set oRoot = oDoc.createElement(szDocType)
+    Set oDoc.documentElement = oRoot
+'
+'   Username
+'
+    Set oNode = oDoc.createElement("USERNAME")
+    szUserName = Environ("USERNAME")
+    If szUserName = "" Then szUserName = "Unknown"
+    oNode.Text = szUserName
+    oRoot.appendChild oNode
+'
+'   Nodename of PC
+'
+    Set oNode = oDoc.createElement("HOST")
+    szHost = Environ("COMPUTERNAME")
+    If szHost = "" Then szHost = "Unknown"
+    oNode.Text = szHost
+    oRoot.appendChild oNode
+'
+'   Register what list seperator we use
+'
+    sListSep = GetIntlSeperatorChar()
+    Set oNode = oDoc.createElement("LIST_SEPARATOR")
+    oNode.Text = sListSep
+    oRoot.appendChild oNode
+    
+    
+End Sub
+Sub LXMLAddSalesReqHeaderString(szItemName As String, szItemValue As String)
+
+    Set oNode = oDoc.createElement(szItemName)
+    oNode.Text = szItemValue
+    oHeader.appendChild oNode
+
+End Sub
+Sub LXMLAddSalesReqItemString(szItemName As String, szItemValue As String)
+
+    Set oNode = oDoc.createElement(szItemName)
+    oNode.Text = szItemValue
+    oDetail.appendChild oNode
+
+End Sub
+Sub LXMLCreateNewGroup(GroupName As String)
+'
+'   Create new group element
+'
+    Set oDetail = oDoc.createElement(GroupName)
+    oHeader.appendChild oDetail
+
+End Sub
+Sub LXMLCreateNewRequest()
+'
+'   Create new group element
+'
+    Set oHeader = oDoc.createElement("SPECIFICATION")
+    oRoot.appendChild oHeader
+
+End Sub
+'************************************************************************************
+'* Function to save a XML into a file (Used by Order and Sales info request)
+'************************************************************************************
+Sub LXMLWriteDocumentToFile(szFileName As String)
+'
+'   Initialize the SFASpoolDir
+'
+    InitSpoolDir
+'
+'   Back to root
+'
+    Set oDoc.documentElement = oRoot
+    
+' Save xml file
+    oDoc.Save szFileName
+
+End Sub
+'*************************************************************************************
+'* Sub used to test the generation of a XML order
+'*************************************************************************************
+Sub TestXMLRutinesForOrder()
+
+    Dim szFileName As String
+    Dim Status As Integer
+    
+    Call LXMLCreateNewDocument("SFA_ORDER")
+    
+    Call LXMLAddHeaderItemString("ORDERTYPE", "ZOR")
+    
+    Call LXMLAddHeaderItemInt("SALESORG", 100)
+    
+    Call LXMLAddHeaderItemString("DISTR_CHAN", "03")
+    
+    Call LXMLAddHeaderItemString("DIVISION", "01")
+    
+    Call LXMLAddHeaderItemString("ORDER_REASON", "Z01")
+    
+    Call LXMLAddHeaderItemString("PRICING_DATE", "20010517")
+    
+    Call LXMLAddHeaderItemInt("SOLDTO_PARTY", 1009)
+    
+    Call LXMLAddHeaderItemString("ORDER_REF", "CDK000000010")
+    
+    Call LXMLAddHeaderItemString("REQ_DEL_DATE", "20010518")
+    
+    Call LXMLAddHeaderItemString("SHIPPING_INSTR", "This is a shipping instruction text with the danish |fffd||fffd||fffd||fffd||fffd||fffd|")
+    
+    Call LXMLAddHeaderItemString("ORDER_INSTR", "This is a order instruction text with the danish |fffd||fffd||fffd||fffd||fffd||fffd|")
+    
+    Call LXMLAddHeaderItemString("ORDER_METHOD", "SFA")
+    
+    '
+    '   Add detail lines
+    '
+    
+    Call LXMLAddDetailItemString("MATNR", "7171")
+    Call LXMLAddDetailItemInt("ORDER_QTY", 1)
+    
+    LXMLPrepareNextDetailItem
+    
+    Call LXMLAddDetailItemString("MATNR", "7171")
+    Call LXMLAddDetailItemInt("ORDER_QTY", 2)
+    
+    '
+    '   End of order, write to file
+    '
+    szFileName = GetSpoolDir + "\" + GetUniqueXMLFileName
+    
+    Call LXMLWriteDocumentToFile(szFileName)
+    
+    Status = MsgBox("Test document created as " + szFileName, vbOKOnly, "Generate XML Status")
+    
+End Sub
+'*************************************************************************************
+'* Sub used to generate a test sales request XML document
+'*************************************************************************************
+Sub TestXMLRutinesForSalesInfo()
+    
+    Dim szFileName As String
+    Dim Status As Integer
+    
+    Call LXMLCreateNewSalesReqDocument("SFA_REQUEST")
+    
+    LXMLCreateNewRequest
+     
+    Call LXMLAddSalesReqHeaderString("REQUEST_TYPE", "SALES_INFORMATION")
+    Call LXMLAddSalesReqHeaderString("YEAR", "2001")
+    
+    Call LXMLCreateNewGroup("KEY")
+    
+    Call LXMLAddSalesReqItemString("CUSTOMER", "1009")
+    Call LXMLAddSalesReqItemString("CURRENCY", "DKK")
+    
+    Call LXMLCreateNewGroup("KEY")
+    
+    Call LXMLAddSalesReqItemString("CUSTOMER", "1012")
+    Call LXMLAddSalesReqItemString("CURRENCY", "DEM")
+    '
+    '   Uncomment to test by creating another request in same document
+    '
+'    LXMLCreateNewRequest
+     
+'    Call LXMLAddSalesReqHeaderString("REQUEST_TYPE", "SALES_INFORMATION")
+'    Call LXMLAddSalesReqHeaderString("YEAR", "2001")
+    
+'    Call LXMLCreateNewGroup("KEY")
+    
+'    Call LXMLAddSalesReqItemString("CUSTOMER", "1009")
+'    Call LXMLAddSalesReqItemString("CURRENCY", "DKK")
+    
+'    Call LXMLCreateNewGroup("KEY")
+    
+'    Call LXMLAddSalesReqItemString("CUSTOMER", "1012")
+'    Call LXMLAddSalesReqItemString("CURRENCY", "DEM")
+    '
+    '   End of data, write to file
+    '
+    szFileName = GetSpoolDir + "\" + GetUniqueXMLFileName
+    
+    Call LXMLWriteDocumentToFile(szFileName)
+    
+    Status = MsgBox("Test document created as " + szFileName, vbOKOnly, "Generate XML Status")
+
+End Sub
+'*************************************************************************************
+'* Sub to test of reading a XML Sales information file
+'*************************************************************************************
+Sub TestReadOfSalesInfo()
+    
+    Dim oDocument As DOMDocument
+    Dim oSalesInfoList As IXMLDOMNodeList
+    Dim oSalesInfo  As IXMLDOMNode
+    Dim oElement As IXMLDOMElement
+    Dim oRecordList As IXMLDOMNodeList
+    Dim oRecordInfo As IXMLDOMNode
+    Dim RowCount As Integer
+    Dim sString As String
+    
+    Dim i As Integer
+    Dim r As Integer
+    
+    RowCount = 1
+    
+    '
+    '   Perform some EXCEL stuff needed by samle to cleanup the report sheet
+    '
+    Sheets("Sales Information").Activate
+    Range("A1", "IV16000").Clear
+    
+    Set oDocument = New DOMDocument
+    '
+    '   Work syncronious on this
+    '
+    oDocument.async = False
+    '
+    '   Read document from the file
+    '
+    oDocument.Load ("C:\Files\dknieros\sales_information.xml")
+    '
+    '   Build a list of SALES_INFORMATION if more than one
+    '
+    Set oSalesInfoList = oDocument.selectNodes("SALES_INFORMATION")
+    
+    '
+    '   Walk thru list and work on each SALES_INFORMATION object
+    '
+    For i = 0 To oSalesInfoList.Length - 1
+        '
+        '   Get a object to the current SALES_INFORMATION data
+        '
+        Set oSalesInfo = oSalesInfoList.Item(i)
+        '
+        '   Get the created date information
+        '
+        Set oElement = oSalesInfo.selectSingleNode("CREATED")
+        Cells(RowCount, 1).Value = "Report Date"
+        Cells(RowCount, 2).Value = Mid$(oElement.nodeTypedValue, 7, 2) + "-" + Mid$(oElement.nodeTypedValue, 5, 2) + "-" + Mid$(oElement.nodeTypedValue, 1, 4) + " " + Mid$(oElement.nodeTypedValue, 9, 2) + ":" + Mid$(oElement.nodeTypedValue, 11, 2) + ":" + Mid$(oElement.nodeTypedValue, 13, 2)
+        RowCount = RowCount + 1
+        '
+        '   Get the year information
+        '
+        Set oElement = oSalesInfo.selectSingleNode("YEAR")
+        Cells(RowCount, 1).Value = "Year for data"
+        Cells(RowCount, 2).Value = oElement.nodeTypedValue
+        RowCount = RowCount + 3
+        '
+        '   Build header lines in Excel sheet
+        '
+        Cells(RowCount, 1).Value = "Customer#"
+        Cells(RowCount, 1).Font.Bold = True
+        Cells(RowCount, 2).Value = "Article#"
+        Cells(RowCount, 2).Font.Bold = True
+        Cells(RowCount, 3).Value = "Product#"
+        Cells(RowCount, 3).Font.Bold = True
+        Cells(RowCount, 4).Value = "Currency"
+        Cells(RowCount, 4).Font.Bold = True
+        Cells(RowCount, 5).Value = "Open orders Value"
+        Cells(RowCount, 5).Font.Bold = True
+        Cells(RowCount, 6).Value = "Open Orders QTY"
+        Cells(RowCount, 6).Font.Bold = True
+        Cells(RowCount, 7).Value = "Invoiced Value"
+        Cells(RowCount, 7).Font.Bold = True
+        Cells(RowCount, 8).Value = "Invoiced QTY"
+        Cells(RowCount, 8).Font.Bold = True
+    
+        RowCount = RowCount + 1
+        '
+        '   Find all records below this information
+        '
+        Set oRecordList = oSalesInfo.selectNodes("RECORD")
+        For r = 0 To oRecordList.Length - 1
+            '
+            '   Walk thru all records to find all relevant data
+            '
+            Set oRecordInfo = oRecordList.Item(r)
+            
+            Set oElement = oRecordInfo.selectSingleNode("CUSTOMER")
+            Cells(RowCount, 1).Value = oElement.nodeTypedValue
+            
+            Set oElement = oRecordInfo.selectSingleNode("ARTICLE")
+            Cells(RowCount, 2).Value = oElement.nodeTypedValue
+            
+            Set oElement = oRecordInfo.selectSingleNode("PRODUCT")
+            Cells(RowCount, 3).Value = oElement.nodeTypedValue
+            
+            Set oElement = oRecordInfo.selectSingleNode("CURRENCY")
+            Cells(RowCount, 4).Value = oElement.nodeTypedValue
+            
+            Set oElement = oRecordInfo.selectSingleNode("OPEN_ORDERS_VALUE")
+            Cells(RowCount, 5).Value = oElement.nodeTypedValue
+            
+            Set oElement = oRecordInfo.selectSingleNode("OPEN_ORDERS_QTY")
+            Cells(RowCount, 6).Value = oElement.nodeTypedValue
+            
+            Set oElement = oRecordInfo.selectSingleNode("INVOICED_VALUE")
+            Cells(RowCount, 7).Value = oElement.nodeTypedValue
+            
+            Set oElement = oRecordInfo.selectSingleNode("INVOICED_QTY")
+            Cells(RowCount, 8).Value = oElement.nodeTypedValue
+            
+            RowCount = RowCount + 1
+            
+        Next
+    Next
+    
+
+End Sub
+'
+'   Read in the registry to seperator char used in lists
+'
+Function GetIntlSeperatorChar() As String
+    Dim hKey As Long
+    Dim iListChar As String
+    Dim cbListCharLen As Long
+    
+    cbListCharLen = 10
+    iListChar = "                              "
+    If RegOpenKey(HKEY_CURRENT_USER, "Control Panel\International", hKey) = ERROR_SUCCESS Then
+        If RegQueryValueEx(hKey, "sList", 0, REG_SZ, iListChar, cbListCharLen) = ERROR_SUCCESS Then
+            iListChar = Left(iListChar, cbListCharLen - 1)
+        Else
+            iListChar = ","
+        End If
+        RegCloseKey (hKey)
+    Else
+        iListChar = ","
+    End If
+    GetIntlSeperatorChar = iListChar
+End Function
+
+'*************************************************************************************
+'* Sub to merge SFA Orders and save originals before creating merged document
+'*************************************************************************************
+Function MergeSFAOrders() As Boolean
+   
+    Dim oDocument As DOMDocument
+    Dim oTotalOrder As IXMLDOMNodeList
+    Dim oNewOrderInfo  As IXMLDOMNode
+    Dim oOrderInfo  As IXMLDOMNode
+    Dim oOrderInfoList As IXMLDOMNodeList
+    Dim szFileName As String
+    Dim szTimeDir As String
+    Dim bFirstTime As Boolean
+    Dim failedcnt As Integer
+    Dim transcnt As Integer
+    Dim i As Integer
+    Dim z As Integer
+    Dim szSpoolDir As String
+    Dim bSuccessMerge As Boolean
+    Dim bDoneMerge As Integer
+    Dim szSaveDir As String
+    Dim szTempFileName As String
+    Dim szMergedFileName As String
+    
+    bSuccessMerge = False
+    bDoneMerge = False
+    
+    MergeSFAOrders = False
+    
+    Set oDetail = Nothing
+    Set oHeader = Nothing
+    Set oRoot = Nothing
+    
+    Set oDoc = New DOMDocument
+    oDoc.resolveExternals = True
+    
+' Create processing instruction and document root
+    Set oNode = oDoc.createProcessingInstruction("xml", "version='1.0' encoding='iso-8859-1'")
+    Set oNode = oDoc.insertBefore(oNode, oDoc.childNodes.Item(0))
+    
+' Create document root SFA_ORDER
+    Set oRoot = oDoc.createElement("SFA_ORDER")
+    Set oDoc.documentElement = oRoot
+    
+    bFirstTime = True
+    
+    InitSpoolDir
+    
+    szTimeDir = "M" + Format(Date, "yyyymmdd") + Format(Time, "hhmmss")
+    
+    szSpoolDir = GetSpoolDir + "\"
+    '
+    '   Cleanup old .Work files before starting
+    '
+    szFileName = Dir(szSpoolDir + "Archive\*.Work", vbNormal)
+    While (szFileName <> "")
+        Kill szSpoolDir + "Archive\" + szFileName
+        szFileName = Dir()
+    Wend
+    '
+    '   Cleanup old .DelMark files before starting
+    '
+    szFileName = Dir(szSpoolDir + "Archive\*.DelMark", vbNormal)
+    While (szFileName <> "")
+        Kill szSpoolDir + "Archive\" + szFileName
+        szFileName = Dir()
+    Wend
+    '
+    '   Merge actual order file into one file
+    '
+    failedcnt = 0
+    transcnt = 0
+    szFileName = Dir(szSpoolDir + "*.*", vbNormal)
+    While (szFileName <> "")
+    
+        Set oDocument = Nothing
+        Set oDocument = New DOMDocument
+        '
+        '   Work syncronious on this
+        '
+        oDocument.async = False
+        '
+        '   Read document from the file
+        '
+        oDocument.Load (szSpoolDir + szFileName)
+        '
+        '   Check that an error did not occur
+        '
+        If oDocument.parseError.errorCode = 0 Then
+        '
+        '   No error occured parsing the document, test if it is a SFA order
+        '
+            If oDocument.lastChild.baseName = "SFA_ORDER" Then
+                '
+                '   Build a list of SALES_INFORMATION if more than one
+                '
+                Set oTotalOrder = oDocument.selectNodes("SFA_ORDER")
+                '
+                '   Walk thru list and work on each SALES_INFORMATION object
+                '
+                For i = 0 To oTotalOrder.Length - 1
+                    '
+                    '   Select the whole order
+                    '
+                    Set oOrderInfoList = oTotalOrder.Item(i).selectNodes("G_HEADER_REC")
+                    For z = 0 To oOrderInfoList.Length - 1
+                        '
+                        '   Select the whole order
+                        '
+                        Set oOrderInfo = oOrderInfoList.Item(z)
+                        '
+                        '   Append whole tree to the the master document
+                        '
+                        oRoot.appendChild oOrderInfo
+                    Next
+                    '
+                    '   Make file for deletion by creating a temporary file by same + "_delMark" under Archive dir
+                    '
+                    FileCopy szSpoolDir + szFileName, szSpoolDir + "Archive\" + szFileName + ".DelMark"
+                    bDoneMerge = bDoneMerge + 1
+                Next
+            End If
+        End If
+        szFileName = Dir()
+    Wend
+    '
+    '   Failed of no more than one order is merges
+    '
+    bSuccessMerge = False
+    
+    If bDoneMerge > 1 Then
+        szMergedFileName = "MRG" + GetUniqueXMLFileName
+        
+        Call LXMLWriteDocumentToFile(szSpoolDir + "Archive\" + szMergedFileName + ".Work")
+        bSuccessMerge = True
+    End If
+    '
+    '  Now delete all the files we have merged into 1 file
+    '
+    If bSuccessMerge Then
+        szFileName = Dir(szSpoolDir + "Archive\*.DelMark", vbNormal)
+        bFirstTime = True
+        While (szFileName <> "")
+            If bFirstTime Then
+                szSaveDir = szSpoolDir + "Archive\" + szTimeDir
+                MkDir (szSaveDir)
+                bFirstTime = False
+            End If
+        
+            szTempFileName = Left$(szFileName, Len(szFileName) - 8)
+            Name szSpoolDir + szTempFileName As szSpoolDir + "Archive\" + szTimeDir + "\" + szTempFileName
+            Kill szSpoolDir + "Archive\" + szFileName
+            szFileName = Dir()
+        Wend
+        Name szSpoolDir + "Archive\" + szMergedFileName + ".Work" As szSpoolDir + szMergedFileName
+        MergeSFAOrders = True
+    Else
+        On Error Resume Next
+        '
+        '   Something went wrong delete all .Delmark files
+        '
+        szFileName = Dir(szSpoolDir + "Archive\*.DelMark", vbNormal)
+        While (szFileName <> "")
+            Kill szSpoolDir + "Archive\" + szFileName
+            szFileName = Dir()
+        Wend
+        '
+        '   Delete all .Work files also
+        '
+        szFileName = Dir(szSpoolDir + "Archive\*.Work", vbNormal)
+        While (szFileName <> "")
+            Kill szSpoolDir + "Archive\" + szFileName
+            szFileName = Dir()
+        Wend
+        MergeSFAOrders = False
+        
+    End If
+    
+    '
+    '   Do not trigger error because we only have one order
+    '
+    If bDoneMerge = 1 And bSuccessMerge = False Then
+        MergeSFAOrders = True
+    End If
+    '
+    '   Free objects
+    '
+    Set oRoot = Nothing
+    Set oDocument = Nothing
+End Function
+
+
+
+
+
+INQUEST-PP=macro

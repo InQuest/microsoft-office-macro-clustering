@@ -1,0 +1,1527 @@
+Attribute VB_Name = "AddinCode"
+' This module contains code for converting Excel spreadsheets
+' into Quicken QIF data.
+'
+' Written by Didier Lachieze  June 7th, 2002
+'
+'
+' The routines are known to work with Excel 2000 and
+' Money 2000 & 2003. They will probably work fine with other
+' versions as well.
+'
+' This is freeware. Use at your own risk.
+ 
+ 
+' Public declarations
+Public ButtonClicked As String
+Public FileQIF As Variant
+Public AccountType As String
+Public AccountName As String
+Public DateFormat49 As String
+Public DateFormat99 As String
+Public DateFormat00 As String
+Public SpecialProcessing As String
+Public InvertAmount As Boolean
+Public PlageSelect As Range
+Public SettingsSheet As Worksheet
+Public LanguageSheet As Worksheet
+Public LanguageValue As String
+
+Option Explicit
+
+'======================================================
+' QIFLoad: load transactions from a Quicken QIF file
+'======================================================
+'
+Sub QIFLoad()
+
+Dim hFile As Integer
+Dim sType As String
+Dim iRow As Integer
+Dim iCol As Integer
+Dim iPos As Integer
+Dim iPos1 As Integer
+Dim iPos2 As Integer
+Dim sRecord As String
+Dim iYear As Integer
+Dim iMonth As Integer
+Dim iDay As Integer
+Dim sFilename
+Const miSTARTROW = 3
+Dim Msg, Style, Response
+Dim fso, ts
+
+ LanguageValue = ""
+ Set SettingsSheet = ThisWorkbook.Sheets("Settings")
+ Set LanguageSheet = ThisWorkbook.Sheets("language")
+
+ On Error Resume Next
+ If ActiveSheet.Name = "" Then 'If no worksheet then create one
+  Workbooks.Add
+ End If
+
+ If SettingsSheet.Range("Language") = "" Then 'New language: clear settings
+    SettingsSheet.Columns(2).Clear
+    SettingsSheet.Rows(2).Clear
+    LanguageForm.Show
+    SettingsSheet.Range("Language") = LanguageValue
+    If LanguageValue = "fran|fffd|ais" Then
+        ThisWorkbook.Sheets("fran|fffd|ais").Range("B1:B100").Copy _
+            Destination:=ThisWorkbook.Sheets("language").Range("B1")
+    ElseIf LanguageValue = "english" Then
+        ThisWorkbook.Sheets("english").Range("B1:B100").Copy _
+            Destination:=ThisWorkbook.Sheets("language").Range("B1")
+    End If
+ Else
+    LanguageValue = SettingsSheet.Range("Language")
+ End If
+ dlgLoadQIF.Show
+ 'If ButtonClicked = "Convert" Then Call SaveToQIF
+ If ButtonClicked = "Cancel" Then Exit Sub
+
+hFile = FreeFile
+
+iRow = miSTARTROW
+
+'sFilename = Application.GetOpenFilename("QIF Files (*.qif), *.qif")
+ sFilename = FileQIF
+If sFilename <> False Then
+  Style = vbYesNo + vbQuestion + vbCritical + vbDefaultButton2
+  Response = MsgBox(LanguageSheet.Range("EndMessage3") & Strings.Chr(13) & Strings.Chr(10) _
+          & LanguageSheet.Range("EndMessage4") & " " & Dir(sFilename) & "?", _
+          Style, LanguageSheet.Range("MenuItem2"))
+  If Response = vbNo Then Exit Sub
+
+  ' clear existing data
+  Range(Cells(miSTARTROW, 1), Cells(500, 8)).Clear
+  
+  'Open sFilename For Input As hFile
+  Set fso = CreateObject("Scripting.FileSystemObject")
+  Set ts = fso.OpenTextFile(sFilename)
+  'Line Input #hFile, sRecord
+  sRecord = ts.ReadLine
+  sType = Strings.Mid$(sRecord, 7)
+  Cells(1, 1) = sType
+  Cells(2, 1) = LanguageSheet.Range("CheckDateCaption")   'Date
+  Cells(2, 2) = LanguageSheet.Range("CheckNumCaption")    'Number
+  Cells(2, 3) = LanguageSheet.Range("CheckPayeeCaption")  'Payee
+  Cells(2, 4) = LanguageSheet.Range("CheckCatCaption")    'Category
+  Cells(2, 5) = LanguageSheet.Range("CheckSubCatCaption") 'SubCategory
+  Cells(2, 6) = LanguageSheet.Range("CheckAmountCaption") 'Amount
+  Cells(2, 7) = LanguageSheet.Range("CheckStatusCaption") 'Cleared status
+  Cells(2, 8) = LanguageSheet.Range("CheckMemoCaption")   'Memo
+
+  
+  'While Not EOF(hFile)
+  While Not ts.AtEndOfStream
+    'Line Input #hFile, sRecord
+    sRecord = ts.ReadLine
+    Select Case Strings.Left$(sRecord, 1)
+        Case "D"        ' date
+            iCol = 1
+            sRecord = Strings.Mid$(sRecord, 2)
+            iPos1 = InStr(1, sRecord, "/", vbTextCompare)   'First separator
+            If iPos1 = 0 Then
+                iPos1 = InStr(1, sRecord, ".", vbTextCompare)
+            End If
+            iPos2 = InStr(4, sRecord, "/", vbTextCompare)   'Second separator
+            If iPos2 = 0 Then
+                iPos2 = InStr(4, sRecord, "'", vbTextCompare)
+            End If
+            Select Case SettingsSheet.Range("QIFLoadDate")
+                Case LanguageSheet.Range("DateDefault")
+                    iYear = Year(DateValue(sRecord))
+                    iMonth = Month(DateValue(sRecord))
+                    iDay = Day(DateValue(sRecord))
+                Case LanguageSheet.Range("DateFormat0")
+                    iYear = Strings.Mid$(sRecord, iPos2 + 1)
+                    ' if year on 2 digits and separator is "/" then date before 2000
+                    If iYear < 100 And Strings.Mid$(sRecord, iPos2, 1) = "/" Then
+                        iYear = iYear - 100
+                    End If
+                    iMonth = Strings.Mid$(sRecord, iPos1 + 1, iPos2 - iPos1 - 1)
+                    iDay = Strings.Mid$(sRecord, 1, iPos1 - 1)
+                Case LanguageSheet.Range("DateFormat1")
+                    iYear = Strings.Mid$(sRecord, iPos2 + 1)
+                    ' if year on 2 digits and separator is "/" then date before 2000
+                    If iYear < 100 And Strings.Mid$(sRecord, iPos2, 1) = "/" Then
+                        iYear = iYear - 100
+                    End If
+                    iMonth = Strings.Mid$(sRecord, 1, iPos1 - 1)
+                    iDay = Strings.Mid$(sRecord, iPos1 + 1, iPos2 - iPos1 - 1)
+                Case LanguageSheet.Range("DateFormatE")
+                    iYear = Strings.Mid$(sRecord, iPos2 + 1)
+                    ' if separator "'" or year>49 & separator "/"  then date before 2000
+                    If iYear > 49 And Strings.Mid$(sRecord, iPos2, 1) = "/" Then
+                        iYear = iYear - 100
+                    ElseIf Strings.Mid$(sRecord, iPos2, 1) = "'" Then
+                        iYear = iYear - 100
+                    End If
+                    iMonth = Strings.Mid$(sRecord, iPos1 + 1, iPos2 - iPos1 - 1)
+                    iDay = Strings.Mid$(sRecord, 1, iPos1 - 1)
+                Case LanguageSheet.Range("DateFormatF")
+                    iYear = Strings.Mid$(sRecord, iPos2 + 1)
+                    If iYear > 49 And Strings.Mid$(sRecord, iPos2, 1) = "/" Then
+                        iYear = iYear - 100
+                    ElseIf Strings.Mid$(sRecord, iPos2, 1) = "'" Then
+                        iYear = iYear - 100
+                    End If
+                    iMonth = Strings.Mid$(sRecord, 1, iPos1 - 1)
+                    iDay = Strings.Mid$(sRecord, iPos1 + 1, iPos2 - iPos1 - 1)
+            End Select
+            Cells(iRow, iCol) = DateSerial(iYear, iMonth, iDay)
+        Case "N"        ' number
+            iCol = 2
+        Case "T", "$"   ' amount
+            iCol = 6
+        Case "C"        ' cleared status
+            iCol = 7
+        Case "P"        ' payee
+            iCol = 3
+        Case "L"        ' category
+            iCol = 4
+        Case "M", "E"   ' memo
+            iCol = 8
+        Case "S"        ' split line
+            iCol = 4
+            iRow = iRow + 1
+            Cells(iRow, 1) = "S"
+        Case "^"        ' end of record
+            iCol = 0
+            iRow = iRow + 1
+        Case Else       ' unknown
+            iCol = 0
+    End Select
+    If iCol > 1 Then
+        sRecord = Strings.Mid$(sRecord, 2)
+        iPos = InStr(2, sRecord, ":", vbTextCompare)
+        ' date
+        If iCol = 4 And iPos > 0 Then
+            Cells(iRow, iCol) = Strings.Left$(sRecord, iPos - 1)    'category
+            Cells(iRow, iCol + 1) = Strings.Mid$(sRecord, iPos + 1) 'subcategory
+        Else
+            Cells(iRow, iCol) = sRecord
+        End If
+    End If
+ Wend
+
+ Close hFile
+End If
+
+End Sub
+
+'======================================================
+' SaveToQIF: save transactions to a Quicken QIF file
+'======================================================
+'
+Private Sub SaveToQIF()
+
+Dim hFile As Integer
+Dim iRow As Integer
+Dim iCol As Integer
+Dim sRecord As String
+Dim sFirstCol As String
+Dim sDate As String
+Dim sFilename As Variant
+Dim iStartRow As Integer
+Dim iBottomRow As Integer
+Dim iLeftCol As Integer
+Dim iDateCol As Integer
+Dim noError As Boolean
+Dim SplitFlag As Boolean
+Dim DataSheet As Worksheet
+Dim MyString As String
+Dim Category As String, Subcategory As String, Status As String, Number As String
+Dim Memo As String, Payee As String, Amount As String, tDate As String, Expense As String
+
+Dim Msg, Style, Response, iYear, Field
+
+hFile = FreeFile
+
+' Get Top Row
+iStartRow = PlageSelect.Row
+iRow = iStartRow
+
+' Get Bottom Row
+iBottomRow = PlageSelect.Rows(PlageSelect.Rows.Count).Row
+
+' Get Left Row
+iLeftCol = PlageSelect.Column - 1
+
+Set DataSheet = PlageSelect.Worksheet
+' check data to convert
+Do
+    'sFirstCol = Strings.UCase$(DataSheet.Cells(iRow, iLeftCol + 1))
+    'If Strings.Len(sFirstCol) = 0 Then Exit Do
+    iCol = 1
+    Do
+      Select Case ExtractField(iCol)   ' Evaluate Selected Field
+      Case LanguageSheet.Range("CheckDateCaption")   'Check date values
+       If DataSheet.Cells(iRow, iCol + iLeftCol) <> "" And _
+          DataSheet.Cells(iRow, iCol + iLeftCol) <> "S" Then
+        
+         Field = dlgSaveQIF.FormatOfDate.Value
+         If Field = LanguageSheet.Range("DateFormatH") Then
+            noError = IsDate(DateFormat(DataSheet.Cells(iRow, iCol + iLeftCol)))
+         Else
+            noError = IsDate(Strings.UCase$(DataSheet.Cells(iRow, iCol + iLeftCol)))
+         End If
+         If Not noError Then
+           MsgBox LanguageSheet.Range("ErrorDate"), vbCritical
+          Exit Do
+         End If
+       End If
+      Case LanguageSheet.Range("CheckAmountCaption") 'Check Amount values
+        noError = IsNumeric(DataSheet.Cells(iRow, iCol + iLeftCol))
+        If Not noError Then
+           MsgBox LanguageSheet.Range("ErrorAmount"), vbCritical
+           Exit Do
+        End If
+      Case ""                           ' No more Field
+        Exit Do
+      Case Else                         ' Other values.
+      End Select
+      iCol = iCol + 1
+    Loop
+    If Not noError Then Exit Do
+    iRow = iRow + 1
+    If iRow > iBottomRow Then Exit Do
+Loop
+
+If noError Then
+ iRow = iStartRow
+ 
+ ' open QIF file
+ sFilename = FileQIF
+ On Error Resume Next
+ Open sFilename For Output As hFile
+ If Err.Number = 76 Then
+    MsgBox LanguageSheet.Range("ErrorFilePath"), vbCritical
+    Exit Sub
+ End If
+ Print #hFile, "!Type:" & AccountType   ' Type of account
+
+ If AccountName <> "" Then
+    Print #hFile, "L[" & AccountName & "]" ' name of account
+ End If
+
+ ' Write transactions to QIF file
+SplitFlag = False
+Do
+    Category = ""
+    Subcategory = ""
+    iCol = 1
+    Do
+      Select Case ExtractField(iCol)   ' Evaluate Selected Field
+      
+        '---------- Date ------------
+        Case LanguageSheet.Range("CheckDateCaption")   'Date
+        iDateCol = iCol + iLeftCol
+        If SplitFlag = False Then 'if new transaction
+          Field = dlgSaveQIF.FormatOfDate.Value
+          If Field = LanguageSheet.Range("DateFormatH") Then
+            sDate = DateFormat(DataSheet.Cells(iRow, iDateCol))
+          Else
+            sDate = Strings.UCase$(DataSheet.Cells(iRow, iDateCol))
+          End If
+          If SpecialProcessing = "BNP Net VISA" Then
+            sDate = BNPDate(DataSheet.Cells(iRow, iDateCol + 1))
+          End If
+          Field = dlgSaveQIF.FormatOfDate.Value
+          If Field = LanguageSheet.Range("DateFormatG") Then
+            sDate = Strings.Format$(sDate, "YY/MM")
+            iYear = Year(DateTime.Date)
+            sDate = sDate & "/" & iYear
+          Else
+            iYear = Year(DateValue(sDate))
+          End If
+         
+          If iYear < 1950 Then
+            tDate = Strings.Format$(DateValue(sDate), DateFormat49)
+          ElseIf iYear < 2000 Then
+            tDate = Strings.Format$(DateValue(sDate), DateFormat99)
+          Else
+            tDate = Strings.Format$(DateValue(sDate), DateFormat00)
+          End If
+        End If
+        
+        '---------- Number ------------
+        Case LanguageSheet.Range("CheckNumCaption")    'Number
+         Number = DataSheet.Cells(iRow, iCol + iLeftCol)
+        
+        '---------- Payee ------------
+        Case LanguageSheet.Range("CheckPayeeCaption")  'Payee
+         Payee = DataSheet.Cells(iRow, iCol + iLeftCol)
+
+                
+        '---------- Cleared Status ------------
+        Case LanguageSheet.Range("CheckStatusCaption") 'Cleared Status
+         Status = DataSheet.Cells(iRow, iCol + iLeftCol)
+         
+         '---------- Reimbursable Expense ------------
+        Case LanguageSheet.Range("CheckExpCaption") 'Reimbursable expense
+         Expense = DataSheet.Cells(iRow, iCol + iLeftCol)
+               
+        '---------- Amount ------------
+        Case LanguageSheet.Range("CheckAmountCaption") 'Amount
+         If InvertAmount Then
+            MyString = Strings.Format(-DataSheet.Cells(iRow, iCol + iLeftCol), "###0.00")
+         Else
+            MyString = Strings.Format(DataSheet.Cells(iRow, iCol + iLeftCol), "###0.00")
+         End If
+         Amount = SetDecimalSeparator(MyString)
+                
+        '---------- Spend ------------
+        Case LanguageSheet.Range("CheckSpendCaption") 'Spend
+         MyString = DataSheet.Cells(iRow, iCol + iLeftCol)
+         If IsNumeric(MyString) Then
+            If Abs(MyString) <> 0 Then
+                MyString = Strings.Format(Abs(MyString), "###0.00")
+                MyString = SetDecimalSeparator(MyString)
+                Amount = "-" & MyString   ' Always negative
+            End If
+         End If
+         
+        '---------- Receive ------------
+        Case LanguageSheet.Range("CheckReceiveCaption") 'Receive
+         MyString = Strings.Trim(DataSheet.Cells(iRow, iCol + iLeftCol))
+         If IsNumeric(MyString) Then
+            If Abs(MyString) <> 0 Then
+                MyString = Strings.Format(Abs(MyString), "###0.00")
+                MyString = SetDecimalSeparator(MyString)
+                Amount = MyString     ' Always positive
+            End If
+         End If
+             
+        '---------- Memo ------------
+        Case LanguageSheet.Range("CheckMemoCaption")   'Memo
+         If SpecialProcessing = "BNP Net VISA" Then
+          Payee = BNPPayee(DataSheet.Cells(iRow, iCol + iLeftCol))
+         End If
+         Memo = DataSheet.Cells(iRow, iCol + iLeftCol) 'memo
+            
+        '---------- Category ------------
+        Case LanguageSheet.Range("CheckCatCaption")    'Category
+         Category = DataSheet.Cells(iRow, iCol + iLeftCol)
+             
+        '---------- Sub-Category ------------
+        Case LanguageSheet.Range("CheckSubCatCaption")  'Sub-Category
+         Subcategory = DataSheet.Cells(iRow, iCol + iLeftCol)
+      
+        Case ""                           ' No more Field
+         Exit Do
+         
+        Case Else                         ' Other values: don't care
+        
+      End Select
+      iCol = iCol + 1
+    Loop
+    
+    'Print items to ouput file
+    If SplitFlag = True Then
+      If Category <> "" And Subcategory <> "" Then
+        Print #hFile, "S" & Category & ":" & Subcategory  ' category:sub-category
+      ElseIf Category <> "" Then
+        Print #hFile, "S" & Category   ' category
+      End If
+      If Memo <> "" Then Print #hFile, "E" & Memo      ' memo
+      Print #hFile, "$" & Amount    ' split amount
+      If Expense <> "" Then Print #hFile, "F" & Expense  ' Reimbursable expense
+    Else
+      Print #hFile, "D" & tDate     ' Date of transaction
+      If SpecialProcessing <> LanguageSheet.Range("ProcessingD") Then
+        Print #hFile, "U" & Amount    ' Amount of transaction (higher possible value than T)
+                                      ' Not supported in Quicken V6 and earlier
+      End If
+      Print #hFile, "T" & Amount    ' Amount of transaction
+      If Status <> "" Then Print #hFile, "C" & Status   ' Cleared status
+      If Number <> "" Then Print #hFile, "N" & Number   ' Number (check or reference)
+      If Payee <> "" Then Print #hFile, "P" & Payee     ' Payee/description
+      If Memo <> "" Then Print #hFile, "M" & Memo       ' Memo
+      If Category <> "" And Subcategory <> "" Then
+        Print #hFile, "L" & Category & ":" & Subcategory  ' category:sub-category
+      ElseIf Category <> "" Then
+        Print #hFile, "L" & Category   ' category
+      End If
+      If Expense <> "" Then Print #hFile, "F" & Expense  ' Reimbursable expense
+    End If
+    
+    If DataSheet.Cells(iRow + 1, iDateCol) = "" Or _
+       DataSheet.Cells(iRow + 1, iDateCol) = "S" Then
+            SplitFlag = True    ' if next date cell empty or "S" => split item
+    Else
+            SplitFlag = False   ' else next transaction
+            Print #hFile, "^"   ' end of record
+    End If
+    
+    iRow = iRow + 1
+    If iRow > iBottomRow Then
+        If SplitFlag = True Then
+            Print #hFile, "^"   ' end of record, last transaction was a split
+        End If
+        Exit Do
+    End If
+ Loop
+        
+ Close hFile
+ Style = vbYesNo + vbQuestion + vbDefaultButton2
+ Response = MsgBox(LanguageSheet.Range("EndMessage") & Dir(sFilename) _
+           & vbCr & LanguageSheet.Range("EndMessage2"), Style)
+ If Response = vbNo Then ButtonClicked = "Cancel"
+End If
+
+End Sub
+
+
+'================================================
+' Function: Set Decimal Separator to QIF standard
+'================================================
+'
+Function SetDecimalSeparator(Txt As String) As String
+'   Replace the decimal separator of a text string with a '.'
+'   and the thousands separator with a ' '
+
+    Dim TempString As String
+    Dim DecimalSeparator As String, ThousandsSeparator As String
+    Dim CurrentCar As String
+    
+    Dim i As Integer
+    
+    DecimalSeparator = Application.International(xlDecimalSeparator)
+    ThousandsSeparator = Application.International(xlThousandsSeparator)
+
+'   Initialize
+    TempString = ""
+'   Extract each element
+    For i = 1 To Strings.Len(Txt)
+        CurrentCar = Strings.Mid(Txt, i, 1)
+        If CurrentCar = DecimalSeparator Then
+            If SpecialProcessing = LanguageSheet.Range("ProcessingC") Then
+                CurrentCar = ","
+            Else
+                CurrentCar = "."
+            End If
+        ElseIf CurrentCar = ThousandsSeparator Then
+            If SpecialProcessing = LanguageSheet.Range("ProcessingC") Then
+                CurrentCar = "."
+            Else
+                CurrentCar = ","
+            End If
+        End If
+        TempString = TempString & CurrentCar
+    Next i
+    SetDecimalSeparator = TempString
+End Function
+
+'==========================================
+' Function: Extract Fields
+'==========================================
+'
+Function ExtractField(iCol) As String
+Dim sField As String, TempString As String
+
+    sField = Strings.Trim(SettingsSheet.Cells(2, iCol)) ' Remove extra spaces
+    If sField <> "" Then
+       TempString = Strings.Mid(sField, 2) 'Remove leading <
+       sField = Strings.Left(TempString, Strings.Len(TempString) - 1) 'Remove trailing >
+    End If
+    ExtractField = sField
+End Function
+'==========================================
+' Function: Date Format
+'==========================================
+'
+Function DateFormat(Memo) As String
+    Dim Txt As String, TempString As String
+
+    Txt = Memo
+    TempString = Strings.Left(Txt, 4) & "/" & Strings.Mid(Txt, 5, 2) & "/" & Strings.Mid(Txt, 7, 2)
+    DateFormat = TempString
+End Function
+
+'==========================================
+' Function: BNP Date
+'==========================================
+'
+Function BNPDate(Memo) As String
+    Dim Txt As String, TempString As String
+    Dim CurrentCar As String
+    Dim x As Variant
+    Dim i As Integer
+
+    x = Split(Memo, "|fffd|") ' Extract Substrings from Memo string
+    Txt = x(3)
+ 
+'   Initialize
+    TempString = ""
+    For i = 1 To Strings.Len(Txt)
+    CurrentCar = Strings.Mid(Txt, i, 1)
+    If i = 3 Or i = 5 Then
+            TempString = TempString & "/"   ' Add date Separators
+    End If
+        TempString = TempString & CurrentCar
+    Next i
+    BNPDate = TempString
+End Function
+
+'==========================================
+' Function: BNP Payee
+'==========================================
+'
+Function BNPPayee(Memo) As String
+    Dim TempString As String
+    Dim x As Variant
+    Dim i As Integer
+
+    x = Split(Memo, "|fffd|") ' Extract Substrings from Memo string
+    TempString = x(4)
+    For i = 5 To UBound(x)
+        If x(i) = "*" Then Exit For
+        If IsNumeric(x(i)) Then Exit For
+        TempString = TempString & " " & x(i)
+    Next i
+    BNPPayee = TempString
+End Function
+
+'==========================================
+' About: display About dialog
+'==========================================
+'
+Public Sub About()
+ Set LanguageSheet = ThisWorkbook.Sheets("language")
+ dlgAbout.Show
+End Sub
+
+'==========================================
+' xl2qif: Main Procedure
+'==========================================
+'
+Public Sub xl2qif()
+Dim Style, Response
+
+LanguageValue = ""
+Set SettingsSheet = ThisWorkbook.Sheets("Settings")
+Set LanguageSheet = ThisWorkbook.Sheets("language")
+
+On Error Resume Next
+If ActiveSheet.Name = "" Then
+  Style = vbCritical
+  Response = MsgBox(LanguageSheet.Range("NoWorkSheet"), Style, LanguageSheet.Range("MenuItem1"))
+  Exit Sub
+End If
+
+Do
+ If SettingsSheet.Range("Language") = "" Then 'New language: clear settings
+    SettingsSheet.Columns(2).Clear
+    SettingsSheet.Rows(2).Clear
+    LanguageForm.Show
+    SettingsSheet.Range("Language") = LanguageValue
+    If LanguageValue = "fran|fffd|ais" Then
+        ThisWorkbook.Sheets("fran|fffd|ais").Range("B1:B100").Copy _
+            Destination:=ThisWorkbook.Sheets("language").Range("B1")
+    ElseIf LanguageValue = "english" Then
+        ThisWorkbook.Sheets("english").Range("B1:B100").Copy _
+            Destination:=ThisWorkbook.Sheets("language").Range("B1")
+    End If
+ Else
+    LanguageValue = SettingsSheet.Range("Language")
+ End If
+ dlgSaveQIF.Show
+ If ButtonClicked = "Convert" Then Call SaveToQIF
+ If ButtonClicked = "Cancel" Then Exit Do
+Loop
+End Sub
+
+
+
+Attribute VB_Name = "LanguageForm"
+Attribute VB_Base = "0{587C31E6-8415-4184-8BC0-40269012DBB1}{839AF05A-6554-4165-8F2A-45D654AE41EF}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub CheckEnglish_Click()
+  If CheckEnglish.Value = True Then
+    LanguageValue = "english"
+    CheckFrancais.Value = False
+  End If
+End Sub
+
+Private Sub CheckFrancais_Click()
+  If CheckFrancais.Value = True Then
+    LanguageValue = "fran|fffd|ais"
+    CheckEnglish.Value = False
+  End If
+End Sub
+
+Private Sub CommandButton1_Click()
+    LanguageForm.Hide
+    Unload Me
+End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+    
+Private Sub CreateMenu()
+'   This sub should be executed when the workbook is opened.
+'   NOTE: There is no error handling in this subroutine
+
+ Dim MenuObject As CommandBarPopup
+ 
+ Dim MenuItem As Object
+ Dim Row As Integer
+ Dim PositionOrMacro, Caption, FaceId
+
+ Set SettingsSheet = ThisWorkbook.Sheets("Settings")
+ If SettingsSheet.Range("Language") = "" Then 'New language: clear settings
+    SettingsSheet.Columns(1).Clear
+    SettingsSheet.Rows(2).Clear
+    LanguageForm.Show
+    SettingsSheet.Range("Language") = LanguageValue
+    If LanguageValue = "fran|fffd|ais" Then
+        ThisWorkbook.Sheets("fran|fffd|ais").Range("B1:B100").Copy _
+            Destination:=ThisWorkbook.Sheets("language").Range("B1")
+    ElseIf LanguageValue = "english" Then
+        ThisWorkbook.Sheets("english").Range("B1:B100").Copy _
+            Destination:=ThisWorkbook.Sheets("language").Range("B1")
+    End If
+    ThisWorkbook.Save
+ Else
+    LanguageValue = SettingsSheet.Cells(5, 1)
+ End If
+'   Make sure the menus aren't duplicated
+    Call DeleteMenu
+   
+'   Add the menu and menu items
+'   Add the top-level menu to the Worksheet CommandBar
+    Caption = "&XL2QIF"
+    PositionOrMacro = 10
+    Set MenuObject = Application.CommandBars(1). _
+        Controls.Add(Type:=msoControlPopup, _
+        Before:=PositionOrMacro, _
+        Temporary:=True)
+    MenuObject.Caption = Caption
+'   Add Menu Item 1
+    Caption = "&" & ThisWorkbook.Sheets("language").Range("MenuItem1")
+    PositionOrMacro = "xl2qif"
+    Set MenuItem = MenuObject.Controls.Add(Type:=msoControlButton)
+    MenuItem.OnAction = PositionOrMacro
+    MenuItem.Caption = Caption
+    MenuItem.FaceId = 3
+'   Add Menu Item 2
+    Caption = "&" & ThisWorkbook.Sheets("language").Range("MenuItem2")
+    PositionOrMacro = "QIFLoad"
+    Set MenuItem = MenuObject.Controls.Add(Type:=msoControlButton)
+    MenuItem.OnAction = PositionOrMacro
+    MenuItem.Caption = Caption
+    MenuItem.FaceId = 23
+    MenuItem.BeginGroup = True
+'   Add Menu Item 3
+    Caption = "&" & ThisWorkbook.Sheets("language").Range("MenuItem3")
+    PositionOrMacro = "About"
+    Set MenuItem = MenuObject.Controls.Add(Type:=msoControlButton)
+    MenuItem.OnAction = PositionOrMacro
+    MenuItem.Caption = Caption
+    MenuItem.BeginGroup = True
+    
+End Sub
+
+Private Sub DeleteMenu()
+'   This sub should be executed when the workbook is closed
+'   Deletes the Menus
+    Dim MenuSheet As Worksheet
+    Dim Row As Integer
+    Dim Caption As String
+    
+    On Error Resume Next
+    Caption = "&XL2QIF"
+    Application.CommandBars(1).Controls(Caption).Delete
+    On Error GoTo 0
+End Sub
+
+
+Private Sub Workbook_Open()
+' This procedure creates the custom Money Menu
+    Call CreateMenu
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+' This procedure deletes the custom Money Menu
+    Call DeleteMenu
+End Sub
+
+
+Attribute VB_Name = "dlgAbout"
+Attribute VB_Base = "0{8D8C2125-3CD9-4D53-A4A2-C5A7FD160E1C}{9C6BB693-4A7C-48ED-B5B9-AA36241D2DAE}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Dim Link As String
+
+Private Sub cmdOK_Click()
+    dlgAbout.Hide
+    Unload Me
+End Sub
+
+Private Sub Label3_Click()
+    Link = LanguageSheet.Range("AboutWebSite")
+    On Error GoTo NoCanDo
+    ActiveWorkbook.FollowHyperlink Address:=Link, NewWindow:=True
+    Unload Me
+    Exit Sub
+NoCanDo:
+    MsgBox "Cannot open " & Link
+End Sub
+
+Private Sub UserForm_Initialize()
+    ' Localise l'interface
+      dlgAbout.Caption = LanguageSheet.Range("dlgAboutCaption")
+      Label1.Caption = LanguageSheet.Range("AboutMessage1")
+      Label2.Caption = LanguageSheet.Range("AboutMessage2")
+      Label3.Caption = LanguageSheet.Range("AboutMessage3")
+      Label4.Caption = LanguageSheet.Range("AboutMessage4")
+End Sub
+Attribute VB_Name = "dlgLoadQIF"
+Attribute VB_Base = "0{44510FF9-A4CA-4C85-9E9C-5F6BE21F056C}{44596C2A-9DCB-465A-B571-685200C8155F}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'==========================================
+' QIF Load Dialogue Form for XL2QIF
+'==========================================
+Dim iCol As Integer
+Dim Field As String
+
+'==========================================
+' QIF source file: Browse Button
+'==========================================
+Private Sub ChooseQIF_Click()
+    Dim fileOpenName As Variant
+    Dim defaultFilename As Variant
+    
+    defaultFilename = Dir(QIFPath.Value, vbNormal)
+    If QIFPath.Text = "" Then
+      defaultFilename = "msmoney.qif"
+    End If
+    fileOpenName = Application.GetOpenFilename( _
+    fileFilter:="QIF Files (*.qif), *.qif")
+    If fileOpenName = False Then Exit Sub
+    FileQIF = fileOpenName
+    QIFPath.Text = FileQIF
+    SettingsSheet.Range("QIFLoadFile") = FileQIF
+End Sub
+
+
+Private Sub QIFPath_Change()
+    FileQIF = QIFPath.Text
+    SettingsSheet.Range("QIFLoadFile") = FileQIF
+End Sub
+
+'==========================================
+' Options:Date Format
+'==========================================
+Private Sub FormatOfDate_Change()
+    Field = FormatOfDate.Value
+    SettingsSheet.Range("QIFLoadDate") = Field
+End Sub
+
+'==========================================
+' Cancel Button
+'==========================================
+Private Sub cmdQuitter_Click()
+    ButtonClicked = "Cancel"
+    dlgLoadQIF.Hide
+    Unload Me
+End Sub
+
+'==========================================
+' Default Button
+'==========================================
+Private Sub cmdReInit_Click()
+' Initialise la liste des formats de date
+    FormatOfDate.Text = LanguageSheet.Range("DateFormat0")
+    SettingsSheet.Range("QIFLoadDate") = ""
+' Initialise le fichier QIF source
+    SettingsSheet.Range("QIFLoadFile") = ""
+    FileQIF = SettingsSheet.Range("QIFLoadFile")
+    QIFPath.Text = FileQIF
+End Sub
+
+'==========================================
+' Import Button
+'==========================================
+Private Sub cmdImport_Click()
+    Dim Addr As String
+
+    On Error Resume Next
+    ' Teste si un fichier destination est s|fffd|lectionn|fffd|
+    If SettingsSheet.Range("QIFLoadFile") = "" Then
+        MsgBox LanguageSheet.Range("NoOutputFile"), vbCritical
+        ' QIFPath.SetFocus
+        On Error GoTo 0
+        Exit Sub
+    End If
+    ButtonClicked = "Import"
+    ThisWorkbook.Save
+    Unload Me
+End Sub
+'==========================================
+' UserForm Initialization
+'==========================================
+Private Sub UserForm_Initialize()
+
+    ' Restaure les settings precedents
+      iCol = 1
+      
+    ' Localise l'interface
+      dlgLoadQIF.Caption = LanguageSheet.Range("dlgLoadCaption")
+      Label1.Caption = LanguageSheet.Range("InputFileCaption")
+      Label7.Caption = LanguageSheet.Range("Label7Caption")
+      ChooseQIF.Caption = LanguageSheet.Range("ChooseQIFCaption")
+      cmdReInit.Caption = LanguageSheet.Range("cmdReInitCaption")
+      cmdImport.Caption = LanguageSheet.Range("cmdImportCaption")
+      cmdQuitter.Caption = LanguageSheet.Range("cmdQuitterCaption")
+    
+    ' Restaure Fichier QIF
+    If SettingsSheet.Range("QIFLoadFile") <> "" Then
+      FileQIF = SettingsSheet.Range("QIFLoadFile")
+      QIFPath.Text = FileQIF
+    End If
+          
+    ' Initialise la liste des formats de date
+      FormatOfDate.AddItem (LanguageSheet.Range("DateDefault"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormat0"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormat1"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatE"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatF"))
+      ' Restaure le Format de date
+    If SettingsSheet.Range("QIFLoadDate") <> "" Then
+      FormatOfDate.Text = SettingsSheet.Range("QIFLoadDate")
+    Else
+      FormatOfDate.Text = LanguageSheet.Range("DateDefault")
+    End If
+End Sub
+
+Attribute VB_Name = "dlgSaveQIF"
+Attribute VB_Base = "0{695AA258-504C-4DB0-ADAE-B54D7DA5BAED}{B54C5C64-DA6B-46B3-82CB-11D23F09F5F4}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+'==========================================
+' Main Dialogue Form for XL2QIF
+'==========================================
+Dim iCol As Integer
+Dim Field As String
+
+'==========================================
+' QIF output file: Browse Button
+'==========================================
+Private Sub ChooseQIF_Click()
+    Dim fileSaveName As Variant
+    Dim defaultFilename As Variant
+    
+    defaultFilename = Dir(QIFPath.Value, vbNormal)
+    If QIFPath.Text = "" Then
+      defaultFilename = "msmoney.qif"
+    End If
+    fileSaveName = Application.GetSaveAsFilename( _
+    initialFilename:=defaultFilename, _
+    fileFilter:="QIF Files (*.qif), *.qif")
+    If fileSaveName = False Then Exit Sub
+    FileQIF = fileSaveName
+    QIFPath.Text = FileQIF
+    SettingsSheet.Range("QIFSaveFile") = FileQIF
+End Sub
+
+
+
+Private Sub QIFPath_Change()
+    FileQIF = QIFPath.Text
+    SettingsSheet.Range("QIFSaveFile") = FileQIF
+End Sub
+
+'==========================================
+' Options: Account Type
+'==========================================
+Private Sub TypeOfAccount_Change()
+    Select Case TypeOfAccount.Value   ' Evaluate Selected value.
+    Case LanguageSheet.Range("Bank")  'Bank
+       AccountType = "Bank"
+    Case LanguageSheet.Range("Ccard") 'Ccard
+       AccountType = "CCard"
+    Case LanguageSheet.Range("Cash")  'Cash
+       AccountType = "Cash"
+    Case LanguageSheet.Range("Oth_A") 'Oth_A
+       AccountType = "Oth A"
+    Case LanguageSheet.Range("Oth_L") 'Oth_L
+       AccountType = "Oth L"
+    Case Else                         ' Other values.
+      AccountType = "Bank"
+    End Select
+    SettingsSheet.Range("Account") = TypeOfAccount.Value
+End Sub
+
+'==========================================
+' Options:Date Format
+'==========================================
+Private Sub FormatOfDate_Change()
+    Field = FormatOfDate.Value
+    If Field = LanguageSheet.Range("DateFormatA") Then
+        DateFormat49 = "DD/MM/YYYY"
+        DateFormat99 = "DD/MM/YYYY"
+        DateFormat00 = "DD/MM/YYYY"
+    ElseIf Field = LanguageSheet.Range("DateFormatB") Then
+        DateFormat49 = "MM/DD/YYYY"
+        DateFormat99 = "MM/DD/YYYY"
+        DateFormat00 = "MM/DD/YYYY"
+    ElseIf Field = LanguageSheet.Range("DateFormatC") Then
+        DateFormat49 = "DD/MM/YY"
+        DateFormat99 = "DD/MM/YY"
+        DateFormat00 = "DD/MM'YY"
+    ElseIf Field = LanguageSheet.Range("DateFormatD") Then
+        DateFormat49 = "MM/DD/YY"
+        DateFormat99 = "MM/DD/YY"
+        DateFormat00 = "MM/DD'YY"
+    ElseIf Field = LanguageSheet.Range("DateFormatE") Then
+        DateFormat49 = "MM/DD'YY"
+        DateFormat99 = "MM/DD/YY"
+        DateFormat00 = "MM/DD/YY"
+    ElseIf Field = LanguageSheet.Range("DateFormatF") Then
+        DateFormat49 = "MM/DD'YY"
+        DateFormat99 = "MM/DD/YY"
+        DateFormat00 = "MM/DD/YY"
+    ElseIf Field = LanguageSheet.Range("DateFormatG") Then
+        DateFormat49 = "DD/MM/YYYY"
+        DateFormat99 = "DD/MM/YYYY"
+        DateFormat00 = "DD/MM/YYYY"
+    ElseIf Field = LanguageSheet.Range("DateFormatH") Then
+        DateFormat49 = "DD/MM/YYYY"
+        DateFormat99 = "DD/MM/YYYY"
+        DateFormat00 = "DD/MM/YYYY"
+    Else
+        DateFormat49 = "MM/DD/YYYY"
+        DateFormat99 = "MM/DD/YYYY"
+        DateFormat00 = "MM/DD'YYYY"
+    End If
+    SettingsSheet.Range("QIFSaveDate") = Field
+End Sub
+
+'==========================================
+' Options:SpecificProcessing
+'==========================================
+Private Sub SpecificProcessing_Change()
+    Field = SpecificProcessing.Value
+    SpecialProcessing = Field
+    SettingsSheet.Range("Processing") = Field
+End Sub
+
+'==========================================
+' Options: Separate Spend & Receive columns
+'==========================================
+Private Sub CheckSeparateSR_Click()
+  If CheckSeparateSR.Value = True Then
+    CheckAmount.Enabled = False
+    CheckAmount.Value = False
+    CheckInvAmount.Enabled = False
+    CheckInvAmount.Value = False
+    CheckSpend.Enabled = True
+    CheckReceive.Enabled = True
+  Else
+    CheckAmount.Enabled = True
+    CheckInvAmount.Enabled = True
+    CheckSpend.Enabled = False
+    CheckSpend.Value = False
+    CheckReceive.Enabled = False
+    CheckReceive.Value = False
+  End If
+  SettingsSheet.Range("DebitCredit") = CheckSeparateSR.Value
+End Sub
+
+'==========================================
+' Options:Invert Amounts
+'==========================================
+Private Sub CheckInvAmount_Click()
+    InvertAmount = CheckInvAmount.Value
+    SettingsSheet.Range("Invert") = CheckInvAmount.Value
+End Sub
+
+'==========================================
+' Fields: Check Number
+'==========================================
+Private Sub CheckNum_Click()
+  Field = "<" & LanguageSheet.Range("CheckNumCaption") & ">"
+  If CheckNum.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Date
+'==========================================
+Private Sub CheckDate_Click()
+  Field = "<" & LanguageSheet.Range("CheckDateCaption") & ">"
+  If CheckDate.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Payee
+'==========================================
+Private Sub CheckPayee_Click()
+  Field = "<" & LanguageSheet.Range("CheckPayeeCaption") & ">"
+  If CheckPayee.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Status
+'==========================================
+Private Sub CheckStatus_Click()
+  Field = "<" & LanguageSheet.Range("CheckStatusCaption") & ">"
+  If CheckStatus.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Amount
+'==========================================
+Private Sub CheckAmount_Click()
+  Field = "<" & LanguageSheet.Range("CheckAmountCaption") & ">"
+  If CheckAmount.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Spend
+'==========================================
+Private Sub CheckSpend_Click()
+  Field = "<" & LanguageSheet.Range("CheckSpendCaption") & ">"
+  If CheckSpend.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Receive
+'==========================================
+Private Sub CheckReceive_Click()
+  Field = "<" & LanguageSheet.Range("CheckReceiveCaption") & ">"
+  If CheckReceive.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Memo
+'==========================================
+Private Sub CheckMemo_Click()
+  Field = "<" & LanguageSheet.Range("CheckMemoCaption") & ">"
+  If CheckMemo.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Category
+'==========================================
+Private Sub CheckCat_Click()
+  Field = "<" & LanguageSheet.Range("CheckCatCaption") & ">"
+  If CheckCat.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Sub-Category
+'==========================================
+Private Sub CheckSubCat_Click()
+  Field = "<" & LanguageSheet.Range("CheckSubCatCaption") & ">"
+  If CheckSubCat.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Reimbursable expense
+'==========================================
+Private Sub CheckExp_Click()
+  Field = "<" & LanguageSheet.Range("CheckExpCaption") & ">"
+  If CheckExp.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+  Else
+    Call RemoveField(Field)
+  End If
+End Sub
+
+'==========================================
+' Fields: Don't Care
+'==========================================
+Private Sub OptionDontCare_Click()
+  Field = "<" & LanguageSheet.Range("OptionDontCare") & ">"
+  If OptionDontCare.Value = True Then
+    TextFieldOrder.Value = TextFieldOrder.Value + Field & " "
+    SettingsSheet.Cells(2, iCol) = Field
+    iCol = iCol + 1
+    OptionDontCare.Value = False
+  End If
+End Sub
+
+'==========================================
+' Fields: Clear Button
+'==========================================
+Private Sub cmdClear_Click()
+    CheckNum.Value = False
+    CheckDate.Value = False
+    CheckPayee.Value = False
+    CheckStatus.Value = False
+    CheckAmount.Value = False
+    CheckSpend.Value = False
+    CheckReceive.Value = False
+    CheckMemo.Value = False
+    CheckCat.Value = False
+    CheckSubCat.Value = False
+    CheckExp.Value = False
+    TextFieldOrder.Value = ""
+    SettingsSheet.Rows(2).Clear
+    iCol = 1
+End Sub
+
+'==========================================
+' Convert Button
+'==========================================
+Private Sub cmdConvert_Click()
+    Dim Addr As String
+
+    On Error Resume Next
+    'Get the address, or reference, from the RefEdit control.
+    Addr = Me.RefEdit1.Value
+
+    'Set the PlageSelect Range object to the range specified in the
+    'RefEdit control.
+    Set PlageSelect = Range(Addr)
+          
+    ' Teste la s|fffd|lection effectu|fffd|e est correcte
+    If Err <> 0 Then
+        MsgBox LanguageSheet.Range("InvalidRange"), vbCritical
+        ' RefEdit1.SetFocus
+        On Error GoTo 0
+        Exit Sub
+    End If
+    ' Teste si un fichier destination est s|fffd|lectionn|fffd|
+    If SettingsSheet.Range("QIFSaveFile") = "" Then
+        MsgBox LanguageSheet.Range("NoOutputFile"), vbCritical
+        ' QIFPath.SetFocus
+        On Error GoTo 0
+        Exit Sub
+    End If
+    ' Teste si au moins un champ est s|fffd|lectionn|fffd|e
+    If iCol = 1 Then
+        MsgBox LanguageSheet.Range("NoField"), vbCritical
+        ' Frame1.SetFocus
+        On Error GoTo 0
+        Exit Sub
+    End If
+    ButtonClicked = "Convert"
+    ThisWorkbook.Save
+    Unload Me
+End Sub
+
+'==========================================
+' Cancel Button
+'==========================================
+Private Sub cmdQuitter_Click()
+    ButtonClicked = "Cancel"
+    dlgSaveQIF.Hide
+    Unload Me
+End Sub
+
+'==========================================
+' Default Button
+'==========================================
+Private Sub cmdReInit_Click()
+' Efface la s|fffd|lection en cours
+    Me.RefEdit1.Text = ""
+' Initialise la liste des formats de date
+    FormatOfDate.Text = LanguageSheet.Range("DateFormatA")
+    SettingsSheet.Range("QIFSaveDate") = ""
+' Initialise la liste des types de compte
+    TypeOfAccount.Text = LanguageSheet.Range("Bank")
+    SettingsSheet.Range("Account") = ""
+' Initialise le fichier QIF destination
+    SettingsSheet.Range("QIFSaveFile") = ""
+    FileQIF = SettingsSheet.Range("QIFSaveFile")
+    QIFPath.Text = FileQIF
+' Initialise l'option debit/credit
+    SettingsSheet.Range("DebitCredit") = False
+    CheckSeparateSR.Value = SettingsSheet.Range("DebitCredit")
+' Initialise l'option inversion des montants
+    SettingsSheet.Range("Invert") = False
+    CheckInvAmount.Value = SettingsSheet.Range("Invert")
+' Initialise le type de processing
+    SpecificProcessing.Text = LanguageSheet.Range("ProcessingA")
+' Initialise l'ordre des champs
+    Call cmdClear_Click
+End Sub
+
+'==========================================
+' UserForm Initialization
+'==========================================
+Private Sub UserForm_Initialize()
+
+    ' Affiche la s|fffd|lection en cours
+      Me.RefEdit1.Text = ActiveWindow.RangeSelection.Address
+      
+    ' Restaure les settings precedents
+      iCol = 1
+      
+    ' Localise l'interface
+      dlgSaveQIF.Caption = LanguageSheet.Range("dlgCaption")
+      Label1.Caption = LanguageSheet.Range("Label1Caption")
+      Label2.Caption = LanguageSheet.Range("Label2Caption")
+      Label6.Caption = LanguageSheet.Range("Label6Caption")
+      Label7.Caption = LanguageSheet.Range("Label7Caption")
+      'Label8.Caption = LanguageSheet.Range("Label8Caption")
+      Label9.Caption = LanguageSheet.Range("Label9Caption")
+      Frame1.Caption = LanguageSheet.Range("Frame1Caption")
+      Frame2.Caption = LanguageSheet.Range("Frame2Caption")
+      CheckNum.Caption = LanguageSheet.Range("CheckNumCaption")
+      CheckDate.Caption = LanguageSheet.Range("CheckDateCaption")
+      CheckPayee.Caption = LanguageSheet.Range("CheckPayeeCaption")
+      CheckStatus.Caption = LanguageSheet.Range("CheckStatusCaption")
+      CheckAmount.Caption = LanguageSheet.Range("CheckAmountCaption")
+      CheckSpend.Caption = LanguageSheet.Range("CheckSpendCaption")
+      CheckReceive.Caption = LanguageSheet.Range("CheckReceiveCaption")
+      CheckMemo.Caption = LanguageSheet.Range("CheckMemoCaption")
+      CheckCat.Caption = LanguageSheet.Range("CheckCatCaption")
+      CheckSubCat.Caption = LanguageSheet.Range("CheckSubCatCaption")
+      CheckSeparateSR.Caption = LanguageSheet.Range("CheckSeparateSRCaption")
+      CheckInvAmount.Caption = LanguageSheet.Range("CheckInvAmountCaption")
+      CheckExp.Caption = LanguageSheet.Range("CheckExpCaption")
+      OptionDontCare.Caption = LanguageSheet.Range("OptionDontCare")
+      ChooseQIF.Caption = LanguageSheet.Range("ChooseQIFCaption")
+      cmdClear.Caption = LanguageSheet.Range("cmdClearCaption")
+      cmdReInit.Caption = LanguageSheet.Range("cmdReInitCaption")
+      cmdConvert.Caption = LanguageSheet.Range("cmdConvertCaption")
+      cmdQuitter.Caption = LanguageSheet.Range("cmdQuitterCaption")
+    
+    ' Restaure Fichier QIF
+    If SettingsSheet.Range("QIFSaveFile") <> "" Then
+      FileQIF = SettingsSheet.Range("QIFSaveFile")
+      QIFPath.Text = FileQIF
+    End If
+          
+    ' Initialise la liste des types de compte
+      Label2.Caption = LanguageSheet.Range("AccountLabel")
+      TypeOfAccount.AddItem (LanguageSheet.Range("Bank")) 'Bank
+      TypeOfAccount.AddItem (LanguageSheet.Range("Ccard")) 'CCard
+      TypeOfAccount.AddItem (LanguageSheet.Range("Cash")) 'Cash
+      TypeOfAccount.AddItem (LanguageSheet.Range("Oth_A")) 'Oth_A
+      TypeOfAccount.AddItem (LanguageSheet.Range("Oth_L")) 'Oth_L
+    ' Restaure le type de compte
+    If SettingsSheet.Range("Account") <> "" Then
+      TypeOfAccount.Text = SettingsSheet.Range("Account")
+    Else
+      TypeOfAccount.Text = LanguageSheet.Range("Bank")    'Bank
+    End If
+    
+    ' Initialise la liste des formats de date
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatA"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatB"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatC"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatD"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatE"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatF"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatG"))
+      FormatOfDate.AddItem (LanguageSheet.Range("DateFormatH"))
+      ' Restaure le Format de date
+    If SettingsSheet.Range("QIFSaveDate") <> "" Then
+      FormatOfDate.Text = SettingsSheet.Range("QIFSaveDate")
+    Else
+      FormatOfDate.Text = LanguageSheet.Range("DateFormatA")
+    End If
+     
+    ' Initialise la liste des traitements sp|fffd|cifiques
+      SpecificProcessing.AddItem (LanguageSheet.Range("ProcessingA"))
+      SpecificProcessing.AddItem (LanguageSheet.Range("ProcessingB"))
+      SpecificProcessing.AddItem (LanguageSheet.Range("ProcessingC"))
+      SpecificProcessing.AddItem (LanguageSheet.Range("ProcessingD"))
+    ' Restaure le traitement sp|fffd|cifique
+    If SettingsSheet.Range("Processing") <> "" Then
+      SpecificProcessing.Text = SettingsSheet.Range("Processing")
+    Else
+      SpecificProcessing.Text = LanguageSheet.Range("ProcessingA")
+    End If
+       
+    'Restaure l'option debit/credit
+    If SettingsSheet.Range("DebitCredit") = "" Then
+     CheckSeparateSR.Value = False
+    Else
+     CheckSeparateSR.Value = SettingsSheet.Range("DebitCredit")
+    End If
+       
+    'Restaure l'option inversion des montants
+    If SettingsSheet.Range("Invert") = "" Then
+     CheckInvAmount.Value = False
+    Else
+     CheckInvAmount.Value = SettingsSheet.Range("Invert")
+    End If
+    
+    'Restaure Champs selectionnes
+    Do
+     If SettingsSheet.Cells(2, iCol) = "" Then Exit Do
+     Select Case SettingsSheet.Cells(2, iCol)
+     Case "<" & LanguageSheet.Range("CheckNumCaption") & ">"
+        CheckNum.Value = True
+     Case "<" & LanguageSheet.Range("CheckDateCaption") & ">"
+        CheckDate.Value = True
+     Case "<" & LanguageSheet.Range("CheckPayeeCaption") & ">"
+        CheckPayee.Value = True
+     Case "<" & LanguageSheet.Range("CheckStatusCaption") & ">"
+        CheckStatus.Value = True
+     Case "<" & LanguageSheet.Range("CheckAmountCaption") & ">"
+        CheckAmount.Value = True
+     Case "<" & LanguageSheet.Range("CheckSpendCaption") & ">"
+        CheckSpend.Value = True
+     Case "<" & LanguageSheet.Range("CheckReceiveCaption") & ">"
+        CheckReceive.Value = True
+     Case "<" & LanguageSheet.Range("CheckMemoCaption") & ">"
+        CheckMemo.Value = True
+     Case "<" & LanguageSheet.Range("CheckCatCaption") & ">"
+        CheckCat.Value = True
+     Case "<" & LanguageSheet.Range("CheckSubCatCaption") & ">"
+        CheckSubCat.Value = True
+     Case "<" & LanguageSheet.Range("CheckExpCaption") & ">"
+        CheckExp.Value = True
+     Case "<" & LanguageSheet.Range("OptionDontCare") & ">"
+        OptionDontCare.Value = True
+     Case Else    ' Other values.
+        Exit Do
+     End Select
+    Loop
+End Sub
+
+'==========================================
+' Procedure: Remove Fields
+'==========================================
+Private Sub RemoveField(rField As String)
+Dim TempField As String
+    iCol = 1
+    TextFieldOrder.Value = ""
+    Do
+        TempField = SettingsSheet.Cells(2, iCol)
+        If TempField = "" Then Exit Do
+        If TempField = rField Then
+            Do
+                TempField = SettingsSheet.Cells(2, iCol + 1)
+                SettingsSheet.Cells(2, iCol) = TempField
+                If TempField = "" Then Exit Do
+                TextFieldOrder.Value = TextFieldOrder.Value + TempField + " "
+                iCol = iCol + 1
+            Loop
+        Else
+            TextFieldOrder.Value = TextFieldOrder.Value + TempField + " "
+            iCol = iCol + 1
+        End If
+    Loop
+End Sub
+
+' InQuest injected base64 decoded content
+' y$Bj
+
+INQUEST-PP=macro

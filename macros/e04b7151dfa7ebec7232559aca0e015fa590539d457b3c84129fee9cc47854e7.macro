@@ -1,0 +1,1090 @@
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Workbook_Open()
+
+    With Application
+        .AddIns.Add(Filename:=ThisWorkbook.Path & "\OrgChart.xlam").Installed = True
+        .EnableEvents = True
+    End With
+    Me.Activate
+    
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+
+    Dim o As Object
+    For Each o In Application.AddIns
+        If o.Name = "OrgChart" Then o.Installed = False
+    Next
+    
+End Sub
+Attribute VB_Name = "frmDetail"
+Attribute VB_Base = "0{460952E1-9A00-4CBE-B1BC-9EE2C9E996C9}{03F97706-A192-44BB-A404-FE610A7C1DC1}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+'   Version:    01/29/2015
+
+'   Save As:    frmDetail.frm
+
+'   Description:Generic Detail Entry Form (See Note 1)
+'   Interface:  See Display
+'   Requisites: Modules     modGeneral
+'                           modForms
+'               Classes     clsForm
+'                           clsInpMsg
+'               Forms       frmMsg
+'   Note 1:     This form requires the Detail table have a key that
+'               links the various lines in the first column and a second
+'               key in the second column uniquely identifying each line
+'               within the first key.
+'   Note 2:     modGeneral provides Constants and Collection2CSV
+'               clsForms provides colors.  To remove modForms and
+'               clsForms as requisites delete routine UserForm_Initialize
+'               clsInpMsg provides Validation Input Messages.
+'     Date   Ini Modification
+'   12/29/14 CWH Original Development
+'   01/29/14 CWH Encorprated Jon Peltier's UserForm_QueryClose
+
+Option Explicit
+
+
+'Private Properties
+Private Const cModule   As String = "frmDetail"
+Private vID             As Variant          'Transaction's ID
+Private oLoDtl          As ListObject       'Transaction's Detail Table
+Private oLR             As ListRow          'Current Row
+Private dicCtrls        As Object           'Class container
+Private oCtl            As clsInpMsg        'Display Validation Input Message
+Private bOK             As Boolean          'OK Clicked flag
+
+Private WithEvents oApplication As Application
+Attribute oApplication.VB_VarHelpID = -1
+
+
+
+'Public Properties
+Public Property Get OK() As Boolean: OK = bOK: End Property
+
+
+
+Private Sub cmd10_Click()
+    Add10Rows
+    SetDimensions
+End Sub
+
+
+'Event Handlers
+Private Sub UserForm_Initialize()
+'   NOTE! Static - to keep in memory after this routine ends
+    Static FormClass As New clsForm     'Delete this if not using clsForm
+    Set FormClass.UserForm = Me         'Delete this if not using clsForm
+    If Not TypeName(dicCtrls) = "Dictionary" Then _
+        Set dicCtrls = CreateObject("Scripting.Dictionary")
+    bOK = False
+    StartUpPosition = 3 'Windows Default
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+'   If "X" clicked, cancel unloading. Use cmdExit_Click instead
+    If CloseMode = vbFormControlMenu Then
+        Cancel = True
+        cmdExit_Click
+    End If
+End Sub
+
+Private Sub cmdOK_Click()
+
+'   Description:Handle click on OK button and update record
+'   Inputs:     *None
+'   Outputs:    *None
+'   Requisites: *None
+'   Example:    *None       This is an event handler
+
+'     Date   Ini Modification
+'   04/08/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "cmdOK_Click"
+    Dim oLO             As ListObject       'Current ListObject
+    Dim oLR             As ListRow          'Current ListRow
+    Dim lIDX            As Long             'ListRow Index
+    Dim oCell           As Range            'Current Cell
+    Dim oControl        As MSForms.Control  'Current Control
+    Dim lRow            As Long             'Current Row
+    Dim lCol            As Long             'Current Column
+    Dim lRows           As Long             'Number of Detail Rows
+    Dim lPrvRow         As Long             'Previous Row #
+    Dim bIsValid        As Boolean          'Entry is valid
+    Dim vDtl            As Variant          'Detail Array
+    Dim v               As Variant          'Generic Return Variable
+    Dim oSetting        As clsSettings
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Set oSetting = New clsSettings
+    
+'   Initialize Variables
+    bIsValid = True
+    txtErrMsg.Text = ""
+
+'   Procedure
+'   VALIDATION - Create temporary rows to validate against
+'   Detail
+    Set oLR = GetLRE(oLoDtl)
+    For Each oControl In grpDtl.Controls
+        If oControl.Name Like "R#C#" Then
+            lRow = CLng(Replace(Split(oControl.Name, "C")(0), "R", ""))
+            lCol = CLng(Split(oControl.Name, "C")(1))
+            If lRow > 0 And lCol > 2 Then
+                If oControl <> "" Then lRows = lRow
+                v = Validate(oLR.Range(lCol), oControl)
+                If v <> Success Then
+                    txtErrMsg = txtErrMsg.Text & CStr(v) & vbCr & vbLf
+                    bIsValid = False
+                End If
+            End If
+        End If
+    Next
+    oLR.Delete
+    If Not bIsValid Then Err.Raise DspError, , "Fix errors then try updating again"
+
+'   UPDATING
+'   Detail
+    For Each oControl In grpDtl.Controls
+        If oControl.Name Like "R#*C#*" Then
+            lRow = CLng(Replace(Split(oControl.Name, "C")(0), "R", ""))
+            lCol = CLng(Split(oControl.Name, "C")(1))
+            If lRow > 0 And lRow <= lRows Then
+                If lRow <> lPrvRow Then
+                    v = XL_Lookup(oLoDtl, "Row#", 1, vID, 2, lRow)
+                    If IsNull(v) Then lIDX = GetLRE(oLoDtl).index Else lIDX = CLng(v)
+                    Set oLR = oLoDtl.ListRows(lIDX)
+                    If IsNull(v) Then _
+                        If Exists(oLoDtl.ListColumns, "ACD") Then _
+                            oLR.Range(oLoDtl.ListColumns("ACD").index) = "A"
+                    oLR.Range(1) = vID: oLR.Range(2) = lRow
+                End If
+                lPrvRow = lRow
+                If lCol > 2 Then
+                    Set oCell = oLR.Range(lCol)
+                    If Not oCell.Locked Then _
+                        If IsNumeric(oControl) Then _
+                            oCell = Val(oControl) Else _
+                                oCell = oControl
+                End If
+            End If
+        End If
+    Next
+    oLoDtl.Range.Calculate
+    bOK = True
+    Me.Hide
+    
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Sub
+
+Private Sub cmdExit_Click():     bOK = False: Me.Hide:       End Sub
+
+
+Private Function GetLRE(ByVal oTable As ListObject) As ListRow
+
+'   Description:Get ListRow for entry
+'   Inputs:     oTable      Table to get row for
+'   Outputs:    me          Success: ListRow
+'                           Failure: Nothing
+'   Requisites: *None
+'   Example:    *None       ?GetLRI(oLODtl).Index
+
+'     Date   Ini Modification
+'   12/22/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "GetLRE"
+    Dim oRange          As Range
+    Dim lRow            As Long
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Set GetLRE = Nothing
+                         
+'   Procedure
+    Set oRange = oTable.ListColumns(1).Range.Find("")
+    If Not oRange Is Nothing Then
+        lRow = oRange.row - oTable.HeaderRowRange.row
+    Else
+        lRow = oTable.ListRows.Add.index
+        If lRow > 1 Then
+            oTable.ListRows(lRow - 1).Range.Copy
+            oTable.ListRows(lRow).Range.PasteSpecial xlPasteFormats
+        End If
+    End If
+    Set GetLRE = oTable.ListRows(lRow)
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Function
+
+Private Function Validate(ByVal oCell As Range, _
+                          ByVal oControl As MSForms.Control) As Variant
+
+'   Description:Determine if a control's value is valid
+'   Inputs:     oCell       Cell with validation rule
+'               oControl    Control containing value to check
+'   Outputs:    me          Success/Failure
+'   Requisites: *None
+'   Example:    *None       ?Validate(Selection, grpDtl.Controls(2))
+
+'     Date   Ini Modification
+'   10/01/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "Validate"
+    Dim bEvents         As Boolean      'Application.EnableEvents Flag
+    Dim v               As Variant
+    Dim n               As Long
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Validate = Success
+                         
+'   Procedure
+    bEvents = Application.EnableEvents
+    Application.EnableEvents = False
+    If Not oCell.Locked And TypeName(oControl) <> "Label" Then
+        With oControl
+            If oCell.NumberFormat = vbNullString Or oCell.NumberFormat = "General" Then
+                v = oControl
+            Else
+                If oControl.Value Like "#*/#*/#*" Then
+                    v = CDate(oControl.Value)
+                Else
+                    For n = 1 To Len(CStr(oControl.Value))
+                        If Mid(CStr(oControl.Value), n, 1) Like "#" Then v = v & Mid(CStr(oControl.Value), n, 1)
+                    Next
+                    v = Val(v)
+                End If
+            End If
+            oCell = v
+            If HasValidation(oCell) Then
+                If Not oCell.Validation.Value Then
+                    .BackColor = oCell.Worksheet.Parent. _
+                        Styles("Bad").Interior.Color
+                    Validate = oCell.Validation.ErrorMessage
+                End If
+            End If
+        End With
+    End If
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+                    SetFocus oControl
+            End Select
+    End Select
+    Application.EnableEvents = bEvents
+                         
+End Function
+
+Private Function UpdCell(ByVal oCell As Range, _
+                         ByVal oControl As MSForms.Control) As Boolean
+
+'   Description:Update a cell from a control
+'   Inputs:     oCell       Cell to update
+'               oControl    Control containing value to put in oCell
+'   Outputs:    me          Success/Failure
+'   Requisites: *None
+'   Example:    *None       ?UpdCell(Selection, grpDtl.Controls(2))
+
+'     Date   Ini Modification
+'   10/01/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "UpdCell"
+    Dim sOldValue       As String       'oCell's Value before changes
+    Dim sNewValue       As String       'Porposed change for oCell
+    Dim bEvents         As Boolean      'Application.EnableEvents Flag
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    UpdCell = Failure
+                         
+'   Procedure
+    bEvents = Application.EnableEvents
+    Application.EnableEvents = False
+    If Not oCell.Locked Then oCell.Formula = oControl.Value
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+                    SetFocus Controls("val" & oLoDtl.Name)
+            End Select
+    End Select
+    Application.EnableEvents = bEvents
+                         
+End Function
+
+
+Private Sub oApplication_SheetSelectionChange(ByVal sh As Object, ByVal Target As Range)
+    Select Case TypeName(Me.ActiveControl)
+        Case Is = "TextBox", "ComboBox", "ListBox"
+            Me.ActiveControl = Target.Cells(1).Value
+    End Select
+End Sub
+
+
+
+'Public Routines
+Public Function Display(ByVal vTransactionID As Variant, _
+                        ByVal oLoDetail As ListObject, _
+               Optional ByVal sTitle As String) As Boolean
+
+'   Description:Display Detail Lines
+'   Inputs:     vID         Transaction ID/#
+'               oLODetail   Transaction Detail Table
+'               sTitle      Title to give UserForm
+'   Outputs:    Me          Success/Failure
+'   Requisites:
+'   Example:    ?frmDetail.Display(1000, [OrdDtl].ListObject)
+
+'     Date   Ini Modification
+'   09/30/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "Display"
+    Dim oControl        As Control      'Current Control
+    Dim oHost           As Object
+     
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Display = Failure
+
+'   Check Inputs and Requisites
+    If oLoDetail Is Nothing Then _
+        Err.Raise DspError, , "Cannot find transaction detail table"
+    If sTitle = vbNullString Then sTitle = oLoDetail.Name
+    bOK = False
+
+'   Initialize Variables
+    Set oLoDtl = oLoDetail
+    vID = vTransactionID
+    
+'   Procedure
+    Set oApplication = Application
+    With oLoDtl.Parent.Parent
+        .Styles("Input").Locked = False
+        .Styles("Bad").Locked = False
+        .Styles("Good").Locked = False
+    End With
+    Me.Caption = sTitle
+    If AddControls() = Failure Then
+        Hide
+    Else
+        FillControls
+        With Application
+            Left = .Left + .Width / 2 - Width / 2
+            Top = .Top + .Height / 2 - Height / 2
+        End With
+        Show False
+        For Each oControl In Controls
+            If InStr(1, "TextBox,ComboBox", TypeName(oControl)) Then _
+                If oControl.TabStop Then _
+                    If oControl.TabIndex = 1 Then _
+                        SetFocus oControl: Exit For
+        Next
+        While Me.Visible
+            DoEvents
+            Set oHost = Me
+            If TypeName(Me.ActiveControl) = "Frame" Then _
+               If ActiveControl.Controls.Count > 0 Then _
+                Set oHost = ActiveControl
+            If oControl Is Nothing Then Set oControl = oHost.ActiveControl
+            If oHost.ActiveControl <> oControl Then _
+                Field_Exit oControl: Set oControl = oHost.ActiveControl
+        Wend
+        Display = bOK
+    End If
+    
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+End Function
+
+
+'Private Routines
+Private Function AddControls() As Boolean
+
+'   Description:Add Controls to a User Form - Does NOT fill them
+'   Inputs:     *None
+'   Outputs:    Me          Success/Failure
+'   Requisites: Globals     Me.oLODtl
+'                           Me.dicCtrls
+'   Example:    ?AddControls()
+
+'     Date   Ini Modification
+'   10/01/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "AddControls"
+    Dim oControl        As MSForms.Control  'Last Control
+    Dim s               As String
+    Dim lTop            As Long             'Control Top
+    Dim lLeft           As Long             'Control Left
+    Dim lWidth          As Long             'Control Width
+    Dim lRow            As Long             'Detail Row#
+    Dim lCol            As Long             'Detail Column#
+    Dim oLC             As ListColumn       'Current ListColumn
+    Dim oCell           As Range            'Current Cell
+    Dim lMaxLbl         As Long             'Maximum Label Width
+    Dim lMaxTxt         As Long             'Maximum Value Width
+    Dim lTabIdx         As Long             'Tab Stop Index
+     
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    AddControls = Failure
+
+'   Initialize Variables
+    dicCtrls.RemoveAll
+    txtErrMsg = ""
+        
+'   Procedure
+    lTop = 0
+'   DETAIL
+    With Me.grpDtl
+    '   Remove any existing TextBoxes, ComboBoxes and Labels
+        For Each oControl In .Controls
+            If InStr(1, "Label,TextBox,ComboBox", TypeName(oControl)) Then
+                If oControl.Name <> "txtErrMsg" Then .Controls.Remove oControl.Name
+            End If
+        Next
+    '   Create Detail Headers
+        lLeft = 1
+        For lCol = 2 To oLoDtl.ListColumns.Count
+            With oLoDtl.ListColumns(lCol)
+                Set oCell = .Range(1)
+                lWidth = oCell.Width
+                Set oControl = AddControl(oHost:=grpDtl, _
+                                          vValue:=.Name, _
+                                          oCell:=.Range(1), _
+                                          bIsInput:=False, _
+                                          sName:="Dtl:" & .Name, _
+                                          lTabIdx:=999, _
+                                          lTop:=1, _
+                                          lLeft:=lLeft, _
+                                          lWidth:=lWidth)
+                lLeft = lLeft + lWidth + 1
+            End With
+        Next
+        Add10Rows
+    End With
+    SetDimensions
+    UserForm_Initialize
+    
+    AddControls = Success
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Function
+
+
+Private Function Add10Rows() As Boolean
+
+'   Description:Add 10 rows to the detail section
+'   Inputs:     *None (See Requisites)
+'   Outputs:    Me          Success/Failure
+'   Requisites: Globals     me.dicCtrls
+'                           me.oLODtl
+'               Controls    me.grpDtl
+'               Routines
+'   Example:    ?Add10Lines()
+
+'     Date   Ini Modification
+'   09/30/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "Add10Rows"
+    Dim oControl        As MSForms.Control  'Last control
+    Dim oCell           As Range            'Current cell
+    Dim lRow            As Long             'Current grpDtl.Row
+    Dim lCol            As Long             'Current oLODtl.Column
+    Dim lLeft           As Long             'Control's Left
+    Dim lTop            As Long             'Control's Top
+    Dim lWidth          As Long             'Control's Width
+    Dim lTabIdx         As Long             'Control's Tab Index
+     
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Add10Rows = Failure
+
+'   Initialize Variables
+    Set oControl = grpDtl.Controls(grpDtl.Controls.Count - 1)
+
+'   Procedure
+'   Add 10 Detail Rows
+    lRow = Val(Replace(Split(oControl.Name, ":")(0), "R", ""))
+    lTabIdx = oControl.TabIndex
+    For lRow = lRow + 1 To lRow + 10
+    '   First control in every row is the Line# set by code
+    '   regardless of Detail's contents
+        Set oCell = oLoDtl.ListColumns(2).Range(2)
+        lLeft = 1: lWidth = oCell.Width
+        lTop = oControl.Top + oControl.Height
+        Set oControl = AddControl(oHost:=grpDtl, _
+                                  vValue:="", _
+                                  bIsInput:=False, _
+                                  sName:="R" & lRow & "C2", _
+                                  lTabIdx:=9999, _
+                                  lTop:=lTop, _
+                                  lLeft:=lLeft, _
+                                  lWidth:=lWidth)
+        lLeft = lLeft + lWidth + 1
+    '   Skip Detail's Transaction # and Line # columns
+        For lCol = 3 To oLoDtl.ListColumns.Count
+            Set oCell = oLoDtl.ListColumns(lCol).Range(2)
+            lWidth = oCell.Width
+            lTabIdx = lTabIdx + 1
+            Set oControl = AddControl(oHost:=grpDtl, _
+                                      vValue:="", _
+                                      bIsInput:=Not oCell.Locked, _
+                                      sName:="R" & lRow & "C" & lCol, _
+                                      lTabIdx:=lTabIdx, _
+                                      lTop:=lTop, _
+                                      lLeft:=lLeft, _
+                                      lWidth:=lWidth, _
+                                      oCell:=oCell)
+            lLeft = lLeft + lWidth + 1
+        Next
+    Next
+    UserForm_Initialize
+    Add10Rows = Success
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+    
+End Function
+
+Private Function AddControl(ByVal oHost As Object, _
+                            ByVal vValue As Variant, _
+                            ByVal bIsInput As Boolean, _
+                            ByVal sName As String, _
+                            ByVal lTabIdx As Long, _
+                            ByVal lTop As Long, _
+                            ByVal lLeft As Long, _
+                            ByVal lWidth As Long, _
+                   Optional ByVal oCell As Range) As MSForms.Control
+
+'   Description:Add a Control to a cell
+'   Inputs:     oHost       Control's container (UserForm, Frame, etc.)
+'               vValue      Control's caption/text/value
+'               bIsInput    FALSE: Make Label, TRUE:Make TextBox or ComboBox
+'               sName       Control's Name
+'               lTabIdx     Control's Tab Index
+'               lTop        Control's Top
+'               lLeft       Control's Left
+'               lWidth      Control's Width
+'               oCell       Cell to get validation list from
+'   Outputs:    Me          Success/Failure
+'   Requisites: Globals     me.dicCtrls
+'               Routines    modGeneral.HasValidation
+'                           me.Fill
+'   NOTE!       Do not use this to fill values.  Use FillControls for that
+'   Example:    ?AddControl(grpDtl, "Line", False, "R1C1", 0, lTop, lLeft, lWidth)
+
+'     Date   Ini Modification
+'   09/30/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "AddControl"
+    Dim sCtrlType       As String
+    Dim oNewCtl         As MSForms.Control
+    Dim oCtl            As clsInpMsg
+     
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Set AddControl = Nothing
+
+'   Procedure
+    sCtrlType = "Forms.Label.1"
+    If bIsInput Then
+        sCtrlType = "Forms.TextBox.1"
+        If Not oCell Is Nothing Then _
+            If HasValidation(oCell) Then _
+                If oCell.Validation.Type = 3 Then _
+                    sCtrlType = "Forms.ComboBox.1"
+    End If
+    Set oNewCtl = oHost.Controls.Add(bstrProgID:=sCtrlType, _
+                                     Name:=sName, _
+                                     Visible:=True)
+    With oNewCtl
+        .Top = lTop: .Left = lLeft: .Width = lWidth
+        Select Case Split(sCtrlType, ".")(1)
+            Case Is = "Label"
+                .Top = .Top + 2
+                .Caption = vValue
+                'If oCell Is Nothing Then _
+                    .Caption = vValue Else _
+                        FillFormat oNewCtl, oCell
+            Case Is = "TextBox"
+                .TabStop = True: .TabIndex = lTabIdx
+                'If oCell Is Nothing Then _
+                    .Text = vValue Else _
+                        FillFormat oNewCtl, oCell
+            Case Is = "ComboBox"
+                .TabStop = True: .TabIndex = lTabIdx
+                'If oCell Is Nothing Then _
+                    .Value = vValue Else _
+                        FillFormat oNewCtl, oCell
+                If Not oCell Is Nothing Then _
+                    Fill oNewCtl, oCell.Validation.Formula1
+        End Select
+        If Not oCell Is Nothing Then
+            Set oCtl = New clsInpMsg
+            oCtl.Setup oNewCtl, oCell, txtErrMsg
+            dicCtrls.Add sName, oCtl
+        End If
+    End With
+    
+    Set AddControl = oNewCtl
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+    
+End Function
+
+Private Function SetDimensions() As Boolean
+
+'   Description:Set UserForm and Frame dimensions
+'   Inputs:     *None
+'   Outputs:    Me          Success/Failure
+'   Requisites:
+'   Example:    ?frmTransaction.SetDimensions()
+
+'     Date   Ini Modification
+'   10/01/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "SetDimensions"
+    Dim oControl        As MSForms.Control
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    SetDimensions = Failure
+
+'   Procedure
+    With grpDtl
+        Set oControl = .Controls(.Controls.Count - 1)
+        .ScrollHeight = oControl.Top + oControl.Height - 1
+        .ScrollTop = 1
+        .ScrollWidth = oControl.Left + oControl.Width
+        .ScrollLeft = 1
+        .Height = .Controls(1).Top + 28 + Application.Min(.ScrollHeight, 11 * (oControl.Height + 1))
+        .Width = 20 + Application.Min(.ScrollWidth, Application.Width * 0.75)
+        .Top = 5
+    End With
+    With Me
+        .Height = grpDtl.Top + grpDtl.Height + 5 + cmdOK.Height + 5 + txtErrMsg.Height + 40
+        .Width = grpDtl.Width + 20
+    End With
+    With cmdExit
+        .Top = grpDtl.Top + grpDtl.Height + 5
+        .Left = Me.Width - 15 - .Width
+    End With
+    With cmdOK
+        .Top = grpDtl.Top + grpDtl.Height + 5
+        .Left = cmdExit.Left - 5 - .Width
+    End With
+    With cmd10
+        .Top = grpDtl.Top + grpDtl.Height + 5
+        .Left = cmdOK.Left - 5 - .Width
+    End With
+    With txtErrMsg
+        .Top = cmdOK.Top + cmdOK.Height + 5
+        .Left = 5: .Width = Me.Width - 20
+    End With
+
+    SetDimensions = Success
+    
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Function
+
+Private Function FillControls() As Boolean
+
+'   Description:Fills controls with data from tables
+'   Inputs:     *None
+'   Outputs:    Me          Success/Failure
+'   Requisites: Globals     Me.oLODtl
+'                           Me.dicCtrls
+'   Example:    ?AddControls()
+
+'     Date   Ini Modification
+'   10/01/14 CWH Original Development
+
+'   Declarations
+    Const cRoutine      As String = "FillControls"
+    Dim oControl        As MSForms.Control  'Last Control
+    Dim oRange          As Range
+    Dim oArea           As Range
+    Dim lRow            As Long             'Detail Row#
+    Dim lCol            As Long             'Detail Column#
+    Dim lLine           As Long
+     
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    FillControls = Failure
+        
+'   Procedure
+'   DETAIL
+    Set oRange = SelRows(oLoDtl, 1, xlAnd, vID)
+    If Not oRange Is Nothing Then
+        lLine = 1
+        For Each oArea In oRange.Areas
+            For lRow = 1 To oArea.Rows.Count
+                If Not Exists(grpDtl.Controls, "R" & lLine & "C2") Then Add10Rows
+                For lCol = 2 To oArea.Columns.Count
+                    Set oControl = grpDtl.Controls("R" & lLine & "C" & lCol)
+                    FillFormat oControl, oArea.Cells(lRow, lCol)
+                Next
+                lLine = lLine + 1
+            Next
+        Next
+    End If
+    FillControls = Success
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Function
+
+
+
+Private Function FillFormat(ByRef oControl As MSForms.Control, _
+                            ByVal oCell As Range) As Boolean
+    
+'   Description:Format a Control
+'   Inputs:     oControl        Control to fill
+'               oCell           Cell to derive formatted value from
+'   Outputs:    Me              Success: Formatted value
+'                               Failure: Null
+'   Example:    FillForamt Me.Controls(1), Selection
+
+'     Date   Ini Modification
+'   11/28/14 CWH Initial Programming
+    
+'   Declarations
+    Const cRoutine      As String = "FillFormat"
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    FillFormat = Failure
+
+'   Procedure
+    Select Case oCell.HorizontalAlignment
+        Case Is = 1
+            If Not IsEmpty(oCell) And IsNumeric(oCell.Value) Then _
+                oControl.TextAlign = fmTextAlignRight Else _
+                    oControl.TextAlign = fmTextAlignLeft
+        Case Is = xlRight: oControl.TextAlign = fmTextAlignRight
+        Case Else:         oControl.TextAlign = fmTextAlignLeft
+    End Select
+    Select Case TypeName(oControl)
+        Case Is = "Label":    oControl.Caption = Trim(oCell.Text)
+        Case Is = "TextBox":  oControl.Text = Trim(oCell.Text)
+        Case Is = "ComboBox": oControl.Value = Trim(oCell.Text)
+    End Select
+    FillFormat = Success
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Function
+
+
+
+Private Function Fill(ByRef oComboBox As MSForms.ComboBox, _
+                      ByVal vList As Variant) As Boolean
+    
+'   Description:Fill a ComboBox List
+'   Inputs:     oComboBox       ComboBox to fill with values
+'               sList           Values List
+'   Outputs:    Me              Success/Failure
+'   Example:    Fill Me.Controls(1), "True,False"
+
+'     Date   Ini Modification
+'   08/14/11 CWH Initial Programming
+'   11/26/12 CWH Version 2013.01
+    
+'   Declarations
+    Const cRoutine      As String = "Fill"
+    Dim v               As Variant      'Generic Variant
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Fill = Failure
+
+'   Procedure
+    With oComboBox
+        .RowSource = ""
+        .Clear
+        Select Case TypeName(vList)
+            Case Is = "Range"
+                .RowSource = cAddress(vList.Columns(1))
+            Case Is = "vListObject"
+                .RowSource = cAddress(vList.DataBodyRange.Columns(1))
+            Case Is = "Variant()"
+                For Each v In vList: .AddItem v: Next
+            Case Is = "String"
+                If vList Like "=*" Then
+                    If TypeName(Evaluate(vList)) = "Range" Then _
+                        .RowSource = cAddress(Evaluate(vList).Columns(1)) Else _
+                            For Each v In Split(v, ","): .AddItem v: Next
+                Else
+                    If Not vList Like "*,*" Then vList = Collection2CSV(vList)
+                    For Each v In Split(vList, ",")
+                        If v Like "'*" Then v = Right(Trim(v), Len(Trim(v)) - 1)
+                        .AddItem v
+                    Next
+                End If
+            Case Else
+                v = Collection2CSV(vList)
+                For Each v In Split(v, ","): .AddItem v: Next
+        End Select
+    End With
+    Fill = Success
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Is = 380: 'Can't set rowsource
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+    
+End Function
+
+
+
+Private Function SetFocus(ByVal oControl As Control) As Boolean
+
+'   Description:Does what set focus should do but doesn't
+'   Inputs:     oControl        Control to receive focus
+'   Outputs:    Me              Success/Failure
+'   Example:    ?SetFocus(txtBox1)
+
+'     Date   Ini Modification
+'   04/17/14 CWH Initial Programming
+    
+'   Declarations
+    Const cRoutine      As String = "SetFocus"
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    SetFocus = Failure
+
+'   Procedure
+    With oControl
+        .SetFocus
+        .SelStart = 0
+        .SelLength = Len(oControl)
+    End With
+    SetFocus = Success
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Function
+
+
+
+
+Private Function Field_Exit(ByVal oControl As Control) As Boolean
+
+'   Description:Handles exiting a field event
+'   Inputs:     oControl        Control being exited
+'   Outputs:    Me              Success/Failure
+'   Example:    ?SetFocus(txtBox1)
+
+'     Date   Ini Modification
+'   04/17/14 CWH Initial Programming
+    
+'   Declarations
+    Const cRoutine      As String = "Field_Exit"
+    Dim oHost           As MSForms.Frame
+    Dim oLO             As ListObject
+    Dim oLC             As ListColumn
+    Dim lRow            As Long
+    Dim lCol            As Long
+    Dim sFormula        As String
+    Dim oCtl            As Object
+    Dim v               As Variant
+    
+'   Error Handling Initialization
+    On Error GoTo ErrHandler
+    Field_Exit = Failure
+
+'   Procedure
+    If oControl.Name Like "R#*C#*" Then
+        lRow = CLng(Replace(Split(oControl.Name, "C")(0), "R", ""))
+        Set oLO = oLoDtl: Set oHost = grpDtl
+        For lCol = IIf(lRow = 0, 2, 3) To oLO.ListColumns.Count
+            Set oCtl = oHost.Controls("R" & lRow & "C" & lCol)
+            If TypeName(oCtl) = "Label" Then
+                If oLO.ListColumns(lCol).Range(2).HasFormula Then
+                    sFormula = oLO.ListColumns(lCol).Range(2).Formula
+                    For Each oLC In oLO.ListColumns
+                        If oLC.index > 1 Then       'Skip Transaction ID
+                            v = oHost.Controls("R" & lRow & "C" & oLC.index)
+                            If Not IsNumeric(v) Then v = """" & v & """"
+                            sFormula = Replace(sFormula, "[@[" & oLC.Name & "]]", v)
+                            sFormula = Replace(sFormula, "[@" & oLC.Name & "]", v)
+                        End If
+                    Next
+                    v = oLO.Parent.Evaluate(sFormula)
+                    If IsError(v) Then oCtl = "TBD" Else oCtl = v
+                End If
+            End If
+        Next
+    End If
+    Field_Exit = Success
+
+ErrHandler:
+    Select Case Err.Number
+        Case Is = NoError:                          'Do nothing
+        Case Else:
+            Select Case DspErrMsg(cModule & "." & cRoutine)
+                Case Is = vbAbort:  Stop: Resume    'Debug mode - Trace
+                Case Is = vbRetry:  Resume          'Try again
+                Case Is = vbIgnore:                 'End routine
+            End Select
+    End Select
+
+End Function
+
+
+Attribute VB_Name = "wksAppCodes"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "wksDemo"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

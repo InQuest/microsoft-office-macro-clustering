@@ -1,0 +1,726 @@
+Attribute VB_Name = "Module1"
+Attribute VB_Name = "Module2"
+Dim rowLimit As String
+'Change the number of rows to match rowLimit value
+Dim validationResults(1000, 200) As String
+Dim cTypes(1 To 200) As String
+Dim otmUrl As String
+'Dim userDict As Scripting.Dictionary
+Dim queryUrl As String
+Dim sHostName As String
+Dim enteredUsr As String
+Dim enteredPwd As String
+Dim classNotes As String
+Dim usrPwd As String
+Dim inturl As String
+Dim wmurl As String
+Dim topIndex As Integer
+Dim itemQuery As String
+Dim authCheckQuery As String
+Dim seqQuery As String
+Dim seqQueryResult As String
+Dim RemSeq As String
+Dim RemarkSequence As Integer
+Dim gtmXml As String
+Dim xmlToSend As String
+Dim ComString As String
+Dim Comments As String
+Dim sqlToDeleteRemark As String
+Dim remPresenceResults As Variant
+Dim exRemSeq As Variant
+Dim DelResults As String
+
+Sub Run_Click()
+
+Worksheets("Control").Cells(3, "D").Value = "Processing ...."
+readControlData
+authCheck
+clearForRun
+buildCtypesAndTopIndex
+
+Dim irow As Integer
+irow = 2
+Dim part As String
+Dim desc As String
+Dim htsus As String
+Dim eccnus As String
+Dim schedb As String
+Dim returnText As String
+Dim itemFlag As String
+
+Dim codeQuery As String
+Dim CodeQueryResult As String
+
+'Generate Transmission Header and common elements
+
+xmlToSend = "<Transmission xmlns=""http://xmlns.oracle.com/apps/otm"">"
+xmlToSend = xmlToSend & "<TransmissionHeader>"
+xmlToSend = xmlToSend & "<UserName>" & enteredUsr & "</UserName>"
+xmlToSend = xmlToSend & "<Password>" & enteredPwd & "</Password>"
+xmlToSend = xmlToSend & "<SenderTransmissionNo>" & part & "</SenderTransmissionNo>"
+xmlToSend = xmlToSend & "<AckSpec><ComMethodGid><Gid><Xid>EMAIL</Xid></Gid></ComMethodGid><AckOption>ERROR</AckOption></AckSpec>"
+xmlToSend = xmlToSend & "</TransmissionHeader>"
+xmlToSend = xmlToSend & "<TransmissionBody>"
+
+'Begin looping through the item rows
+
+Do While ((Not IsEmpty(Worksheets("Item PERMITTED Info").Cells(irow, "B"))) And (irow <= rowLimit))
+part = Worksheets("Item PERMITTED Info").Cells(irow, "B")
+
+'calculate maximum value of item remark sequence
+
+    seqQuery = "SELECT MAX(REMARK_SEQUENCE) R FROM ITEM_REMARK"
+    Worksheets("Control").Cells(32, "B").Value = seqQuery
+    seqQueryResult = CSVQuery(seqQuery)
+    RemSeq = processRemXML(seqQueryResult)
+    RemarkSequence = CInt(RemSeq) + irow - 1
+    
+'Find presence of Existing PERMITTED Info for the current Item and Country Code Combination from Item Remarks
+
+    sqlToDeleteRemark = "SELECT ITEM_GID FROM ITEM_REMARK WHERE ITEM_GID=" & Chr(39) & Worksheets("Item PERMITTED Info").Cells(irow, "A").Value & "." & part & Chr(39) & " AND REMARK_QUAL_GID=" & Chr(39) & "LOL." & Worksheets("Item PERMITTED Info").Cells(irow, "D").Value & Chr(39) & " AND REMARK_TEXT LIKE " & Chr(39) & Chr(37) & Worksheets("Item PERMITTED Info").Cells(irow, "C").Value & Chr(37) & Chr(39)
+    DelResults = CSVQuery(sqlToDeleteRemark)
+    Worksheets("Control").Cells(32, "B").Value = sqlToDeleteRemark
+    remPresenceResults = processExRemXML(DelResults)
+    
+'Capture Notes From Excel
+    
+    ComString = Worksheets("Item PERMITTED Info").Cells(irow, "E").Value
+    Comments = CleanupStr(ComString)
+
+'Build Xml
+
+    xmlToSend = xmlToSend & GenerateItemXml(part, irow, 3, topIndex)
+
+Worksheets("Logs").Cells(irow, "A").Value = part
+Worksheets("Logs").Cells(irow, "B").Value = Format(Now(), "yyyy-MM-dd hh:mm:ss")
+
+irow = irow + 1
+
+Loop
+xmlToSend = xmlToSend & "</TransmissionBody>"
+xmlToSend = xmlToSend & "</Transmission>"
+
+Worksheets("Control").Cells(40, "D").Value = xmlToSend
+returnText = SendXml(xmlToSend)
+validateTransmissions
+GetReferenceNumber returnText, irow
+
+Worksheets("Control").Cells(3, "D").Value = "DONE.Please review sheets 'Data','Logs' for details"
+'Worksheets("Control").Cells(11, "B").Interior.Color = RGB(255, 255, 255)
+
+'Worksheets("Control").Cells(3, "B").Clear
+
+End Sub
+Function SendXml(gtmXml As String) As String
+Dim oXmlHttp As MSXML2.XMLHTTP60
+
+' 2. Send xml
+'Dim oXmlHttp As MSXML2.XMLHTTP60
+Set oXmlHttps = New MSXML2.XMLHTTP60
+oXmlHttps.Open "POST", wmurl, False, enteredUsr, enteredPwd
+oXmlHttps.setRequestHeader "Content-Type", "application/xml"
+oXmlHttps.setRequestHeader "Content-Action", "xmldata"
+oXmlHttps.setRequestHeader "Connection", "Keep-Alive"
+oXmlHttps.setRequestHeader "Accept-Language", "en"
+oXmlHttps.setRequestHeader "Authorization", "Basic MY_AUTH_STRING"
+On Error Resume Next
+oXmlHttps.send gtmXml
+SendXml = oXmlHttps.responseText
+
+End Function
+Function CSVQuery(sqlQuery As String) As String
+Dim contents As String
+contents = "rootName=SQL_RESULTS&sqlQuery=" & sqlQuery
+Worksheets("Control").Cells(31, "C").Value = sqlQuery
+Dim oXmlHttps As MSXML2.XMLHTTP60
+'Set oXmlHttps = New MSXML2.XMLHTTP60
+Set oXmlHttps = CreateObject("MSXML2.ServerXMLHTTP")
+oXmlHttps.Open "POST", inturl, False, enteredUsr, enteredPwd
+oXmlHttps.setRequestHeader "Content-Type", "application/x-www-form-urlencoded"
+oXmlHttps.setRequestHeader "Content-Action", "xmldata"
+oXmlHttps.setRequestHeader "Connection", "Keep-Alive"
+oXmlHttps.setRequestHeader "Accept-Language", "en"
+oXmlHttps.setRequestHeader "Authorization", "Basic MY_AUTH_STRING"
+'oXmlHttps.setRequestHeader "Authorization", "Basic " + Base64Encode(enteredUsr + ":" + enteredPwd)
+oXmlHttps.send contents
+CSVQuery = oXmlHttps.responseText
+Worksheets("Control").Cells(31, "C").Value = oXmlHttps.responseText
+End Function
+Function GetReferenceNumber(returnText As String, irow As Integer) As String
+
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Dim RefTransNum As String
+
+Set oXmlReturn = New MSXML2.DOMDocument60
+oXmlReturn.LoadXML (returnText)
+
+Debug.Print returnText
+
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:otm=""http://xmlns.oracle.com/apps/otm"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+    If Not IsNull(xmlRoot.SelectSingleNode("//otm:ReferenceTransmissionNo")) And Not IsEmpty(xmlRoot.SelectSingleNode("//otm:ReferenceTransmissionNo").nodeTypedValue) Then
+
+        RefTransNum = xmlRoot.SelectSingleNode("//otm:ReferenceTransmissionNo").nodeTypedValue
+        Worksheets("Logs").Cells(irow, "C").Value = "Success ! - Sent to GTM"
+        Worksheets("Logs").Cells(irow, "D").Value = RefTransNum
+        Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(0, 255, 0)  'Green color for success
+    Else
+        Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(255, 0, 0)  'Red color for failure
+    End If
+Else
+    Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(255, 0, 0)  'Red color for failure
+End If
+    GetReferenceNumber = RefTransNum
+End Function
+
+Function processQueryXml(csvQStr As String) As String
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Dim itemID As String
+Set oXmlReturn = New MSXML2.DOMDocument60
+oXmlReturn.LoadXML (csvQStr)
+
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:otm=""http://xmlns.oracle.com/apps/otm"" xmlns:dbxml=""http://xmlns.oracle.com/apps/otm/DBXML"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+    If Not IsNull(xmlRoot.SelectSingleNode("dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_XID")) And Not IsEmpty(xmlRoot.SelectSingleNode("dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_XID").nodeTypedValue) Then
+        itemID = xmlRoot.SelectSingleNode("dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_XID").nodeTypedValue
+    End If
+End If
+
+Dim strArray() As String
+Dim intCount As Integer
+   
+strArray = Split(itemID, Chr(10))
+   
+'Debug.Print UBound(strArray)
+    
+If UBound(strArray) >= 4 Then
+    processQueryXml = "ITEM EXISTS"
+ElseIf UBound(strArray) = 3 Then
+    processQueryXml = "ITEM DOESN'T EXISTS"
+End If
+
+End Function
+Function processRemXML(seqQueryResult As String) As String
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+'Dim RemSeq As String
+Set oXmlReturn = New MSXML2.DOMDocument60
+oXmlReturn.LoadXML (seqQueryResult)
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:otm=""http://xmlns.oracle.com/apps/otm"" xmlns:dbxml=""http://xmlns.oracle.com/apps/otm/DBXML"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+     If Not IsNull(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@R")) And Not IsEmpty(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@R").nodeTypedValue) Then
+        RemSeq = xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@R").nodeTypedValue
+    End If
+End If
+processRemXML = RemSeq
+End Function
+Function processExRemXML(seqQueryResult As String) As Variant
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Set oXmlReturn = New MSXML2.DOMDocument60
+oXmlReturn.LoadXML (seqQueryResult)
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:otm=""http://xmlns.oracle.com/apps/otm"" xmlns:dbxml=""http://xmlns.oracle.com/apps/otm/DBXML"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+    If xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET").nodeTypedValue = "NO DATA" Then
+        exRemSeq = Null
+    ElseIf Not IsNull(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_GID")) And Not IsEmpty(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_GID").nodeTypedValue) Then
+        exRemSeq = xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_GID").nodeTypedValue
+    End If
+End If
+processExRemXML = exRemSeq
+End Function
+Function processCurrRemSeqXML(seqQueryResult As String) As String
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Dim currRSeq As String
+Set oXmlReturn = New MSXML2.DOMDocument60
+oXmlReturn.LoadXML (seqQueryResult)
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:otm=""http://xmlns.oracle.com/apps/otm"" xmlns:dbxml=""http://xmlns.oracle.com/apps/otm/DBXML"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+    If xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET").nodeTypedValue = "NO DATA" Then
+        currRSeq = "NO DATA"
+    ElseIf Not IsNull(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@REMARK_SEQUENCE")) And Not IsEmpty(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@REMARK_SEQUENCE").nodeTypedValue) Then
+        currRSeq = xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@REMARK_SEQUENCE").nodeTypedValue
+    End If
+End If
+processCurrRemSeqXML = currRSeq
+End Function
+Function validateTransmissions() As String
+Dim irow1 As Integer
+Dim trnNo As String
+Dim transQuery As String
+Dim transQueryResult  As String
+Dim transStatus  As String
+
+irow1 = 2
+Do While Not IsEmpty(Worksheets("Logs").Cells(irow1, "A"))
+    If (Not IsEmpty(Worksheets("Logs").Cells(irow1, "D"))) Then
+        trnNo = Worksheets("Logs").Cells(irow1, "D")
+        transQuery = "select status from i_transmission where i_transmission_no = "
+        transQuery = transQuery & trnNo
+        transQueryResult = CSVQuery(transQuery)
+        'Debug.Print processTransReturnXml(transQueryResult)
+        transStatus = processTransReturnXml(transQueryResult)
+        Worksheets("Logs").Cells(irow1, "E") = transStatus
+        If transStatus = """PROCESSED""" Then
+            Worksheets("Logs").Cells(irow1, "E").Interior.Color = RGB(0, 255, 0)
+        ElseIf transStatus = """ERROR""" Then
+            Worksheets("Logs").Cells(irow1, "E").Interior.Color = RGB(255, 0, 0)
+        End If
+    End If
+    irow1 = irow1 + 1
+Loop
+End Function
+Function processTransReturnXml(csvQStr As String) As String
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Dim itemID As String
+Set oXmlReturn = New MSXML2.DOMDocument60
+'Debug.Print "csvQStr: " + csvQStr
+oXmlReturn.LoadXML (csvQStr)
+
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:otm=""http://xmlns.oracle.com/apps/otm"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+    If Not IsNull(xmlRoot.SelectSingleNode("//Write")) And Not IsEmpty(xmlRoot.SelectSingleNode("//Write").nodeTypedValue) Then
+        itemID = xmlRoot.SelectSingleNode("//Write").nodeTypedValue
+        'Debug.Print itemID
+    End If
+End If
+
+Dim strArray() As String
+Dim intCount As Integer
+   
+strArray = Split(itemID, Chr(10))
+   
+'Debug.Print UBound(strArray)
+processTransReturnXml = strArray(UBound(strArray))
+
+End Function
+Function genXmlForRow(irow As Integer, startIndex As Integer, topIndex As Integer) As String
+Dim rowResults As String
+Dim codeValid As String
+Dim funcVal As String
+Dim jcol As Integer
+
+funcVal = "NO"
+
+    For jcol = startIndex To topIndex Step 1
+        codeValid = validationResults(irow, jcol)
+        If (codeValid = "ITEM EXISTS") Then
+            funcVal = "YES"
+        End If
+    Next
+
+genXmlForRow = funcVal
+
+End Function
+
+Function GenerateItemXml(part As String, irow As Integer, startIndex As Integer, topIndex As Integer) As String
+Dim col As Integer
+Dim cXml As String
+Dim currRow As Integer
+Dim gtmXml As String
+currRow = 2
+
+gtmXml = gtmXml & "<GLogXMLElement>"
+gtmXml = gtmXml & "<otm:ItemMaster xmlns:otm = ""http://xmlns.oracle.com/apps/otm/transmission/v6.4"">"
+gtmXml = gtmXml & "<otm:Item>"
+gtmXml = gtmXml & "<otm:TransactionCode>IU</otm:TransactionCode>"
+gtmXml = gtmXml & "<otm:ItemGid>"
+gtmXml = gtmXml & "<otm:Gid>"
+gtmXml = gtmXml & "<otm:DomainName>" & Worksheets("Item PERMITTED Info").Cells(irow, "A").Value & "</otm:DomainName>"
+gtmXml = gtmXml & "<otm:Xid>" & part & "</otm:Xid>"
+gtmXml = gtmXml & "</otm:Gid>"
+gtmXml = gtmXml & "</otm:ItemGid>"
+
+'Do While (Not IsEmpty(Worksheets("Item PERMITTED Info").Cells(currRow, "A")))
+'For col = startIndex To topIndex Step 1
+        cXml = addCodeXml(irow, col)
+        gtmXml = gtmXml & cXml
+        Worksheets("Control").Cells(41, "F").Value = cXml
+        currRow = currRow + 1
+'Next
+'Loop
+gtmXml = gtmXml & "</otm:Item>"
+gtmXml = gtmXml & "</otm:ItemMaster>"
+gtmXml = gtmXml & "</GLogXMLElement>"
+GenerateItemXml = gtmXml
+
+End Function
+Function addCodeXml(rowIndex As Integer, colIndex As Integer) As String
+Dim codeXml As String
+Dim cType As String
+Dim code As String
+Dim cFlag As String
+Dim currRemSeq As String
+Dim currRemSeqSQL As String
+Dim currentRemarkSeq As String
+
+codeXml = ""
+If Not IsNull(remPresenceResults) Then
+    currRemSeqSQL = "SELECT REMARK_SEQUENCE FROM ITEM_REMARK WHERE ITEM_GID=" & Chr(39) & Worksheets("Item PERMITTED Info").Cells(rowIndex, "A").Value & "." & Worksheets("Item PERMITTED Info").Cells(rowIndex, "B").Value & Chr(39) & " AND REMARK_QUAL_GID=" & Chr(39) & "LOL." & Worksheets("Item PERMITTED Info").Cells(rowIndex, "D").Value & Chr(39) & " AND REMARK_TEXT LIKE " & Chr(39) & Chr(37) & Worksheets("Item PERMITTED Info").Cells(rowIndex, "C").Value & Chr(37) & Chr(39)
+    currRemSeq = CSVQuery(currRemSeqSQL)
+    currentRemarkSeq = processCurrRemSeqXML(currRemSeq)
+    Worksheets("Control").Cells(39, "D").Value = currentRemarkSeq
+    'code = Trim(Worksheets("Item PERMITTED Info").Cells(rowIndex, colIndex).value)
+    'cType = cTypes(colIndex)
+    codeXml = codeXml & "<otm:Remark><otm:TransactionCode>U</otm:TransactionCode><otm:RemarkSequence>" & currentRemarkSeq & "</otm:RemarkSequence><otm:RemarkQualifierGid><otm:Gid><otm:DomainName>LOL</otm:DomainName><otm:Xid>"
+    codeXml = codeXml & Worksheets("Item PERMITTED Info").Cells(rowIndex, "D").Value
+    codeXml = codeXml & "</otm:Xid>"
+    codeXml = codeXml & "</otm:Gid></otm:RemarkQualifierGid><otm:RemarkLevel>1</otm:RemarkLevel><otm:RemarkText>"
+    codeXml = codeXml & Worksheets("Item PERMITTED Info").Cells(rowIndex, "D").Value & "|" & Worksheets("Item PERMITTED Info").Cells(rowIndex, "C").Value & "|" & Comments
+    codeXml = codeXml & "</otm:RemarkText>"
+    codeXml = codeXml & "</otm:Remark>"
+    Worksheets("Item PERMITTED Info").Cells(rowIndex, "F").Value = Worksheets("Item PERMITTED Info").Cells(rowIndex, "D").Value & "|" & Worksheets("Item PERMITTED Info").Cells(rowIndex, "C").Value & "|" & Worksheets("Item PERMITTED Info").Cells(rowIndex, "E").Value
+addCodeXml = codeXml
+Else
+ codeXml = codeXml & "<otm:Remark><otm:TransactionCode>IU</otm:TransactionCode><otm:RemarkSequence>" & RemarkSequence & "</otm:RemarkSequence><otm:RemarkQualifierGid><otm:Gid><otm:DomainName>LOL</otm:DomainName><otm:Xid>"
+    codeXml = codeXml & Worksheets("Item PERMITTED Info").Cells(rowIndex, "D").Value
+    codeXml = codeXml & "</otm:Xid>"
+    codeXml = codeXml & "</otm:Gid></otm:RemarkQualifierGid><otm:RemarkLevel>1</otm:RemarkLevel><otm:RemarkText>"
+    codeXml = codeXml & Worksheets("Item PERMITTED Info").Cells(rowIndex, "D").Value & "|" & Worksheets("Item PERMITTED Info").Cells(rowIndex, "C").Value & "|" & Comments
+    codeXml = codeXml & "</otm:RemarkText>"
+    codeXml = codeXml & "</otm:Remark>"
+  Worksheets("Item PERMITTED Info").Cells(rowIndex, "F").Value = Worksheets("Item PERMITTED Info").Cells(rowIndex, "D").Value & "|" & Worksheets("Item PERMITTED Info").Cells(rowIndex, "C").Value & "|" & Worksheets("Item PERMITTED Info").Cells(rowIndex, "E").Value
+  addCodeXml = codeXml
+End If
+End Function
+Function saveWorkbook() As String
+Dim IntialName As String
+Dim sFileSaveName As Variant
+Dim withoutMacro As Workbook     'workbook you want to save
+'withoutMacro = ThisWorkbook
+ 
+ThisWorkbook.Sheets(Array("Data", "Logs")).Select
+ThisWorkbook.Sheets(Array("Data", "Logs")).Copy
+
+IntialName = "Sample Output"
+
+sFileSaveName = Application.GetSaveAsFilename(InitialFileName:=InitialName, fileFilter:="Excel Files (*.xlsx), *.xlsx")
+If sFileSaveName <> False Then
+    ActiveWorkbook.SaveAs sFileSaveName, FileFormat:=xlOpenXMLWorkbook, CreateBackup:=False
+End If
+
+End Function
+Function clearWorkbook() As String
+'When cleared auto save to a standard folder
+Worksheets("Control").Cells(3, "D").Value = "Processing ...."
+clearData
+clearLogs
+Worksheets("Control").Cells(3, "D").Value = "Done. Sheets Data and Logs are cleared...."
+End Function
+Function clearData() As String
+For col1 = 1 To 6 Step 1
+    For row1 = 2 To 1000 Step 1
+        Worksheets("Item PERMITTED Info").Cells(row1, col1).Interior.Color = RGB(255, 255, 255)
+        Worksheets("Item PERMITTED Info").Cells(row1, col1).ClearContents
+    Next
+Next
+End Function
+Function clearLogs() As String
+Dim irow2 As Integer
+    irow2 = 2
+ Do While (Not IsEmpty(Worksheets("Logs").Cells(irow2, "A")))
+For col1 = 1 To 5 Step 1
+    For row1 = 2 To 10 Step 1
+        Worksheets("Logs").Cells(row1, col1).Interior.Color = RGB(255, 255, 255)
+        Worksheets("Logs").Cells(row1, col1).ClearContents
+    Next
+Next
+Loop
+End Function
+Function clearValidation() As String
+For col1 = 1 To 5 Step 1
+    For row1 = 2 To 1000 Step 1
+        Worksheets("Data").Cells(row1, col1).Interior.Color = RGB(255, 255, 255)
+    Next
+Next
+End Function
+Function clearForRun() As String
+clearLogs
+'clearValidation
+End Function
+'Function saveAndClearWorkbook() As String
+'saveWorkbook
+'clearWorkbook
+'End Function
+
+Function validateTransmissionsB() As String
+
+    Worksheets("Control").Cells(3, "D").Value = "Processing ...."
+    
+    readControlData
+    authCheck
+    
+    validateTransmissions
+
+    Worksheets("Control").Cells(3, "B").Clear
+    Worksheets("Control").Cells(3, "D").Value = "DONE. Please review 'Data' sheet for validation errors"
+
+End Function
+
+Function readControlData() As String
+enteredUsr = Worksheets("Control").Cells(2, "B").Value
+enteredPwd = Worksheets("Control").Cells(3, "B").Value
+
+otmUrl = Worksheets("Control").Cells(5, "B").Value
+queryUrl = otmUrl
+inturl = otmUrl & "/GC3/glog.integration.servlet.DBXMLServlet?command=xmlExport"
+wmurl = otmUrl & "/GC3/glog.integration.servlet.WMServlet"
+rowLimit = 1000
+End Function
+
+Function buildCtypesAndTopIndex() As String
+Dim colIndex As Integer
+colIndex = 3
+
+Do While Not IsEmpty(Worksheets("Item PERMITTED Info").Cells(1, colIndex))
+    cTypes(colIndex) = Worksheets("Item PERMITTED Info").Cells(1, colIndex)
+    'Debug.Print colIndex & cTypes(colIndex)
+    colIndex = colIndex + 1
+Loop
+
+topIndex = colIndex - 1
+'Debug.Print "topIndex: " & topIndex
+
+End Function
+Function validateItem(part As String, irow As Integer) As String
+    Dim itemQueryResult As String
+    
+    itemQuery = "select item_xid from item where item_gid = 'LOL."
+    itemQuery = itemQuery & part
+    itemQuery = itemQuery & "'"
+
+    'Item Validation
+    itemQueryResult = CSVQuery(itemQuery)
+    'Debug.Print itemQueryResult
+
+    Dim glogerrorPos As Integer
+
+    glogerrorPos = InStr(1, itemQueryResult, "glog_error")
+    If (glogerrorPos <> 0) Then
+         Worksheets("Control").Cells(3, "D").Value = itemQueryResult
+    End If
+    
+    Dim itemFlag1 As String
+    
+    itemFlag1 = processQueryXml(itemQueryResult)
+    
+    'Debug.Print itemFlag
+    If (itemFlag1 = "ITEM DOESN'T EXISTS") Then
+        Worksheets("Data").Cells(irow, "A").Interior.Color = RGB(255, 0, 0)
+    End If
+    
+    validateItem = itemFlag1
+End Function
+Function authCheck() As String
+    Dim authCheckQueryResult As String
+    
+    authCheckQuery = "SELECT 1 FROM DUAL"
+    
+    'Check authentication
+    authCheckQueryResult = CSVQuery(authCheckQuery)
+    
+    Dim glogerrorPos As Integer
+    glogerrorPos = InStr(1, authCheckQueryResult, "glog_error")
+    If (glogerrorPos <> 0) Then
+        Worksheets("Control").Cells(3, "D").Value = authCheckQueryResult
+        End
+    End If
+    
+End Function
+Function CleanupStr(strXmlValue) As String
+ 'description: Replace forbidden char. &'"<> by their Predefined General Entities
+   Dim sValue As String
+   If IsNull(strXmlValue) Then
+     CleanupStr = ""
+   Else
+     sValue = CStr(strXmlValue)
+     sValue = Replace(sValue, "&", "&amp;") 'do ampersand first !
+     sValue = Replace(sValue, "'", "&apos;")
+     sValue = Replace(sValue, """", "&quot;")
+     sValue = Replace(sValue, "<", "&lt;")
+     sValue = Replace(sValue, ">", "&gt;")
+     CleanupStr = sValue
+   End If
+End Function
+Function Base64Encode(sText)
+    Dim oXML, oNode
+    Set oXML = CreateObject("Msxml2.DOMDocument.3.0")
+    Set oNode = oXML.createElement("base64")
+    oNode.DataType = "bin.base64"
+    oNode.nodeTypedValue = Stream_StringToBinary(sText)
+    Base64Encode = oNode.Text
+    Set oNode = Nothing
+    Set oXML = Nothing
+End Function
+
+
+
+'Stream_StringToBinary Function
+'2003 Antonin Foller, http://www.motobit.com
+'Text - string parameter To convert To binary data
+
+Function Stream_StringToBinary(Text)
+  Const adTypeText = 2
+  Const adTypeBinary = 1
+
+  'Create Stream object
+  Dim BinaryStream 'As New Stream
+  Set BinaryStream = CreateObject("ADODB.Stream")
+
+  'Specify stream type - we want To save text/string data.
+  BinaryStream.Type = adTypeText
+
+  'Specify charset For the source text (unicode) data.
+  BinaryStream.Charset = "us-ascii"
+
+  'Open the stream And write text/string data To the object
+  BinaryStream.Open
+  BinaryStream.WriteText Text
+
+  'Change stream type To binary
+  BinaryStream.Position = 0
+  BinaryStream.Type = adTypeBinary
+
+  'Ignore first two bytes - sign of
+  BinaryStream.Position = 0
+
+  'Open the stream And get binary data from the object
+  Stream_StringToBinary = BinaryStream.Read
+
+  Set BinaryStream = Nothing
+End Function
+
+
+
+'Stream_BinaryToString Function
+'2003 Antonin Foller, http://www.motobit.com
+'Binary - VT_UI1 | VT_ARRAY data To convert To a string
+
+Function Stream_BinaryToString(Binary)
+  Const adTypeText = 2
+  Const adTypeBinary = 1
+
+  'Create Stream object
+  Dim BinaryStream 'As New Stream
+  Set BinaryStream = CreateObject("ADODB.Stream")
+
+  'Specify stream type - we want To save text/string data.
+  BinaryStream.Type = adTypeBinary
+
+  'Open the stream And write text/string data To the object
+  BinaryStream.Open
+  BinaryStream.Write Binary
+
+  'Change stream type To binary
+  BinaryStream.Position = 0
+  BinaryStream.Type = adTypeText
+
+  'Specify charset For the source text (unicode) data.
+  BinaryStream.Charset = "us-ascii"
+
+  'Open the stream And get binary data from the object
+  Stream_BinaryToString = BinaryStream.ReadText
+  Set BinaryStream = Nothing
+End Function
+
+Attribute VB_Name = "Module3"
+Sub Button1_Click()
+    Call Run_Click
+End Sub
+
+Attribute VB_Name = "Module4"
+Sub Logs_Button1_Click()
+    Call validateTransmissionsB
+End Sub
+
+Sub Logs_Button2_Click()
+    Call saveWorkbook
+End Sub
+
+Sub Logs_Button3_Click()
+    Call clearWorkbook
+End Sub
+
+Sub Logs_Button5_Click()
+'    Call validateCodesB
+End Sub
+
+'Sub Logs_Button4_Click()
+'    Call saveAndClearWorkbook
+'End Sub
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub TextBox1_Change()
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+End Sub
+
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

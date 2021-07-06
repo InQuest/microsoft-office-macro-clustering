@@ -1,0 +1,379 @@
+Attribute VB_Name = "CWmacros"
+Option Explicit
+
+Function FixNumberString(vS As String) As String
+  ' Trim streng
+  FixNumberString = Trim$(vS)
+  If FixNumberString = "" Then FixNumberString = "0"
+  'Fjern % fra bakerst i verdien hvis bruker har skrevet inn dette
+  If Right(FixNumberString, 1) = "%" Then
+    FixNumberString = Trim$(Left(FixNumberString, Len(FixNumberString) - 1))
+  End If
+  'Hvis tallet inneholder punktum eller komma kan dette v|fffd|re desimalskilletegn eller siffergrupperingstegn. Mellomrom
+  'kan v|fffd|re siffergrupperingstegn. CDbl benytter lokale innstillinger til |fffd| avgj|fffd|re dette.
+End Function
+
+Function MoreRobustVal(vStr As String) As Double
+  vStr = Trim$(vStr)
+  If Right(vStr, 1) = "%" Then vStr = Left(vStr, Len(vStr) - 1)
+  If vStr = "" Then vStr = "0"
+  If Right(vStr, 1) = "." Then vStr = vStr + "0"
+  If Right(vStr, 1) = "," Then vStr = vStr + "0"
+  vStr = Replace(vStr, ",", ".") 'Val tolker alltid . som desimalskilletegn, og benytter ikke siffergruppering.
+  
+  MoreRobustVal = Val(vStr)
+End Function
+
+Sub AutoOpen()
+  Dim oVar As Variable
+  Dim vFound As Integer
+  
+  If Not Application.Visible Then
+    Exit Sub
+  End If
+  
+  For Each oVar In ActiveDocument.Variables
+    If UCase(oVar.Name) = "DOCUMENT_READY_FOR_END_USER" Then
+      Exit Sub
+    End If
+  Next
+  
+  If Val(Application.Version) >= 12 Then
+    ActiveWindow.View.ReadingLayout = False
+  End If
+
+  vFound = 0
+  For Each oVar In ActiveDocument.Variables
+    If UCase(oVar.Name) = "PRICEFORMAT" Then vFound = 1
+  Next
+  
+  If vFound = 0 Then
+    cwDealerForm.lblPriceFormat.Caption = ""
+  Else
+    If UCase(ActiveDocument.Variables("priceformat")) = "BTO" Then cwDealerForm.lblPriceFormat.Caption = "Tilbudspriser er brutto"
+    If UCase(ActiveDocument.Variables("priceformat")) = "NET" Then cwDealerForm.lblPriceFormat.Caption = "Tilbudspriser er netto"
+    If UCase(ActiveDocument.Variables("priceformat")) = "0" Then cwDealerForm.lblPriceFormat.Caption = "Tilbudet inneholder ikke priser"
+  End If
+  
+  ActiveDocument.Fields.Update
+  cwDealerForm.Show
+End Sub
+
+Sub cwRemoveDocVars()
+  Dim oVar As Variable
+  
+  For Each oVar In ActiveDocument.Variables
+    oVar.Delete
+  Next
+  
+  ' Sett inn en ny dokumentvariabel som forteller at dokumentet er "ferdig". Dette sjekkes i AutoOpen, slik
+  ' at en eventuell sluttkunde skal slippe |fffd| f|fffd| opp kontrollpanelet.
+  ActiveDocument.Variables("document_ready_for_end_user") = 1
+End Sub
+
+Sub cwRemoveOrderDiscount()
+  Dim oBM As Bookmark
+  
+  'L|fffd|p gjennom bokmerker og slett bokmerke og innhold hvis de begynner p|fffd| "ORDERDISCOUNT"
+  For Each oBM In ActiveDocument.Bookmarks
+    If UCase(Left$(oBM.Name, 13)) = "ORDERDISCOUNT" Then
+      oBM.Range.Delete
+      oBM.Range.Cells.Delete
+    End If
+  Next
+End Sub
+
+Sub cwRemoveFields()
+' Erstatter alle felt med vanlig tekst (basert p|fffd| siste utregnede verdi)
+' Brukes for |fffd| fjerner "avanse- og rabattfunksjonaliteten" fra dokumentet.
+' NB: Fjerner/unlinker bare de "sensitive" feltene, s|fffd| sidenummer etc. vil
+' fremdeles virke.
+  Dim oField As Field
+  Dim oRange As Word.Range
+  
+  For Each oRange In ActiveDocument.StoryRanges
+    Do
+      For Each oField In oRange.Fields
+        If (oField.Type = wdFieldIf) Or (oField.Type = wdFieldRef) Or (oField.Type = wdFieldSet) Or (oField.Type = wdFieldFormula) Or (oField.Type = wdFieldExpression) Or (oField.Type = wdFieldDocVariable) Or (oField.Type = wdFieldDate) Then
+          oField.Unlink
+        End If
+      Next
+      Set oRange = oRange.NextStoryRange
+    Loop Until oRange Is Nothing
+  Next
+End Sub
+
+Private Sub cwSetDMFieldcodes(vMarkup As String, vDiscount As String) 'Innverdier forutsettes som strenger med korrekte desimaltall uten prosenttegn
+  Dim oField As Field
+  
+  ' Word er litt inkonsekvent da desimaltegn m|fffd| v|fffd|re . i VBA, men styres av format settings i dokumentet. Erstatter derfor
+  ' eventuelle . med dokumentvariabel decimalseparator f|fffd|r jeg setter inn feltkoder:
+  
+  vMarkup = Replace(vMarkup, ".", ActiveDocument.Variables("decimalseparator"))
+  vDiscount = Replace(vDiscount, ".", ActiveDocument.Variables("decimalseparator"))
+  
+  For Each oField In ActiveDocument.Fields
+    If InStr(1, oField.Code.Text, "SET dealermarkup", vbTextCompare) > 0 Then
+      oField.Code.Text = "SET dealermarkup " & CStr(vMarkup) & "%"
+    End If
+    If InStr(1, oField.Code.Text, "SET dealerdiscount", vbTextCompare) > 0 Then
+      oField.Code.Text = "SET dealerdiscount " & CStr(vDiscount) & "%"
+    End If
+  Next
+  ActiveDocument.Fields.Update
+End Sub
+
+Private Sub cwReplaceBookmarkText(BM As Bookmark, NewText As String)
+  Dim oRange As Range
+  Dim oName As String
+  
+  oName = BM.Name
+  Set oRange = BM.Range
+  oRange.Text = NewText
+  ActiveDocument.Bookmarks.Add oName, oRange
+End Sub
+
+Private Function GetSumOfLines() As Double
+  Dim oSum As Double
+  Dim oBM As Bookmark
+  oSum = 0
+  
+  'L|fffd|p gjennom bokmerker og summer alle som begynner p|fffd| "sumline"
+  For Each oBM In ActiveDocument.Bookmarks
+    If UCase(Left$(oBM.Name, 7)) = "SUMLINE" Then
+      If IsNumeric(FixNumberString(oBM.Range.Text)) Then
+        oSum = oSum + CDbl(FixNumberString(oBM.Range.Text))
+      End If
+    End If
+  Next
+  
+  GetSumOfLines = oSum
+End Function
+
+Sub cwCalculateAll(vMarkup As Double, vDiscount As Double)
+'Algoritme: L|fffd|p gjennom bokmerker. Alle som begynner med "cwsumline" skal legges sammen til en
+'totalsum. Totalsummen settes s|fffd| inn i det bokmerket som heter cwsumtotal
+  Dim oBM As Bookmark
+  Dim oSum As Double
+  Dim oVar As Variable
+  Dim oField As Field
+  
+  ActiveDocument.Variables("sumbeforemarkup") = 0
+  ActiveDocument.Variables("sumbeforediscount") = 0
+  ActiveDocument.Variables("sumafterdiscount") = 0
+  ActiveDocument.Variables("sumofdiscount") = 0
+  ActiveDocument.Variables("totalquoterounding") = 0
+  ActiveDocument.Variables("totalquotepricebeforerounding") = 0
+  ActiveDocument.Variables("totalquotepriceafterrounding") = 0
+  
+  ActiveDocument.ActiveWindow.View.ShowFieldCodes = False
+  
+  '1. Sett f|fffd|rst p|fffd|slag og rabatt til 0% og beregn sumbeforemarkup (totalsum av ordre f|fffd|r p|fffd|slag)
+  Call cwSetDMFieldcodes("0.0", "0.0")
+  ActiveDocument.Variables("sumbeforemarkup") = GetSumOfLines
+  
+  '2. Sett p|fffd|slag til angitt verdi, men la rabatt st|fffd| til 0 og beregn sumbeforediscount (totalsum av ordre f|fffd|r rabatt)
+  Call cwSetDMFieldcodes(Str$(vMarkup), "0.0")
+  ActiveDocument.Variables("sumbeforediscount") = GetSumOfLines
+  
+  '3. Sett rabatt til |fffd|nsket verdi og beregn sumafterdiscount (totalsum av ordre etter rabatt)
+  Call cwSetDMFieldcodes(Str$(vMarkup), Str$(vDiscount))
+  ActiveDocument.Variables("sumafterdiscount") = GetSumOfLines
+  
+  '4. Beregn totaldiscount (hvor mye rabatt som ble gitt)
+  ActiveDocument.Variables("sumofdiscount") = _
+        ActiveDocument.Variables("sumbeforediscount") _
+      - ActiveDocument.Variables("sumafterdiscount")
+  
+  '5. Beregn noen dokumentvariabler for bruk i "oppsummeringen" i tilbudet
+  ActiveDocument.Variables("totalquotepricebeforerounding") = _
+      ( _
+         (ActiveDocument.Variables("sumafterdiscount") _
+        + Val(ActiveDocument.Variables("dealerfreight")) _
+        + Val(ActiveDocument.Variables("orderfreight"))) * 1.25 _
+      )
+    
+  ActiveDocument.Variables("totalquotepriceafterrounding") = Int(ActiveDocument.Variables("totalquotepricebeforerounding"))
+  
+  ActiveDocument.Variables("totalquoterounding") = _
+        (ActiveDocument.Variables("totalquotepricebeforerounding")) _
+      - (ActiveDocument.Variables("totalquotepriceafterrounding"))
+      
+End Sub
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+Attribute VB_Name = "cwDealerForm"
+Attribute VB_Base = "0{D3A326AB-3C8D-4F5B-9D1D-D7314986000B}{C8BCA43E-A2EA-4FF7-839D-2018E4A78E21}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Dim Silent As Integer
+
+Private Sub ShowDebugInfo()
+  Dim vMsg As String
+  Dim oVar As Variable
+  
+  vMsg = ""
+  
+  For Each oVar In ActiveDocument.Variables
+    vMsg = vMsg & oVar.Name & ": " & oVar.Value & vbNewLine
+  Next
+  
+  MsgBox (vMsg)
+End Sub
+
+Private Function CloseControlPanel()
+  Dim Discount As Double
+  
+  'For |fffd| kunne lukke panel uten |fffd| kj|fffd|re cwRemoveFields (kjekt under testing av nye maler) kan man skrive "debug" i et av input-feltene for |fffd| slippe dette.
+  If (UCase(tbDiscount.Text) <> "DEBUG") And (UCase(tbDiscountMargin.Text) <> "DEBUG") And (UCase(tbMarkup.Text) <> "DEBUG") And (UCase(tbDealerFreight.Text) <> "DEBUG") Then
+    'Hvis det ikke er oppgitt noen sluttkunderabatt fjernes innholdet i bokmerket "ORDERDISCOUNT" slik at det ikke spesifikt st|fffd|r p|fffd| tilbudet at den stakkars kunden ikke har f|fffd|tt rabatt...
+    Discount = MoreRobustVal(tbDiscount.Text)
+    If Discount = 0 Then Call cwRemoveOrderDiscount
+    ActiveDocument.Fields.Update
+    Call cwRemoveFields
+    Call cwRemoveDocVars
+  Else
+    ActiveDocument.Fields.Update
+  End If
+ 
+  cwDealerForm.Hide
+End Function
+
+Private Function DiscountMarginToMarkup(vDM As String) As Double
+  Dim DM As Double
+  
+  
+  DM = MoreRobustVal(vDM) / 100
+  If DM = 1 Then
+    DiscountMarginToMarkup = 0
+  Else
+    DiscountMarginToMarkup = 100 * DM / (1 - DM)
+  End If
+
+End Function
+
+Private Function MarkupToDiscountMargin(vMU As String) As Double
+  Dim MU As Double
+    
+  
+  MU = MoreRobustVal(vMU) / 100
+  If MU = -100 Then
+    MarkupToDiscountMargin = 0
+  Else
+    MarkupToDiscountMargin = 100 * (MU / (1 + MU))
+  End If
+
+End Function
+
+
+Private Sub cbCalc_Click()
+  Dim MU As Double 'MarkUp
+  Dim DBS As String 'Dekningsbidrag formattert som streng
+  Dim DGS As String 'Dekningsgrad formattert som streng
+  Dim DB As Double 'Dekningsbidrag
+  Dim DG As Double 'Dekningsgrad
+  Dim DF As Double 'Dealerfreight - forhandlers frakttilegg (kommer i tillegg til frakt fra leverand|fffd|r)
+  
+  If (UCase(tbDiscount.Text) = "SHOWINFO") Or (UCase(tbDiscountMargin.Text) = "SHOWINFO") Or (UCase(tbMarkup.Text) = "SHOWINFO") Or (UCase(tbDealerFreight.Text) = "SHOWINFO") Then
+    ShowDebugInfo
+  Else
+    tbDiscount.Text = FixNumberString(tbDiscount.Text)
+    tbDiscountMargin.Text = FixNumberString(tbDiscountMargin.Text)
+    tbDealerFreight.Text = FixNumberString(tbDealerFreight.Text)
+    
+    If Not (IsNumeric(tbDiscountMargin.Text) And IsNumeric(tbDiscountMargin.Text) And IsNumeric(tbDealerFreight.Text)) Then 'Sjekk om lovlig verdi
+      Call MsgBox("Ulovlig verdi. Benytt bare tall!")
+    Else
+      DF = MoreRobustVal(tbDealerFreight.Text)
+      ActiveDocument.Variables("dealerfreight") = DF
+      
+      MU = DiscountMarginToMarkup(tbDiscountMargin.Text)
+      Application.ScreenUpdating = False
+      Call cwCalculateAll(MU, MoreRobustVal(tbDiscount.Text))
+      Application.ScreenUpdating = True
+      
+      DB = ActiveDocument.Variables("sumafterdiscount") - ActiveDocument.Variables("sumbeforemarkup")
+      If ActiveDocument.Variables("sumafterdiscount") = 0 Then
+        DG = 0
+      Else
+        DG = DB / ActiveDocument.Variables("sumafterdiscount")
+      End If
+      DBS = "Dekningsbidrag: " + Str$(Round(DB, 2))
+      DGS = "Dekningsbidrag i % av utsalgspris: " + Str$(Round(100 * DG, 2)) + "%"
+      
+      lblGrossMargin.Caption = DBS
+      lblGrossMarginRatio.Caption = DGS
+    End If
+    ActiveDocument.Fields.Update
+  End If
+End Sub
+
+Private Sub cbClose_Click()
+  Call CloseControlPanel
+End Sub
+
+Private Sub cbReset_Click()
+  Silent = 1
+  tbDiscountMargin.Text = "0"
+  tbMarkup.Text = "0"
+  tbDiscount.Text = "0"
+  tbDealerFreight.Text = "0"
+  ActiveDocument.Variables("dealerfreight") = 0
+  lblGrossMargin.Caption = "Dekningsbidrag kr 0,-"
+  lblGrossMarginRatio.Caption = "Dekningsbidrag i % av utsalgspris: 0%"
+  Silent = 0
+  Call cbCalc_Click
+End Sub
+
+Private Sub tbDiscountMargin_Change()
+  If UCase(tbDiscountMargin.Text) = "SHOWINFO" Then
+    ShowDebugInfo
+  End If
+  
+  If UCase(tbDiscountMargin.Text) = "DEBUG" Then
+    CloseControlPanel
+  End If
+  
+  If Silent <> 1 Then
+    Silent = 1
+    tbMarkup.Text = Round(DiscountMarginToMarkup(tbDiscountMargin.Text), 2)
+    ' tbMarkup.Text = DiscountMarginToMarkup(tbDiscountMargin.Text)
+    Silent = 0
+  End If
+End Sub
+
+Private Sub tbMarkup_Change()
+  If UCase(tbMarkup.Text) = "SHOWINFO" Then
+    ShowDebugInfo
+  End If
+  
+  If UCase(tbMarkup.Text) = "DEBUG" Then
+    CloseControlPanel
+  End If
+  
+  If Silent <> 1 Then
+    Silent = 1
+    tbDiscountMargin.Text = Round(MarkupToDiscountMargin(tbMarkup.Text), 2)
+    ' tbDiscountMargin.Text = MarkupToDiscountMargin(tbMarkup.Text)
+    Silent = 0
+  End If
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+  Call CloseControlPanel
+End Sub
+
+
+
+
+INQUEST-PP=macro

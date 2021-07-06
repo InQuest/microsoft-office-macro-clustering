@@ -1,0 +1,1556 @@
+Attribute VB_Name = "CBaseEvents"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Dim WithEvents m_proxy As CDDXProxy
+Attribute m_proxy.VB_VarHelpID = -1
+Dim WithEvents m_login As CDDXLogin
+Attribute m_login.VB_VarHelpID = -1
+Dim WithEvents m_helper As CDDXHelper
+Attribute m_helper.VB_VarHelpID = -1
+
+Private Sub Class_Initialize()
+    Set m_login = CDDXLogin
+    Set m_proxy = CDDXProxy
+    Set m_helper = CDDXHelper
+End Sub
+
+Public Sub ReleaseRefs()
+    Set m_login = Nothing
+    Set m_proxy = Nothing
+    Set m_helper = Nothing
+End Sub
+
+Private Sub Class_Terminate()
+    Call ReleaseRefs
+End Sub
+
+Private Sub m_helper_OnEvent(sender As Object, ByVal eventID As Long, wParam As Variant, lParam As Variant)
+    If eventID = HELPER_EVENT_FINGERPINT Then
+        Call sender.AddFingerprint(DDX_PID, CDDXApp.DDXCodeRevision(ThisWorkbook) + " (" + ThisWorkbook.name + ")")
+    End If
+End Sub
+
+Private Sub m_login_OnAfterLogout(sender As Object)
+    Call CWorker.NotifyCustomValidator(vbNullString)
+End Sub
+
+Private Sub m_proxy_OnEvent(sender As Object, ByVal taskID As String, wParam As Variant, lParam As Variant)
+    With CWorker
+        If Not .Contains(taskID) Then Exit Sub
+        Call .NotifyCustomValidator(taskID)
+    End With
+End Sub
+Attribute VB_Name = "CCurveFilters"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Event OnData(ByVal sender As Object, ByVal curveNm As String, ByVal granularity As String, ByVal effectiveDte As Date, contractDtes() As Date, Values() As String, ByVal valueNumber As Long)
+
+Private Const FILTER_EXTEND As Integer = 64
+Private Const FILTER_MAX As Integer = 1024
+
+Private Const FILTER_E_TOO_MANY As String = "Too many filters!"
+Private Const FILTER_E_MISSING_NAME As String = "Unspecified name!"
+Private Const FILTER_E_MISSING_VALUE As String = "Unspecified value!"
+Private Const FILTER_E_MISSING_ALL As String = "Missing parameters!"
+
+Private m_folder As String
+Private m_folder_id As String
+
+Private m_filter_count As Integer
+Private m_filter_names() As String
+Private m_filter_values() As String
+'
+Private m_properties As Variant '()  As ZEWSProxy.labelValues
+
+Private m_first_curve_name As String ' for compatibility
+Private m_contract_dates() As Date
+Private m_values() As String
+
+
+Private Sub RaiseError(descption As String)
+    Call Err.Raise(vbObjectError + 1, "CCurveFilters", descption)
+End Sub
+
+Public Function AddFilter(ByVal propName As String, ByVal propValue As String) As Boolean
+ Dim k As Integer
+ 
+    'to validate inputs
+    If propName = vbNullString Then
+        Call RaiseError(FILTER_E_MISSING_NAME)
+    End If
+    
+    If propValue = vbNullString Then
+        Call RaiseError(FILTER_E_MISSING_VALUE)
+    End If
+    
+    'to check existence
+    For k = 0 To m_filter_count - 1
+        If StrComp(m_filter_names(k), propName, vbTextCompare) = 0 Then
+            If StrComp(m_filter_values(k), propValue) = 0 Then
+                Exit Function
+            End If
+        End If
+    Next
+    
+    'add
+    Call AllotFilterArea
+    m_filter_names(m_filter_count) = propName
+    m_filter_values(m_filter_count) = propValue
+    m_filter_count = m_filter_count + 1
+    
+    AddFilter = True
+End Function
+
+Private Sub AllotFilterArea()
+ Dim ub As Integer
+ 
+    If Len(Join(m_filter_names)) = 0 Then
+        ReDim m_filter_names(FILTER_EXTEND - 1)
+        ReDim m_filter_values(FILTER_EXTEND - 1)
+        
+    Else
+        ub = UBound(m_filter_names)
+        If ub >= FILTER_MAX Then
+            Call RaiseError(FILTER_E_TOO_MANY)
+        End If
+        
+        If m_filter_count >= ub Then
+            ReDim Preserve m_filter_names(ub + FILTER_EXTEND)
+            ReDim Preserve m_filter_values(ub + FILTER_EXTEND)
+        End If
+        
+    End If
+End Sub
+
+Private Sub Clear()
+    m_filter_count = 0
+    m_properties = vbNull
+End Sub
+
+Public Sub PrepareProperties(propNamesOfInterest() As String)
+ Dim nms() As String
+ Dim vals() As String
+ Dim k As Integer
+ Dim count As Integer
+
+    m_properties = vbNull
+    
+    If Len(Join(propNamesOfInterest)) = 0 And m_filter_count = 0 Then
+        Call RaiseError(FILTER_E_MISSING_ALL)
+    End If
+    
+    If m_filter_count > 0 Then
+        count = m_filter_count - 1
+        ReDim nms(count)
+        ReDim vals(count)
+        
+        For k = 0 To count
+            nms(k) = m_filter_names(k)
+            vals(k) = m_filter_values(k)
+        Next
+        
+        m_filter_count = 0
+    End If
+        
+    With CDDXLib.DefaultZEWSProxy(DDX_PID)
+        m_properties = .GetFilteredCuvreProperties(CDDXLogin.sid, propNamesOfInterest, nms, vals)
+    End With
+    
+    Erase nms
+    Erase vals
+End Sub
+
+Public Property Get PropertyNames() As String()
+ Dim nm() As String
+ Dim k As Long
+ 
+    On Local Error GoTo OOPS
+    
+    If UBound(m_properties) < 0 Then Exit Property
+    
+    ReDim nm(LBound(m_properties) To UBound(m_properties))
+    
+    For k = LBound(m_properties) To UBound(m_properties)
+        nm(k) = m_properties(k).label
+    Next
+    PropertyNames = nm
+    
+OOPS:
+    Exit Property
+End Property
+
+Public Property Get PropertyValues(propName As String) As String()
+ Dim nm() As String
+ Dim k As Long
+ 
+    On Local Error GoTo OOPS
+    If UBound(m_properties) < 0 Then Exit Property
+
+    For k = LBound(m_properties) To UBound(m_properties)
+        If StrComp(propName, m_properties(k).label) = 0 Then
+            PropertyValues = m_properties(k).Values
+            Exit Property
+        End If
+    Next
+    
+OOPS:
+    Exit Property
+End Property
+
+Private Function GenerateXML4Property() As String
+ Dim p As LongPtr
+ Dim k As Long
+ Dim xml As New ZEWSXml
+       
+    If m_filter_count = 0 Then Exit Function
+    
+    On Local Error GoTo OOPS
+    
+    With xml
+        Call .CreateRootElement("CurvePortal", "1.0")
+        
+        p = .Createlement(-1, "Names")
+        For k = 1 To m_filter_count
+            Call .CreateTextNode(p, "i", m_filter_names(k - 1))
+        Next
+              
+        p = .Createlement(-1, "Values")
+        For k = 1 To m_filter_count
+
+            Call .CreateTextNode(p, "i", m_filter_values(k - 1))
+        Next
+
+        GenerateXML4Property = .ToString()
+    End With
+    
+    Set xml = Nothing
+    
+OOPS:
+    m_filter_count = 0
+    Exit Function
+End Function
+
+Private Function RetrieveCurves(ByVal granularities As Long, curveNames() As String, curveTypes As Variant, ByVal properties As String, ByVal filters As String, ByVal findDirectives As Long) As ZEWSProxy.curveBean()
+ Dim cvTypes() As String
+ Dim found As Long
+ 
+    If (VarType(curveTypes) And vbString) <> 0 Then
+        If (VarType(curveTypes) And vbArray) <> 0 Then
+            cvTypes = curveTypes
+        ElseIf curveTypes <> vbNullString Then
+            ReDim cvTypes(0 To 0)
+            cvTypes(0) = curveTypes
+        End If
+    End If
+    
+    With CDDXLib.DefaultZEWSProxy(DDX_PID)
+        RetrieveCurves = .FindCurves(CDDXLogin.sid, granularities, curveNames, cvTypes, properties, filters, found, findDirectives)
+    End With
+End Function
+
+Public Function GetCurves() As String()
+ Dim beans() As ZEWSProxy.curveBean
+ Dim props As String
+ Dim curves() As String
+ Dim k As Long
+
+    props = GenerateXML4Property()
+    beans = RetrieveCurves(CURVE_GRANULARITY_NONE, curves, vbNullString, props, vbNullString, CURVE_FIND_INCLUDE_RDONLY Or CURVE_FIND_INCLUDE_MULTIOBS)
+    
+    On Local Error GoTo OOPS
+    
+    If UBound(beans) < 0 Then Exit Function
+    
+    ReDim curves(LBound(beans) To UBound(beans))
+    
+    For k = LBound(beans) To UBound(beans)
+        curves(k) = beans(k).name
+    Next
+    
+    GetCurves = curves
+        
+OOPS:
+
+    Exit Function
+End Function
+
+Public Sub PrepareCurveData(ByVal curveNames As Variant, ByVal EffectiveDts As Variant, Optional curveObs As Variant, Optional observeDSTStart As Boolean = False, Optional observeDSTend As Boolean = False)
+' Dim buff As String
+' Dim alldata() As String
+' Dim items() As String
+ Dim k As Long
+ Dim obsary() As String
+ Dim cvary() As String
+ Dim oprary() As Double
+ 
+    Erase m_contract_dates
+    Erase m_values
+    
+    'to get curve names
+    If (VarType(curveNames) And vbString) <> 0 Then
+        If (VarType(curveNames) And vbArray) = 0 Then
+            ReDim cvary(0 To 0)
+            cvary(0) = curveNames
+        Else
+            ReDim cvary(0 To UBound(curveNames) - LBound(curveNames))
+            For k = LBound(curveNames) To UBound(curveNames)
+                cvary(k - LBound(curveNames)) = curveNames(k)
+            Next
+        End If
+    Else
+        Err.Raise vbObjectError + 1, "PrepareCurveData", "Invalid Parameter curveNames"
+    End If
+    
+    'to get curve names
+    If (VarType(EffectiveDts) And vbDate) <> 0 Then
+        If (VarType(EffectiveDts) And vbArray) = 0 Then
+            ReDim oprary(0 To 0)
+            oprary(0) = EffectiveDts
+        Else
+            ReDim oprary(0 To UBound(EffectiveDts) - LBound(EffectiveDts))
+            For k = LBound(EffectiveDts) To UBound(EffectiveDts)
+                oprary(k - LBound(EffectiveDts)) = CDbl(EffectiveDts(k))
+            Next
+        End If
+    Else
+        Err.Raise vbObjectError + 2, "PrepareCurveData", "Invalid Parameter EffectiveDts"
+    End If
+    
+    '
+    If Not IsMissing(curveObs) Then
+        If (VarType(curveObs) And vbString) <> 0 Then
+            If (VarType(curveObs) And vbArray) <> 0 Then
+                ReDim obsary(0 To UBound(curveObs) - LBound(curveObs))
+                
+                For k = LBound(curveObs) To UBound(curveObs)
+                    obsary(k - LBound(curveObs)) = curveObs(k)
+                Next
+            Else
+                ReDim obsary(0 To 0)
+                
+                obsary(0) = curveObs
+            End If
+        Else
+            Err.Raise vbObjectError + 3, "PrepareCurveData", "Invalid Parameter curveObs"
+        End If
+    End If
+    
+    m_first_curve_name = cvary(0)
+    
+    With CDDXLib.DefaultZEWSProxy(DDX_PID)
+        Call .DownloadCurvesForFilter(CDDXLogin.sid, m_folder_id, cvary, oprary, obsary, IIf(observeDSTStart, &H1, 0) Or IIf(observeDSTend, &H2, 0))
+    End With
+    
+'    If buff = vbNullString Then Exit Sub
+'    alldata = Split(buff, vbLf)
+'
+'    ReDim m_contract_dates(LBound(alldata) To UBound(alldata))
+'    ReDim m_values(LBound(alldata) To UBound(alldata))
+'
+'    For k = LBound(alldata) To UBound(alldata)
+'        If alldata(k) = vbNullString Then Exit For
+'        items = Split(alldata(k), vbTab)
+'
+'        m_contract_dates(k) = CDate(Val(items(0)))
+'        m_values(k) = items(1)
+'    Next
+End Sub
+
+Private Sub Read4Compatibility()
+    If m_first_curve_name = vbNullString Then Exit Sub
+    Call ReadByName(m_first_curve_name, False)
+    m_first_curve_name = vbNullString
+End Sub
+
+Public Property Get contracts() As Date()
+    Call Read4Compatibility
+    contracts = m_contract_dates
+End Property
+
+Public Property Get Values() As String()
+    Call Read4Compatibility
+    Values = m_values
+End Property
+
+Private Sub SetFolderInfo()
+ Dim k As Long
+ 
+    With CDDXLib.DefaultZEWSProxy(DDX_PID)
+        m_folder_id = .NewGUID()
+        
+        m_folder = .HelperResultsetFileName("foo", 0)
+        For k = Len(m_folder) To 1 Step -1
+            If Mid(m_folder, k, 1) = "\" Then
+                Exit For
+            End If
+        Next
+        m_folder = left(m_folder, k) + m_folder_id + "\"
+    End With
+End Sub
+
+Private Function GetDataFileName(curveNm As String) As String
+ Dim fn As String
+ Dim buff As String
+ Dim datafn As String
+ Dim file
+ Dim k As Long
+ 
+    On Local Error GoTo OOPS
+       
+    fn = m_folder + "Curves.txt"
+    
+    If Dir(fn) <> vbNullString Then
+        Set file = CreateObject("ADODB.Stream")
+        With file
+            Call .Open
+            .Type = 2
+            .Charset = "UTF-8"
+            Call .LoadFromFile(fn)
+        End With
+    
+        Do
+            If file.EOS() Then Exit Do
+            
+            buff = file.ReadText(-2)
+            k = InStr(buff, "=")
+            If k < Len(buff) And k > 1 Then
+                If StrComp(Mid(buff, k + 1), curveNm) = 0 Then
+                    GetDataFileName = m_folder + left(buff, k - 1)
+                    Exit Do
+                End If
+            End If
+        Loop
+        Call file.Close
+    End If
+
+OOPS:
+    If Err.Number <> 0 Then
+        
+    End If
+    
+    On Local Error GoTo -1
+    Exit Function
+End Function
+
+Private Sub Notify(ByVal curveNm As String, ByVal granularity As String, ByVal effectiveDte As Date, contractDtes() As Date, Values() As String, ByVal valueNumber As Long)
+    On Local Error GoTo OOPS
+    
+    RaiseEvent OnData(Me, curveNm, granularity, effectiveDte, contractDtes, Values, valueNumber)
+    
+OOPS:
+    If Err.Number <> 0 Then
+    
+    End If
+    On Local Error GoTo -1
+    Exit Sub
+End Sub
+
+Public Sub ReadCurveData(ByVal curveNm As String)
+    Call ReadByName(curveNm, True)
+End Sub
+
+Private Sub ReadByName(ByVal curveNm As String, ByVal fireEvents As Boolean)
+ Dim fn As String
+ Dim buff As String
+ Dim file
+ Dim k As Long
+ Dim row As Long
+ Dim granularity As String
+ Dim oprs() As String
+ Dim contrs() As String
+ Dim Values() As String
+ 
+    Erase m_contract_dates
+    Erase m_values
+    
+    fn = GetDataFileName(curveNm)
+    If Len(fn) = 0 Then
+        If fireEvents Then Call Notify(curveNm, vbNullString, Now, m_contract_dates, m_values, -1)
+        Exit Sub
+    End If
+    
+    On Local Error GoTo OOPS
+
+    Set file = CreateObject("ADODB.Stream")
+    With file
+        Call .Open
+        .Type = 2
+        .Charset = "UTF-8"
+        Call .LoadFromFile(fn)
+    End With
+
+    row = 0
+    Do
+        If file.EOS() Then Exit Do
+        buff = file.ReadText(-2)
+        row = row + 1
+        
+        If row = 1 Then
+            'curve name
+        ElseIf row = 2 Then
+            granularity = buff
+            'RaiseEvent OnData(Me, curveNM, VN_GRANULARITY, buff)
+        ElseIf row = 3 Then
+            oprs = Split(buff, vbTab)
+        ElseIf row = 4 Then
+            contrs = Split(buff, vbTab)
+            'for compatibitiy
+            ReDim m_contract_dates(LBound(contrs) To UBound(contrs))
+            For k = LBound(contrs) To UBound(contrs)
+                m_contract_dates(k) = CDate(Val(contrs(k)))
+            Next
+        Else
+            If row = 5 Then
+                m_values = Split(buff, vbTab)
+                If Not fireEvents Then Exit Do
+            End If
+            
+            Values = Split(buff, vbTab)
+            Call Notify(curveNm, granularity, CDate(Val(oprs(row - 5))), m_contract_dates, Values, row - 4)
+        End If
+        
+    Loop
+    Call file.Close
+
+    If fireEvents Then Call Notify(curveNm, granularity, Now, m_contract_dates, m_values, 0)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        
+    End If
+    
+    On Local Error GoTo -1
+    Exit Sub
+End Sub
+
+Private Sub Class_Initialize()
+    Call Clear
+    Call SetFolderInfo
+End Sub
+
+Private Sub Class_Terminate()
+    On Local Error Resume Next
+    
+    Erase m_filter_names
+    Erase m_filter_values
+    
+    If UBound(m_properties) > 0 Then Erase m_properties
+    
+    Erase m_contract_dates
+    Erase m_values
+    
+    On Local Error GoTo 0
+End Sub
+Attribute VB_Name = "CCurveValidation"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Function CreateValidator() As CurveValidator
+    Set CreateValidator = CWorker.CreateCurveValidator()
+End Function
+
+Public Function NewFiltersInstance() As CCurveFilters
+    Set NewFiltersInstance = New CCurveFilters
+End Function
+Attribute VB_Name = "CRepository"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Const F_DONE As Long = &H1
+
+Public Ptr As String
+Public TransactNo As Long
+Public taskID As String
+
+Private m_Status As Long
+
+Public Sub FromString(ByVal strTokens As String)
+ Dim tokens() As String
+ 
+    tokens = Split(strTokens, vbTab)
+    Ptr = tokens(0)
+    TransactNo = Val(tokens(1))
+    taskID = tokens(2)
+    m_Status = Val(tokens(3))
+End Sub
+
+Public Function ToString() As String
+    ToString = Ptr + vbTab + CStr(TransactNo) + vbTab + taskID + vbTab + CStr(m_Status)
+End Function
+
+Public Property Get IsDone() As Boolean
+    IsDone = CDDXHelper.IsFlag(m_Status, F_DONE)
+End Property
+
+Public Property Let IsDone(ByVal value As Boolean)
+    If value Then
+        m_Status = m_Status Or F_DONE
+    Else
+        m_Status = m_Status And (Not F_DONE)
+    End If
+End Property
+Attribute VB_Name = "CWorker"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private FCustomValidators As Collection
+
+Public Function Contains(taskID As String) As Boolean
+ Dim k As Long
+ Dim validator As CurveValidator
+
+    If FCustomValidators Is Nothing Then Exit Function
+
+    For k = FCustomValidators.count To 1 Step -1
+        Set validator = FCustomValidators.Item(k)
+        Contains = validator.Contains(DDX_PID, taskID)
+        If Contains Then Exit Function
+    Next
+End Function
+
+Public Sub ReleaseCurveValidator(validator As CurveValidator)
+ Dim k As Long
+
+    If FCustomValidators Is Nothing Then Exit Sub
+    
+    For k = FCustomValidators.count To 1 Step -1
+        If ObjPtr(FCustomValidators.Item(k)) = ObjPtr(validator) Then
+            FCustomValidators.Remove k
+            Exit For
+        End If
+    Next
+End Sub
+
+Public Sub NotifyCustomValidator(ByVal taskID As String)
+ Dim k As Long
+ Dim fo As Object
+ Dim fn As String
+ Dim Ptr
+ Dim errNo As Long
+ Dim errMsg As String
+ Dim exp As String
+ Dim repository As CRepository
+ Dim fpath As String
+ 
+    If FCustomValidators Is Nothing Then
+        Call CDDXUtility.DeleteTempFilesByTaskId(taskID)
+        Exit Sub
+    End If
+    
+    If FCustomValidators.count = 0 Then
+        Call CDDXUtility.DeleteTempFilesByTaskId(taskID)
+        Exit Sub
+    End If
+    
+    If Len(taskID) > 0 Then
+        fn = GetFilePath(taskID)
+        Set fo = CDDXFile.OpenFile(fn)
+        
+        Set repository = New CRepository
+        Call repository.FromString(CDDXFile.ReadLine(fo))
+    
+        Ptr = Val(repository.Ptr)
+        
+        errNo = Int(Val(CDDXFile.ReadLine(fo)))
+        errMsg = CDDXFile.ReadLine(fo)
+        
+        If errNo = ZE_CV_OK Then
+            fpath = CDDXFile.ReadLine(fo)
+        End If
+        
+        Call CDDXFile.CloseFile(fo, fn, exp)
+        Set fo = Nothing
+    
+        For k = FCustomValidators.count To 1 Step -1
+            If ObjPtr(FCustomValidators.Item(k)) = Ptr Then
+                Call FCustomValidators.Item(k).Notify(DDX_PID, repository, fpath, errNo, errMsg)
+                Exit For
+            End If
+        Next
+        
+    Else
+        For k = FCustomValidators.count To 1 Step -1
+            Call FCustomValidators.Item(k).Notify(DDX_PID, Nothing, fpath, ZE_CV_CANCELLED, vbNullString)
+        Next
+    End If
+End Sub
+
+Public Function CreateCurveValidator() As CurveValidator
+    Set CreateCurveValidator = New CurveValidator
+    
+    If FCustomValidators Is Nothing Then
+        Set FCustomValidators = New Collection
+    End If
+    FCustomValidators.Add CreateCurveValidator
+End Function
+
+Public Function GetFilePath(ByVal taskID As String) As String
+    GetFilePath = CDDXLib.DefaultZEWSProxy(DDX_PID).HelperResultsetFileName(taskID, 0)
+End Function
+Attribute VB_Name = "CurveValidator"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Const ACTION_UPLOAD As Long = &H1
+Private Const ACTION_ACCEPT As Long = &H4
+
+Public Event OnCompleted(sender As Object, ByVal transactionNo As Long, ByVal outputFilePath As String, ByVal errNo As Long, ByVal errMsg As String)
+
+Private m_Repository As New Scripting.Dictionary
+
+Private Sub FreeResults(ByVal TransactNo As Long)
+ Dim repository As CRepository
+ 
+    If m_Repository Is Nothing Then Exit Sub
+    
+    If Not m_Repository.Exists(TransactNo) Then Exit Sub
+    Set repository = m_Repository.Item(TransactNo)
+
+    Call m_Repository.Remove(TransactNo)
+End Sub
+
+Private Function GetRepository(ByVal TransactNo As Long) As CRepository
+    If m_Repository Is Nothing Then Exit Function
+    If Not m_Repository.Exists(TransactNo) Then Exit Function
+
+    Set GetRepository = m_Repository.Item(TransactNo)
+End Function
+
+Private Sub Add(repository As Object)
+    If m_Repository.Exists(repository.TransactNo) Then Call m_Repository.Remove(repository.TransactNo)
+    Call m_Repository.Add(repository.TransactNo, repository)
+End Sub
+
+Private Sub AbortValidation(ByVal TransactNo As Long)
+ Dim repository As CRepository
+
+    Set repository = GetRepository(TransactNo)
+    If repository Is Nothing Then Exit Sub
+
+    'Call CDDXLib.DefaultZEWSProxy(DDX_PID).ValidateCurves(ACTION_CANCEL, repository.taskID, vbNullString, vbNullString)
+    Call FreeResults(TransactNo)
+End Sub
+
+Public Function Contains(ByVal pid As String, ByVal taskID As String) As Boolean
+ Dim repository As CRepository
+ Dim k As Long
+ 
+    If Not CDDXApp.IsPX(pid) Then Exit Function
+    
+    For k = 0 To m_Repository.count - 1
+        Set repository = m_Repository.Item(m_Repository.Keys(k))
+        
+        If StrComp(repository.taskID, taskID) = 0 Then
+            Contains = True
+            Exit Function
+        End If
+    Next
+End Function
+
+Public Sub Notify(ByVal pid As String, repository As Object, ByVal xmlfile As String, ByVal errNo As Long, ByVal errMsg As String)
+ Dim k As Long
+ 
+    If Not CDDXApp.IsPX(pid) Then Exit Sub
+    
+    If repository Is Nothing Then
+        For k = 0 To m_Repository.count - 1
+            Set repository = m_Repository.Item(m_Repository.Keys(k))
+            
+            repository.IsDone = True
+            Call Add(repository)
+            RaiseEvent OnCompleted(Me, repository.TransactNo, xmlfile, errNo, errMsg)
+        Next
+        Exit Sub
+    End If
+    
+    If Not m_Repository.Exists(repository.TransactNo) Then Exit Sub
+    
+    If StrComp(m_Repository.Item(repository.TransactNo).taskID, repository.taskID) <> 0 Then Exit Sub
+    
+    repository.IsDone = True
+    Call Add(repository)
+    
+    On Error GoTo OOPS
+    
+    RaiseEvent OnCompleted(Me, repository.TransactNo, xmlfile, errNo, errMsg)
+    
+    Call FreeResults(repository.TransactNo)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        CDDXApp.StatusMessage = Err.Description
+    End If
+    
+    On Error GoTo 0
+    Exit Sub
+End Sub
+
+'Async API : to upload & retrieve validation results
+Public Sub Upload(ByVal TransactNo As Long, dataFilePath As String)
+ Dim repository As CRepository
+ Dim task As String
+ 
+    If Not CDDXLogin.loggedin Then
+        Err.Raise vbObjectError + 1, , "Not signed in yet"
+    End If
+    
+    If dataFilePath = vbNullString Then
+        Err.Raise vbObjectError + 1, , "Data file not specified"
+    End If
+
+    Call AbortValidation(TransactNo)
+
+    task = CDDXHelper.NewGUID()
+    
+    Set repository = New CRepository
+    With repository
+        .Ptr = CStr(ObjPtr(Me))
+        .TransactNo = TransactNo
+        .taskID = task
+    End With
+    
+    Call Add(repository)
+    Call CDDXApp.StartMonitor(DDX_PID, task, vbNullString)
+
+    Call CDDXLib.DefaultZEWSProxy(DDX_PID).VRCall(ACTION_UPLOAD, task, dataFilePath, repository.ToString())
+End Sub
+
+'to see whether the task is done
+Public Function IsDone(ByVal TransactNo As Long) As Boolean
+ Dim repository As CRepository
+ 
+    Set repository = GetRepository(TransactNo)
+    If Not repository Is Nothing Then IsDone = repository.IsDone
+End Function
+
+' Sync mode API : to accept
+Public Sub Accept(ByVal inFilePath As String, ByRef outFilePath As String, ByRef errNumber As Long, ByRef errMessage As String)
+ Dim task As String
+ Dim fname As String
+ Dim fo As Object
+ Dim exp As String
+ 
+    If Not CDDXLogin.loggedin Then
+        Err.Raise vbObjectError + 1, , "Not signed in yet"
+    End If
+    
+    If inFilePath = vbNullString Then
+        Err.Raise vbObjectError + 1, , "Data file not specified"
+    End If
+
+    task = CDDXHelper.NewGUID()
+    
+    fname = CDDXLib.DefaultZEWSProxy(DDX_PID).VRCall(ACTION_ACCEPT, task, inFilePath, vbNullString)
+    
+    Set fo = CDDXFile.OpenFile(fname)
+    
+    Call CDDXFile.ReadLine(fo)
+
+    errNumber = Int(Val(CDDXFile.ReadLine(fo)))
+    errMessage = CDDXFile.ReadLine(fo)
+    
+    If errNumber = ZE_CV_OK Then
+        outFilePath = CDDXFile.ReadLine(fo)
+    Else
+        outFilePath = vbNullString
+    End If
+    
+    Call CDDXFile.CloseFile(fo, fname, exp)
+    Set fo = Nothing
+End Sub
+
+Public Function IsErrServerRelated(ByVal errNumber As Long) As Boolean
+    IsErrServerRelated = CDDXHelper.IsFlag(errNumber, ZE_CV_MASK_SERVER)
+End Function
+
+Public Function IsErrLocalRelated(ByVal errNumber As Long) As Boolean
+    IsErrLocalRelated = CDDXHelper.IsFlag(errNumber, ZE_CV_MASK_SYSTEM)
+End Function
+
+Public Function GetErrorNumber(ByVal errNumber As Long) As Long
+    GetErrorNumber = (errNumber And (Not ZE_CV_MASK_SYSTEM) And (Not ZE_CV_MASK_SERVER))
+End Function
+
+Private Sub Class_Terminate()
+    If Not m_Repository Is Nothing Then
+
+        Call m_Repository.RemoveAll
+        Set m_Repository = Nothing
+    End If
+    
+    Call CWorker.ReleaseCurveValidator(Me)
+End Sub
+
+Attribute VB_Name = "MainSheet"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "ModFileStructures"
+Option Explicit
+Option Private Module
+
+'------------ ACCEPT ------------
+'//ddx/*
+'
+'         <CurveLevel>
+'            <curve>
+'                <name>...</name>
+'                <comment>...</comment>
+'                <opr>...</opr>
+'                <opr>...</opr>
+'                ...
+'            </curve>
+'            ...
+'         </CurveLevel>
+'
+'         <ObservationLevel>
+'            <curve>
+'                <name>...</name>
+'                <opr>...</opr>
+'                <comment>...</comment>
+'                <observation>...</observation>
+'                <observation>...</observation>
+'                ...
+'            </curve>
+'            ...
+'         </ObservationLevel>
+'
+'         <DataPointLevel>
+'            <curve>
+'                <name>...</name>
+'                <opr>...</opr>
+'                <observation>
+'                    <name> ... </name>
+'                    <comment>...</comment>
+'                    <contract>
+'                        <granularity>...</granularity>
+'                        <date>...</date>
+'                        <date>...</date>
+'                        ...
+'                    </contract>
+'                    <contract>
+'                        ...
+'                    </contract>
+'                    ...
+'                </observation>
+'                ...
+'            </curve>
+'            ...
+'         </DataPointLevel>
+
+
+'------------ UPLOAD ------------
+'//ddx/*
+'
+'        <Futures>
+'            <curve>
+'                <name>...</name>
+'                <opr>...</opr>
+'                <data>
+'                    <ct> ... </ct> <!--- curve type --->
+'                    <gn> ... </gn> <!--- granularity name --->
+'                    <dt> ... </dt> <!--- contract date --->
+'                    <dv> ... </dv> <!--- data value --->
+'                </data>
+'
+'                ...
+'            </curve>
+'            ...
+'        </Futures>
+'
+'        <TimeSeries>
+'            <curve>
+'                <name>...</name>
+'                <data>
+'                    <dt>...</dt>   <!--- opr date --->
+'                    <ct> ... </ct> <!--- curve type --->
+'                    <dv> ... </dv> <!--- data value --->
+'                </data>
+'                ...
+'            </curve>
+'            ...
+'        </TimeSeries>
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "ZECurveValidation"
+Option Explicit
+
+Public Const ZE_CV_MASK_SYSTEM As Long = &H10000
+Public Const ZE_CV_MASK_SERVER As Long = &H20000
+        
+Public Const ZE_CV_OK As Long = 0
+Public Const ZE_CV_UNKNOWN As Long = 2
+Public Const ZE_CV_BAD_INPUTS As Long = 3
+Public Const ZE_CV_UPLOAD_FAILURE As Long = 4
+Public Const ZE_CV_NO_DEPENDENT_CURVE As Long = 5
+Public Const ZE_CV_FAILED_TO_RETRIEVE_CURVE_VALUE As Long = 6
+Public Const ZE_CV_FAILED_TO_RETRIEVE_CURVE_STATUS As Long = 7
+Public Const ZE_CV_TIMEOUT As Long = 9
+Public Const ZE_CV_CANCELLED As Long = 10
+Public Const ZE_CV_BAD_RETURN As Long = 11
+
+
+Attribute VB_Name = "ZEWSXml"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Event OnRead(ByVal seq As Long, ByVal IsAttribute As Boolean, ByVal name As String, ByVal value As String, ByVal userData As Long)
+Public Event OnWrite(ByVal seq As Long, ByRef IsAttribute As Boolean, ByRef name As String, ByRef value As String, ByVal userData As Long)
+
+Private m_xmlDoc As MSXML2.DOMDocument60
+Private m_nodeHash As Scripting.Dictionary
+
+Private Sub NewDoc()
+' Dim ver As MSXML2.IXMLDOMProcessingInstruction
+    Call m_nodeHash.RemoveAll
+    Set m_xmlDoc = New MSXML2.DOMDocument60
+    m_xmlDoc.preserveWhiteSpace = True
+'    Set ver = m_xmlDoc.createProcessingInstruction("xml", "version=" & """1.0""")
+'    Call m_xmlDoc.appendChild(ver)
+End Sub
+
+Public Sub CreateRootElement(ByVal rootName As String, ByVal VersionNumber As String)
+ Dim rootNode As MSXML2.IXMLDOMElement
+    
+    Call NewDoc
+    
+'    xmlDecl = m_xmlDoc.CreateXmlDeclaration("1.0", "utf-8", Null)
+    Set rootNode = m_xmlDoc.createElement(rootName)
+    
+    Call rootNode.SetAttribute("Version", VersionNumber)
+'    Call m_xmlDoc.InsertBefore(xmlDecl, m_xmlDoc.DocumentElement)
+    Call m_xmlDoc.appendChild(rootNode)
+End Sub
+
+Public Function Createlement(ByVal parentNode As LongPtr, ByVal elementName As String) As LongPtr '???
+ Dim node As MSXML2.IXMLDOMElement
+
+    If InStr(elementName, "/") > 0 And parentNode = -1 Then
+        Createlement = CreatelementEx(elementName)
+        Exit Function
+    End If
+
+    Set node = m_xmlDoc.createElement(elementName)
+
+    Call GetParentElement(parentNode).appendChild(node)
+
+    Createlement = LUID(node)
+    Call m_nodeHash.Add(CStr(Createlement), node)
+End Function
+
+Public Function Createlement2(ByVal parentNode As MSXML2.IXMLDOMElement, ByVal elementName As String) As MSXML2.IXMLDOMElement
+ Dim node As MSXML2.IXMLDOMElement
+
+    If InStr(elementName, "/") > 0 And (parentNode Is Nothing) Then
+        Set Createlement2 = CreatelementEx2(elementName)
+        Exit Function
+    End If
+    
+    Set node = m_xmlDoc.createElement(elementName)
+    
+    Call IIf(parentNode Is Nothing, m_xmlDoc.DocumentElement, parentNode).appendChild(node)
+            
+    Set Createlement2 = node
+End Function
+
+Private Function CreatelementEx(ByVal elementName As String) As LongPtr
+' Dim path() As String
+ Dim node As MSXML2.IXMLDOMElement
+' Dim tmp As MSXML2.IXMLDOMElement
+' Dim k As Long
+' Dim m As Long
+'
+'    If left(elementName, 1) = "/" Then
+'        elementName = Mid(elementName, 2)
+'    ElseIf right(elementName, 1) = "/" Then
+'        elementName = left(elementName, Len(elementName) - 1)
+'    End If
+'    If Len(elementName) = 0 Then
+'        CreatelementEx = -10
+'        Exit Function
+'    End If
+'
+'    path = Split(elementName, "/")
+'
+'    Set node = m_xmlDoc.DocumentElement
+'
+'    If node.nodeName <> path(0) Then
+'        CreatelementEx = -11
+'        Exit Function
+'    End If
+'
+'    For k = 1 To UBound(path) - 1
+'        Set tmp = Nothing
+'
+'        For m = 0 To node.ChildNodes.length - 1
+'            If node.ChildNodes(m).nodeName = path(k) Then
+'                Set tmp = node.ChildNodes(m)
+'                Exit For
+'            End If
+'        Next
+'
+'        If tmp Is Nothing Then
+'            Set node = tmp
+'        End If
+'    Next
+'
+'    Set tmp = m_xmlDoc.createElement(path(UBound(path)))
+'    Call node.appendChild(tmp)
+'    Set node = tmp
+
+    Set node = CreatelementEx2(elementName)
+    CreatelementEx = LUID(node)
+    Call m_nodeHash.Add(CStr(CreatelementEx), node)
+End Function
+
+Private Function CreatelementEx2(ByVal elementName As String) As MSXML2.IXMLDOMElement
+ Dim path() As String
+ Dim node As MSXML2.IXMLDOMElement
+ Dim tmp As MSXML2.IXMLDOMElement
+ Dim k As Long
+ Dim m As Long
+ 
+    If left(elementName, 1) = "/" Then
+        elementName = Mid(elementName, 2)
+    ElseIf right(elementName, 1) = "/" Then
+        elementName = left(elementName, Len(elementName) - 1)
+    End If
+    If Len(elementName) = 0 Then
+        'CreatelementEx = -10
+        Exit Function
+    End If
+    
+    path = Split(elementName, "/")
+ 
+    Set node = m_xmlDoc.DocumentElement
+            
+    If node.nodeName <> path(0) Then
+        'CreatelementEx = -11
+        Exit Function
+    End If
+    
+    For k = 1 To UBound(path) - 1
+        Set tmp = Nothing
+        
+        For m = 0 To node.ChildNodes.length - 1
+            If node.ChildNodes(m).nodeName = path(k) Then
+                Set tmp = node.ChildNodes(m)
+                Exit For
+            End If
+        Next
+        
+        If tmp Is Nothing Then
+            Set node = tmp
+        End If
+    Next
+
+    Set tmp = m_xmlDoc.createElement(path(UBound(path)))
+    Call node.appendChild(tmp)
+    Set node = tmp
+
+    Set CreatelementEx2 = node
+End Function
+
+Private Function GetParentElement(ByVal parentNode As LongPtr) As MSXML2.IXMLDOMElement
+    If m_nodeHash.Exists(CStr(parentNode)) Then
+        Set GetParentElement = m_nodeHash(CStr(parentNode))
+    Else
+        Set GetParentElement = m_xmlDoc.DocumentElement
+    End If
+End Function
+
+Private Function AddToHash(node As MSXML2.IXMLDOMElement) As LongPtr
+    AddToHash = LUID(node)
+    Call m_nodeHash.Add(CStr(AddToHash), node)
+End Function
+ 
+Public Function CreateTextNode(ByVal parentNode As LongPtr, ByVal nodeName As String, ByVal nodeText As String) As LongPtr '???
+ Dim text As MSXML2.IXMLDOMText
+ Dim node As MSXML2.IXMLDOMElement
+
+    Set text = m_xmlDoc.CreateTextNode(nodeText)
+    Set node = m_xmlDoc.createElement(nodeName)
+    Call node.appendChild(text)
+
+    Call GetParentElement(parentNode).appendChild(node)
+    CreateTextNode = AddToHash(node)
+End Function
+
+Public Function CreateTextNode2(parentNode As MSXML2.IXMLDOMElement, ByVal nodeName As String, ByVal nodeText As String) As MSXML2.IXMLDOMElement
+ Dim text As MSXML2.IXMLDOMText
+ Dim node As MSXML2.IXMLDOMElement
+
+    Set text = m_xmlDoc.CreateTextNode(nodeText)
+    Set node = m_xmlDoc.createElement(nodeName)
+    Call node.appendChild(text)
+    
+    If parentNode Is Nothing Then
+        Call m_xmlDoc.DocumentElement.appendChild(node)
+    Else
+        Call parentNode.appendChild(node)
+    End If
+    
+    Set CreateTextNode2 = node
+End Function
+
+Public Function ToString() As String
+    ToString = CDDXLib.DefaultZEWSProxy(DDX_PID).BeautifyXML(m_xmlDoc.xml)
+End Function
+
+Public Function LoadXML(ByVal xml As String) As Boolean
+    Call NewDoc
+    If Len(xml) = 0 Then Exit Function
+
+    On Error GoTo OOPS
+    
+    LoadXML = m_xmlDoc.LoadXML(xml)
+    
+OOPS:
+    If Err.Number <> 0 Then
+        Call DispErr(Err.Description)
+    End If
+    Exit Function
+End Function
+
+Public Function SelectTexts(ByVal selectPath As String) As String()
+ Dim nodes As MSXML2.IXMLDOMNodeList
+ Dim ret() As String
+ Dim k As Long
+ Dim cnt As Long
+ 
+    Set nodes = m_xmlDoc.SelectNodes(selectPath)
+
+    If nodes Is Nothing Then
+        ReDim ret(0 To 0)
+        SelectTexts = ret
+        Exit Function 'return new string[1]{string.Empty};
+    End If
+    
+    cnt = nodes.length
+    If cnt = 0 Then
+        ReDim ret(0 To 0)
+        SelectTexts = ret
+        Exit Function 'return new string[1]{string.Empty};
+    End If
+    
+    ReDim ret(0 To cnt - 1)
+     
+    For k = 0 To cnt - 1
+        ret(k) = nodes(k).text
+    Next
+    
+    SelectTexts = ret
+End Function
+
+Private Sub DispErr(ByVal errDesc As String)
+    CDDXApp.StatusMessage = errDesc
+    'Debug.Print errDesc
+End Sub
+
+Public Function Load(ByVal filePath As String) As Boolean
+    On Error GoTo OOPS
+    
+    Call NewDoc
+    Load = m_xmlDoc.Load(filePath)
+
+OOPS:
+    If Err.Number <> 0 Then
+        Call DispErr(Err.Description)
+    End If
+    Exit Function
+End Function
+
+'Public Function Save(ByVal filePath As String) As Boolean
+'    On Error GoTo OOPS
+'
+'                XmlWriterSettings settings = new XmlWriterSettings();
+'                settings.Indent = true;
+'                settings.NewLineChars = Environment.NewLine;
+'                using (XmlWriter writer = XmlTextWriter.Create(filePath, settings))
+'                {
+'                    m_xmlDoc.Save(writer);
+'                }
+'                return true;
+'
+'OOPS:
+'    If Err.Number <> 0 Then
+'        Call DispErr(Err.Description)
+'    End If
+'    Exit Function
+'End Function
+
+Public Property Get Version() As String
+    Version = m_xmlDoc.DocumentElement.getAttribute("Version")
+End Property
+
+'Public Function Encode64(ByVal strToEncode As String) As String
+'            byte[] b = System.Text.ASCIIEncoding.ASCII.GetBytes(strToEncode);
+'            string ret = System.Convert.ToBase64String(b);
+'
+'            return ret;
+'End Function
+'
+'Public Function Decode64(ByVal strToDecode As String) As String
+'            byte[] b  = System.Convert.FromBase64String(strToDecode);
+'            string ret = System.Text.ASCIIEncoding.ASCII.GetString(b);
+'
+'            return ret;
+'End Function
+
+'Public Function RemoveNode(ByVal selectPath As String) As Boolean
+'            XmlNode node = _xmlDoc.SelectSingleNode(selectPath);
+'
+'            if (node == null) return false;
+'            if (node.ParentNode == null) return false;
+'            node.ParentNode.RemoveChild(node);
+'            return true;
+'End Function
+'
+Public Function SelectAttribute(ByVal selectPath As String, ByVal attribName As String) As String
+ Dim node As MSXML2.IXMLDOMNode
+ Dim attr As MSXML2.IXMLDOMAttribute
+ 
+    Set node = m_xmlDoc.SelectSingleNode(selectPath)
+    If node Is Nothing Then Exit Function
+
+    Set attr = node.Attributes.getNamedItem(attribName)
+    If attr Is Nothing Then Exit Function
+    
+    SelectAttribute = attr.text
+End Function
+
+'Public Function AddAttribute(ByVal nodeID As LongPtr, ByVal attribName As String, ByVal attribValue As String) As Boolean '???
+' Dim node As MSXML2.IXMLDOMNode
+' Dim attr As MSXML2.IXMLDOMAttribute
+'
+'    Set node = GetParentElement(nodeID)
+'    If node Is Nothing Then Exit Function
+'
+'    Set attr = m_xmlDoc.createAttribute(attribName)
+'    node.Attributes.setNamedItem(attr).text = attribValue
+'
+'    AddAttribute = True
+'End Function
+
+Public Function AddAttribute2(ByVal node As MSXML2.IXMLDOMElement, ByVal attribName As String, ByVal attribValue As String) As Boolean '???
+ Dim attr As MSXML2.IXMLDOMAttribute
+ 
+    Set attr = m_xmlDoc.createAttribute(attribName)
+    node.Attributes.setNamedItem(attr).text = attribValue
+
+    AddAttribute2 = True
+End Function
+
+'Public Function SelectAttributes(ByVal selectPath As String, ByVal attribName As String) As String()
+'            XmlNodeList nodes = _xmlDoc.SelectNodes(selectPath);
+'
+'            if (nodes == null || nodes.Count == 0)
+'            {
+'                return new string[1] { string.Empty };
+'            }
+'
+'            List<string> values = new List<string>();
+'            foreach (XmlElement node in nodes)
+'            {
+'                values.Add(node.HasAttribute(attribName) ? node.GetAttribute(attribName) : string.Empty);
+'            }
+'            return values.ToArray();
+'End Function
+
+Private Function LUID(obj As Object) As LongPtr
+    LUID = ObjPtr(obj)
+End Function
+
+Public Sub ReadXML(ByVal path As String, ByVal userData As Long)
+ Dim nodes As MSXML2.IXMLDOMNodeList
+ Dim seq As Long
+ Dim k As Long
+ Dim n As Long
+ 
+    seq = 1
+    Set nodes = m_xmlDoc.SelectNodes(path)
+    
+    If nodes Is Nothing Then Exit Sub
+    If nodes.length = 0 Then Exit Sub
+    
+    For k = 0 To nodes.length - 1
+        For n = 0 To nodes(k).Attributes.length - 1
+            With nodes(k).Attributes(n)
+                RaiseEvent OnRead(seq, True, .nodeName, .text, userData)
+            End With
+        Next
+
+        For n = 0 To nodes(k).ChildNodes.length - 1
+            With nodes(k).ChildNodes(n)
+                RaiseEvent OnRead(seq, False, .nodeName, .text, userData)
+            End With
+        Next
+        
+        seq = seq + 1
+    Next
+End Sub
+
+Public Sub WriteXML(ByVal path As String, ByVal userData As Long)
+ Dim name As String
+ Dim value As String
+ Dim isattrib As Boolean
+ Dim node As MSXML2.IXMLDOMNode
+ Dim tmp As MSXML2.IXMLDOMNode
+ Dim attr As MSXML2.IXMLDOMAttribute
+ Dim itemno As Long
+ 
+    Set node = CreateNode(path)
+    itemno = 0
+        
+    Do
+        name = vbNullString
+        value = vbNullString
+        isattrib = False
+        
+        itemno = itemno + 1
+        RaiseEvent OnWrite(itemno, isattrib, name, value, userData)
+        
+        If name = vbNullString Then Exit Do
+
+        If isattrib Then
+            Set attr = m_xmlDoc.createAttribute(name)
+            node.Attributes.setNamedItem(attr).text = value
+        Else
+            Set tmp = m_xmlDoc.createElement(name)
+            tmp.text = value
+            Call node.appendChild(tmp)
+        End If
+    Loop
+End Sub
+
+Private Function CreateNode(ByVal pathName As String) As MSXML2.IXMLDOMNode
+ Dim path() As String
+ Dim node As MSXML2.IXMLDOMNode
+ Dim tmp As MSXML2.IXMLDOMNode
+ Dim k As Long
+ Dim n As Long
+
+    If left(pathName, 1) = "/" Then
+        pathName = Mid(pathName, 2)
+    ElseIf right(pathName, 1) = "/" Then
+        pathName = left(pathName, Len(pathName) - 1)
+    End If
+    If Len(pathName) = 0 Then Exit Function
+    
+    path = Split(pathName, "/")
+
+    Set node = m_xmlDoc.DocumentElement
+    If node.nodeName <> path(0) Then Exit Function
+
+    For k = LBound(path) + 1 To UBound(path)
+        Set tmp = Nothing
+
+        If k <> UBound(path) Then
+            For n = 0 To node.ChildNodes.length - 1
+                If node.ChildNodes(n).nodeName = path(k) Then
+                    Set tmp = node.ChildNodes(n)
+                    Exit For
+                End If
+            Next
+        End If
+
+        If tmp Is Nothing Then
+            Set tmp = m_xmlDoc.createElement(path(k))
+            Call node.appendChild(tmp)
+            Set node = tmp
+        End If
+    Next
+
+    Set CreateNode = node
+End Function
+
+Public Function SelectNodes(ByVal selectPath As String) As MSXML2.IXMLDOMNodeList
+ Dim nodes As MSXML2.IXMLDOMNodeList
+ 
+    Set nodes = m_xmlDoc.SelectNodes(selectPath)
+
+    If nodes Is Nothing Then Exit Function
+    If nodes.length = 0 Then Exit Function
+    Set SelectNodes = nodes
+End Function
+
+Private Sub Class_Initialize()
+    Set m_nodeHash = New Scripting.Dictionary
+    m_nodeHash.CompareMode = vbBinaryCompare
+End Sub
+
+Private Sub Class_Terminate()
+    Set m_nodeHash = Nothing
+    Set m_xmlDoc = Nothing
+End Sub
+Attribute VB_Name = "modAddin"
+Option Explicit
+Option Private Module
+
+Public Const DDX_PID As String = "29707791-56E7-4930-8118-AAF18BE861EB"
+
+Public Sub Auto_Open()
+    With CBaseEvents
+    End With
+End Sub
+
+
+INQUEST-PP=macro

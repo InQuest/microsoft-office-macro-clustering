@@ -1,0 +1,1005 @@
+Attribute VB_Name = "LicenseValidator"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+#Const LATE_BINDING = 1
+Option Explicit
+#If VBA7 Then
+    Private Declare PtrSafe Function GetModuleUsage% Lib "kernel32" (ByVal hModule%)
+    Private Declare PtrSafe Function apiGetComputerName Lib "kernel32" Alias "GetComputerNameA" (ByVal lpBuffer As String, nSize As Long) As Long
+
+    Private Declare PtrSafe Function OpenProcess Lib "kernel32" (ByVal dwDesiredAccess As LongPtr, ByVal bInheritHandle As LongPtr, ByVal dwProcessId As LongPtr) As Long
+    Private Declare PtrSafe Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As LongPtr, ByVal dwMilliseconds As Long) As Long
+
+    Private Declare PtrSafe Function GetExitCodeProcess Lib "kernel32" (ByVal hProcess As LongPtr, ByRef lpExitCode As LongPtr) As LongPtr
+    
+    Private Declare PtrSafe Function GetShortPathName Lib "Kernel32.dll" Alias "GetShortPathNameW" (ByVal LongPath As LongPtr, ByVal ShortPath As LongPtr, ByVal Size As Long) As Long
+    Private Declare PtrSafe Function SetDllDirectory Lib "Kernel32.dll" Alias "SetDllDirectoryW" (ByVal path As LongPtr) As Long
+    Private Declare PtrSafe Sub LoadClr_x64 Lib "QlmCLRHost_x64.dll" (ByVal clrVersion As String, ByVal verbose As Boolean, ByRef CorRuntimeHost As IUnknown)
+    Private Declare PtrSafe Sub LoadClr_x86 Lib "QlmCLRHost_x86.dll" (ByVal clrVersion As String, ByVal verbose As Boolean, ByRef CorRuntimeHost As IUnknown)
+    
+#Else
+    Private Declare Function GetModuleUsage% Lib "kernel32" (ByVal hModule%)
+    Private Declare Function apiGetComputerName Lib "kernel32" Alias "GetComputerNameA" (ByVal lpBuffer As String, nSize As Long) As Long
+
+    Private Declare Function OpenProcess Lib "kernel32" (ByVal dwDesiredAccess As Long, ByVal bInheritHandle As Long, ByVal dwProcessId As Long) As Long
+    Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
+
+    Private Declare Function GetExitCodeProcess Lib "kernel32" (ByVal hProcess As Long, ByRef lpExitCode As Long) As Long
+
+    Private Declare Function GetShortPathName Lib "Kernel32.dll" Alias "GetShortPathNameW" (ByVal LongPath As Long, ByVal ShortPath As Long, ByVal Size As Long) As Long
+    Private Declare Function SetDllDirectory Lib "Kernel32.dll" Alias "SetDllDirectoryW" (ByVal path As Long) As Long
+        
+    Private Declare Sub LoadClr_x64 Lib "QlmCLRHost_x64.dll" (ByVal clrVersion As String, ByVal verbose As Boolean, ByRef CorRuntimeHost As IUnknown)
+    Private Declare Sub LoadClr_x86 Lib "QlmCLRHost_x86.dll" (ByVal clrVersion As String, ByVal verbose As Boolean, ByRef CorRuntimeHost As IUnknown)
+#End If ' WinAPI Declarations
+
+
+' Constants
+Const SYNCHRONIZE = &H100000
+Const INFINITE = &HFFFFFFFF
+Const MaxLong = 2147483647
+Const IntOffset = 65536
+Const LongOffset = 4294967296#
+Const MaxInt = 32767
+
+' QLM Enums required when using late binding
+Public Enum ELicenseStatus
+    ELicenseStatus_EKeyPermanent = 2
+    ELicenseStatus_EKeyDemo = 4
+    ELicenseStatus_EKeyInvalid = 8
+    ELicenseStatus_EKeyProductInvalid = 16
+    ELicenseStatus_EKeyVersionInvalid = 32
+    ELicenseStatus_EKeyExpired = 64
+    ELicenseStatus_EKeyTampered = 128
+    ELicenseStatus_EKeyMachineInvalid = 256
+    ELicenseStatus_EKeyNeedsActivation = 512
+    ELicenseStatus_EKeyExceededAllowedInstances = 1024
+    ELicenseStatus_EKeyRevoked = 2048
+End Enum
+
+Public Enum EStoreKeysTo
+    EStoreKeysTo_EFile = 0
+    EStoreKeysTo_ERegistry = 1
+End Enum
+    
+Public Enum ELicenseType
+    ELicenseType_PermanentGeneric = 71
+    ELicenseType_Generic = 71
+    ELicenseType_Evaluation = 69
+    ELicenseType_Activation = 65
+    ELicenseType_ComputerName = 67
+    ELicenseType_UserDefined = 85
+End Enum
+
+Public Enum EComputerType
+    EComputerType_none = 0
+    EComputerType_PC = 1
+    EComputerType_VM = 2
+End Enum
+
+Public Enum ELicenseModel
+    ELicenseModel_none = 0
+    ELicenseModel_permanent = 1
+    ELicenseModel_trial = 2
+    ELicenseModel_subscription = 3
+End Enum
+
+Public Enum EStoreKeysOptions
+    EStoreKeysOptions_EStoreKeysPerUser = 1
+    EStoreKeysOptions_EStoreKeysPerMachine = 2
+    EStoreKeysOptions_EStoreKeysPerUserAndMachine = 3
+End Enum
+
+Public Enum ELicenseEngineLibrary
+    ELicenseEngineLibrary_DotNet = 1
+    ELicenseEngineLibrary_Cplusplus = 2
+    ELicenseEngineLibrary_Both = 3
+End Enum
+
+Public Enum ELicenseBinding
+    ELicenseBinding_ComputerName = 0
+    ELicenseBinding_Generic = 1
+    ELicenseBinding_UserDefined = 2
+    ELicenseBinding_MacAddress = 3
+    ELicenseBinding_VolumeSerialNumber = 4
+    ELicenseBinding_MotherBoardSerialNumber = 5
+    ELicenseBinding_ActiveDirectoryComputerDomain = 6
+    ELicenseBinding_ActiveDirectoryAppDomain = 7
+    ELicenseBinding_SystemManagementBiosUuid = 8
+End Enum
+
+Public Enum EOfflinePeriodExceededAction
+    EOfflinePeriodExceededAction_DoNothing = -1
+    EOfflinePeriodExceededAction_ExitApp = 0
+    EOfflinePeriodExceededAction_FireEvent = 1
+    EOfflinePeriodExceededAction_ThrowException = 2
+End Enum
+
+Public Enum EServerErrorCode
+        NoError = 0
+
+        ' Request Errors: 1 - 99
+        RequestBlocked_Error = 1                               ' A method call failed - generic error
+        RequestBlocked_TimeDifferenceWithServer = 2            ' A method call failed because the time between the server and the client exceeds the allowed threshold (10 minutes)
+        RequestBlocked_IpRestriction = 3                       ' A method call failed because of IP restrictions configured in the Server Properties
+        RequestBlocked_FailedToDecrypt = 4                     ' A method call failed because QLM failed to decrypt the data.
+        RequestBlocked_InvalidFormat = 5                       ' A method call failed because the encrypted data was not in the expected format.
+        RequestBlocked_EmptyData = 6                           ' A method call failed because the data sent to the server was empty.
+        RequestBlocked_OperationDisabled = 7                   ' A method call failed because the operation was disabled in the License server security settings
+        RequestBlocked_AuthenticationError = 8                 ' A method call failed because the authentication verification failed
+
+        ' Communication Errors: 100 - 199
+        ConnectionToServer_Error = 100                                 ' A connection to the server failed - generic error
+        ConnectionToServer_Failed = 101                        ' failed to connect to the license server
+        ConnectionToServer_TimeDifferenceExceedsThreshold = 102 ' The time between the server and the client exceeds the allowed threshold (24 hours)
+
+        
+        ' License Errors: 200 - 1899
+        License_Error = 200                                    ' generic license error
+        License_Revoked = 201                                  ' the license key is revoked
+        License_Illegal = 202                                  ' the license key is illegal
+        License_NotFound = 203                                 ' the license key was not found on the server
+        License_NoProduct = 204                                ' no product associated to this license was found
+        License_NotValid = 205                                 ' the license key is not valid
+        License_NotProvided = 206                              ' the license key was not provided
+        License_AlreadyActivatedOnAnotherSystem = 207          ' the license key is already activated on another system
+        License_MissingArgument = 208                          ' a required argument is missing
+        License_Expired = 209                                  ' the license has expired
+        License_NoMoreActivations = 210                        ' no more activations are available
+        License_ActivationKeyForWrongVersion = 211              ' the activation key is for another version than the one the user is running
+        License_ExceededMaxReleases = 212                      ' the license key is already activated on another system
+        License_ExceededNumberOfTrialLicensesPerClient = 213   ' exceeded the number of trial licenses allowed per client
+        License_ExceededMaxActivationsPerSystem = 214          ' exceeded the maximum number of activations per system
+
+        ' Customer Errors: 1900 - 1999
+        Customer_Error = 1900                                  ' generic customer error
+        Customer_Exists = 1901                                 ' cannot add a customer that already exists
+        Customer_Add_Error = 1902                              ' failed to add a new customer
+        Customer_Cannot_Update_Builtin_Customer = 1903         ' cannot update the built-in None customer
+        Customer_NotFound = 1904                               ' the customer was not found
+
+        ' DB Errors: 2000-2099
+        DB_Connection_Failed = 2000                            ' the connection to the DB failed
+        DB_Schema_Upgrade_Error = 2001                         ' error when upgrading the DB schema
+
+        ' Misc Errors: 2100-2199
+        Email_Error = 2100                                     ' Failed to send an email
+        Sms_Error_NotConfigured = 2101                         ' SMS messaging is not configured
+        Sms_Error_Sending = 2102                               ' SMS messaging - error sending a message
+
+        UnknownError = 3000
+End Enum
+' Class variables
+
+
+Dim m_license As Object
+' You can change m_license to be of type IQlmLicense during development for intellisense
+'Dim m_license As IQlmLicense
+
+Dim m_activationKey As String
+Dim m_computerKey As String
+
+
+Dim m_isEvaluation As Boolean
+Dim m_evaluationExpired As Boolean
+Dim m_evaluationRemainingDays As Integer
+Dim m_wrongProductVersion As Boolean
+
+Dim m_homeDir As String
+
+Dim m_customData1 As String
+Dim m_customData2 As String
+Dim m_customData3 As String
+
+
+Public Sub Class_Initialize()
+
+    m_isEvaluation = False
+    m_evaluationExpired = False
+    m_evaluationRemainingDays = -1
+    m_wrongProductVersion = False
+
+End Sub
+
+Public Sub InitializeLicense(ByVal homeDir As String, Optional settingsFile As String)
+
+    m_homeDir = homeDir
+    
+    Set m_license = GetQlmLicense()
+
+    ' If you are using the QLM License Wizard, you can load the product definition from the settings.xml file generated
+    ' by the Protect Your App Wizard.
+    ' To load the settings from the XML file, call the license.LoadSettings function.
+
+    If settingsFile <> "" Then
+    
+        m_license.LoadSettings (settingsFile)
+        
+        
+        m_license.RsaPublicKey = "<RSAKeyValue><Modulus>uZsys/30c2wfP4ywq/Paxmztc/+p8vCgMzxHpguP3AMOtbUFMWC8RDhjdzQE5AuNXChVnp9IAs4MNKWMoVwfVLyDXVlVPaFKTPIbDmUMtz/8t0C4TOXcOTMMEPmvKvg8nolHWfdxJeF5jfOdDl/3TNtgATkSUDiT1ltLR6MaG9s=</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>"
+        
+        Dim errorMessage As String
+        errorMessage = ""
+    
+        If m_license.ValidateSettingsFile(settingsFile, errorMessage) = False Then
+            Err.Raise 1, "LicenseValidator", errorMessage
+        End If
+        
+    Else
+
+    
+        m_license.DefineProduct 1, "Demo", 1, 0, "DemoKey", "{24EAA3C1-3DD7-40E0-AEA3-D20AA17A6005}"
+        m_license.LicenseEngineLibrary = ELicenseEngineLibrary.ELicenseEngineLibrary_DotNet
+        m_license.PublicKey = "A59Jip0lt73Xig=="
+        m_license.RsaPublicKey = "<RSAKeyValue><Modulus>uZsys/30c2wfP4ywq/Paxmztc/+p8vCgMzxHpguP3AMOtbUFMWC8RDhjdzQE5AuNXChVnp9IAs4MNKWMoVwfVLyDXVlVPaFKTPIbDmUMtz/8t0C4TOXcOTMMEPmvKvg8nolHWfdxJeF5jfOdDl/3TNtgATkSUDiT1ltLR6MaG9s=</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>"
+        m_license.CommunicationEncryptionKey = "{B6163D99-F46A-4580-BB42-BF276A507A14}"
+        m_license.DefaultWebServiceUrl = "http://quicklicensemanager.com/qlmdemov11/qlmLicenseServer/qlmservice.asmx"
+        m_license.StoreKeysLocation = EStoreKeysTo.EStoreKeysTo_ERegistry
+        m_license.StoreKeysOptions = EStoreKeysOptions.EStoreKeysOptions_EStoreKeysPerUserAndMachine
+        m_license.ValidateOnServer = False
+        m_license.PublishAnalytics = False
+        m_license.EvaluationPerUser = True
+        m_license.EnableMultibyte = True
+        m_license.ExpiryDateRoundHoursUp = True
+        m_license.EnableSoapExtension = True
+        m_license.EnableClientLanguageDetection = True
+         
+    End If
+End Sub
+
+Public Function ValidateLicenseAtStartup(ByRef computerID As String, ByRef needsActivation As Boolean, ByRef returnMsg As String) As Boolean
+
+    ValidateLicenseAtStartup = ValidateLicenseAtStartupEx(computerID, ELicenseBinding_UserDefined, needsActivation, returnMsg)
+
+End Function
+
+Public Function ValidateLicenseAtStartupByBinding(ByVal licenseBinding As ELicenseBinding, ByRef needsActivation As Boolean, ByRef returnMsg As String) As Boolean
+
+    ValidateLicenseAtStartupByBinding = ValidateLicenseAtStartupEx("", licenseBinding, needsActivation, returnMsg)
+End Function
+
+''' <remarks>Call ValidateLicenseAtStartup when your application is launched.
+''' If this function returns false, exit your application.
+''' </remarks>
+''' <summary>
+''' Validates the license when the application starts up.
+''' The first time a license key is validated successfully,
+''' it is stored in a hidden file on the system.
+''' When the application is restarted, this code will load the license
+''' key from the hidden file and attempt to validate it again.
+''' If it validates succesfully, the function returns true.
+''' If the license key is invalid, expired, etc, the function returns false.
+''' </summary>
+Public Function ValidateLicenseAtStartupEx(ByRef computerID As String, ByVal licenseBinding As ELicenseBinding, ByRef needsActivation As Boolean, ByRef errorMsg As String) As Boolean
+
+    errorMsg = ""
+    needsActivation = False
+
+    Dim storedActivationKey As String
+    Dim storedComputerKey As String
+    Dim serverUpdateRequiresReactivation As Boolean
+
+    storedActivationKey = ""
+    storedComputerKey = ""
+    serverUpdateRequiresReactivation = False
+
+    Dim retReadKeys As Boolean
+
+
+    retReadKeys = m_license.ReadKeys(m_activationKey, m_computerKey)
+
+    If storedActivationKey <> "" Then
+        m_activationKey = storedActivationKey
+    End If
+
+    If storedComputerKey <> "" Then
+        m_computerKey = storedComputerKey
+    End If
+
+    If m_activationKey = "" And m_computerKey = "" Then
+        If m_license.EvaluationLicenseKey = "" Then
+            errorMsg = "No license key was found."
+            ValidateLicenseAtStartupEx = False
+            Exit Function
+        Else
+            m_activationKey = m_license.EvaluationLicenseKey
+        End If
+    End If
+
+    ValidateLicenseAtStartupEx = ValidateLicense(m_activationKey, m_computerKey, computerID, licenseBinding, needsActivation, errorMsg)
+
+    If ValidateLicenseAtStartupEx = True And m_license.ValidateOnServer Then
+        Dim serverMessage As String
+        Dim errorCode As EServerErrorCode
+        Dim li As Object
+
+        Set li = GetLicenseInfo
+        serverMessage = ""
+
+        ' When ValidateLicenseOnServer Is Not able to contact the License Server
+            '  If MaxDaysOffline Is set to -1, ValidateLicenseOnServer will aways return true, connectionSuccessfull will be false.
+            '  If MaxDaysOffline Is set to a specific value, say 5 days, ValidateLicenseOnServer will return true if no connection was establihed for <= 5 days
+            '  otherwise it will return false.
+
+        If (m_license.ValidateLicenseOnServerEx2("", m_activationKey, m_computerKey, computerID, fOSMachineName(), True, li, errorCode, serverMessage) = False) Then
+            errorMsg = serverMessage
+            ValidateLicenseAtStartupEx = False
+            Exit Function
+        End If
+        
+        serverUpdateRequiresReactivation = (li.NewExpiryDate <> "12:00:00 AM") Or (li.NewFeatures <> vbNullString) Or (li.NewFloatingSeats <> -1)
+    End If
+
+    If ((WrongProductVersion Or EvaluationExpired Or serverUpdateRequiresReactivation) And m_license.ValidateOnServer) Then
+        ValidateLicenseAtStartupEx = ReactivateKey(computerID)
+    End If
+
+
+End Function
+
+Private Function ReactivateKey(ByVal computerID As String)
+
+    Dim newComputerKey As String
+    Dim response As String
+    Dim message As String
+    Dim serverDate As Date
+
+    ReactivateKey = False
+    
+    response = ""
+
+    If m_license.Ping("", response, serverDate) = False Then
+        '' we cannot connect to the server so we cannot do any validation with the server
+        ReactivateKey = False
+        Exit Function
+    End If
+
+    response = ""
+    Call m_license.ReactivateLicense("", m_activationKey, computerID, response)
+    
+    Dim li As Object
+    Set li = GetLicenseInfo
+            
+    If m_license.ParseResults(response, li, message) = True Then
+    
+        newComputerKey = li.ComputerKey
+
+        Dim needsActivation As Boolean
+        Dim returnMsg As String
+        If ValidateLicense(m_activationKey, newComputerKey, computerID, ELicenseBinding_UserDefined, needsActivation, returnMsg) = True Then
+            Call m_license.StoreKeys(m_activationKey, newComputerKey)
+            ReactivateKey = True
+        End If
+    End If
+End Function
+
+
+''' <remarks>Call this function in the dialog where the user enters the license key to validate the license.</remarks>
+''' <summary>
+''' Validates a license key. If you provide a computer key, the computer key is validated.
+''' Otherwise, the activation key is validated.
+''' If you are using machine bound keys (UserDefined), you can provide the computer identifier,
+''' otherwise set the computerID to an empty string.
+''' </summary>
+''' <param name="activationKey">Activation key</param>
+''' <param name="computerKey">Computer key</param>
+''' <param name="computerID">Unique computer identifier</param>
+''' <param name="errorMsg">returned error message</param>
+
+Public Function ValidateLicense(ByVal p_activationKey As String, ByVal p_computerKey As String, ByRef computerID As String, ByVal licenseBinding As ELicenseBinding, ByRef needsActivation As Boolean, ByRef errorMsg As String) As Boolean
+    Dim nStatus As Integer
+    Dim licenseKey As String
+    Dim ret As Boolean
+
+    needsActivation = False
+    m_isEvaluation = False
+    m_evaluationExpired = False
+    m_evaluationRemainingDays = -1
+    m_wrongProductVersion = False
+
+
+    If p_computerKey <> "" Then
+        licenseKey = p_computerKey
+    ElseIf p_activationKey <> "" Then
+        licenseKey = p_activationKey
+    Else
+        ValidateLicense = False
+        Exit Function
+    End If
+
+
+    If licenseBinding = ELicenseBinding_UserDefined Then
+        errorMsg = m_license.ValidateLicenseEx(licenseKey, computerID)
+    Else
+        errorMsg = m_license.ValidateLicenseEx3(licenseKey, licenseBinding, False, False)
+        computerID = m_license.GetComputerID(licenseBinding)
+    End If
+
+    nStatus = m_license.GetStatus()
+
+    If IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyInvalid) Or _
+        IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyProductInvalid) Or _
+        IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyMachineInvalid) Or _
+        IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyExceededAllowedInstances) Or _
+        IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyTampered) Then
+
+        ' the key is invalid
+        ret = False
+
+    ElseIf (IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyVersionInvalid)) Then
+        m_wrongProductVersion = True
+        ret = False
+
+    ElseIf (IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyDemo)) Then
+
+        m_isEvaluation = True
+
+        If (IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyExpired)) Then
+            ' the key has expired
+            ret = False
+            m_evaluationExpired = True
+        Else
+            ' the demo key is still valid
+            ret = True
+            m_evaluationRemainingDays = m_license.DaysLeft
+        End If
+
+    ElseIf (IsTrue(nStatus, ELicenseStatus.ELicenseStatus_EKeyPermanent)) Then
+        ' the key is OK
+        ret = True
+    End If
+
+    If ret = True Then
+        If m_license.LicenseType = ELicenseType.ELicenseType_Activation Then
+            needsActivation = True
+            ret = False
+        End If
+    End If
+
+    ValidateLicense = ret
+
+
+End Function
+
+
+''' <summary>
+''' Deletes the license keys stored on the computer.
+''' </summary>
+Public Sub DeleteKeys()
+    Call m_license.DeleteKeys
+End Sub
+
+Public Sub DeleteAllKeys()
+
+    Dim saveLocation As EStoreKeysTo
+    saveLocation = m_license.StoreKeysLocation
+
+    m_license.StoreKeysLocation = EStoreKeysTo_EFile
+    m_license.DeleteKeys
+
+    m_license.StoreKeysLocation = EStoreKeysTo_ERegistry
+    m_license.DeleteKeys
+
+    m_license.StoreKeysLocation = saveLocation
+
+
+End Sub
+
+Public Sub PublishAnalyticsToServer(computerID As String, customAnalyticsData1 As String, customAnalyticsData2 As String, customAnalyticsData3 As String)
+
+    If m_license.PublishAnalytics Then
+        
+        Dim ret As Boolean
+        Dim analytics As Object
+        Set analytics = GetAnalytics
+        
+        analytics.QlmLicenseObject = m_license
+    
+        Dim errorMessage As String
+        
+        Dim installID As String
+        installID = analytics.ReadInstallID(errorMessage)
+        
+        Dim version As String
+        
+        #If QLM_VB = "VB6" Then
+            version = App.Major & "." & App.Minor
+        #Else
+            version = Application.version
+        #End If
+    
+        If Len(installID) = 0 Then
+            
+            ret = analytics.AddInstallEx(version, analytics.GetOperatingSystem(), _
+                                    fOSMachineName(), computerID, m_activationKey, m_computerKey, _
+                                    m_license.IsEvaluation(), m_license.ProductName, _
+                                    m_license.MajorVersion, m_license.MinorVersion, _
+                                    customAnalyticsData1, customAnalyticsData2, customAnalyticsData3, _
+                                    installID)
+    
+            If ret = True Then
+                analytics.WriteInstallID installID, errorMessage
+            End If
+        Else
+            ret = analytics.UpdateInstallEx(installID, version, analytics.GetOperatingSystem(), _
+                                        fOSMachineName(), computerID, m_activationKey, _
+                                        m_computerKey, m_license.IsEvaluation, m_license.ProductName, _
+                                        m_license.MajorVersion, m_license.MinorVersion, _
+                                        customAnalyticsData1, customAnalyticsData2, customAnalyticsData3)
+        End If
+    End If
+End Sub
+
+Public Sub UnpublishAnalyticsFromServer()
+        
+    If m_license.PublishAnalytics Then
+       
+        Dim analytics As Object
+        Set analytics = GetAnalytics
+        
+        analytics.QlmLicenseObject = m_license
+
+        Dim installID As String
+        Dim errorMessage As String
+        installID = analytics.ReadInstallID(errorMessage)
+
+        If Len(installID) > 0 Then
+            If analytics.RemoveInstall(installID, errorMessage) = True Then
+            End If
+        End If
+
+    End If
+End Sub
+
+Public Property Get ActivationKey() As String
+    ActivationKey = m_activationKey
+End Property
+
+
+
+Public Property Get ComputerKey() As String
+    ComputerKey = m_computerKey
+End Property
+
+Public Property Get LicenseObject() As Object
+    Set LicenseObject = m_license
+End Property
+
+
+Public Property Get IsEvaluation() As Boolean
+    IsEvaluation = m_isEvaluation
+End Property
+
+Public Property Get EvaluationExpired() As Boolean
+    EvaluationExpired = m_evaluationExpired
+End Property
+
+Public Property Get EvaluationRemainingDays() As Integer
+    EvaluationRemainingDays = m_evaluationRemainingDays
+End Property
+
+Public Property Get WrongProductVersion() As Boolean
+    WrongProductVersion = m_wrongProductVersion
+End Property
+
+Public Property Let customData1(ByVal newValue As String)
+    m_customData1 = newValue
+End Property
+
+Public Property Let customData2(ByVal newValue As String)
+    m_customData2 = newValue
+End Property
+
+Public Property Let customData3(ByVal newValue As String)
+    m_customData3 = newValue
+End Property
+
+Private Function IsTrue(ByVal nVal1 As Integer, ByVal nVal2 As Integer) As Boolean
+
+    If (((nVal1 And nVal2) = nVal1) Or ((nVal1 And nVal2) = nVal2)) Then
+
+        IsTrue = True
+        Exit Function
+    End If
+
+    IsTrue = False
+
+End Function
+
+'Returns the computername
+Public Function fOSMachineName() As String
+    Dim lngLen As Long, lngX As Long
+    Dim strCompName As String
+    lngLen = 16
+    strCompName = String$(lngLen, 0)
+    lngX = apiGetComputerName(strCompName, lngLen)
+    If lngX <> 0 Then
+        fOSMachineName = Left$(strCompName, lngLen)
+    Else
+        fOSMachineName = ""
+    End If
+End Function
+
+' Add references to the following type libs your VBA project (Tools->References):
+
+    ' For .NET 2.0
+    'C:\windows\Microsoft.NET\Framework\v2.0.50727\mscorlib.tlb
+    'C:\windows\Microsoft.NET\Framework\v2.0.50727\mscoree.tlb
+    'QlmLicenseLib.tlb
+
+    ' For .NET 4.0
+    'C:\windows\Microsoft.NET\Framework\v4.0.30319\mscorlib.tlb
+    'C:\windows\Microsoft.NET\Framework\v4.0.30319\mscoree.tlb
+    'QlmLicenseLib.tlb
+    
+Public Function GetQlmLicense() As Object
+    
+#If LATE_BINDING Then
+    Set GetQlmLicense = GetMyObject(m_homeDir & "\QlmLicenseLib.dll", "QlmLicenseLib.QlmLicense")
+#Else
+    Set GetQlmLicense = New QlmLicense
+#End If
+   
+End Function
+
+Public Function GetLicenseInfo() As Object
+#If LATE_BINDING Then
+    Set GetLicenseInfo = GetMyObject(m_homeDir & "\QlmLicenseLib.dll", "QlmLicenseLib.LicenseInfo")
+#Else
+    Set GetLicenseInfo = New LicenseInfo
+#End If
+ End Function
+ 
+Public Function GetProductProperties() As Object
+#If LATE_BINDING Then
+    Set GetProductProperties = GetMyObject(m_homeDir & "\QlmLicenseLib.dll", "QlmLicenseLib.QlmProductProperties")
+#Else
+    Set GetProductProperties = New QlmProductProperties
+#End If
+ End Function
+ 
+Public Function GetProductProperty() As Object
+#If LATE_BINDING Then
+    Set GetProductProperty = GetMyObject(m_homeDir & "\QlmLicenseLib.dll", "QlmLicenseLib.QlmProductProperty")
+#Else
+    Set GetProductProperty = New QlmProductProperty
+#End If
+ End Function
+
+Public Function GetHardware() As Object
+#If LATE_BINDING Then
+    Set GetHardware = GetMyObject(m_homeDir & "\QlmLicenseLib.dll", "QlmLicenseLib.QlmHardware")
+#Else
+    Set GetHardware = New QlmHardware
+#End If
+
+ End Function
+ 
+ Public Function GetAnalytics() As Object
+ #If LATE_BINDING Then
+    Set GetAnalytics = GetMyObject(m_homeDir & "\QlmLicenseLib.dll", "QlmLicenseLib.QlmAnalytics")
+#Else
+    Set GetAnalytics = New QlmAnalytics
+#End If
+ End Function
+ 
+ Private Function GetMyObject(dllPath As String, dllClass As String) As Object
+    
+    SetPath (m_homeDir)
+    
+    Dim clr As mscoree.CorRuntimeHost
+
+    If Is64BitApp() Then
+        Call LoadClr_x64("v4.0", False, clr)
+    Else
+        Call LoadClr_x86("v4.0", False, clr)
+    End If
+
+    Call clr.Start
+
+    Dim domain As mscorlib.AppDomain
+    Call clr.GetDefaultDomain(domain)
+
+    Dim myInstanceOfDotNetClass As Object
+    Dim handle As mscorlib.ObjectHandle
+
+    Set handle = domain.CreateInstanceFrom(dllPath, dllClass)
+
+    Dim clrObject As Object
+    Set GetMyObject = handle.Unwrap
+
+    Call clr.Stop
+End Function
+
+Private Function SetPath(path As String)
+    Dim LongPath As String
+    Dim ShortPath As String
+    Dim PathLength As Integer
+    
+    ' If the path is not a UNC path, get the short version
+    If Left$(path, 2) <> "\\" Then
+        LongPath = "\\?\" & path
+        ShortPath = String$(260, vbNull)
+    
+        PathLength = GetShortPathName(StrPtr(LongPath), StrPtr(ShortPath), 260)
+        ShortPath = Mid$(ShortPath, 5, CLng(PathLength - 4))
+    
+        Call SetDllDirectory(StrPtr(ShortPath))
+    Else
+        Call SetDllDirectory(StrPtr(path))
+    End If
+End Function
+
+Private Function Is64BitApp() As Boolean
+
+#If Win64 Then
+    Is64BitApp = True
+#End If
+
+End Function
+
+Attribute VB_Name = "QlmHelper"
+Public QlmLicenseKey As String
+Public QlmAbort As Boolean
+Public lv As LicenseValidator
+Public settingsFile As String
+Public homeDir As String
+
+
+
+
+Public Sub CreateQLMTab()
+Dim hFile As Long
+Dim path As String, fileName As String, ribbonXML As String, user As String
+
+hFile = FreeFile
+path = Environ("LOCALAPPDATA") & "\Microsoft\Office\"
+fileName = "Excel.officeUI"
+
+ribbonXML = "<mso:customUI      xmlns:mso='http://schemas.microsoft.com/office/2009/07/customui'>" & vbNewLine
+ribbonXML = ribbonXML + "  <mso:ribbon>" & vbNewLine
+ribbonXML = ribbonXML + "    <mso:qat/>" & vbNewLine
+ribbonXML = ribbonXML + "    <mso:tabs>" & vbNewLine
+ribbonXML = ribbonXML + "      <mso:tab id='reportTab' label='QLM' insertBeforeQ='mso:TabFormat'>" & vbNewLine
+ribbonXML = ribbonXML + "        <mso:group id='reportGroup' label='License' autoScale='true'>" & vbNewLine
+ribbonXML = ribbonXML + "          <mso:button id='runReport' label='License Wizard' " & vbNewLine
+ribbonXML = ribbonXML + "imageMso='AdpDiagramKeys'      onAction='LaunchWizard'/>" & vbNewLine
+ribbonXML = ribbonXML + "        </mso:group>" & vbNewLine
+ribbonXML = ribbonXML + "      </mso:tab>" & vbNewLine
+ribbonXML = ribbonXML + "    </mso:tabs>" & vbNewLine
+ribbonXML = ribbonXML + "  </mso:ribbon>" & vbNewLine
+ribbonXML = ribbonXML + "</mso:customUI>"
+
+ribbonXML = Replace(ribbonXML, """", "")
+
+Open path & fileName For Output Access Write As hFile
+Print #hFile, ribbonXML
+Close hFile
+End Sub
+
+Public Sub LaunchWizard()
+#If VBA7 Then
+        Dim exitCode As LongPtr
+#Else
+        Dim exitCode As Long
+#End If
+
+        Dim args As String
+        
+        args = args & " /settings " & """" & settingsFile & """"
+        
+        ' If you are using a UserDefined computerID, specify the computerID on the command line
+        'args = args & " /computerID " & lv.fOSMachineName
+        
+        Dim wizardExe As String
+        wizardExe = homeDir & "\net4\QlmLicenseWizard.exe"
+        If Dir(wizardExe) = "" Then
+            wizardExe = "C:\Program Files\Soraco\QuickLicenseMgr\QlmLicenseWizard.exe"
+        End If
+        
+        exitCode = lv.LicenseObject.LaunchProcess(wizardExe, args, True, True)
+End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Option Explicit
+
+
+' QLM supports 4 feature sets
+Const FEATURE_SET_0 = 0
+Const FEATURE_SET_1 = 0
+Const FEATURE_SET_2 = 0
+Const FEATURE_SET_3 = 0
+
+' Each feature set supports 8 features
+' These are the features defined for the Demo product
+Const FEATURE_STD = 1
+Const FEATURE_PRO = 2
+Const FEATURE_ENT = 4
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+
+HideSheets
+
+End Sub
+
+Private Sub Workbook_Open()
+   
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Do not forget to password protect your VBA code
+    '''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    
+    ' Create a tab with a button that allows the user to launch the wizard from Excel
+    CreateQLMTab
+    
+    ' Verifies the license
+    CheckLicense
+    
+    ' Shows the workbook sheets if the license validation is successful
+    ShowSheets
+    
+End Sub
+
+Public Sub CheckLicense()
+    
+    
+    '
+    ' for debugging purposes / stepping through the code - remove the Stop when done.
+    '
+    Stop
+    
+    On Error GoTo PROC_ERR
+           
+    homeDir = ThisWorkbook.path & "\Qlm"
+    settingsFile = homeDir & "\Demo 1.0.lw.xml"
+    
+    Set lv = New LicenseValidator
+    lv.InitializeLicense homeDir, settingsFile
+    
+    Dim licenseBinding As ELicenseBinding
+    licenseBinding = ELicenseBinding_ComputerName
+    
+       
+    ' Analytics Custom Data that will be published to the Server - QLM Enterprise only
+    lv.customData1 = "VBA"
+    lv.customData2 = "Excel"
+    lv.customData3 = "ExcelLicenseWizard.xls"
+        
+    
+    Dim needsActivation As Boolean
+    Dim errorMsg As String
+    
+    If lv.ValidateLicenseAtStartupByBinding(licenseBinding, needsActivation, errorMsg) = False Then
+    
+        Dim args As String
+        
+        args = args & " /settings " & """" & settingsFile & """"
+        args = args & " /computerID " & lv.fOSMachineName
+        
+#If VBA7 Then
+        Dim exitCode As LongPtr
+#Else
+        Dim exitCode As Long
+#End If
+        
+        Dim wizardExe As String
+        wizardExe = homeDir & "\net4\QlmLicenseWizard.exe"
+        If Dir(wizardExe) = "" Then
+            wizardExe = "C:\Program Files\Soraco\QuickLicenseMgr\QlmLicenseWizard.exe"
+        End If
+        
+        exitCode = lv.LicenseObject.LaunchProcess(wizardExe, args, True, True)
+                
+        ' Validate the license again after activation, if it fails, exit the app
+        If lv.ValidateLicenseAtStartupByBinding(needsActivation, needsActivation, errorMsg) = False Then
+            ExitApp
+        End If
+    End If
+    
+    If lv.LicenseObject.IsFeatureEnabledEx(FEATURE_SET_0, FEATURE_STD) Then
+        ' The PRO feature is enabled
+        MsgBox "Feature STD is enabled"
+    End If
+    
+    If lv.LicenseObject.IsFeatureEnabledEx(FEATURE_SET_0, FEATURE_PRO) Then
+        ' The PRO feature is enabled
+        MsgBox "Feature PRO is enabled"
+    End If
+    
+    If lv.LicenseObject.IsFeatureEnabledEx(FEATURE_SET_0, FEATURE_ENT) Then
+        ' The PRO feature is enabled
+        MsgBox "Feature ENT is enabled"
+    End If
+          
+    
+    Exit Sub
+    
+PROC_ERR:
+    MsgBox "Error: (" & Err.Number & ") " & Err.Description, vbCritical
+    Stop
+    ExitApp
+    
+End Sub
+
+Private Sub ExitApp()
+
+    ' Before shipping your app, uncomment the Close statement in the ExitApp Sub
+    ' During development, you may want to comment it out to avoid getting locked out of your app
+    
+    'Me.Close savechanges:=False
+End Sub
+
+Private Sub ShowSheets()
+    Dim sh As Worksheet
+
+    For Each sh In Worksheets
+        sh.Visible = xlSheetVisible
+    Next sh
+
+    ' hide the HiddenWorksheet
+    Sheets("HiddenWorksheet").Visible = xlVeryHidden
+
+End Sub
+
+Private Sub HideSheets()
+
+    Dim sh As Worksheet
+
+    ' hide the HiddenWorksheet
+    Sheets("HiddenWorksheet").Visible = xlSheetVisible
+
+    For Each sh In Worksheets
+    If Not sh.Name = "HiddenWorksheet" Then sh.Visible = xlVeryHidden
+
+    Next sh
+
+End Sub
+
+
+
+
+
+
+
+
+
+
+
+
+' InQuest injected base64 decoded content
+' K+-zc
+' D8cw4
+' ]YU=
+' RznnX
+
+INQUEST-PP=macro

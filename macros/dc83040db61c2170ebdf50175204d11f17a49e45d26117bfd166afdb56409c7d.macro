@@ -1,0 +1,2384 @@
+Attribute VB_Name = "A_DEFINE"
+
+'/****** definice zakladnich parametru  **********/'
+
+Global PocetGrafu
+Global PocetPV                              'pocet parametrizacnich bunek
+Global PocetListu                           'pocet listu zvlaste pocitany list davkovac senaz_silaz - pridam pocitani pouze u resetu barvy a zapsani datumu
+Global NameStation                          'Nazev BPS
+
+Global PoleMonth()                          'Pole vycislenych hodnot za mesic
+
+Global List_par
+
+Public Const Strana1 = "Elekt|fffd|ina"
+Public Const Strana2 = "Teplo"
+Public Const Strana3 = "Bioplyn"
+Public Const Strana4 = "M|fffd|chadla"
+Public Const Strana5 = "Plynojem"
+Public Const Strana6 = "|fffd|erp|fffd|n|fffd|"
+Public Const Strana7 = "D|fffd|vkova|fffd|"
+Public Const Strana8 = "Teploty"
+Public Const Strana9 = "Substr|fffd|ty"
+
+Global ZadanyDen
+Global ZadanyRok
+Global ZadanyMesic
+
+
+'/***********   Declare DotazSQL_ .... ***********/'
+Global Datum_OD
+Global Datum_DO
+Global DATUM_zacatek
+Global DATUM_konec
+
+
+'/***********   Definice struktury pro statistiku ***********/'
+Type MonthStruct
+    Pole() As Variant
+    Maximum As Double
+    MaxDate As Date
+    Minimum As Double
+    MinDate As Date
+    Soucet As Double
+    Prum As Double
+End Type
+
+
+Global Struktura As MonthStruct
+Global StatStruct As MonthStruct
+
+Attribute VB_Name = "B_START"
+'************************* Startovaci procedura ********************************
+Sub StartRtsExport()
+
+Application.EnableEvents = False
+
+'/* nacteni parametru z provozniho listu /*
+NameStation = CStr(Sheets("Provozn|fffd|").Cells(17, 2).value)
+PocetPV = CInt(Sheets("Provozn|fffd|").Cells(18, 2).value)
+PocetListu = CInt(Sheets("Provozn|fffd|").Cells(19, 2).value)
+  
+'/* spusteni dialog okna /*
+If ZadejDatum.DEN.value = "" Or ZadejDatum.MESIC.value = "" Or ZadejDatum.ROK.value = "" Or CInt(ZadejDatum.DEN) < 1 Or CInt(ZadejDatum.MESIC) < 1 Or CInt(ZadejDatum.MESIC) > 12 Or CInt(ZadejDatum.ROK) < 2009 Or CInt(ZadejDatum.ROK) > CInt(Year(Date)) Then
+    Msg = MsgBox("|fffd|patn|fffd| zadan|fffd| datum", vbExclamation + vbOKOnly, "Chybna data"): Unload formular2
+If Msg = vbOKOnly Then ZadejDatum.Show
+   Exit Sub
+Else
+    If CInt(ZadejDatum.DEN) > CInt(Day(DateAdd("d", -1, (DateAdd("m", 1, (DateSerial(ZadejDatum.ROK, ZadejDatum.MESIC, 1))))))) Then
+            Msg = MsgBox("|fffd|patn|fffd| zadan|fffd| datum", vbExclamation + vbOKOnly, "Chybna data"): Unload formular2
+    End If
+End If
+
+ZadanyDen = ZadejDatum.DEN
+ZadanyRok = ZadejDatum.ROK
+ZadanyMesic = ZadejDatum.MESIC
+Unload formular1
+
+For i = 1 To PocetListu
+ Call ResetBarvy(i)         'reset barevnych vikendu
+Next
+
+Call ListName
+
+For i = 1 To PocetListu
+ Call Zapis_datumy(i)
+Next
+
+For i = 1 To PocetListu
+ Call Zapis_nadpis(i)
+Next
+
+Call ZapisData
+'Call CopySheetAsHTML(i)
+
+Application.EnableEvents = True
+End Sub
+
+Sub AutoStartMacro() ' makro pro aut spusteni
+
+ Datum_input = Date
+
+ ZadejDatum.MESIC = Month(Datum_input)
+ ZadejDatum.ROK = Year(Datum_input)
+
+ Call StartRtsExport
+ 
+End Sub
+
+Sub AutoStartMacro_LastMonth() ' makro pro aut spusteni - vygeneruje minuly mesic
+
+ Datum_input = DateAdd("m", -1, Date)
+
+ ZadejDatum.MESIC = Month(Datum_input)
+ ZadejDatum.ROK = Year(Datum_input)
+
+ Call StartRtsExport
+ 
+End Sub
+
+
+Public Function aktualizace(strana)
+
+List_par = "Provozn|fffd|"
+
+ZadanyMesic = Month(CDate(Sheets(strana).Cells(5, 2).value))
+ZadanyRok = Year(CDate(Sheets(strana).Cells(5, 2).value))
+
+For par = 51 To PocetPV
+    
+    If par >= 51 And par <= 60 Then
+        StrIdx = 50
+        'strana = CStr(Sheets(List_par).Cells(1, 4 + StrIdx).Value)
+    End If
+
+    Select Case (Sheets(List_par).Cells(10, 3 + par).value)
+        Case "Pr|fffd|m|fffd|r"
+            Call Prumer(par, strana, List_par, PocetPV)
+        Case "Minimum"
+            Call Min(par, strana, List_par, PocetPV)
+        Case "Maximum"
+            Call Max(par, strana, List_par, PocetPV)
+        Case "Provozn|fffd| hodiny"
+            Call ProvHod(par, strana, List_par)
+        Case "Posledn|fffd| vzorek"
+            Call PosledniVzorek(par, strana, List_par, PocetPV)
+        Case "Nepo|fffd||fffd|tat" ' nepocitat
+    End Select
+Next
+
+End Function
+
+Public Function SpocitejTuny(strana)
+
+For sloupec = 4 To 10
+    For radek = 5 To 35
+        If (Sheets(strana).Cells(radek, 3).value) = "-.-" Or (Sheets(strana).Cells(radek, 3).value) <= 0 Or (Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(radek, sloupec).value) = "-.-" Then
+            If (Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(radek, sloupec).value) = "-.-" Then
+                Sheets(strana).Cells(radek, sloupec).value = "-.-"
+            Else
+            Sheets(strana).Cells(radek, sloupec).value = 0
+            End If
+        Else
+            If (Sheets(strana).Cells(radek, 3).value) = "" Then
+                Sheets(strana).Cells(radek, sloupec).value = "-.-"
+            Else
+                'Sheets(strana).Cells(radek, sloupec).value = (Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(radek, sloupec).value) * 100 / (Sheets(strana).Cells(radek, 3).value)
+                Sheets(strana).Cells(radek, sloupec).value = (Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(radek, sloupec).value) * (Sheets(strana).Cells(radek, 3).value) / 100
+            End If
+        End If
+    Next
+Next
+End Function
+
+'****************************konfigurace ********************************************************
+Sub ZapisData()
+
+Dim NumFce
+Dim strana
+vizualizace (6)
+
+For par = 1 To PocetPV
+
+  If par >= 1 And par <= 10 Then
+        StrIdx = 0
+        strana = CStr(Sheets(List_par).Cells(1, 4 + StrIdx).value)
+    vizualizace (10 + par)
+    End If
+   
+
+    Select Case (Sheets(List_par).Cells(10, 3 + par).value)
+        Case "Pr|fffd|m|fffd|r"
+            Call Prumer(par, strana, List_par, PocetPV)
+        Case "Minimum"
+            Call Min(par, strana, List_par, PocetPV)
+        Case "Maximum"
+            Call Max(par, strana, List_par, PocetPV)
+        Case "Rozd|fffd|l"
+            Call RozdilMesic(par, strana, List_par, PocetPV)
+        Case "Provozn|fffd| hodiny"
+            Call ProvHod(par, strana, List_par)
+        Case "Posledn|fffd| vzorek"
+            Call PosledniVzorek(par, strana, List_par, PocetPV)
+        Case "V|fffd|kyv"
+            Call Vykyv(par, strana, List_par, PocetPV)
+        Case "Nepo|fffd||fffd|tat" ' nepocitat
+    End Select
+    
+Next
+
+'*******  ru|fffd|n|fffd| v|fffd|po|fffd|ty ************
+strana = "Elekt|fffd|ina"
+'If Sheets(strana).Cells(7, 14).value <> "" And Sheets(strana).Cells(7, 14).value <> 0 Then
+    'Call ProcentValue       ' funkce zapise procentualni podily vyrobene energie
+'Else
+' zobrazim chybovou hlasku, protoze neni zadan vykon elektrarny
+'End If
+
+strana = "Teplo"
+'If Sheets(strana).Cells(9, 14).value <> "" And Sheets(strana).Cells(9, 14).value <> 0 Then
+'    Call ProcentValueTeplo       ' funkce zapise procentualni podily vyrobeneho tepla
+'Else
+' zobrazim chybovou hlasku, protoze neni zadan vykon elektrarny
+'End If
+
+'strana = "Bioplyn"
+'Call LimitH2S       ' funkce spocita limit H2S pro vykon KVET
+
+
+ vizualizace (100)
+ Unload formular2
+ Unload ZadejDatum
+ 
+End Sub
+
+'********* Vypise hodnotu do bunky ******************
+Sub VypisPole(par, Struct As MonthStruct, strana, DenIdx)
+    
+IdxStrana = NazevStrany(strana)
+ 
+ For i = 5 To 28
+
+    If Sheets(Strana1).Cells(i + (24 * (DenIdx - 1)), 2) = "" Then    ' offset hlavicka
+        index = 3
+    Else
+        val_b = Struct.Pole(i - 1 - 4)
+        If val_b < -30 Or val_b = -1 Then
+         index = 0                      ' uprava kv|fffd|li zobrazeni zapornych teplot - je t|fffd|eba o|fffd|et|fffd|it jen pro teplotu
+        Else
+         HODNOTA = val_b
+         index = 1
+        End If
+    End If
+    
+    Select Case index
+        Case 0
+        Sheets(strana).Cells(i + (24 * (DenIdx - 1)), (par + 2) - (IdxStrana * 10)).value = "-.-"
+        Case 1
+        Sheets(strana).Cells(i + (24 * (DenIdx - 1)), (par + 2) - (IdxStrana * 10)).value = HODNOTA
+        Case 2
+        Sheets(strana).Cells(i + (24 * (DenIdx - 1)), (par + 2) - (IdxStrana * 10)).value = 0
+        Case 3
+        Sheets(strana).Cells(i + (24 * (DenIdx - 1)), (par + 2) - (IdxStrana * 10)).value = ""
+     End Select
+ Next
+ 
+    ' vypis statistik
+    'Call VypisStat(Struct, strana, par)
+    
+End Sub
+
+
+'*********************************  fce dej index dle n|fffd|zvu strany *****************************
+Function NazevStrany(strana)
+    Select Case strana
+        Case "Elekt|fffd|ina"
+        IdxStrana = 0
+        Case "Teplo"
+        IdxStrana = 1
+        Case "Bioplyn"
+        IdxStrana = 2
+        Case "M|fffd|chadla"
+        IdxStrana = 3
+        Case "Plynojem"
+        IdxStrana = 4
+        Case "|fffd|erp|fffd|n|fffd|"
+        IdxStrana = 5
+        Case "D|fffd|vkova|fffd|"
+        IdxStrana = 6
+        Case "Teploty"
+        IdxStrana = 7
+        Case "Substr|fffd|ty"
+        IdxStrana = 8
+    End Select
+    NazevStrany = IdxStrana
+End Function
+
+'*********************************  fce dej index dle typu promenne *****************************
+Function IDPTStrToIdx(IDTPx)
+    Select Case IDTPx
+       Case "AI"
+       IDTP = 0
+       Case "BI"
+       IDTP = 1
+       Case "CI"
+       IDTP = 2
+       Case "AC"
+       IDTP = 5
+       Case "BC"
+       IDTP = 6
+       Case "CC"
+       IDTP = 7
+    End Select
+    IDPTStrToIdx = IDTP
+End Function
+
+'********* Spo|fffd||fffd|tan|fffd| procentuelnich podil|fffd| vyroby energie ******************
+
+Sub ProcentValue()
+    strana = "Elekt|fffd|ina"
+    
+    i = 4 ' vytizeni kvet %
+    j = 5 ' vytizeni kvet
+    
+    For k = 5 To 35
+        If Sheets(strana).Cells(k, j).value <> "" And Sheets(strana).Cells(k, j).value <> "-.-" And Sheets(strana).Cells(k, j).value <> 0 Then
+            Sheets(strana).Cells(k, i) = 100 * Sheets(strana).Cells(k, j).value / (Sheets(strana).Cells(7, 14).value * 24)
+        Else
+            If Sheets(strana).Cells(k, j) = "" Then
+                Sheets(strana).Cells(k, i) = ""
+            Else
+                If Sheets(strana).Cells(k, j) = 0 Then
+                    Sheets(strana).Cells(k, i) = 0
+                Else
+                    Sheets(strana).Cells(k, i) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    
+     ' vlastni spotreba  = hruby - vykonZE
+    g = 5 ' hruby elektricky vykon
+    j = 7 ' ze site
+    h = 6 ' do site
+    v = 8 ' vlastni spotreba BPS
+    
+    
+    For k = 5 To 35
+        If (Sheets(strana).Cells(k, g) <> "" And Sheets(strana).Cells(k, h) <> "") And _
+            (Sheets(strana).Cells(k, g) <> "-.-" And Sheets(strana).Cells(k, h) <> "-.-") Then
+            'vlastni vypocet
+            Sheets(strana).Cells(k, v) = (Sheets(strana).Cells(k, g) - Sheets(strana).Cells(k, h))
+        Else
+            If Sheets(strana).Cells(k, g) = "" Or Sheets(strana).Cells(k, h) = "" Then
+                Sheets(strana).Cells(k, v) = ""
+            Else
+                If Sheets(strana).Cells(k, g) = 0 Or Sheets(strana).Cells(k, h) = 0 Then
+                    Sheets(strana).Cells(k, v) = 0
+                Else
+                    Sheets(strana).Cells(k, v) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    
+    i = 9 ' vlastni spotreba %
+    j = 8 ' vlastni spotreba
+    
+    For k = 5 To 35
+        If Sheets(strana).Cells(k, j) <> "" And Sheets(strana).Cells(k, j) <> "-.-" And Sheets(strana).Cells(k, j) <> 0 Then
+            Sheets(strana).Cells(k, i) = 100 * Sheets(strana).Cells(k, j) / (Sheets(strana).Cells(7, 14) * 24)
+        Else
+            If Sheets(strana).Cells(k, j) = "" Then
+                Sheets(strana).Cells(k, i) = ""
+            Else
+                If Sheets(strana).Cells(k, j) = 0 Then
+                    Sheets(strana).Cells(k, i) = 0
+                Else
+                    Sheets(strana).Cells(k, i) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    
+   ' zeleny bonus = ((hruby-vlastni-susarna)*100)/hruby
+    g = 10 ' vykon do site
+    h = 8 ' spotreba farmy
+    i = 9 ' zeleny bonus
+    If False Then
+    For k = 5 To 35
+        If (Sheets(strana).Cells(k, g) <> "" And Sheets(strana).Cells(k, h) <> "") And _
+            (Sheets(strana).Cells(k, g) <> "-.-" And Sheets(strana).Cells(k, h) <> "-.-") And _
+            (Sheets(strana).Cells(k, g) <> 0 And Sheets(strana).Cells(k, h) <> 0) Then
+            
+            Sheets(strana).Cells(k, i) = Sheets(strana).Cells(k, g) + Sheets(strana).Cells(k, h)
+        Else
+            If Sheets(strana).Cells(k, g) = "" Or Sheets(strana).Cells(k, h) = "" Then
+                Sheets(strana).Cells(k, i) = ""
+            Else
+                If Sheets(strana).Cells(k, g) = 0 Or Sheets(strana).Cells(k, h) = 0 Then
+                    Sheets(strana).Cells(k, i) = 0
+                Else
+                    Sheets(strana).Cells(k, i) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    End If
+    
+    
+End Sub
+
+'********* Spo|fffd||fffd|tan|fffd| procentuelnich podil|fffd| vyroby tepla ******************
+
+Sub ProcentValueTeplo()
+    strana = "Teplo"
+    stranaRead = "Elekt|fffd|ina"
+    
+    i = 4 ' Hruby tepelny vykon
+    j = 5 ' Hruby elektricky vykon
+    
+    For k = 5 To 35
+        If Sheets(stranaRead).Cells(k, j).value <> "" And Sheets(stranaRead).Cells(k, j).value <> "-.-" And Sheets(stranaRead).Cells(k, j).value <> 0 Then
+            Sheets(strana).Cells(k, i) = Sheets(stranaRead).Cells(k, j).value * 1.09562
+        Else
+            If Sheets(strana).Cells(k, j) = "" Then
+                Sheets(strana).Cells(k, i) = ""
+            Else
+                If Sheets(strana).Cells(k, j) = 0 Then
+                    Sheets(strana).Cells(k, i) = 0
+                Else
+                    Sheets(strana).Cells(k, i) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    
+    i = 6 ' Vlastni spotreba BPS %
+    j = 5 ' vlastni spotreba BPS
+    
+    For k = 5 To 35
+        If Sheets(strana).Cells(k, j).value <> "" And Sheets(strana).Cells(k, j).value <> "-.-" And Sheets(strana).Cells(k, j).value <> 0 Then
+            Sheets(strana).Cells(k, i) = 100 * Sheets(strana).Cells(k, j).value / (Sheets("Elekt|fffd|ina").Cells(9, 14).value * 24)
+        Else
+            If Sheets(strana).Cells(k, j) = "" Then
+                Sheets(strana).Cells(k, i) = ""
+            Else
+                If Sheets(strana).Cells(k, j) = 0 Then
+                    Sheets(strana).Cells(k, i) = 0
+                Else
+                    Sheets(strana).Cells(k, i) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    
+    i = 8 ' spotreba susarny %
+    j = 7 ' spotreba susarny
+    
+    For k = 5 To 35
+        If Sheets(strana).Cells(k, j) <> "" And Sheets(strana).Cells(k, j) <> "-.-" And Sheets(strana).Cells(k, j) <> 0 Then
+            Sheets(strana).Cells(k, i) = 100 * Sheets(strana).Cells(k, j) / (Sheets("Elekt|fffd|ina").Cells(9, 14).value * 24)
+        Else
+            If Sheets(strana).Cells(k, j) = "" Then
+                Sheets(strana).Cells(k, i) = ""
+            Else
+                If Sheets(strana).Cells(k, j) = 0 Then
+                    Sheets(strana).Cells(k, i) = 0
+                Else
+                    Sheets(strana).Cells(k, i) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    
+    ' odpadni teplo + vytapeni budovy = ((hruby-vlastni-susarna)*100)/hruby
+    g = 4 ' hruby tepelny vykon
+    h = 5 ' vlastni spotreba BPS
+    i = 7 ' spotreba susarny
+    j = 9 ' odpadni teplo
+    
+    
+    For k = 5 To 35
+        If (Sheets(strana).Cells(k, g) <> "" And Sheets(strana).Cells(k, h) <> "" And Sheets(strana).Cells(k, i) <> "") And _
+            (Sheets(strana).Cells(k, g) <> "-.-" And Sheets(strana).Cells(k, h) <> "-.-" And Sheets(strana).Cells(k, i) <> "-.-") And _
+            (Sheets(strana).Cells(k, g) <> 0 And Sheets(strana).Cells(k, h) <> 0 And Sheets(strana).Cells(k, i) <> 0) Then
+            
+            Sheets(strana).Cells(k, j) = ((Sheets(strana).Cells(k, g) - Sheets(strana).Cells(k, h) - Sheets(strana).Cells(k, i)) * 100) / Sheets(strana).Cells(k, g)
+        Else
+            If Sheets(strana).Cells(k, g) = "" Or Sheets(strana).Cells(k, h) = "" Or Sheets(strana).Cells(k, i) = "" Then
+                Sheets(strana).Cells(k, j) = ""
+            Else
+                If Sheets(strana).Cells(k, g) = 0 Or Sheets(strana).Cells(k, h) = 0 Or Sheets(strana).Cells(k, i) = 0 Then
+                    Sheets(strana).Cells(k, j) = 0
+                Else
+                    Sheets(strana).Cells(k, j) = "-.-"
+                End If
+            End If
+        End If
+    Next
+    
+End Sub
+
+'***************    v|fffd|pocet Limit H2S pro v|fffd|kon kvet *************************
+'  =(((0,9411764*sulfan*1,52)/(metan*10)*10)/700)
+'=((((0,9411764*E27*1,52)/((E22*10))*10)/700))
+
+Sub LimitH2S()
+    strana = "Bioplyn"
+    
+    i = 5 ' METAN
+    j = 7 ' SULFAN
+    h = 11 ' LIMIT H2S
+    
+    For k = 5 To 35
+        If (Sheets(strana).Cells(k, i) <> "" And Sheets(strana).Cells(k, j) <> "") And _
+            (Sheets(strana).Cells(k, i) <> "-.-" And Sheets(strana).Cells(k, j) <> "-.-") And _
+            (Sheets(strana).Cells(k, i) <> 0 And Sheets(strana).Cells(k, j) <> 0) Then
+            
+            Sheets(strana).Cells(k, h) = (((0.9411764 * Sheets(strana).Cells(k, j) * 1.52) / ((Sheets(strana).Cells(k, i)) / 100 * 10) * 10) / 700) * 100
+        Else
+            If Sheets(strana).Cells(k, i) = "" Or Sheets(strana).Cells(k, j) = "" Then
+                Sheets(strana).Cells(k, i) = ""
+            Else
+                If Sheets(strana).Cells(k, i) = 0 Or Sheets(strana).Cells(k, j) = 0 Then
+                    Sheets(strana).Cells(k, i) = 0
+                Else
+                    Sheets(strana).Cells(k, i) = "-.-"
+                End If
+            End If
+        End If
+    Next
+End Sub
+
+
+'*********************************************************______________________________________*********************************************************
+'********************************************************|  jednotlive definice vypocetnich fci |********************************************************
+'********************************************************************************************************************************************************
+
+'*******************************************
+'*********Provozni hodiny ******************
+'*******************************************
+Sub ProvHod(par, strana, List_par)
+
+ ROK = ZadanyRok
+ MESIC = ZadanyMesic
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+
+Call DotazSQLArray(ROK, MESIC, DEN, strana, par, par1_st, par1_typ, par1_ln, par1_tab)
+
+End Sub
+
+'*******************************************
+'********* rozdil mesicni ******************
+'*******************************************
+Sub RozdilMesic(par, strana, List_par, pocet_pv)
+
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+ 
+    date_start = DateSerial(ZadanyRok, ZadanyMesic, 1)
+    date_end = DateAdd("m", 1, date_start)
+    date_end = DateAdd("d", -1, date_end)
+    den_end = Day(date_end)
+    
+
+Select Case par
+    Case 13, 15 'pro kalorimetry
+        Struktura = DotazSQLfceArray(ZadanyRok, ZadanyMesic, ZadanyDen, par1_st, par1_typ, par1_ln, par2_ln, par1_tab, 12)
+    Case Else
+    For Tt = 1 To den_end
+        Struktura = DotazSQLfceArray(ZadanyRok, ZadanyMesic, Tt, par1_st, par1_typ, par1_ln, par2_ln, par1_tab, 11)
+        Call VypisPole(par, Struktura, strana, Tt)
+    Next
+End Select
+
+
+End Sub
+
+'*******************************************
+'*********  funkce v|fffd|kyv hodnoty  **********
+' funkce nacte dva parametry IDLN ostatni parametry se predpokladaji shodne
+'*******************************************
+Sub Vykyv(par, strana, List_par, pocet_pv)
+
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+ 
+ par2_ln = CInt(Sheets(List_par).Cells(9, par + 3).value)
+ 
+    Struktura = DotazSQLfceArray(ZadanyRok, ZadanyMesic, ZadanyDen, par1_st, par1_typ, par1_ln, par2_ln, par1_tab, 20)
+
+Call VypisPole(par, Struktura, strana)
+End Sub
+
+'*******************************************
+'*******  vypise posledni vzorek dne *******
+'*******************************************
+
+Sub PosledniVzorek(par, strana, List_par, pocet_pv)
+
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+ 
+Struktura = DotazSQLfceArray(ZadanyRok, ZadanyMesic, i, par1_st, par1_typ, par1_ln, par2_ln, par1_tab, 7)
+
+Call VypisPole(par, Struktura, strana)
+
+End Sub
+
+
+'*******************************************
+'*********  vypocet prumeru ****************
+'*******************************************
+
+Sub Prumer(par, strana, List_par, pocet_pv)
+
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+ 
+
+Struktura = DotazSQLfceArray(ZadanyRok, ZadanyMesic, i, par1_st, par1_typ, par1_ln, par2_ln, par1_tab, 2)
+
+Call VypisPole(par, Struktura, strana)
+
+End Sub
+
+'*******************************************
+'*********  nalezeni maxima dne ************
+'*******************************************
+
+Sub Max(par, strana, List_par, pocet_pv)
+
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+ 
+Struktura = DotazSQLfceArray(ZadanyRok, ZadanyMesic, i, par1_st, par1_typ, par1_ln, par2_ln, par1_tab, 0)
+
+Call VypisPole(par, Struktura, strana)
+
+End Sub
+
+'*******************************************
+'*********  nalezeni minima dne ************
+'*******************************************
+
+Sub Min(par, strana, List_par, pocet_pv)
+ 
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+ 
+Struktura = DotazSQLfceArray(ZadanyRok, ZadanyMesic, i, par1_st, par1_typ, par1_ln, par2_ln, par1_tab, 1)
+
+Call VypisPole(par, Struktura, strana)
+
+End Sub
+
+
+Attribute VB_Name = "C_SKIN_PAGE"
+'********* Pojmenovani vsech listu dle parametrizacniho listu ******************
+Public Function ListName()
+
+Dim PocetListu As Integer
+
+PocetListu = Sheets.Count
+List_par = Sheets(PocetListu).Name
+
+    For i = 0 To PocetListu - 2
+    Sheets(i + 1).Name = Sheets(List_par).Cells(1, 4 + (i * 10)).value
+    Next
+    
+End Function
+'********* zapise nazev elektrarny mesic a rok ******************
+Public Function Zapis_nadpis(strana)
+ 
+ 
+ Select Case ZadanyMesic
+    Case 1
+        NameMonth = "Leden"
+    Case 2
+        NameMonth = "|fffd|nor"
+    Case 3
+        NameMonth = "B|fffd|ezen"
+    Case 4
+        NameMonth = "Duben"
+    Case 5
+        NameMonth = "Kv|fffd|ten"
+    Case 6
+        NameMonth = "|fffd|erven"
+    Case 7
+        NameMonth = "|fffd|ervenec"
+    Case 8
+        NameMonth = "Srpen"
+    Case 9
+        NameMonth = "Z|fffd||fffd||fffd|"
+    Case 10
+        NameMonth = "|fffd||fffd|jen"
+    Case 11
+        NameMonth = "Listopad"
+    Case 12
+        NameMonth = "Prosinec"
+ End Select
+ 
+Sheets(strana).Cells(2, 4).value = NameStation
+'Sheets(strana).Cells(2, 9).value = ZadanyDen & " ."
+Sheets(strana).Cells(2, 10).value = NameMonth
+Sheets(strana).Cells(2, 12).value = ZadanyRok
+
+End Function
+
+'********* V|fffd|pis datum|fffd| do prvn|fffd|ho sloupce pro vsechny listy ******************
+Public Function Zapis_datumy(strana)
+ 
+    date_start = DateSerial(ZadanyRok, ZadanyMesic, 1)
+    date_end = DateAdd("m", 1, date_start)
+    date_end = DateAdd("d", -1, date_end)
+    den_end = Day(date_end)
+    date_index_hour = 1
+    'date_start = DateAdd("h", 1, date_start)
+    For k = 0 To den_end - 1
+       Sheets(strana).Cells(5 + (24 * k), 1).value = date_start
+       date_start = DateAdd("d", 1, date_start)
+      
+      For i = 5 To 28
+          
+          Sheets(strana).Cells(i + (24 * k), 2).value = date_index_hour
+          date_index_hour = date_index_hour + 1
+          
+      Next
+      i = 5
+      date_index_hour = 1
+    Next
+
+End Function
+
+
+'********* Nastaven|fffd| v|fffd|ech barevnych bunek na b|fffd|lou a v|fffd|maz ******************
+Public Function ResetBarvy(strana)
+
+For i = 1 To 8
+    For k = 5 To 800
+        With Sheets(strana).Cells(k, i)
+        .Interior.ColorIndex = 2            'vymazani barevneho znaceni vikendu
+        .value = ""                         'vymazani bunek
+        End With
+    Next
+Next
+
+
+End Function
+
+'*********************** Zakresleni v|fffd|kend|fffd| barevne ******************
+Public Function vikend(DATUM, radek, strana)
+
+Dim LWeekday As Integer
+
+LWeekday = Weekday(DATUM, vbMonday)
+
+If LWeekday = 6 Then
+    For i = 2 To 12
+     Sheets(strana).Cells(radek, i).Interior.ColorIndex = 17
+    Next
+End If
+
+If LWeekday = 7 Then
+    For i = 2 To 12
+     Sheets(strana).Cells(radek, i).Interior.ColorIndex = 38
+    Next
+End If
+
+
+End Function
+Attribute VB_Name = "Export"
+Public Function CopySheetAsHTML(NumGraph)
+    Dim fName As String
+    'With ActiveWorkbook.PublishObjects.Add(xlSourceSheet, "C:\" & fName & ".htm", "Graf1", "DataRange", xlHtmlChart, "Graf1")
+    
+    Select Case NumGraph
+    
+    Case 1
+    fName = Graf1.Name
+     With ActiveWorkbook.PublishObjects.Add(xlSourceChart, "C:\" & fName & ".htm", Graf1.Name, "", xlHtmlStatic, DivID:="graf1")
+        .Publish (True)
+        .AutoRepublish = True
+    End With
+    
+    Case 2
+    fName = Graf2.Name
+     With ActiveWorkbook.PublishObjects.Add(xlSourceChart, "C:\" & fName & ".htm", Graf2.Name, "", xlHtmlStatic, DivID:="graf2")
+        .Publish (True)
+        .AutoRepublish = True
+    End With
+    
+    End Select
+    
+End Function
+
+Public Function vizualizace(Procenta As Variant)
+
+        'vizualizace za|fffd||fffd|tek
+
+Proc = Procenta / 100
+    With formular1
+        .StatusFrame.Caption = Format(Proc, "0%")
+        .Status.Width = Proc * (.StatusFrame.Width - 16)
+        .StatusFrame.Repaint
+        
+    End With
+    
+     With formular2
+        .StatusFrame.Caption = Format(Proc, "0%")
+        .Status.Width = Proc * (.StatusFrame.Width - 16)
+        .StatusFrame.Repaint
+        
+    End With
+'                           vizualizace                                               konec
+End Function
+
+
+
+Attribute VB_Name = "F_DotazSQL_ProvHod_array"
+Public Pole_hodnot()
+Public PoleHodnotMesic()
+Public Count_max
+Public NeniHodnota
+Public strana
+Public ParNum
+Public testcitac
+
+Public Function DotazSQLArray(PozadovanyRok, PozadovanyMesic, PozadovanyDen, STR, Parametr, IDST, IDTPStr, IDLN, nazev_tabulky)
+
+Dim IDTP
+Dim conn
+
+ReDim PoleHodnotMesic(30)
+
+strana = STR
+ParNum = Parametr
+TimeCount = 0
+Predchozi = 1       ' zajistit zjisteni prechozi hodnoty i posledni hodnoty!!!!!
+ROK = PozadovanyRok
+MESIC = PozadovanyMesic
+DEN = PozadovanyDen
+
+IDTP = IDPTStrToIdx(IDTPStr)      '/*******  prevedeni stringu na index ******
+
+'___________________________________________________na|fffd|ten|fffd| hodnot pro aktualni mesic _____________________________________________________________________
+
+'*******************  letni cas **********************
+'   1 - letni
+'   0 -  zimni
+
+LetniCas = 2
+
+ActDatum = DATUM_zacatek
+SqlTimeConfig = Sheets("Provozn|fffd|").Cells(11, 2).value               ' nacteni konfigurace SQL databaze - formatu datumu
+
+Konverze = ZapisDatumRead(ROK, MESIC, DEN, SqlTimeConfig)                   'zjistim o jaky cas se jedna a zda je treba konverze
+Call NactiPole(Datum_OD, Datum_DO, IDST, IDTP, IDLN, nazev_tabulky)
+Call ZapisDatumZpetRead(ROK, MESIC, DEN, SqlTimeConfig)
+
+
+For P = 0 To 30
+    PoleHodnotMesic(P) = -1
+Next
+
+If NeniHodnota = 1 Then         ' pokud neni v databazi hodnota vypise nuly
+    TimeCount = 0
+    GoTo ERROR
+End If
+
+If Konverze = 1 Then        ' posunu pole
+   PosunPole (Pole_hodnot)
+End If
+
+
+
+
+    
+'*------------------------  start zpracovani nacteneho pole --------------------------------*'
+ActDen = 0
+vysledek = 0
+Predchozi = 1
+Nasledujici = 1
+timecountcelk = 0
+CasKonec = 0
+
+ActDatum = CDate(DateSerial(ROK, MESIC, (Day(Pole_hodnot(0, 1)))))
+ActDen = Day(Pole_hodnot(0, 1)) - 1
+
+            
+For m = 0 To Count_max
+    If Pole_hodnot(m, 1) < (CDate(ActDatum + 1) + TimeSerial(0, 0, 0)) Then        ' pro pripad kdy se nejedna o prvni hodnotu pole
+        
+        If m > 0 Then
+            If Pole_hodnot(m - 1, 0) = 0 Then
+                Valid = DecToBinary(m - 1)
+                If Valid = True Then
+                    Predchozi = Predchozi       '/***** hodnota je platna
+                Else
+                    Predchozi = 1               '/***** hodnota neni platna
+                End If
+            End If
+        End If
+        
+        If m > 0 Then
+            If Pole_hodnot(m, 0) = 1 And Predchozi = 0 Then
+             TimeCount = TimeCount
+             Predchozi = 1
+             GoTo DALSI
+            End If
+            If Pole_hodnot(m, 0) = 1 And Predchozi = 1 Then
+             TimeCount = TimeCount + DateDiff("s", Pole_hodnot(m - 1, 1), Pole_hodnot(m, 1))
+            End If
+            If Pole_hodnot(m, 0) = 0 And Predchozi = 1 Then
+             TimeCount = TimeCount + DateDiff("s", Pole_hodnot(m - 1, 1), Pole_hodnot(m, 1))
+             Predchozi = 0
+             GoTo DALSI
+            End If
+            If Pole_hodnot(m, 0) = 0 And Predchozi = 0 Then
+             TimeCount = TimeCount
+            End If
+            GoTo DALSI
+            
+REP:        If Pole_hodnot(m, 0) = 1 And Predchozi = 0 Then             ' behem zapisu se inkrementoval count takze zjistim hodnotu pro predchozi
+             TimeCount = TimeCount
+             Predchozi = 1
+             GoTo DALSI
+            End If
+            If Pole_hodnot(m, 0) = 1 And Predchozi = 1 Then
+             TimeCount = TimeCount + DateDiff("s", CDate(ActDatum) + TimeSerial(0, 0, 0), Pole_hodnot(m, 1))
+            End If
+            If Pole_hodnot(m, 0) = 0 And Predchozi = 1 Then
+             TimeCount = TimeCount + DateDiff("s", CDate(ActDatum) + TimeSerial(0, 0, 0), Pole_hodnot(m, 1))
+             Predchozi = 0
+             GoTo DALSI
+            End If
+            If Pole_hodnot(m, 0) = 0 And Predchozi = 0 Then
+             TimeCount = TimeCount
+            End If
+        End If
+DALSI:
+        If m = 0 Then                                                       ' v pripade ze se jedna o prvni hodnotu v poli je treba zjistit predchozi hodnotu - min rok
+            If DEN = 1 And MESIC = 1 Then       ' provizorni |fffd|e|fffd|en|fffd|, protoze na Nov|fffd| rok se KGJ vyp|fffd|n|fffd| zap|fffd|n|fffd| se a|fffd| 2,3, tak|fffd|e posledn|fffd| hodnota z minul|fffd|ho roku je 0
+                Predchozi = 0
+            End If
+            If Pole_hodnot(m, 0) = 1 And Predchozi = 0 Then
+             TimeCount = TimeCount
+            End If
+            If Pole_hodnot(m, 0) = 1 And Predchozi = 1 Then
+             TimeCount = TimeCount + DateDiff("s", CDate(ActDatum) + TimeSerial(0, 0, 0), Pole_hodnot(m, 1)) ' pokud predchozi byla 1 tak pripoctu cas vzorku k pulnoci
+            End If
+        End If
+        
+    Else
+        If Predchozi = 1 And m <> CountMax Then             ' zapis vysledne hodnoty do mesicniho pole
+         TimeCount = TimeCount + DateDiff("s", Pole_hodnot(m - 1, 1), CDate(ActDatum + 1) + TimeSerial(0, 0, 0))
+        End If
+        PoleHodnotMesic(ActDen) = TimeCount            'Indexovani poli od nuly
+        
+        ActDen = ActDen + 1
+        ActDatum = DateAdd("d", 1, ActDatum)
+        timecountcelk = timecountcelk + TimeCount
+        TimeCount = 0
+        GoTo REP
+    End If
+Next
+
+If m > Count_max And ActDen < 31 Then
+
+    If Predchozi = 1 And m <> Count_max And m > 1 Then             ' zapis vysledne hodnoty do mesicniho pole
+         CasDoKonce = DateDiff("s", Pole_hodnot(m - 1, 1), CDate(ActDatum) + TimeSerial(24, 0, 0))
+         If CasDoKonce < 3610 Then
+            TimeCount = TimeCount + CasDoKonce ' + DateDiff("s", Pole_hodnot(m - 1, 1), CDate(ActDatum) + TimeSerial(23, 59, 59))
+         Else
+         ' zde je treba dotaz na dalsi mesic na nasledujici hodnotu
+         End If
+    End If
+        
+    PoleHodnotMesic(ActDen) = TimeCount    'z|fffd|pis dosavadn|fffd| na|fffd||fffd|tan|fffd| hodnoty posledn|fffd|ho dne
+    timecountcelk = timecountcelk + TimeCount
+End If
+
+GoTo KONEC:
+
+ERROR:
+NeniHodnota = 0
+Call VypisCasArray(PoleHodnotMesic)
+
+KONEC:
+Call VypisCasArray(PoleHodnotMesic)
+StatStruct = stat(ROK, MESIC, PoleHodnotMesic)
+Call VypisStatCas(StatStruct, strana, ParNum)
+End Function
+
+'******************* Funkce pro p|fffd|epocet na binarni hodnotu *******************
+Function DecToBinary(Count) As Boolean
+    
+    Pom = Pole_hodnot(Count, 2)
+    'For i = 1 To 2
+        Pom = Pom \ 2
+        Pom = Pom \ 2
+        Validity = Pom Mod 2
+        
+     '   If i = 2 Then
+     '       Pom = Pom / 2
+     '       Validity = Pom Mod 2
+     '   Else
+     '       Pom = Pom \ 2
+     '       Validity = Pom Mod 2
+     '   End If
+   ' Next
+    
+DecToBinary = Validity
+
+End Function
+
+'******************* Funkce pro vypis hodnot casu *****************************
+Sub VypisCasArray(PoleCasu)
+Dim Hod, Min
+    For k = 0 To 30
+        TimeCount = PoleCasu(k)
+        PocetMin = TimeCount \ 60
+        'V|fffd|po|fffd|et hodin a minut
+        If PocetMin > 1438 Then
+        Hod = 24
+        Min = 0
+        Else
+        Hod = TimeCount \ 3600
+        Min = PocetMin - (Hod * 60)
+        End If
+
+        If (Hod < 0) Or (Min < 0) Or (Sheets(Strana1).Cells(k + 5, 2) = "") Then
+         index = 3
+        Else
+         index = 1
+        End If
+           
+        If PocetMin = 0 And PoleCasu(k) = -1 And (Sheets(Strana1).Cells(k + 5, 2) <> "") Then
+         index = 2
+        End If
+     
+    IdxStrana = NazevStrany(strana)
+     
+        Select Case index
+           Case 1
+           Sheets(strana).Cells(k + 5, (ParNum + 2) - (IdxStrana * 10)).value = Right(("0" + CStr(Hod)), 2) + ":" + Right(("0" + CStr(Min)), 2)
+           Case 2
+           Sheets(strana).Cells(k + 5, (ParNum + 2) - (IdxStrana * 10)).value = "-.-"
+           Case 3
+           Sheets(strana).Cells(k + 5, (ParNum + 2) - (IdxStrana * 10)).value = ""
+        End Select
+    Next
+End Sub
+
+'******************* Funkce pro prepocet casu na zimni  *****************************
+Sub PosunPole(Pole)
+    For j = 0 To Count_max
+        NovyCas = CDate(Pole_hodnot(j, 1)) + TimeSerial(1, 0, 0)
+        Pole_hodnot(j, 1) = NovyCas
+        'NovyCas = DateAdd("h", 1, Pole_hodnot(j, 1))
+    Next
+End Sub
+
+'******************* Funkce sestavujici command do SQL a nasledne vycteni vraceneho pole *****************************
+Sub NactiPole(Datum_OD As Variant, Datum_DO As Variant, IDST, IDTP, IDLN, nazev_tabulky)
+
+pv_WhereID = "IDST=" & IDST & " AND IDTP=" & IDTP & " AND IDLN=" & IDLN
+strWHERE = " WHERE " & pv_WhereID & " AND ATIME>=" & Datum_OD & " AND ATIME<=" & Datum_DO
+'SQL_a = "SELECT  IDTP, IDLN, IDST, ATIME, RVALUE FROM " & nazev_tabulky & "" & strWHERE
+SQL_a = "SELECT  ATIME, RVALUE, PROP FROM " & nazev_tabulky & "" & strWHERE
+
+Set conn = CreateObject("ADODB.Connection")
+conn.Open CStr(Sheets(List_par).Cells(13, 2).value) 'conn.Open "DSN=RetosSQL;Driver=SQL Server;uid=retosus;pwd=rts2;database=retosdb;Server=SUTERA-NB\SQLEXPRESS"
+Set RS0 = CreateObject("ADODB.recordset")
+RS0.CursorType = 3
+RS0.Open SQL_a, conn
+
+
+If RS0.RecordCount > 0 Then                         ' pokud je vice jak nula zapisu zacnu nacitat data do pole
+
+    Count_max = RS0.RecordCount - 1
+    ReDim Pole_hodnot(Count_max, 2)                 'bere pocet |fffd||fffd|dk|fffd| - indexuji od 0
+    i = 0: j = 0
+ While Not RS0.EOF                                  'do konce tabulky
+    Nactena = FormatNumber(CDbl(RS0("RVALUE")), 2)
+    Pole_hodnot(i, j) = CDbl(Nactena)
+    j = j + 1
+    Pole_hodnot(i, j) = RS0("ATIME")
+'/******** zapsani dalsiho parametru do 3 sloupce tabulky, jedna se o parametr zda je hodnota v radku validni
+    j = j + 1
+    Pole_hodnot(i, j) = RS0("PROP")
+'/********
+    j = 0: i = i + 1
+    RS0.MoveNext
+    'testcitac = testcitac + 1
+ Wend
+    RS0.Close
+    Set RS0 = Nothing
+Else
+    NeniHodnota = 1
+End If
+
+End Sub
+
+
+
+
+Attribute VB_Name = "F_DotazSQL_fce_array"
+Public Pole_hodnot()
+Public Pole_hodnot2()
+Public PoleHodnotMesic()
+Public PoleHodnotMax()
+Public PoleHodnotMin()
+Public Count_max
+Public Count_max2
+Public NeniHodnota
+Public PresDen
+
+
+'/************************************************************************************************
+' fce=0 maximum, fce=1 minimum, fce=2 prumer, fce=3 poslednihodnota, fce=7 poslednihodnotadavkovac
+
+
+Public Function DotazSQLfceArray(PozadovanyRok, PozadovanyMesic, PozadovanyDen, IDST, IDTPStr, IDLN, IDLN2, nazev_tabulky, Fce) As MonthStruct
+
+Dim IDTP
+Dim conn
+Dim Cmd
+
+ReDim PoleHodnotMesic(30)
+ReDim PoleHodnotMax(30)
+ReDim PoleHodnotMin(30)
+
+MESIC = PozadovanyMesic
+ROK = PozadovanyRok
+DEN = PozadovanyDen
+
+IDTP = IDPTStrToIdx(IDTPStr)      '/*******  prevedeni stringu na index ******
+
+'*******************  letni cas **********************
+'   1 - letni
+'   0 -  zimni
+
+SqlTimeConfig = Sheets("Provozn|fffd|").Cells(11, 2).value       ' nacteni konfigurace SQL databaze - formatu datumu
+
+vysledek = 0
+Vysledek2 = 0
+ActDen = 1
+ActHour = 0
+
+Konverze = ZapisDatumRead(ROK, MESIC, DEN, SqlTimeConfig)                   'zjistim o jaky cas se jedna a zda je treba konverze
+
+If Fce = 20 Then
+    Call NactiDvePole(Datum_OD, Datum_DO, IDST, IDTP, IDLN, IDLN2, nazev_tabulky)  ' funkce pro vycteni dvou tabulek zaraz
+Else
+    Call NactiPole(Datum_OD, Datum_DO, IDST, IDTP, IDLN, nazev_tabulky)
+End If
+
+Call ZapisDatumZpetRead(ROK, MESIC, DEN, SqlTimeConfig)
+
+For P = 0 To 30
+    PoleHodnotMesic(P) = -1                                                 'pokud neni v databazi zadny zaznam, vyplni navratove pole -1
+    PoleHodnotMax(P) = -1
+    PoleHodnotMin(P) = -1
+Next
+
+If NeniHodnota = 1 Then         ' pokud neni v databazi hodnota vypise nuly
+    TimeCount = 0
+    GoTo ERROR
+End If
+
+If Konverze = 1 Then        ' posunu pole
+   Call PosunPole(Pole_hodnot, ROK, MESIC)
+End If
+
+
+'*------------------------  start zpracovani nacteneho pole --------------------------------*'
+
+ActDatum = CDate(DateSerial(ROK, MESIC, (Day(Pole_hodnot(0, 1)))))
+
+        ' jednoduche funkce
+    Select Case Fce
+
+        Case 11   ' funkce rozdil MESICNI
+        
+            '******* vyresetovani pole ************
+            For P = 0 To 30
+                PoleHodnotMesic(P) = -1                                                 'pokud neni v databazi zadny zaznam, vyplni navratove pole -1
+            Next
+            
+            ActHour = Hour(Pole_hodnot(0, 1)): CountFirst = 0
+            
+            For Count = 0 To Count_max
+            If (CInt(Hour(Pole_hodnot(Count, 1)) - Hour(ActDatum)) > 1) And (Count <> 0) Then
+                ActDatum = Pole_hodnot(Count - 1, 1)
+            Else
+                If Pole_hodnot(Count, 1) < (CDate(ActDatum) + TimeSerial(1, 0, 0)) Then
+                    LastVal = Pole_hodnot(Count, 0)
+                    Zapsano = 0
+                Else
+                FirstVal = Pole_hodnot(CountFirst, 0)
+                    vysledek = Pole_hodnot(Count, 0) - FirstVal
+                    If Not Count = 0 Then
+                        If (CInt(ActHour) <> CInt(Hour(Pole_hodnot(Count - 1, 1)))) Then
+                          Do
+                            ActHour = ActHour + 1
+                            'osetreni preteceni
+                            If ActHour > 30 Then
+                              GoTo InterniERROR
+                            End If
+                          Loop While ActHour < Hour(Pole_hodnot(Count, 1))
+                        Else
+                          ActHour = ActHour + 1
+                        End If
+                    Else
+                     ' ActHour = ActHour + 1
+                    End If
+                    'Count = Count - 1
+                    ActDatum = DateAdd("h", 1, ActDatum)
+                    PoleHodnotMesic(ActHour - 1) = vysledek              'Indexovani poli od nuly
+                    CountFirst = Count
+                    Zapsano = 1
+                End If
+            End If
+            Next
+            If Count - 1 = Count_max And Zapsano = 0 Then
+                vysledek = LastVal - Pole_hodnot(CountFirst, 0)
+                PoleHodnotMesic(ActHour - 1) = vysledek          ' ulozeni dosavadni hodnoty
+            End If
+        
+    End Select
+        
+        'StatStruct = stat(ROK, MESIC, PoleHodnotMesic)                  ' fce spocita statistiky
+        GoTo KONEC
+InterniERROR:
+If MsgBox("Nedostupn|fffd| data", vbRetryCancel) = vbCancel Then
+End If
+
+ERROR:
+StatStruct.Pole = PoleHodnotMesic                                       'naplnim strukturu
+DotazSQLfceArray = StatStruct                                           'vratim strukturu
+
+Exit Function
+KONEC:
+StatStruct.Pole = PoleHodnotMesic
+DotazSQLfceArray = StatStruct
+End Function
+
+'******************* Funkce pro prepocet casu na zimni  *****************************
+Sub PosunPole(Pole, ROK, MESIC)
+
+Dim nullTime As Date
+Dim firstHour
+
+    Select Case MESIC
+        Case 10:
+            PresDen = PrestupnyDen(CDate(DateSerial(ROK, MESIC, 1)))
+            For j = 0 To Count_max
+                If CInt(Day(Pole_hodnot(j, 1))) <= PresDen Or CInt(Month(Pole_hodnot(j, 1))) < CInt(MESIC) Then                    'dokud je letni cas, tak pricitam hodinu
+                    NovyCas = CDate(Pole_hodnot(j, 1)) + TimeSerial(1, 0, 0)
+                    Pole_hodnot(j, 1) = NovyCas                                 ' nastal zimni case nepricitam nic
+                Else
+                End If
+            Next
+        Case 3:
+            PresDen = PrestupnyDen(CDate(DateSerial(ROK, MESIC, 1)))
+            nullTime = DateSerial(ROK, MESIC, PresDen) + TimeSerial(2, 0, 1)
+            firstHour = True
+            
+            For j = 0 To Count_max
+              If CInt(Day(Pole_hodnot(j, 1))) = PresDen Then                      'uprava pole pro prestupny den
+                    If (CDate(Pole_hodnot(j, 1))) < nullTime Then
+                      Pole_hodnot(j, 1) = Pole_hodnot(j, 1)
+                    Else
+
+                        NovyCas = CDate(Pole_hodnot(j, 1)) + TimeSerial(1, 0, 0)
+                        Pole_hodnot(j, 1) = NovyCas                               ' nastal letni cas, pricitam hodinu
+
+                    End If
+              Else
+                     NovyCas = CDate(Pole_hodnot(j, 1)) + TimeSerial(1, 0, 0)
+                     Pole_hodnot(j, 1) = NovyCas                               ' nastal letni cas, pricitam hodinu
+              End If
+            Next
+        Case Else:    ' pro letni cas vzdy pricitam hodinu
+            For j = 0 To Count_max
+                NovyCas = CDate(Pole_hodnot(j, 1)) + TimeSerial(1, 0, 0)
+                Pole_hodnot(j, 1) = NovyCas
+                'NovyCas = DateAdd("h", 1, Pole_hodnot(j, 1))
+            Next
+    End Select
+End Sub
+
+'******************* Funkce sestavujici command do SQL a nasledne vycteni vraceneho pole *****************************
+Sub NactiPole(Datum_OD As Variant, Datum_DO As Variant, IDST, IDTP, IDLN, nazev_tabulky)
+
+    pv_WhereID = "IDST=" & IDST & " AND IDTP=" & IDTP & " AND IDLN=" & IDLN
+    
+    strWHERE = " WHERE " & pv_WhereID & " AND ATIME>=" & Datum_OD & " AND ATIME<=" & Datum_DO
+    SQL_a = "SELECT  IDTP, IDLN, IDST, ATIME, RVALUE FROM " & nazev_tabulky & "" & strWHERE
+    
+    Set conn = CreateObject("ADODB.Connection")
+    conn.Open CStr(Sheets(List_par).Cells(13, 2).value) '"DSN=RetosSQL;Driver=SQL Server;uid=retosus;pwd=rts2;database=retosdb;Server=SUTERA-NB\SQLEXPRESS"
+    Set RS0 = CreateObject("ADODB.recordset")
+    RS0.CursorType = 3
+    RS0.Open SQL_a, conn
+    
+    
+    If RS0.RecordCount > 0 Then
+    
+        Count_max = RS0.RecordCount - 1
+        ReDim Pole_hodnot(Count_max, 1) 'bere pocet |fffd||fffd|dk|fffd| - indexuji od 0
+        i = 0: j = 0
+     While Not RS0.EOF                      'do konce tabulky
+        Nactena = FormatNumber(CDbl(RS0("RVALUE")), 2)
+        Pole_hodnot(i, j) = CDbl(Nactena)
+        j = j + 1
+        Pole_hodnot(i, j) = RS0("ATIME")
+        j = 0: i = i + 1
+        RS0.MoveNext
+     Wend
+        RS0.Close
+        Set RS0 = Nothing
+        NeniHodnota = 0
+    Else
+        NeniHodnota = 1
+    End If
+End Sub
+
+
+Sub NactiDvePole(Datum_OD As Variant, Datum_DO As Variant, IDST, IDTP, IDLN, IDLN2, nazev_tabulky)
+    '**************** vycteni prvniho pole ********************************
+    pv_WhereID = "IDST=" & IDST & " AND IDTP=" & IDTP & " AND IDLN=" & IDLN
+    strWHERE = " WHERE " & pv_WhereID & " AND ATIME>=" & Datum_OD & " AND ATIME<=" & Datum_DO
+    SQL_a = "SELECT  IDTP, IDLN, IDST, ATIME, RVALUE FROM " & nazev_tabulky & "" & strWHERE
+    
+    Set conn = CreateObject("ADODB.Connection")
+    conn.Open CStr(Sheets(List_par).Cells(13, 2).value) '"DSN=RetosSQL;Driver=SQL Server;uid=retosus;pwd=rts2;database=retosdb;Server=SUTERA-NB\SQLEXPRESS"
+    Set RS0 = CreateObject("ADODB.recordset")
+    RS0.CursorType = 3
+    RS0.Open SQL_a, conn
+    
+    If RS0.RecordCount > 0 Then
+        Count_max = RS0.RecordCount - 1
+        ReDim Pole_hodnot(Count_max, 1) 'bere pocet |fffd||fffd|dk|fffd| - indexuji od 0
+        i = 0: j = 0
+     While Not RS0.EOF                      'do konce tabulky
+        Nactena = FormatNumber(CDbl(RS0("RVALUE")), 2)
+        Pole_hodnot(i, j) = CDbl(Nactena)
+        j = j + 1
+        Pole_hodnot(i, j) = RS0("ATIME")
+        j = 0: i = i + 1
+        RS0.MoveNext
+     Wend
+        RS0.Close
+        Set RS0 = Nothing
+        NeniHodnota = 0
+    Else
+        NeniHodnota = 1
+    End If
+
+    '**************** vycteni druheho pole ********************************
+    pv_WhereID = "IDST=" & IDST & " AND IDTP=" & IDTP & " AND IDLN=" & IDLN2
+    strWHERE = " WHERE " & pv_WhereID & " AND ATIME>=" & Datum_OD & " AND ATIME<=" & Datum_DO
+    SQL_a = "SELECT  IDTP, IDLN, IDST, ATIME, RVALUE FROM " & nazev_tabulky & "" & strWHERE
+    
+    Set conn = CreateObject("ADODB.Connection")
+    conn.Open CStr(Sheets(List_par).Cells(13, 2).value) '"DSN=RetosSQL;Driver=SQL Server;uid=retosus;pwd=rts2;database=retosdb;Server=SUTERA-NB\SQLEXPRESS"
+    Set RS0 = CreateObject("ADODB.recordset")
+    RS0.CursorType = 3
+    RS0.Open SQL_a, conn
+    
+    If RS0.RecordCount > 0 Then
+        Count_max2 = RS0.RecordCount - 1
+        ReDim Pole_hodnot2(Count_max2, 1) 'bere pocet |fffd||fffd|dk|fffd| - indexuji od 0
+        i = 0: j = 0
+     While Not RS0.EOF                      'do konce tabulky
+        Nactena = FormatNumber(CDbl(RS0("RVALUE")), 2)
+        Pole_hodnot2(i, j) = CDbl(Nactena)
+        j = j + 1
+        Pole_hodnot2(i, j) = RS0("ATIME")
+        j = 0: i = i + 1
+        RS0.MoveNext
+     Wend
+        RS0.Close
+        Set RS0 = Nothing
+        NeniHodnota = 0
+    Else
+        NeniHodnota = 1
+    End If
+End Sub
+
+
+
+
+Attribute VB_Name = "G_STATISTIKA"
+
+'********* Vypise statistiky ******************
+Public Function VypisStat(Struct As MonthStruct, strana, par)
+
+IdxStrana = NazevStrany(strana)
+    
+    Pom = 0
+    For k = 0 To UBound(Struct.Pole)
+        If Struct.Pole(k) = -1 Then
+            Pom = Pom + 1
+        End If
+    Next
+       
+    If IdxStrana = 55 Then 'Pro pripad kdy je nektera strana plnena jinou funkci a je treba z ni pocitat statistiky
+    
+            Call SpocitejTuny("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(t)")
+            
+            strana = "D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(t)"
+            IdxStrana = 6
+    ' ************************   doplnit kod - prepocitavat procenta?? ****************
+            Souc = 0
+            countSum = 0
+            IdxMaxi = 5
+            IdxMini = 5
+            Maxi = 0
+            Mini = 100000
+            IsHodnota = 0
+            param = par + 10
+            
+            For k = 5 To 35
+                If Sheets(strana).Cells(k, (param + 2) - (IdxStrana * 10)).value = "-.-" Or Sheets(strana).Cells(k, (param + 2) - (IdxStrana * 10)).value = "" Then
+                'nevim
+                Else
+                    IsHodnota = 1
+                    Souc = Souc + Sheets(strana).Cells(k, (param + 2) - (IdxStrana * 10)).value
+                    countSum = countSum + 1
+                    If (CDbl(Sheets(strana).Cells(k, (param + 2) - (IdxStrana * 10)).value)) > CDbl(Maxi) Then
+                        Maxi = Sheets(strana).Cells(k, (param + 2) - (IdxStrana * 10)).value
+                        IdxMaxi = k
+                    End If
+                    If (CDbl(Sheets(strana).Cells(k, (param + 2) - (IdxStrana * 10)).value)) < CDbl(Mini) Then
+                        Mini = Sheets(strana).Cells(k, (param + 2) - (IdxStrana * 10)).value
+                        IdxMini = k
+                    End If
+                End If
+            Next
+            If Souc > 0 And countSum > 0 Then
+                Prum = Souc / countSum
+            End If
+            If Mini = 100000 Then
+                Mini = 0
+            End If
+        
+        If IsHodnota = 0 Then
+            Sheets(strana).Cells(38, (param + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(39, (param + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(40, (param + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(41, (param + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(42, (param + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(43, (param + 2) - (IdxStrana * 10)).value = "-.-"
+        Else
+            Sheets(strana).Cells(38, (param + 2) - (IdxStrana * 10)).value = Souc
+            Sheets(strana).Cells(39, (param + 2) - (IdxStrana * 10)).value = Prum
+            Sheets(strana).Cells(40, (param + 2) - (IdxStrana * 10)).value = Mini
+            Sheets(strana).Cells(41, (param + 2) - (IdxStrana * 10)).value = Sheets(strana).Cells(IdxMini, 2).value
+            Sheets(strana).Cells(42, (param + 2) - (IdxStrana * 10)).value = Maxi
+            Sheets(strana).Cells(43, (param + 2) - (IdxStrana * 10)).value = Sheets(strana).Cells(IdxMaxi, 2).value
+        End If
+    Else
+        If Pom = UBound(Struct.Pole) + 1 Then
+            Sheets(strana).Cells(38, (par + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(39, (par + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(40, (par + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(41, (par + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(42, (par + 2) - (IdxStrana * 10)).value = "-.-"
+            Sheets(strana).Cells(43, (par + 2) - (IdxStrana * 10)).value = "-.-"
+        Else
+            Sheets(strana).Cells(38, (par + 2) - (IdxStrana * 10)).value = Struct.Soucet
+            Sheets(strana).Cells(39, (par + 2) - (IdxStrana * 10)).value = Struct.Prum
+            Sheets(strana).Cells(40, (par + 2) - (IdxStrana * 10)).value = Struct.Minimum
+            Sheets(strana).Cells(41, (par + 2) - (IdxStrana * 10)).value = Struct.MinDate
+            Sheets(strana).Cells(42, (par + 2) - (IdxStrana * 10)).value = Struct.Maximum
+            Sheets(strana).Cells(43, (par + 2) - (IdxStrana * 10)).value = Struct.MaxDate
+        End If
+    End If
+    
+    For k = 0 To UBound(Struct.Pole)
+        Struct.Pole(k) = -1
+    Next
+End Function
+
+'*************************** spocita statistiky pole ****************************
+Public Function stat(ROK, MESIC, Pole As Variant) As MonthStruct
+
+Final = 0
+Count = 0
+index = 0
+    
+    'soucet
+    For P = 0 To UBound(Pole)
+        If Pole(P) <> -1 Then
+        Final = Final + Pole(P)
+        End If
+    Next
+    StatStruct.Soucet = Final
+    Final = 0
+    'prumer
+    For P = 0 To UBound(Pole)
+        If Pole(P) <> 0 And Pole(P) <> -1 Then
+         Final = Final + Pole(P)
+         Count = Count + 1
+        End If
+    Next
+    If Final <> 0 Then
+     StatStruct.Prum = Final / Count
+    Else
+     Final = 0
+    End If
+    If Count < 3 Then
+    StatStruct.Prum = 0
+    End If
+    
+    Count = 0
+    Final = -50             ' maximalni denn|fffd| teplota m|fffd||fffd|e b|fffd|t i z|fffd|porn|fffd| |fffd||fffd|slo
+    'maximum
+    For P = 0 To UBound(Pole)
+        If Pole(P) > Final And Pole(P) <> -1 Then
+         Final = Pole(P)
+         index = P
+        End If
+    Next
+    StatStruct.Maximum = Final
+    StatStruct.MaxDate = CDate(DateSerial(ROK, MESIC, index + 1))
+    '/* minimum
+    ' nemusim plnit final velkou hodnotou protoze je v nem maximum z daneho mesice
+    For k = 0 To UBound(Pole)
+        If Pole(k) = "" Then
+         Pole(k) = -1
+        End If
+    Next
+    
+    For P = 0 To UBound(Pole)
+        If Pole(P) >= -50 And Pole(P) <> -1 Then                  ' rozsah do -50 kvuli teplote a -1 nem|fffd||fffd|e b|fffd|t protoze ji pou|fffd||fffd|vam pro pr|fffd|zdnou polo|fffd|ku pole
+            If Pole(P) < Final Then
+             Final = Pole(P)
+             index = P
+            End If
+        End If
+    Next
+    StatStruct.Minimum = Final
+    StatStruct.MinDate = CDate(DateSerial(ROK, MESIC, index + 1))
+    'kopirovani pole
+    StatStruct.Pole = Pole
+    
+    stat = StatStruct
+End Function
+
+'******************* Funkce pro vypis statistik casovych databazovych promennych *****************************
+Public Function VypisStatCas(StatStruct As MonthStruct, strana, par)
+
+Dim Hod, Min
+
+IdxStrana = NazevStrany(strana)
+
+        TimeCount = StatStruct.Maximum
+        PocetMin = TimeCount \ 60
+        If PocetMin > 1438 Then
+         Hod = 24
+         Min = 0
+        Else
+         Hod = TimeCount \ 3600
+         Min = PocetMin - (Hod * 60)
+        End If
+        Sheets(strana).Cells(42, (ParNum + 2) - (IdxStrana * 10)).value = Right(("0" + CStr(Hod)), 2) + ":" + Right(("0" + CStr(Min)), 2)
+        
+        TimeCount = StatStruct.Minimum
+        PocetMin = TimeCount \ 60
+        If PocetMin > 1438 Then
+         Hod = 24
+         Min = 0
+        Else
+         Hod = TimeCount \ 3600
+         Min = PocetMin - (Hod * 60)
+        End If
+        Sheets(strana).Cells(40, (ParNum + 2) - (IdxStrana * 10)).value = Right(("0" + CStr(Hod)), 2) + ":" + Right(("0" + CStr(Min)), 2)
+        
+        TimeCount = StatStruct.Soucet
+        PocetMin = TimeCount \ 60
+        Hod = TimeCount \ 3600
+        Min = PocetMin - (Hod * 60)
+        Sheets(strana).Cells(38, (ParNum + 2) - (IdxStrana * 10)).value = Right(("0" + CStr(Hod)), 4) + ":" + Right(("0" + CStr(Min)), 2)
+        
+        TimeCount = StatStruct.Prum
+        PocetMin = TimeCount \ 60
+        Hod = TimeCount \ 3600
+        Min = PocetMin - (Hod * 60)
+        Sheets(strana).Cells(39, (ParNum + 2) - (IdxStrana * 10)).value = Right(("0" + CStr(Hod)), 2) + ":" + Right(("0" + CStr(Min)), 2)
+
+
+    Sheets(strana).Cells(41, (par + 2) - (IdxStrana * 10)).value = StatStruct.MinDate
+    Sheets(strana).Cells(43, (par + 2) - (IdxStrana * 10)).value = StatStruct.MaxDate
+    
+End Function
+Attribute VB_Name = "List1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "CommandButton1, 62, 0, MSForms, CommandButton"
+
+Private Sub CommandButton1_Click()
+
+VcerejsiDen = Date - 1
+ZadejDatum.MESIC = Month(VcerejsiDen)
+ZadejDatum.ROK = Year(VcerejsiDen)
+ZadejDatum.Show
+
+
+End Sub
+Attribute VB_Name = "List3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "CommandButton1, 40, 0, MSForms, CommandButton"
+Private Sub CommandButton1_Click()
+
+VcerejsiDen = Date - 1
+ZadejDatum.MESIC = Month(VcerejsiDen)
+ZadejDatum.ROK = Year(VcerejsiDen)
+ZadejDatum.Show
+
+End Sub
+Attribute VB_Name = "Summer_Winter_time"
+
+Public Function OKcas(Zadej_datum) As Integer 'As Date
+
+DATUM = CDate(Zadej_datum)
+ROK = Year(DATUM)
+brezenK = DateValue("31" & "." & "3" & "." & ROK) & " " & TimeValue("02:00:00")
+rijenK = DateValue("31" & "." & "10" & "." & ROK) & " " & TimeValue("02:00:00")
+
+Do While ZacatekLetnihoCasu = Empty
+brezenK = DateAdd("d", -1, brezenK)
+DEN = Weekday(brezenK, vbMonday)
+denslovy = WeekdayName(DEN)
+If denslovy = "ned|fffd|le" Then ZacatekLetnihoCasu = brezenK
+Loop
+
+Do While KonecLetnihoCasu = Empty
+rijenK = DateAdd("d", -1, rijenK)
+DEN = Weekday(rijenK, vbMonday)
+denslovy = WeekdayName(DEN)
+If denslovy = "ned|fffd|le" Then KonecLetnihoCasu = rijenK
+Loop
+
+If DATUM < ZacatekLetnihoCasu Or DATUM > KonecLetnihoCasu Then OKcas = 0 'DATUM                    'zimni cas
+If DATUM > ZacatekLetnihoCasu And DATUM < KonecLetnihoCasu Then OKcas = 1 'DateAdd("h", 1, DATUM)  'letni cas
+
+End Function
+
+Public Function PrestupnyDen(Zadej_datum) As Integer
+
+DATUM = CDate(Zadej_datum)
+ROK = Year(DATUM)
+brezenK = DateValue("31" & "." & "3" & "." & ROK) & " " & TimeValue("02:00:00")
+rijenK = DateValue("31" & "." & "10" & "." & ROK) & " " & TimeValue("02:00:00")
+
+denslovy = WeekdayName(Weekday(brezenK, vbMonday))
+If denslovy = "ned|fffd|le" Then
+    ZacatekLetnihoCasu = brezenK
+Else
+    Do While ZacatekLetnihoCasu = Empty
+    brezenK = DateAdd("d", -1, brezenK)
+    DEN = Weekday(brezenK, vbMonday)
+    denslovy = WeekdayName(DEN)
+    If denslovy = "ned|fffd|le" Then ZacatekLetnihoCasu = brezenK
+    Loop
+End If
+
+Do While KonecLetnihoCasu = Empty
+rijenK = DateAdd("d", -1, rijenK)
+DEN = Weekday(rijenK, vbMonday)
+denslovy = WeekdayName(DEN)
+If denslovy = "ned|fffd|le" Then KonecLetnihoCasu = rijenK
+Loop
+
+If DATUM < ZacatekLetnihoCasu Or DATUM > KonecLetnihoCasu Then OKcasNavrat = 0 'DATUM                    'zimni cas
+If DATUM > ZacatekLetnihoCasu And DATUM < KonecLetnihoCasu Then OKcasNavrat = 1 'DateAdd("h", 1, DATUM)  'letni cas
+
+If Month(DATUM) = 3 Then
+  PrestupnyDen = Day(ZacatekLetnihoCasu)
+ElseIf Month(DATUM) = 10 Then
+  PrestupnyDen = Day(KonecLetnihoCasu)
+End If
+
+
+End Function
+
+Public Function prevod(vysledek) As String
+Retezec = CStr(vysledek)
+deleni = Split(Retezec)
+dny = deleni(0)
+minuty = deleni(1)
+deleni = Split(dny, ".")
+rrr = deleni(0)
+mmm = deleni(1)
+ddd = deleni(2)
+ 
+prevod = Chr(39) & ddd & "-" & mmm & "-" & rrr & " " & minuty & Chr(39)
+
+End Function
+
+ 
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+        Application.EnableEvents = False
+End Sub
+Attribute VB_Name = "ZZ_RetosFce"
+Public Const DirRtsExcel As String = "C:\Retosnt\Users\ExportExcelCfg\"
+Public Const MaxPocetVolaniRtsArc As Long = 50000
+
+Private Type TI
+Pole(255) As Integer
+End Type
+
+' Deklarace funkc|fffd| z dll pro aktu|fffd|ln|fffd| stavy a popisy
+
+Declare Function RtsLong Lib "c:\retosnt\bin\rts2exc.dll" Alias "_RtsLong@16" _
+(ByVal st As Long, ByVal pvtp As String, ByVal LN As Long, ByVal op As Long) As Long
+
+Declare Function RtsDouble Lib "c:\retosnt\bin\rts2exc.dll" Alias "_RtsDouble@16" _
+(ByVal st As Long, ByVal pvtp As String, ByVal LN As Long, ByVal op As Long) As Double
+
+Declare Function RtsString Lib "c:\retos\bin\rts2exc.dll" Alias "_RtsStr@20" _
+(ByRef Result As TI, ByVal st As Long, ByVal pvtp As String, ByVal LN As Long, ByVal op As Long) As Long
+
+
+' Deklarace funkc|fffd| z dll pro vyta|fffd|en|fffd| |fffd|saj|fffd| z arch|fffd|v|fffd|
+
+Declare Function RtsArcDouble Lib "c:\retosnt\bin\rts2exc.dll" Alias "_RtsArcDouble@44" _
+(ByVal st As Long, ByVal pvtp As String, ByVal LN As Long, ByVal table As String, ByVal dummy As String, ByVal op As Long, ByVal Y As Long, ByVal mon As Long, ByVal d As Long, ByVal h As Long, ByVal Min As Long) As Double
+
+
+Declare Function RtsArcLong Lib "c:\retosnt\bin\rts2exc.dll" Alias "_RtsArcLong@44" _
+(ByVal st As Long, ByVal pvtp As String, ByVal LN As Long, ByVal table As String, ByVal dummy As String, _
+ByVal op As Long, ByVal Y As Long, ByVal mon As Long, ByVal d As Long, ByVal h As Long, ByVal Min As Long) As Long
+
+
+Declare Function RtsArcStr Lib "c:\retos\bin\rts2exc.dll" Alias "_RtsArcStr@48" _
+(ByRef Result As TI, ByVal st As Long, ByVal pvtp As String, ByVal LN As Long, _
+    ByVal table As String, ByVal dummy As String, ByVal op As Long, ByVal Y As Long, _
+    ByVal mon As Long, ByVal d As Long, ByVal h As Long, ByVal Min As Long) As Long
+
+
+
+'------ ENUMERACNI DEKLARACE funkc|fffd| pro MAKRA
+
+Declare Function DRtsEnumOpen Lib "rts2exc.dll" Alias "_RtsEnumOpen@12" _
+(ByVal nd As Long, ByVal st As Long, ByVal pvtp As String) As Long
+
+'------------------------------------------------------------------------------------------------------------------
+
+Declare Function DRtsEnumClose Lib "rts2exc.dll" Alias "_RtsEnumClose@4" _
+(ByVal handle As Long) As Long
+
+'------------------------------------------------------------------------------------------------------------------
+
+Declare Function DRtsEnumGetLong Lib "rts2exc.dll" Alias "_RtsEnumGetLong@12" _
+(ByVal handle As Long, ByVal index As Long, ByVal param As Long) As Long
+
+'------------------------------------------------------------------------------------------------------------------
+
+Declare Function DRtsEnumGetDvc Lib "rts2exc.dll" Alias "_RtsEnumGetDvc@16" _
+(ByVal handle As Long, ByVal index As Long, ByVal dvc As Long, ByVal reas As Long) As Long
+
+'-------------------------------------------------------------------------------------------------------------------
+
+Declare Function DRtsEnumGetDouble Lib "rts2exc.dll" Alias "_RtsEnumGetDouble@12" _
+(ByVal handle As Long, ByVal index As Long, ByVal param As Long) As Double
+
+'-------------------------------------------------------------------------------------------------------------------
+
+Declare Function DRtsEnumGetStr Lib "rts2exc.dll" Alias "_RtsEnumGetStr@16" _
+(ByRef Result As TI, ByVal handle As Long, ByVal index As Long, ByVal param As Long) As Long
+
+
+
+'Vytvo|fffd|en|fffd| dal|fffd||fffd|ch funkc|fffd| pro aktu|fffd|l stavy a |fffd|ten|fffd| z arch|fffd|v|fffd| odvozen|fffd|ch od v|fffd||fffd|e uveden|fffd|ch
+
+Public Function RtsGetLong(ByVal pvtp As String, ByVal st As Integer, ByVal LN As Integer) As Long
+
+RtsGetLong = RtsLong(st, pvtp, LN, 3)
+
+End Function
+
+Public Function RtsGetDouble(ByVal pvtp As String, ByVal st As Integer, ByVal LN As Integer) As Double
+
+RtsGetDouble = RtsDouble(st, pvtp, LN, 3)
+
+End Function
+
+Public Function RtsGetArcDouble(ByVal pvtp As String, ByVal st As Integer, ByVal LN As Integer, ByVal table As String, ByVal t As Date) As Double
+
+RtsGetArcDouble = RtsArcDouble(st, pvtp, LN, table, "", 3, Year(t), Month(t), Day(t), Hour(t), Minute(t))
+
+End Function
+
+Public Function RtsGetArcStr(ByVal pvtp As String, ByVal st As Integer, ByVal LN As Integer, ByVal table As String, ByVal t As Date) As String
+Dim P As TI
+Dim ret As Long
+
+ret = RtsArcStr(P, st, pvtp, LN, table, "", 3, Year(t), Month(t), Day(t), Hour(t), Minute(t))
+
+RtsGetArcStr = BugConv(P)
+
+End Function
+
+Private Function BugConv(ByRef P As TI) As String
+
+Dim i As Integer
+Dim c As Integer
+Dim STR As String
+
+STR = ""
+
+For i = 0 To 255
+    c = P.Pole(i) Mod 256
+    
+    If c = 0 Then Exit For
+    If c < 0 Then c = 256 + c
+        STR = STR & Chr(c)
+        c = P.Pole(i) \ 256
+            
+    If P.Pole(i) < 0 Then c = 255 + c
+            
+    If c = 0 Then Exit For
+            
+    STR = STR & Chr(c)
+Next i
+
+BugConv = STR
+
+End Function
+
+
+'--------------------------------ENUMERACNI FUNKCE
+
+Public Function RtsEnumOpen(ByVal nd As Long, ByVal st As Long, ByVal pvtp As String) As Long
+
+RtsEnumOpen = DRtsEnumOpen(nd, st, pvtp)
+
+End Function
+
+Public Function RtsEnumClose(ByVal handle As Long) As Long
+
+RtsEnumClose = DRtsEnumClose(handle)
+
+End Function
+
+Public Function RtsEnumGetLong(ByVal handle As Long, ByVal index As Long, ByVal param As Long) As Long
+
+RtsEnumGetLong = DRtsEnumGetLong(handle, index, param)
+
+End Function
+
+Public Function RtsEnumGetDvc(ByVal handle As Long, ByVal index As Long, ByVal dvc As Long, ByVal reas As Long) As Long
+
+RtsEnumGetDvc = DRtsEnumGetDvc(handle, index, dvc, reas)
+
+End Function
+
+Public Function RtsEnumGetDouble(ByVal handle As Long, ByVal index As Long, ByVal param As Long) As Double
+
+RtsEnumGetDouble = DRtsEnumGetDouble(handle, index, param)
+
+End Function
+
+Public Function RtsEnumGetStr(ByVal handle As Long, ByVal index As Long, ByVal param As Long) As String
+Dim P As TI
+Dim ret As Long
+
+ret = DRtsEnumGetStr(P, handle, index, param)
+
+RtsEnumGetStr = BugConv(P)
+
+End Function
+Attribute VB_Name = "ZadejDatum"
+Attribute VB_Base = "0{27B35CF2-9DB7-4FF7-8C49-0C58F3227B28}{03B0452E-97B7-4048-9BFA-1DC730D3420E}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Private Sub ComboBox1_DropButtonClick()
+
+ComboBox1.ListFillRange = Sheets("Provozn|fffd|").Range("A23:A33")
+
+End Sub
+
+Public Sub OK_Click()
+formular2.Show
+End Sub
+
+
+Private Sub OptionButton1_Click()
+
+End Sub
+Attribute VB_Name = "ZapisSQL"
+Public PoleZapis()
+Public DatumCas
+
+
+Public Function ZapisSQLArray(strana)
+    Call VytvorPole(strana)
+    Call ZapisPole(strana)
+    Call VymazBarvy(strana)
+    Call ZakresliVikend
+End Function
+
+Sub VymazBarvy(strana)
+    For i = 4 To 12
+        For k = 5 To 35
+            With Sheets(strana).Cells(k, i)
+            .Interior.ColorIndex = 2            'vymazani barevneho znaceni vikendu
+            End With
+        Next
+    Next
+End Sub
+
+Sub ZakresliVikend()
+Dim LWeekday As Integer
+i = 0
+
+date_start = CDate(Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(5, 2).value)
+date_end = DateAdd("m", 1, date_start)
+date_end = DateAdd("d", -1, date_end)
+den_end = Day(date_end)
+
+Do While (Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(i + 5, 2).value) <> ""
+
+    LWeekday = Weekday(date_start, vbMonday)
+
+        If LWeekday = 6 Then
+            For k = 2 To 12
+             Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(i + 5, k).Interior.ColorIndex = 17
+            Next
+        End If
+        
+        If LWeekday = 7 Then
+            For k = 2 To 12
+             Sheets("D|fffd|vkova|fffd|_sil|fffd|_sen|fffd|(%)").Cells(i + 5, k).Interior.ColorIndex = 38
+            Next
+        End If
+            date_start = DateAdd("d", 1, date_start)
+        i = i + 1
+Loop
+End Sub
+
+Sub VytvorPole(strana)
+
+ReDim PoleZapis(10, 30, 1)
+'****** vynulovani pole ********
+For radek = 0 To 30
+    For sloupec = 0 To 10
+        PoleZapis(sloupec, radek, 0) = -1
+    Next
+Next
+'********* naplneni pole ***********
+For sloupec = 4 To 12
+    For radek = 5 To 35
+        If Sheets(strana).Cells(radek, sloupec).Interior.ColorIndex = 4 Then
+        PoleZapis(sloupec - 4, radek - 5, 0) = Sheets(strana).Cells(radek, sloupec).value
+        PoleZapis(sloupec - 4, radek - 5, 1) = CDate(Sheets(strana).Cells(radek, 2).value)
+        Else
+        PoleZapis(sloupec - 4, radek - 5, 0) = -1               ' pokud hodnota nebyla zmenena zapisu -1
+        End If
+    Next
+Next
+End Sub
+
+Sub ZapisDatum(radek, strana)
+
+den1 = Day(CDate(Sheets(strana).Cells(radek, 2).value))
+mesic1 = Month(CDate(Sheets(strana).Cells(radek, 2).value))
+rok1 = Year(CDate(Sheets(strana).Cells(radek, 2).value))
+
+'den1 = 18
+'mesic1 = 7
+'rok1 = 2012
+
+
+DATUM = rok1 & "-" & den1 & "-" & mesic1 & " "
+
+CAS = "23" & ":" & "59" & ":" & "59" & " "
+
+DatumCas = Chr(39) & DATUM & CAS & Chr(39)         'V|fffd|sledek1 = |fffd|as za|fffd||fffd|tku
+
+End Sub
+
+Sub ZapisDatumZpet(radek, strana)
+
+den1 = Day(CDate(Sheets(strana).Cells(radek, 2).value))
+mesic1 = Month(CDate(Sheets(strana).Cells(radek, 2).value))
+rok1 = Year(CDate(Sheets(strana).Cells(radek, 2).value))
+
+'den1 = 18
+'mesic1 = 7
+'rok1 = 2012
+
+
+DATUM = rok1 & "-" & mesic1 & "-" & den1 & " "
+
+CAS = "23" & ":" & "59" & ":" & "59" & " "
+
+DatumCas = Chr(39) & DATUM & CAS & Chr(39)         'V|fffd|sledek1 = |fffd|as za|fffd||fffd|tku
+
+End Sub
+
+
+Sub ZapisPole(strana)
+List_par = "Provozn|fffd|"
+CountZapisu = 0
+Dim value As Double
+value = 0
+
+
+For par = 52 To 60
+
+ par1_typ = CStr(Sheets(List_par).Cells(4, par + 3).value)
+ par1_st = CInt(Sheets(List_par).Cells(5, par + 3).value)
+ par1_ln = CInt(Sheets(List_par).Cells(6, par + 3).value)
+ par1_tab = CStr(Sheets(List_par).Cells(7, par + 3).value)
+ 
+ Select Case par1_typ
+    Case "AI"
+    TypPromenne = 0
+    Case "BI"
+    TypPromenne = 1
+    Case "CI"
+    TypPromenne = 2
+    Case "AC"
+    TypPromenne = 5
+    Case "BC"
+    TypPromenne = 6
+    Case "CC"
+    TypPromenne = 7
+ End Select
+ 
+    For radek = 0 To 30
+        If PoleZapis(par - 52, radek, 0) <> -1 Then
+            'DatumCas = PoleZapis(par - 51, radek, 1)
+            Call ZapisDatum(radek + 5, strana)
+            value = PoleZapis(par - 52, radek, 0)
+            Call ZapisSQL(par1_st, TypPromenne, par1_ln, par1_tab, 1, value, DatumCas)
+            CountZapisu = CountZapisu + 1
+        End If
+    Next
+Next
+
+End Sub
+
+Function ZapisSQL(STANICE, TYP, LN, TABULKA, NUMNODE, HODNOTA As Double, DATUM)
+    
+    Dim del As Integer
+    Dim po As Double
+    
+    List_par = "Provozn|fffd|"
+    PROMENNA = "RVALUE"
+    'TABULKA = "krhora_dd1"
+    'STANICE = 1
+    'TYP = 0
+    'LN = 5
+    'NUMNODE = 1
+    
+    pred = CStr(HODNOTA)
+    pred2 = Replace(pred, ",", ".")
+    
+ '******** optimalizace ! *******
+    If HODNOTA > 0.1 Then
+    pred = CInt(HODNOTA)
+    Pom = pred - HODNOTA
+    pom2 = 1 - Pom
+    If pom2 > 1 Then
+    pom2 = pom2 - 1
+    End If
+    pom3 = CInt(pom2 * 100)
+    pom4 = CInt(HODNOTA - pom2)
+    del = HODNOTA / pred
+    po = (HODNOTA - pred) * 100
+    po = CInt(po)
+    Else
+    pom4 = 0
+    pom3 = 0
+    End If
+    
+    
+    sloupce = "(NODE, IDST, IDTP, IDLN, ATIME, RVALUE)"
+    hodnoty = " (" & NUMNODE & ", " & STANICE & ", " & TYP & ", " & LN & ", " & DatumCas & "," & pred2 & ")"     '" & HODNOTA & ")"  ' prevod hodnoty na procenta
+    
+    kde = "IDST=" & STANICE & " AND IDTP=" & TYP & " AND IDLN=" & LN & " AND ATIME=" & DATUM
+    'strWHERE = " WHERE " & pv_WhereID &
+    SQL_a = " INSERT INTO " & TABULKA & " " & sloupce & " VALUES " & hodnoty
+    
+    SQL_b = " UPDATE " & TABULKA & " SET RVALUE=" & pred2 & " WHERE " & kde
+    
+    'INSERT INTO Store_Information (store_name, Sales, Date)VALUES ('Los Angeles', 900, 'Jan-10-1999')
+    'INSERT INTO "table_name" ("column1", "column2", ...) VALUES ("value1", "value2", ...)
+    'UPDATE Store_Information Set Sales = 500 WHERE store_name = "Los Angeles" AND Date = "Jan-08-1999
+    
+    Set conn = CreateObject("ADODB.Connection")
+    Set errorObject = CreateObject("ADODB.Error")
+    Set RS0 = CreateObject("ADODB.recordset")
+    
+    On Error Resume Next
+    
+    conn.Open CStr(Sheets(List_par).Cells(13, 2).value) '"DSN=RetosSQL;Driver=SQL Server;uid=retosus;pwd=rts2;database=retosdb;Server=SUTERA-NB\SQLEXPRESS"
+    RS0.CursorType = 3
+    RS0.Open SQL_a, conn
+
+    RS0.Open SQL_b, conn
+
+    'DisplayErrorInfo
+    
+    RS0.Close
+    conn.Close
+    
+
+End Function
+
+Attribute VB_Name = "Zapis_datum"
+
+Function ZapisDatumRead(rok1, mesic1, den1, SqlTimeConfig) As Integer
+
+date_start_min = DateSerial(ZadanyRok, ZadanyMesic - 1, 1)
+date_end_min = DateAdd("m", 1, date_start_min)
+date_end_min = DateAdd("d", -1, date_end_min)
+den_end_min = Day(date_end_min)
+
+date_start = DateSerial(ZadanyRok, ZadanyMesic, 1)
+date_end = DateAdd("m", 1, date_start)
+date_end = DateAdd("d", -1, date_end)
+den_end = Day(date_end)
+
+date_start_next = DateSerial(ZadanyRok, ZadanyMesic, den1)
+date_end_next = DateAdd("d", 1, date_start_next)
+'date_end_next = DateAdd("d", -1, date_end_next)
+den_end_next = Day(date_end_next)
+mesic_end_next = Month(date_end_next)
+rok_end_next = Year(date_end_next)
+
+DATUM_zacatek = rok1 & "-" & mesic1 & "-" & den1 & " "
+DATUM_konec = rok1 & "-" & mesic1 & "-" & den1 + 1 & " "
+CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+CAS_konec = "00" & ":" & "00" & ":" & "01" & " "
+
+PresDen = PrestupnyDen(CDate(DateSerial(rok1, mesic1, 1)))
+
+Select Case SqlTimeConfig
+    Case 0:                                                                 ' konfigurace casu:     YYYY:MM:DD
+        If mesic1 = 1 Or mesic1 = 11 Or mesic1 = 2 Then
+            DATUM_zacatek = rok1 & "-" & mesic1 & "-" & den1 & " "          ' Leden neni t|fffd|eba |fffd|esit hodnotu z min. roku, protoze je cas standardni neni letni cas
+            If den1 = den_end Then
+                DATUM_konec = rok1 & "-" & mesic1 + 1 & "-" & 1 & " "
+            Else
+                DATUM_konec = rok1 & "-" & mesic1 & "-" & den1 + 1 & " "
+            End If
+            CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+            CAS_konec = "00" & ":" & "00" & ":" & "01" & " "
+            Konverze = 0
+        End If
+        If mesic1 >= 3 And mesic1 <= 9 Then                                 ' pro vsechny ostatni mesice zaradim do pole hodnotu 23:00 z prechoziho mesice kv|fffd|li letnimu casu
+            If den1 = 1 Then
+                DATUM_zacatek = rok1 & "-" & mesic1 - 1 & "-" & den_end_min & " "
+            Else
+                DATUM_zacatek = rok1 & "-" & mesic1 & "-" & den1 - 1 & " "
+            End If
+            
+            If den1 = den_end Then
+                DATUM_konec = rok1 & "-" & mesic1 + 1 & "-" & 1 & " "
+            Else
+                DATUM_konec = rok1 & "-" & mesic1 & "-" & den1 & " "
+            End If
+            CAS_zacatek = "23" & ":" & "00" & ":" & "00" & " "
+            CAS_konec = "23" & ":" & "00" & ":" & "01" & " "
+            Konverze = 1
+        End If
+        If mesic1 = 10 Then                                  ' pro vsechny ostatni mesice zaradim do pole hodnotu 23:00 z prechoziho mesice kv|fffd|li letnimu casu
+            If den1 = 1 Then
+                DATUM_zacatek = rok1 & "-" & mesic1 - 1 & "-" & den_end_min & " "
+            Else
+                DATUM_zacatek = rok1 & "-" & mesic1 & "-" & den1 - 1 & " "
+            End If
+            DATUM_konec = rok1 & "-" & mesic1 & "-" & den1 & " "
+            CAS_zacatek = "23" & ":" & "00" & ":" & "00" & " "
+            CAS_konec = "00" & ":" & "00" & ":" & "00" & " "
+            Konverze = 1
+        End If
+        If mesic1 = 12 Then
+            If den1 = 1 Then
+                DATUM_zacatek = rok1 & "-" & mesic1 - 1 & "-" & den_end_min & " "
+            Else
+                DATUM_zacatek = rok1 & "-" & mesic1 & "-" & den1 & " "
+            End If
+            DATUM_konec = rok1 + 1 & "-" & 1 & "-" & 1 & " "
+            CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+            CAS_konec = "00" & ":" & "00" & ":" & "01" & " "
+            Konverze = 0
+        End If
+    Case 1:                                 ' konfigurace casu:     YYYY:DD:MM
+         If mesic1 = 1 Or mesic1 = 11 Or mesic1 = 2 Then
+            DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "          ' Leden neni t|fffd|eba |fffd|esit hodnotu z min. roku, protoze je cas standardni neni letni cas
+            If CInt(den1) = den_end Then
+                DATUM_konec = rok1 & "-" & 1 & "-" & mesic1 + 1 & " "
+            Else
+                DATUM_konec = rok1 & "-" & den1 + 1 & "-" & mesic1 & " "
+            End If
+            CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+            CAS_konec = "00" & ":" & "00" & ":" & "01" & " "
+            Konverze = 0
+        End If
+        If mesic1 = 3 Then                                 ' pro vsechny ostatni mesice zaradim do pole hodnotu 23:00 z prechoziho mesice kv|fffd|li letnimu casu
+            If (CInt(den1) > PresDen) And Not (CInt(den1) = 1) Then
+                DATUM_zacatek = rok1 & "-" & den1 - 1 & "-" & mesic1 & " "
+                DATUM_konec = rok1 & "-" & den1 & "-" & mesic1 & " "
+                CAS_zacatek = "23" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "23" & ":" & "00" & ":" & "00" & " "
+                Konverze = 1
+            ElseIf (CInt(den1) = PresDen) Then
+                DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+                DATUM_konec = rok1 & "-" & den1 & "-" & mesic1 & " "
+                CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "23" & ":" & "00" & ":" & "00" & " "
+                Konverze = 1
+            Else
+                DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+                DATUM_konec = rok1 & "-" & den1 + 1 & "-" & mesic1 & " "
+                CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "00" & ":" & "00" & ":" & "00" & " "
+                Konverze = 0
+            End If
+            
+        End If
+          If mesic1 >= 4 And mesic1 <= 9 Then                                 ' pro vsechny ostatni mesice zaradim do pole hodnotu 23:00 z prechoziho mesice kv|fffd|li letnimu casu
+            DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+            If CInt(den1) = den_end Then
+                DATUM_konec = rok1 & "-" & 1 & "-" & mesic1 + 1 & " "
+            Else
+                DATUM_konec = rok1 & "-" & den1 + 1 & "-" & mesic1 & " "
+            End If
+            CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+            CAS_konec = "00" & ":" & "00" & ":" & "01" & " "
+            Konverze = 0
+        End If
+        If mesic1 = 10 Then                                  ' pro vsechny ostatni mesice zaradim do pole hodnotu 23:00 z prechoziho mesice kv|fffd|li letnimu casu
+            If (CInt(den1) < PresDen) And (CInt(den1) = 1) Then
+                DATUM_zacatek = rok1 & "-" & den_end_min & "-" & mesic1 - 1 & " "
+                DATUM_konec = rok1 & "-" & den1 & "-" & mesic1 & " "
+                CAS_zacatek = "23" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "23" & ":" & "00" & ":" & "00" & " "
+                Konverze = 1
+            ElseIf (CInt(den1) < PresDen) And Not (CInt(den1) = 1) Then
+                DATUM_zacatek = rok1 & "-" & den1 - 1 & "-" & mesic1 & " "
+                DATUM_konec = rok1 & "-" & den1 & "-" & mesic1 & " "
+                CAS_zacatek = "23" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "23" & ":" & "00" & ":" & "00" & " "
+                Konverze = 1
+            ElseIf (CInt(den1) = PresDen) Then
+                DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+                DATUM_konec = rok1 & "-" & den1 & "-" & mesic1 & " "
+                CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "23" & ":" & "00" & ":" & "00" & " "
+                Konverze = 1
+            ElseIf (CInt(den1) = den_end) Then
+                DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+                DATUM_konec = rok1 & "-" & 1 & "-" & mesic1 + 1 & " "
+                CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "00" & ":" & "00" & ":" & "00" & " "
+                Konverze = 0
+            Else
+                DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+                DATUM_konec = rok1 & "-" & den1 + 1 & "-" & mesic1 & " "
+                CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+                CAS_konec = "00" & ":" & "00" & ":" & "00" & " "
+                Konverze = 0
+            End If
+        End If
+        If mesic1 = 12 Then
+            If CInt(den1) = 1 Then
+                DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+            Else
+                DATUM_zacatek = rok1 & "-" & den1 & "-" & mesic1 & " "
+            End If
+            If CInt(den1) = 31 Then
+              'DATUM_konec = rok_end_next & "-" & den_end_next & "-" & mesic_end_next & " "
+              DATUM_konec = rok1 + 1 & "-" & 1 & "-" & 1 & " "
+            Else
+              DATUM_konec = rok1 & "-" & den1 + 1 & "-" & mesic1 & " "
+            End If
+            CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+            CAS_konec = "00" & ":" & "00" & ":" & "01" & " "
+            Konverze = 0
+        End If
+End Select
+    Datum_OD = Chr(39) & DATUM_zacatek & CAS_zacatek & Chr(39)         'V|fffd|sledek1 = |fffd|as za|fffd||fffd|tku
+    Datum_DO = Chr(39) & DATUM_konec & CAS_konec & Chr(39)             'V|fffd|sledek2 = |fffd|as konce
+    
+    ZapisDatumRead = Konverze ' vratim hodnotu zda je treba konvertovat
+End Function
+
+
+Function ZapisDatumZpetRead(rok1, mesic1, den1, SqlTimeConfig)
+
+ den1 = 1
+    If mesic1 = 12 Then
+        DATUM_zacatek = rok1 & "-" & mesic1 & "-" & den1 & " "
+        DATUM_konec = rok1 & "-" & mesic1 & "-" & 31 & " "
+        CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+        CAS_konec = "23" & ":" & "59" & ":" & "59" & " "
+    Else
+        DATUM_zacatek = rok1 & "-" & mesic1 & "-" & den1 & " "
+        DATUM_konec = rok1 & "-" & mesic1 + 1 & "-" & den1 & " "
+        CAS_zacatek = "00" & ":" & "00" & ":" & "00" & " "
+        CAS_konec = "00" & ":" & "00" & ":" & "01" & " "
+    End If
+    
+Datum_OD = Chr(39) & DATUM_zacatek & CAS_zacatek & Chr(39)         'V|fffd|sledek1 = |fffd|as za|fffd||fffd|tku
+Datum_DO = Chr(39) & DATUM_konec & CAS_konec & Chr(39)             'V|fffd|sledek2 = |fffd|as konce
+
+End Function
+Attribute VB_Name = "formular1"
+Attribute VB_Base = "0{93D36EC9-90B4-46C1-9582-FF062519D905}{D950B0CF-520A-413C-A573-EF06FC32F522}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Private Sub UserForm_Activate()
+Call StartRtsExport
+End Sub
+Attribute VB_Name = "formular2"
+Attribute VB_Base = "0{21F8F7CE-BC6D-402D-9690-C7788CE36BD9}{79D75CE8-ADE7-40FC-89F9-D44C693324A2}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Private Sub UserForm_Activate()
+Call StartRtsExport
+End Sub
+
+
+INQUEST-PP=macro

@@ -1,0 +1,782 @@
+Attribute VB_Name = "PhonebookScraper"
+
+Public Sub btnClearData_Click()
+
+    Dim wb As Workbook
+    Dim ws As Worksheet
+    Set wb = ActiveWorkbook
+    Set ws = wb.Sheets("Phonebook Lookup")
+    
+    Dim lngLastRow As Long
+    lngLastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+
+    With Range("$B$2:$N$" & lngLastRow)
+        .Select
+        .ClearContents
+    End With
+    
+    Range("$B$2").Select
+    
+End Sub
+
+
+Public Sub LoopSID()
+    
+    Application.DisplayStatusBar = True
+    'Application.ScreenUpdating = False
+    Application.StatusBar = "Progress: 0%"
+
+    ' Define the workbook and worksheet
+    Dim wb As Workbook
+    Dim ws As Worksheet
+    Set wb = ActiveWorkbook
+    Set ws = wb.Sheets("Phonebook Lookup")
+    
+    ' Loop through the SID list
+    Dim rCell As Range
+    Dim rRng As Range
+    Dim lngLastRow As Long
+    lngLastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    Set rRng = ws.Range("A2:A" & lngLastRow)   ' User SID Column
+    
+    For Each rCell In rRng.Cells
+    
+        If Int((rCell.Row / lngLastRow) * 100) Mod 1 = 0 And rCell.Row Mod 50 = 0 Then Application.StatusBar = "Progress: " & Int((rCell.Row / lngLastRow) * 100) & "%"
+        'rCell.Select
+        
+        Dim person As clsPerson
+        
+        ' IS INPUT AN SID OR AN EMAIL?
+        Dim strSidPattern As String: strPattern = "^[a-zA-Z]{1}[0-9]{6}$"
+        Dim regExSidPattern As New RegExp
+        With regExSidPattern
+            .Global = True
+            .MultiLine = True
+            .IgnoreCase = False
+            .Pattern = strPattern
+        End With
+        If regExSidPattern.test(CStr(rCell)) Then
+        
+            ' IS AN SID
+            Set person = GetPersonDataFromSid(CStr(rCell))
+            
+        Else    ' SID RegEx Failed
+        
+            Dim strEmailPattern As String: strPattern = "^[a-zA-Z0-9_\-\.]+\@[a-zA-Z]+\.[a-zA-Z]{2,3}$"
+            Dim regExEmailPattern As New RegExp
+            With regExEmailPattern
+                .Global = True
+                .MultiLine = True
+                .IgnoreCase = False
+                .Pattern = strPattern
+            End With
+            If regExEmailPattern.test(CStr(rCell)) Then
+            
+                ' IS AN EMAIL
+                Set person = GetPersonDataFromEmail(CStr(rCell))
+            
+            Else    ' EMAIL RegEx Failed
+            
+                ' IS NOT A SID OR AN EMAIL
+                Set person = New clsPerson
+                person.standardID = "Invalid Input (SID/Email)"
+        
+            End If
+        
+        End If
+        
+        Range("$B$" & rCell.Row) = person.nameLast
+        Range("$C$" & rCell.Row) = person.nameFirst
+        Range("$D$" & rCell.Row) = person.jobCode
+        If Trim(person.type_) = "E" Then
+            Range("$E$" & rCell.Row) = "Employee"
+        ElseIf Trim(person.type_) = "C" Then
+            Range("$E$" & rCell.Row) = "Contractor"
+        End If
+        Range("$K$" & rCell.Row) = person.region
+        Range("$L$" & rCell.Row) = person.city
+        
+        Dim objLob As Variant
+        Set objLob = CreateObject("System.Collections.ArrayList")
+        Dim lngIdx As Long
+        lngIdx = 0
+        For Each objLob In person.orgStructure
+            'Debug.Print CStr(objLob)
+            Dim strObjLob As String
+            If IsEmpty(objLob) Then
+                strObjLob = "-"
+            Else
+                strObjLob = objLob
+            End If
+            If lngIdx = 0 Then rCell.Offset(0, 5 + lngIdx) = strObjLob
+            If lngIdx = 1 Then rCell.Offset(0, 5 + lngIdx) = strObjLob
+            If lngIdx = 2 Then rCell.Offset(0, 5 + lngIdx) = strObjLob
+            If lngIdx = 3 Then rCell.Offset(0, 5 + lngIdx) = strObjLob
+            If lngIdx = 4 Then rCell.Offset(0, 5 + lngIdx) = strObjLob
+            lngIdx = lngIdx + 1
+        Next
+        If IsEmpty(rCell.Offset(0, 9)) Then rCell.Offset(0, 9) = "-"
+        
+        Range("$M$" & rCell.Row) = person.managerName
+        Range("$N$" & rCell.Row) = person.managerSID
+        
+        Dim boolFound As Boolean
+        boolFound = False
+        Dim vCell As Range
+        For Each vCell In Range("$B$" & rCell.Row & ":$N$" & rCell.Row)
+            If vCell <> "-" Then If Not IsEmpty(vCell) Then boolFound = True
+        Next vCell
+        If boolFound = False Then
+            For Each vCell In Range("$B$" & rCell.Row & ":$N$" & rCell.Row)
+                vCell = "No records found"
+            Next vCell
+        End If
+    
+    Next rCell
+    
+    MsgBox "Done!"
+    
+    Set collPerson = Nothing
+    
+    Application.StatusBar = ""
+    Application.DisplayStatusBar = False
+    'Application.ScreenUpdating = True
+    
+End Sub
+
+Private Function GetPersonDataFromSid(strUserSID As String) As clsPerson
+    Dim person As clsPerson
+    Set person = New clsPerson
+    ' Validate Input
+    Dim strPattern As String: strPattern = "^[a-zA-Z]{1}[0-9]{6}$"
+    Dim regEx As New RegExp
+    With regEx
+        .Global = True
+        .MultiLine = True
+        .IgnoreCase = False
+        .Pattern = strPattern
+    End With
+    If regEx.test(strUserSID) Then
+        Dim strXML As String
+        strXML = GetHTML("https://phone.jpmchase.net/services/search.aspx?sid=" & strUserSID & "&appid=2")
+        ' Debug.Print strXML
+        Dim xDoc As DOMDocument60
+        Set xDoc = New DOMDocument60
+        xDoc.async = False: xDoc.validateOnParse = False
+        xDoc.LoadXML (strXML)
+        Dim userBeanList As MSXML2.IXMLDOMNodeList
+        Dim userbean As MSXML2.IXMLDOMNode
+        Dim beanChild As MSXML2.IXMLDOMNode
+        Set userBeanList = xDoc.SelectNodes("//peopleResultSet")
+        For Each userbean In userBeanList
+            For Each beanChild In userbean.ChildNodes
+                ' Debug.Print beanChild.nodeName & ":" & vbTab & beanChild.Text
+                If beanChild.nodeName = "errorText" And beanChild.Text = "No records found" Then    ' Check if any records are returned
+                    strJobCodeGlobal = beanChild.Text
+                    strBuildingGlobal = beanChild.Text
+                    strCityGlobal = beanChild.Text
+                    strCountryGlobal = beanChild.Text
+                    strRegionGlobal = beanChild.Text
+                    strMngrNameGlobal = beanChild.Text
+                    strMngrSIDGlobal = beanChild.Text
+                Else    ' Capture XML Data
+                    Dim userPersonBeanList As MSXML2.IXMLDOMNodeList
+                    Dim userPersonBean As MSXML2.IXMLDOMNode
+                    Dim beanPersonChild As MSXML2.IXMLDOMNode
+                    Set userPersonBeanList = xDoc.SelectNodes("//Person")
+                    For Each userPersonBean In userPersonBeanList
+                        For Each beanPersonChild In userPersonBean.ChildNodes
+                            ' Debug.Print beanChild.nodeName & ":" & vbTab & beanChild.Text
+                            If beanPersonChild.nodeName = "standardID" Then person.standardID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nmlsID" Then person.nmlsID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "managerName" Then person.managerName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "managerSID" Then person.managerSID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameFirst" Then person.nameFirst = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameFirstPrefered" Then person.nameFirstPrefered = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLastPreferred" Then person.nameLastPreferred = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameMiddle" Then person.nameMiddle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameMiddleBlock" Then person.nameMiddleBlock = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLast" Then person.nameLast = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLastPrevious" Then person.nameLastPrevious = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameSuffix" Then person.nameSuffix = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "namePreferredSuffix" Then person.namePreferredSuffix = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "tandBerg" Then person.tandBerg = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneInterim" Then person.phoneInterim = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneWork" Then person.phoneWork = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneGDP" Then person.phoneGDP = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneFax" Then person.phoneFax = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneCell" Then person.phoneCell = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phonePager" Then person.phonePager = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneVoiceMail" Then person.phoneVoiceMail = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneTemp" Then person.phoneTemp = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneInstructions" Then person.phoneInstructions = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "email" Then person.email = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "emailInternal" Then person.emailInternal = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isTrackOne" Then person.isTrackOne = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "TrackOneURL" Then person.TrackOneURL = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "empBadge" Then person.empBadge = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isManager" Then person.isManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isSponsor" Then person.isSponsor = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isAssistant" Then person.isAssistant = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isFavorite" Then person.isFavorite = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "jobTitle" Then person.jobTitle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "jobCode" Then person.jobCode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "officerTitle" Then person.officerTitle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "officerTitleAbbr" Then person.officerTitleAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "status" Then person.status = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "type" Then person.type_ = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "rank" Then person.rank = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "otherInformation" Then person.otherInformation = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isMatrixManager" Then person.isMatrixManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasMatrixManager" Then person.hasMatrixManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isAlternateManager" Then person.isAlternateManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasAlternateManager" Then person.hasAlternateManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isLocalManager" Then person.isLocalManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasLocalManager" Then person.hasLocalManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasControlPartner" Then person.hasControlPartner = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isControlPartner" Then person.isControlPartner = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "mailCode" Then person.mailCode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "buildingNumber" Then person.buildingNumber = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "buildingName" Then person.buildingName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "floor" Then person.floor = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatID" Then person.seatID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatFloor" Then person.seatFloor = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatLocationRefID" Then person.seatLocationRefID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "street1" Then person.street1 = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "street2" Then person.street2 = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "city" Then person.city = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "state" Then person.state = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "zipcode" Then person.zipcode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "region" Then person.region = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "regionAbbr" Then person.regionAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "country" Then person.country = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "countryAbbr" Then person.countryAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimType" Then person.interimType = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimAddress" Then person.interimAddress = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimDateStart" Then person.interimDateStart = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimDateEnd" Then person.interimDateEnd = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyFlag" Then person.companyFlag = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyName" Then person.companyName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyID" Then person.companyID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyIDOld" Then person.companyIDOld = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyFlagHiring" Then person.companyFlagHiring = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterName" Then person.costCenterName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterID" Then person.costCenterID = CLng(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterIDOld" Then person.costCenterIDOld = CLng(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "localCostCenterName" Then person.localCostCenterName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "localCostCenterID" Then person.localCostCenterID = CStr(beanPersonChild.Text)
+                        Next beanPersonChild
+                    Next userPersonBean
+                End If
+            Next beanChild
+            ' Add orgStructure
+            If xDoc.SelectNodes("//Person//orgStructure").Length >= 1 Then
+                Dim beanPersonOrgStructure As Variant
+                For Each beanPersonOrgStructure In xDoc.SelectSingleNode("//Person//orgStructure").ChildNodes
+                    'Debug.Print person.standardID, beanPersonOrgStructure.nodeName, beanPersonOrgStructure.Text
+                    person.orgStructure.Add CStr(beanPersonOrgStructure.Text)
+                Next beanPersonOrgStructure
+            End If
+        Next userbean
+        Set xDoc = Nothing
+    Else    ' SID RegEx Failed
+        person.standardID = "No records found"
+    End If
+    Set GetPersonDataFromSid = person ' RETURN
+    Set person = Nothing
+End Function
+
+
+Private Function GetPersonDataFromEmail(strUserEmail As String) As clsPerson
+    Dim person As clsPerson
+    Set person = New clsPerson
+    ' Validate Input
+    Dim strPattern As String: strPattern = "^[a-zA-Z0-9_\-\.]+\@[a-zA-Z]+\.[a-zA-Z]{2,3}$"
+    Dim regEx As New RegExp
+    With regEx
+        .Global = True
+        .MultiLine = True
+        .IgnoreCase = False
+        .Pattern = strPattern
+    End With
+    If regEx.test(strUserEmail) Then
+        Dim strXML As String
+        strXML = GetHTML("https://phone.jpmchase.net/services/search.aspx?email=" & strUserEmail & "&appid=2")
+        ' Debug.Print strXML
+        Dim xDoc As DOMDocument60
+        Set xDoc = New DOMDocument60
+        xDoc.async = False: xDoc.validateOnParse = False
+        xDoc.LoadXML (strXML)
+        Dim userBeanList As MSXML2.IXMLDOMNodeList
+        Dim userbean As MSXML2.IXMLDOMNode
+        Dim beanChild As MSXML2.IXMLDOMNode
+        Set userBeanList = xDoc.SelectNodes("//peopleResultSet")
+        For Each userbean In userBeanList
+            For Each beanChild In userbean.ChildNodes
+                ' Debug.Print beanChild.nodeName & ":" & vbTab & beanChild.Text
+                If beanChild.nodeName = "errorText" And beanChild.Text = "No records found" Then    ' Check if any records are returned
+                    strJobCodeGlobal = beanChild.Text
+                    strBuildingGlobal = beanChild.Text
+                    strCityGlobal = beanChild.Text
+                    strCountryGlobal = beanChild.Text
+                    strRegionGlobal = beanChild.Text
+                    strMngrNameGlobal = beanChild.Text
+                    strMngrSIDGlobal = beanChild.Text
+                Else    ' Capture XML Data
+                    Dim userPersonBeanList As MSXML2.IXMLDOMNodeList
+                    Dim userPersonBean As MSXML2.IXMLDOMNode
+                    Dim beanPersonChild As MSXML2.IXMLDOMNode
+                    Set userPersonBeanList = xDoc.SelectNodes("//Person")
+                    For Each userPersonBean In userPersonBeanList
+                        For Each beanPersonChild In userPersonBean.ChildNodes
+                            ' Debug.Print beanChild.nodeName & ":" & vbTab & beanChild.Text
+                            If beanPersonChild.nodeName = "standardID" Then person.standardID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nmlsID" Then person.nmlsID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "managerName" Then person.managerName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "managerSID" Then person.managerSID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameFirst" Then person.nameFirst = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameFirstPrefered" Then person.nameFirstPrefered = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLastPreferred" Then person.nameLastPreferred = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameMiddle" Then person.nameMiddle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameMiddleBlock" Then person.nameMiddleBlock = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLast" Then person.nameLast = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLastPrevious" Then person.nameLastPrevious = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameSuffix" Then person.nameSuffix = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "namePreferredSuffix" Then person.namePreferredSuffix = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "tandBerg" Then person.tandBerg = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneInterim" Then person.phoneInterim = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneWork" Then person.phoneWork = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneGDP" Then person.phoneGDP = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneFax" Then person.phoneFax = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneCell" Then person.phoneCell = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phonePager" Then person.phonePager = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneVoiceMail" Then person.phoneVoiceMail = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneTemp" Then person.phoneTemp = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneInstructions" Then person.phoneInstructions = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "email" Then person.email = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "emailInternal" Then person.emailInternal = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isTrackOne" Then person.isTrackOne = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "TrackOneURL" Then person.TrackOneURL = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "empBadge" Then person.empBadge = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isManager" Then person.isManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isSponsor" Then person.isSponsor = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isAssistant" Then person.isAssistant = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isFavorite" Then person.isFavorite = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "jobTitle" Then person.jobTitle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "jobCode" Then person.jobCode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "officerTitle" Then person.officerTitle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "officerTitleAbbr" Then person.officerTitleAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "status" Then person.status = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "type" Then person.type_ = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "rank" Then person.rank = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "otherInformation" Then person.otherInformation = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isMatrixManager" Then person.isMatrixManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasMatrixManager" Then person.hasMatrixManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isAlternateManager" Then person.isAlternateManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasAlternateManager" Then person.hasAlternateManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isLocalManager" Then person.isLocalManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasLocalManager" Then person.hasLocalManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasControlPartner" Then person.hasControlPartner = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isControlPartner" Then person.isControlPartner = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "mailCode" Then person.mailCode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "buildingNumber" Then person.buildingNumber = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "buildingName" Then person.buildingName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "floor" Then person.floor = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatID" Then person.seatID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatFloor" Then person.seatFloor = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatLocationRefID" Then person.seatLocationRefID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "street1" Then person.street1 = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "street2" Then person.street2 = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "city" Then person.city = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "state" Then person.state = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "zipcode" Then person.zipcode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "region" Then person.region = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "regionAbbr" Then person.regionAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "country" Then person.country = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "countryAbbr" Then person.countryAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimType" Then person.interimType = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimAddress" Then person.interimAddress = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimDateStart" Then person.interimDateStart = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimDateEnd" Then person.interimDateEnd = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyFlag" Then person.companyFlag = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyName" Then person.companyName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyID" Then person.companyID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyIDOld" Then person.companyIDOld = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyFlagHiring" Then person.companyFlagHiring = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterName" Then person.costCenterName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterID" Then person.costCenterID = CLng(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterIDOld" Then person.costCenterIDOld = CLng(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "localCostCenterName" Then person.localCostCenterName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "localCostCenterID" Then person.localCostCenterID = CStr(beanPersonChild.Text)
+                        Next beanPersonChild
+                    Next userPersonBean
+                End If
+            Next beanChild
+            ' Add orgStructure
+            If xDoc.SelectNodes("//Person//orgStructure").Length >= 1 Then
+                Dim beanPersonOrgStructure As Variant
+                For Each beanPersonOrgStructure In xDoc.SelectSingleNode("//Person//orgStructure").ChildNodes
+                    'Debug.Print person.standardID, beanPersonOrgStructure.nodeName, beanPersonOrgStructure.Text
+                    person.orgStructure.Add CStr(beanPersonOrgStructure.Text)
+                Next beanPersonOrgStructure
+            End If
+        Next userbean
+        Set xDoc = Nothing
+    Else    ' Email RegEx Failed
+        person.standardID = "No records found"
+    End If
+    Set GetPersonDataFromEmail = person ' RETURN
+    Set person = Nothing
+End Function
+
+
+Private Function GetUserHierarchy(strUserSID As String) As Scripting.Dictionary
+    ' Validate Input
+    Dim strPattern As String: strPattern = "^[a-zA-Z]{1}[0-9]{6}$"
+    Dim regEx As New RegExp
+    With regEx
+        .Global = True
+        .MultiLine = True
+        .IgnoreCase = False
+        .Pattern = strPattern
+    End With
+    ' SID = Valid
+    If regEx.test(strUserSID) Then
+    
+        Dim dict As Scripting.Dictionary
+        Set dict = New Scripting.Dictionary
+    
+        Dim strXML As String
+        strXML = GetHTML("https://phone.jpmchase.net/services/search.aspx?AppID=5&hierarchyOf=" & strUserSID)
+        ' Debug.Print strXML
+        
+        Dim xDoc As New DOMDocument60
+        xDoc.async = False: xDoc.validateOnParse = False
+        xDoc.LoadXML (strXML)
+        Dim userBeanList As MSXML2.IXMLDOMNodeList
+        Dim userbean As MSXML2.IXMLDOMNode
+        Dim beanChild As MSXML2.IXMLDOMNode
+        Set userBeanList = xDoc.SelectNodes("//peopleResultSet")
+        For Each userbean In userBeanList
+            For Each beanChild In userbean.ChildNodes
+                'Debug.Print beanChild.nodeName & ":" & vbTab & beanChild.Text
+                If beanChild.nodeName = "errorText" And beanChild.Text = "No records found" Then    ' Check if any records are returned
+                    Exit Function
+                Else    ' Capture XML Data
+                    Dim userPersonBeanList As MSXML2.IXMLDOMNodeList
+                    Dim userPersonBean As MSXML2.IXMLDOMNode
+                    Dim beanPersonChild As MSXML2.IXMLDOMNode
+                    Set userPersonBeanList = xDoc.SelectNodes("//Person")
+                    For Each userPersonBean In userPersonBeanList
+                        'Debug.Print userPersonBean.nodeName & ":" & vbTab & userPersonBean.Text
+                        
+                        Dim person As New clsPerson
+                        Set person = Nothing
+                        
+                        For Each beanPersonChild In userPersonBean.ChildNodes
+                            'Debug.Print beanChild.nodeName & ":" & vbTab & beanChild.Text
+                            If beanPersonChild.nodeName = "standardID" Then person.standardID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nmlsID" Then person.nmlsID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "managerName" Then person.managerName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "managerSID" Then person.managerSID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameFirst" Then person.nameFirst = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameFirstPrefered" Then person.nameFirstPrefered = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLastPreferred" Then person.nameLastPreferred = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameMiddle" Then person.nameMiddle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameMiddleBlock" Then person.nameMiddleBlock = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLast" Then person.nameLast = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameLastPrevious" Then person.nameLastPrevious = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "nameSuffix" Then person.nameSuffix = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "namePreferredSuffix" Then person.namePreferredSuffix = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "tandBerg" Then person.tandBerg = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneInterim" Then person.phoneInterim = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneWork" Then person.phoneWork = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneGDP" Then person.phoneGDP = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneFax" Then person.phoneFax = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneCell" Then person.phoneCell = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phonePager" Then person.phonePager = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneVoiceMail" Then person.phoneVoiceMail = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneTemp" Then person.phoneTemp = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "phoneInstructions" Then person.phoneInstructions = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "email" Then person.email = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "emailInternal" Then person.emailInternal = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isTrackOne" Then person.isTrackOne = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "TrackOneURL" Then person.TrackOneURL = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "empBadge" Then person.empBadge = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isManager" Then person.isManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isSponsor" Then person.isSponsor = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isAssistant" Then person.isAssistant = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isFavorite" Then person.isFavorite = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "jobTitle" Then person.jobTitle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "jobCode" Then person.jobCode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "officerTitle" Then person.officerTitle = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "officerTitleAbbr" Then person.officerTitleAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "status" Then person.status = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "type" Then person.type_ = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "rank" Then person.rank = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "otherInformation" Then person.otherInformation = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isMatrixManager" Then person.isMatrixManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasMatrixManager" Then person.hasMatrixManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isAlternateManager" Then person.isAlternateManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasAlternateManager" Then person.hasAlternateManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isLocalManager" Then person.isLocalManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasLocalManager" Then person.hasLocalManager = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "hasControlPartner" Then person.hasControlPartner = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "isControlPartner" Then person.isControlPartner = CBool(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "mailCode" Then person.mailCode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "buildingNumber" Then person.buildingNumber = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "buildingName" Then person.buildingName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "floor" Then person.floor = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatID" Then person.seatID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatFloor" Then person.seatFloor = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "seatLocationRefID" Then person.seatLocationRefID = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "street1" Then person.street1 = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "street2" Then person.street2 = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "city" Then person.city = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "state" Then person.state = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "zipcode" Then person.zipcode = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "region" Then person.region = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "regionAbbr" Then person.regionAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "country" Then person.country = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "countryAbbr" Then person.countryAbbr = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimType" Then person.interimType = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimAddress" Then person.interimAddress = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimDateStart" Then person.interimDateStart = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "interimDateEnd" Then person.interimDateEnd = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyFlag" Then person.companyFlag = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyName" Then person.companyName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyID" Then person.companyID = CLng(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyIDOld" Then person.companyIDOld = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "companyFlagHiring" Then person.companyFlagHiring = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterName" Then person.costCenterName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterID" Then person.costCenterID = CLng(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "costCenterIDOld" Then person.costCenterIDOld = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "localCostCenterName" Then person.localCostCenterName = CStr(beanPersonChild.Text)
+                            If beanPersonChild.nodeName = "localCostCenterID" Then person.localCostCenterID = CStr(beanPersonChild.Text)
+                        
+                        Next beanPersonChild
+                    
+'                        Debug.Print "userPersonBean", person.standardID, person.nameFirst, person.nameLast
+'                        Debug.Print dict.Exists(person.standardID), dict.count
+                        If Not dict.Exists(person.standardID) And person.rank >= 0 Then dict.Add person.standardID, person
+'                        Debug.Print dict.Exists(person.standardID), dict.count
+'                        For Each key In dict.Keys
+'                            Debug.Print "dict", key, dict(key).standardID, dict(key).nameFirst, dict(key).nameLast, "'" & dict(key).localCostCenterID & "'"
+'                        Next key
+                    
+                    Next userPersonBean
+                    
+                End If
+            Next beanChild
+        Next userbean
+        Set xDoc = Nothing
+        
+    Else    ' SID RegEx Failed
+        Exit Function
+    End If
+    
+    Set GetUserHierarchy = dict   ' Return Collection
+    
+End Function
+
+Private Function IsSidAllignedToMarkley(strUserSID As String) As String
+    ' Validate Input
+    Dim strPattern As String: strPattern = "^[a-zA-Z]{1}[0-9]{6}$"
+    Dim regEx As New RegExp
+    With regEx
+        .Global = True
+        .MultiLine = True
+        .IgnoreCase = False
+        .Pattern = strPattern
+    End With
+    If regEx.test(strUserSID) Then
+        Dim strXML As String
+        strXML = GetHTML("https://phone.jpmchase.net/services/search.aspx?AppID=5&hierarchyOf=" & strUserSID)
+        ' Debug.Print strXML
+        Dim xDoc As New DOMDocument60
+        xDoc.async = False: xDoc.validateOnParse = False
+        xDoc.LoadXML (strXML)
+        Dim userBeanList As MSXML2.IXMLDOMNodeList
+        Dim userbean As MSXML2.IXMLDOMNode
+        Dim beanChild As MSXML2.IXMLDOMNode
+        Set userBeanList = xDoc.SelectNodes("//peopleResultSet")
+        For Each userbean In userBeanList
+            For Each beanChild In userbean.ChildNodes
+                ' Debug.Print beanChild.nodeName & ":" & vbTab & beanChild.Text
+                If beanChild.nodeName = "errorText" And beanChild.Text = "No records found" Then    ' Check if any records are returned
+                    GetCtoForSid = beanChild.Text
+                Else    ' Capture XML Data
+                    Dim userPersonBeanList As MSXML2.IXMLDOMNodeList
+                    Dim userPersonBean As MSXML2.IXMLDOMNode
+                    Dim beanPersonChild As MSXML2.IXMLDOMNode
+                    Set userPersonBeanList = xDoc.SelectNodes("//Person")
+                    Dim strStandardId, strEmail, strFName, strLName As String
+                    Dim lngCurRank, lngJdRank As Long
+                    For Each userPersonBean In userPersonBeanList
+                        ' Debug.Print userPersonBean.nodeName & ":" & vbTab & userPersonBean.Text
+                        For Each beanPersonChild In userPersonBean.ChildNodes
+                            If beanPersonChild.nodeName = "standardID" Then
+                                strStandardId = beanPersonChild.Text
+                            End If
+                            If beanPersonChild.nodeName = "nameFirst" Then
+                                strFName = beanPersonChild.Text
+                            End If
+                            If beanPersonChild.nodeName = "nameLast" Then
+                                strLName = beanPersonChild.Text
+                            End If
+                            If beanPersonChild.nodeName = "email" Then
+                                strEmail = beanPersonChild.Text
+                            End If
+                            If beanPersonChild.nodeName = "rank" Then
+                                If strStandardId = "R002444" Then ' David P Markley
+                                    lngJdRank = beanPersonChild.Text
+                                    lngCurRank = beanPersonChild.Text
+                                Else
+                                    lngCurRank = beanPersonChild.Text
+                                End If
+                            End If
+                        Next beanPersonChild
+                        'Debug.Print strStandardId, strEmail, "curRnk: " & lngCurRank, "jdRnk: " & lngJdRank
+                        If lngCurRank = lngJdRank Then ' Person is a David P Markley
+                            IsSidAllignedToMarkley = strStandardId & "|" & strFName & "|" & strLName
+                        End If
+                    Next userPersonBean
+                End If
+            Next beanChild
+        Next userbean
+        Set xDoc = Nothing
+    End If
+End Function
+
+' Make sure provided URL is well formed. eg. it includes the http:// or https:// if appropriate.
+Private Function GetHTML(URL As String) As String
+    Dim xDoc As Object
+    Set xDoc = CreateObject("MSXML2.XMLHTTP")
+    xDoc.Open "GET", URL, False
+    xDoc.send
+    GetHTML = xDoc.responseText
+    Set xDoc = Nothing
+End Function
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "clsPerson"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+'==========================================
+' Class Module: clsPerson
+'==========================================
+Public standardID As String
+Public nmlsID As String
+Public managerName As String
+Public managerSID As String
+Public nameFirst As String
+Public nameFirstPrefered As String
+Public nameLastPreferred As String
+Public nameMiddle As String
+Public nameMiddleBlock As String
+Public nameLast As String
+Public nameLastPrevious As String
+Public nameSuffix As String
+Public namePreferredSuffix As String
+Public tandBerg As String
+Public phoneInterim As String
+Public phoneWork As String
+Public phoneGDP As String
+Public phoneFax As String
+Public phoneCell As String
+Public phonePager As String
+Public phoneVoiceMail As String
+Public phoneTemp As String
+Public phoneInstructions As String
+Public email As String
+Public emailInternal As String
+Public isTrackOne As Boolean
+Public TrackOneURL As String
+Public empBadge As String
+Public isManager As Boolean
+Public isSponsor As Boolean
+Public isAssistant As Boolean
+Public isFavorite As Boolean
+Public jobTitle As String
+Public jobCode As String
+Public officerTitle As String
+Public officerTitleAbbr As String
+Public status As String
+Public type_ As String
+Public rank As String
+Public otherInformation As String
+Public isMatrixManager As Boolean
+Public hasMatrixManager As Boolean
+Public isAlternateManager As Boolean
+Public hasAlternateManager As Boolean
+Public isLocalManager As Boolean
+Public hasLocalManager As Boolean
+Public hasControlPartner As Boolean
+Public isControlPartner As Boolean
+Public mailCode As String
+Public buildingNumber As String
+Public buildingName As String
+Public floor As String
+Public seatID As String
+Public seatFloor As String
+Public seatLocationRefID As String
+Public street1 As String
+Public street2 As String
+Public city As String
+Public state As String
+Public zipcode As String
+Public region As String
+Public regionAbbr As String
+Public country As String
+Public countryAbbr As String
+Public interimType As String
+Public interimAddress As String
+Public interimDateStart As String
+Public interimDateEnd As String
+Public companyFlag As String
+Public companyName As String
+Public companyID As Long
+Public companyIDOld As Long
+Public companyFlagHiring As String
+'Public orgStructureOverride As String
+Public orgStructure As Object ' Array of Organisation Heirachies
+Public costCenterName As String
+Public costCenterID As Long
+Public costCenterIDOld As Long
+Public localCostCenterName As String
+Public localCostCenterID As String
+'Public contacts As String  ' Array of Contacts
+
+Private Sub Class_Initialize()
+
+    Set orgStructure = CreateObject("System.Collections.ArrayList")
+    
+End Sub
+
+
+INQUEST-PP=macro

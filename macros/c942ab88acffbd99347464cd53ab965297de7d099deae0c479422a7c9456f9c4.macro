@@ -1,0 +1,1316 @@
+Attribute VB_Name = "I_____REFRESH_Template_Private"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "RPItemLookupForm"
+Attribute VB_Base = "0{272D7A59-0EAD-4B1E-B1C1-BB4664D91684}{9BA06D3A-1F9C-4EB7-8478-C3209C51DF29}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'Slightly modified version of R+ 4.0 Item Lookup. Self-contained with all support functions
+
+Option Explicit
+
+Private ItemSecurityTypeDictionary As Object
+Private ItemDataTypeDictionary As Object
+Private FailedLoad As Boolean
+
+' Item Lookup Form
+' Functions very similarly to the Security Lookup form, except that it is all in a single place
+' and the requests are simpler
+
+Private Sub btnItemLookupCancel_Click()
+    Unload Me
+End Sub
+
+
+Private Sub btnItemLookupOK_Click()
+' This code is based on the ability to multiselect, due to inheritance from the RemotePlus 4.0 code.
+
+    Dim outputString As String
+    Dim o As Long
+
+    Dim countSelected As Long
+    countSelected = 0
+
+    ReDim outputList(rplbItemLookupOutput.ListCount - 1) As String
+
+    For o = 0 To rplbItemLookupOutput.ListCount - 1
+
+        If rplbItemLookupOutput.Selected(o) Then
+            outputList(countSelected) = rplbItemLookupOutput.List(o, 0)
+            countSelected = countSelected + 1
+        End If
+
+    Next
+    If countSelected > 0 Then
+        ReDim Preserve outputList(countSelected - 1) As String
+        outputString = Join(outputList, ",")
+    Else
+        outputString = ""
+    End If
+
+    Dim UpdateSuccess As Boolean
+    UpdateSuccess = frmTemplateLayout.SetItem(outputString)
+    If UpdateSuccess Then Unload Me
+    Exit Sub
+
+End Sub
+
+Private Sub btnItemLookupSearch_Click()
+
+    Dim SecurityTypeRequest As String
+    Dim DataTypeRequest As String
+    Dim SecurityTypeResults() As String
+    Dim DataTypeResults() As String
+    Dim SecurityTypeResultsCount As Long
+    Dim DataTypeResultsCount As Long
+
+    btnItemLookupSearch.Caption = "Processing..."
+    btnItemLookupSearch.Enabled = False
+    ' Unlike with Security Lookup, there is no special
+    ' handling of the Cancel button, because Item Lookup requests are always
+    ' relatively small.
+    btnItemLookupCancel.Enabled = False
+
+
+    ' Make two requests and then get the intersection of their responses
+    ' "Any" for either category means to skip that request altogether
+    If rpcomboItemLookupSecurityType.Value <> "Any" Then _
+       SecurityTypeRequest = "NAM,ITM," & ItemSecurityTypeDictionary(rpcomboItemLookupSecurityType.Value) & ",""" & AsteriskWords(rptxtItemDescription.Value) & """,99999,1"
+    If rpcomboItemLookupDataType.Value <> "Any" Then _
+       DataTypeRequest = "NAM,ITM," & ItemDataTypeDictionary(rpcomboItemLookupDataType.Value) & ",""" & AsteriskWords(rptxtItemDescription.Value) & """,99999,1"
+
+    If Len(Trim(SecurityTypeRequest)) > 0 Then
+        SecurityTypeResults = Split(RPGet(SavedUsername, SavedPassword, HttpPrefix & DEFAULTURL & DEFAULTCGI, SecurityTypeRequest), vbLf)
+    End If
+
+    If Len(Trim(DataTypeRequest)) > 0 Then
+        DataTypeResults = Split(RPGet(SavedUsername, SavedPassword, HttpPrefix & DEFAULTURL & DEFAULTCGI, DataTypeRequest), vbLf)
+    End If
+
+
+    btnItemLookupSearch.Caption = "Search"
+    btnItemLookupSearch.Enabled = True
+    btnItemLookupCancel.Enabled = True
+
+
+    Dim CombinedArray() As String
+    Dim CombinedArraySeen As Object    ' Dictionary
+    Set CombinedArraySeen = CreateObject("Scripting.Dictionary")
+
+    Dim result As Variant
+    Dim CombinedArrayPopulated As Boolean
+
+
+    On Error Resume Next
+    SecurityTypeResultsCount = SecurityTypeResults(0)
+    DataTypeResultsCount = DataTypeResults(0)
+
+    ' if both are 0-sized under any circumstance, it doesn't matter which is which
+
+    If SecurityTypeResultsCount = 0 Then
+        CombinedArray = DataTypeResults
+        CombinedArrayPopulated = (UBound(CombinedArray) > -1)
+    ElseIf DataTypeResultsCount = 0 Then
+        CombinedArray = SecurityTypeResults
+        CombinedArrayPopulated = (UBound(CombinedArray) > -1)
+    Else
+        ReDim CombinedArray(SecurityTypeResultsCount + DataTypeResultsCount - 1) As String
+        ' Create a combined array
+        For Each result In SecurityTypeResults
+            CombinedArraySeen(result) = 1
+        Next result
+        For Each result In DataTypeResults
+            CombinedArraySeen(result) = CombinedArraySeen(result) + 1
+        Next result
+        Dim i As Long
+        For Each result In CombinedArraySeen.Keys()
+            If CombinedArraySeen(result) = 2 And Not IsNumeric(result) Then
+                CombinedArrayPopulated = True
+                CombinedArray(i) = result
+                i = i + 1
+            End If
+        Next result
+        ReDim Preserve CombinedArray(i - 1) As String
+    End If
+
+    On Error GoTo 0
+
+    If Not CombinedArrayPopulated Then
+        MsgBox "No results found.", vbInformation, PRODUCTNAME
+        btnItemLookupOK.Enabled = False
+
+    Else
+        rplbItemLookupOutput.Clear
+        rplbItemLookupOutput.ColumnCount = 2    ' The extra column is to ensure horizontal scrolling if necessary
+        ReDim MaxColumnWidths(10) As String
+
+        Dim o As Long
+        For o = 0 To UBound(CombinedArray)
+            ' Skip the numeric response lines
+            If Left(CombinedArray(o), 1) = """" Then
+                Dim CatSplit() As String
+                CatSplit = ParseCSV(CombinedArray(o))
+                If UBound(CatSplit) > 1 Then rplbItemLookupOutput.ColumnCount = UBound(CatSplit) + 2
+
+                ' Split by columns into the output list
+                rplbItemLookupOutput.AddItem
+                Dim s As Long
+                For s = 0 To UBound(CatSplit)
+                    rplbItemLookupOutput.List(rplbItemLookupOutput.ListCount - 1, s) = CatSplit(s)
+                    lblHidden.Caption = CatSplit(s)
+                    If lblHidden.Width + 10 > Val(MaxColumnWidths(s)) Then MaxColumnWidths(s) = CStr(lblHidden.Width + 10) & " pt"
+                Next s
+            End If
+        Next o
+        ReDim Preserve MaxColumnWidths(rplbItemLookupOutput.ColumnCount - 1) As String
+        rplbItemLookupOutput.ColumnWidths = Join(MaxColumnWidths, ";") & ";0.1pt"
+        btnItemLookupOK.Enabled = True
+
+    End If
+    Exit Sub
+End Sub
+
+Private Sub rpcomboItemLookupDataType_Change()
+    UpdateItemLookupSearchButton
+End Sub
+
+Private Sub rpcomboItemLookupSecurityType_Change()
+    UpdateItemLookupSearchButton
+End Sub
+
+
+
+Private Sub UserForm_Activate()
+    If FailedLoad Then Unload Me
+    btnItemLookupSearch.Enabled = False
+End Sub
+
+Private Sub UserForm_Initialize()
+    Dim ItemSecurityTypeDictionaryIsPopulated As Boolean
+    On Error Resume Next
+    ItemSecurityTypeDictionaryIsPopulated = (ItemSecurityTypeDictionary.Count > 0)
+    On Error GoTo 0
+
+    ' Reinitialize the Dictionary only if we haven't done this yet
+    If Not ItemSecurityTypeDictionaryIsPopulated Then
+        ' For Item Lookup, we retrieve a single list of Types, and then turn it into two lists
+        Dim ItemBothTypes() As String
+        Set ItemSecurityTypeDictionary = CreateObject("Scripting.Dictionary")
+        Set ItemDataTypeDictionary = CreateObject("Scripting.Dictionary")
+        Dim ItemType As Variant
+        Dim CatSplit() As String
+        On Error GoTo CantRetrieveTable
+        ItemBothTypes = RetrieveTable("ICAT")
+        If Left(ItemBothTypes(0), 5) = "Error" Then Err.Raise 1
+        
+        For Each ItemType In ItemBothTypes
+            If Not IsNumeric(ItemType) Then
+                CatSplit = ParseCSV(CStr(ItemType))
+                If Left(CatSplit(0), 5) = "DTYPE" Then
+                    ItemDataTypeDictionary(CatSplit(1)) = CatSplit(0)
+                Else
+                    ItemSecurityTypeDictionary(CatSplit(1)) = CatSplit(0)
+                End If
+            End If
+
+        Next ItemType
+    End If
+
+    ' Add the "Any" values to the top of each list
+    rpcomboItemLookupSecurityType.List = ItemSecurityTypeDictionary.Keys()
+    rpcomboItemLookupSecurityType.AddItem "Any", 0
+    rpcomboItemLookupSecurityType.Value = "Any"
+    rpcomboItemLookupDataType.List = ItemDataTypeDictionary.Keys()
+    rpcomboItemLookupDataType.AddItem "Any", 0
+    rpcomboItemLookupDataType.Value = "Any"
+Exit Sub
+CantRetrieveTable:
+    MsgBox "Can't Initialize Item Lookup. Please make sure you entered a valid userid and password.", vbCritical, Title:=PRODUCTNAME
+    FailedLoad = True
+    Exit Sub
+End Sub
+
+
+Private Sub UpdateItemLookupSearchButton()
+' Search Button is only enabled if one or the other sub-category has a choice.
+    btnItemLookupSearch.Enabled = Not (rpcomboItemLookupSecurityType.Value = "Any" And rpcomboItemLookupDataType.Value = "Any")
+End Sub
+
+Public Function RetrieveTable(TableName As String) As String()
+    Dim RpData As String
+
+    RpData = RPGet(SavedUsername, SavedPassword, HttpPrefix & DEFAULTURL & DEFAULTCGI, "NAM,ICAT,4,,200,1")
+    RetrieveTable = Split(RpData, vbLf)
+
+
+
+End Function
+
+Public Function AsteriskWords(ByVal SearchString As String)
+' Concatenate a list of words with an asterisk after each, for namesearch/SCR/NAM purposes
+    Dim RetString As String
+    Dim Words() As String
+    Dim Word As Variant
+
+    Words = Split(Trim(SearchString), " ")
+    For Each Word In Words
+        If Len(Trim(Word)) > 0 Then RetString = RetString & Word & "* "
+    Next
+    AsteriskWords = Trim(RetString)
+
+End Function
+Attribute VB_Name = "RplusRefreshCode"
+Option Explicit
+
+Public Const DEFAULTURL = "rplus.intdata.com"
+Public Const DEFAULTCGI = "/cgi/nph-rplus"
+Public Const DEFAULTREFRESHSCRIPT = "/public/rp.php"
+Public Const LEGALURL = "rplus.intdata.com/public/legal.html"
+Public Const PRODUCTNAME = "Rplus Refresh"
+Private Const DEFAULTRATES = "1:5:10:15:30:60"
+
+Public Const TEMPLATE_SHEET = "Sheet1"
+
+Public Const TITLES_START = "I_TITLES_START"
+Public Const ID_START = "I_ID_START"
+Private SavedList As Collection
+
+Private SavedQueryTable
+
+Private WipeRanges As Collection
+
+' ShellExecute for launching website
+#If VBA7 Then
+    Public Declare PtrSafe Function ShellExecute Lib "shell32.dll" Alias "ShellExecuteA" _
+           (ByVal hwnd As Long, ByVal lpOperation As String, ByVal lpFile As String, Optional ByVal lpParameters As String, Optional ByVal lpDirectory As String, Optional ByVal WindowStyle As Long = vbMinimizedFocus) As Long
+#Else
+    Public Declare Function ShellExecute Lib "shell32.dll" Alias "ShellExecuteA" _
+                                         (ByVal hwnd As Long, ByVal lpOperation As String, ByVal lpFile As String, Optional ByVal lpParameters As String, Optional ByVal lpDirectory As String, Optional ByVal WindowStyle As Long = vbMinimizedFocus) As Long
+#End If
+
+
+Private Sub Refresh_Click()
+' https://stackoverflow.com/questions/31476040/refresh-all-queries-in-workbook
+    Dim wks As Worksheet
+    Dim qt As QueryTable
+    Dim lo As ListObject
+    On Error GoTo CantRefreshPleaseWait
+    
+    With Worksheets(TEMPLATE_SHEET)
+        If .QueryTables.Count = 0 Then
+            MsgBox "Nothing to Refresh!", vbExclamation, Title:=PRODUCTNAME
+        End If
+        For Each qt In .QueryTables
+            qt.refresh BackgroundQuery:=False
+        Next qt
+    End With
+
+    Set qt = Nothing
+    Set wks = Nothing
+    Exit Sub
+CantRefreshPleaseWait:
+    MsgBox "Refresh In Progress. Please wait.", vbExclamation, Title:=PRODUCTNAME
+    On Error Resume Next
+    Exit Sub
+End Sub
+
+
+
+Private Sub Stop_Start(Optional Silent As Boolean, Optional Start As Boolean)
+' If Start is true *or* the button says Start, then "start mode"
+' Else "stop mode"
+Dim OldCaption As String
+OldCaption = Worksheets(TEMPLATE_SHEET).Buttons("btnStopStart").Caption
+On Error GoTo CantStopStartPleaseWait
+    If Start Or OldCaption = "Start" Then
+        Worksheets(TEMPLATE_SHEET).Buttons("btnStopStart").Caption = "Stop"
+        BuildWebQueryList SavedUsername, SavedPassword, Range(ID_START), GetList
+    Else
+        Set WipeRanges = New Collection
+        Dim i As Integer
+        For i = Worksheets(TEMPLATE_SHEET).QueryTables.Count To 1 Step -1
+            WipeRanges.Add Worksheets(TEMPLATE_SHEET).QueryTables(i).ResultRange
+            Worksheets(TEMPLATE_SHEET).QueryTables(i).Delete
+
+        Next i
+        If Not Silent Then
+            MsgBox "Queries will no longer autorefresh.", vbInformation, Title:=PRODUCTNAME
+        End If
+        Worksheets(TEMPLATE_SHEET).Buttons("btnStopStart").Caption = "Start"
+    End If
+    Exit Sub
+CantStopStartPleaseWait:
+    MsgBox "Refresh In Progress. Please wait." & vbCrLf & "You may need to toggle Edit Mode off and on again.", vbExclamation, Title:=PRODUCTNAME
+    On Error Resume Next
+    Exit Sub
+End Sub
+
+Public Sub BuildWebQueryList(username As String, password As String, IdentifierStart As Range, AllItems As Collection)
+' Modified version of the BuildWebQueryList function from RemotePlus 4.0
+
+    Dim IdentifierList As String
+    Dim IdentifierLastRow As Long
+    Dim WebQueries As Object
+    Set WebQueries = CreateObject("Scripting.Dictionary")
+
+    Dim R
+
+    ' Delete all ranges that were saved from the "delete" step, if applicable
+    On Error Resume Next
+    For Each R In WipeRanges
+        R.Clear
+    Next R
+    ' And then we don't need to wipe them again
+    
+    Set WipeRanges = New Collection
+    On Error GoTo 0
+
+    IdentifierLastRow = Cells(Rows.Count, IdentifierStart.Column).End(xlUp).Row
+    If IdentifierLastRow < IdentifierStart.Row Then
+        ' If there's nothing to refresh, don't refresh
+        Exit Sub
+    End If
+
+
+    
+    Dim rStr As String
+    For Each R In Range(IdentifierStart, Cells(IdentifierLastRow, IdentifierStart.Column))
+        rStr = R.Value
+        If InStr(rStr, ",") > 0 Then rStr = """" & rStr & """"
+        IdentifierList = IdentifierList & rStr & ","
+    Next R
+    IdentifierList = Left(IdentifierList, Len(IdentifierList) - 1)
+
+    Dim C
+    For C = 1 To AllItems.Count
+        If Left(AllItems(C), 3) <> "---" And Trim(Left(AllItems(C), 3)) <> "" Then
+            Dim SplitRefresh() As String
+            SplitRefresh = Split(AllItems(C), "@!@")
+            Dim ItemName As String
+            Dim RefreshRate As String
+            ItemName = SplitRefresh(0)
+            RefreshRate = SplitRefresh(1)
+            ' "Column" key is offset from TITLES_START
+            ' "Row" key is offset by 1
+            ' Note: Format of "WebQueries" object is carried over from RemotePlus 4.0.
+            '       Therefore it is slightly more complex than necessary for this template.
+            If RefreshRate = "[None]" Then RefreshRate = "0"
+            WebQueries.Add Range(TITLES_START).Column + C - 1, Range(TITLES_START).Row + 1 & "@!@" & ItemName & "@!@" & RefreshRate & _
+                                                               "@!@" & IdentifierList
+        End If
+    Next C
+    If WebQueries.Count > 0 Then ProcessWebQueries Worksheets(TEMPLATE_SHEET), HttpPrefix & DEFAULTURL, username, password, WebQueries
+End Sub
+
+Sub ProcessWebQueries(WQSheet As Worksheet, URLPrefix As String, username As String, password As String, WebQueries)
+' Modified version of the ProcessWebQueries function from RemotePlus 4.0
+' Note: Format of "WebQueries" object is carried over from RemotePlus 4.0.
+'       Therefore it is slightly more complex than necessary for this template.
+
+    Dim url As String
+
+    url = "URL;" & URLPrefix & DEFAULTREFRESHSCRIPT
+
+
+    On Error GoTo 0
+    Dim xwq
+    For Each xwq In WebQueries.Keys
+
+        Dim SplitLine() As String
+
+
+        SplitLine() = Split(WebQueries(xwq), "@!@")
+        Dim startRow As Long
+        Dim xrate As Long
+        Dim xitem As String
+        Dim IdentifierList As String
+        Dim theRequest As String
+
+        startRow = CInt(SplitLine(0))
+        xitem = SplitLine(1)
+        xrate = CInt(SplitLine(2))
+        IdentifierList = SplitLine(3)
+
+        Dim allIds() As String
+        allIds = Split(IdentifierList, ",")
+        Dim idIdx As Long
+        For idIdx = 0 To UBound(allIds)
+            WQSheet.Cells(startRow + idIdx, xwq).Interior.Color = 16710374
+        Next idIdx
+        theRequest = "GET,(" & Join(allIds, ",") & "),(" & xitem & ")"
+
+
+        Dim thisCell As Range
+        Set thisCell = WQSheet.Cells(startRow, xwq)
+
+        ' First delete any query in the current cell.
+        On Error Resume Next
+        Dim qt As QueryTable
+
+        For Each qt In thisCell.Parent.QueryTables
+            If qt.Destination.Address = thisCell.Address Then
+                If qt.Refreshing Then qt.CancelRefresh
+                qt.Delete
+            End If
+        Next qt
+        On Error GoTo 0
+        With WQSheet.QueryTables.Add(Connection:=url, Destination:=thisCell)
+            .PostText = "rpuser=" & username & "&rppass=" & password & "&Request=" & theRequest & "&Done=request"
+            Dim UniqConnName As String
+            UniqConnName = PRODUCTNAME & " "
+            If thisCell.Worksheet.name <> "Sheet1" Then UniqConnName = UniqConnName & thisCell.Worksheet.name & "!"
+            UniqConnName = UniqConnName & Replace(thisCell.Address, "$", "")
+            .name = UniqConnName
+            .WorkbookConnection.name = UniqConnName
+            Dim theAbbreviatedRequest As String
+            If UBound(allIds) = 0 Then
+                theAbbreviatedRequest = allIds(0)
+            ElseIf UBound(allIds) = 1 Then
+                theAbbreviatedRequest = allIds(0) & "," & allIds(1)
+            Else
+                theAbbreviatedRequest = allIds(0) & "..." & allIds(UBound(allIds))
+            End If
+            .WorkbookConnection.Description = username & " " & xitem & " " & theAbbreviatedRequest
+            .RowNumbers = False
+            .FillAdjacentFormulas = False
+            .PreserveFormatting = True
+            ' If Refresh Rate is [None] then do not update on startup, but still allow
+            ' refreshing manually
+            If xrate > 0 Then
+                .RefreshOnFileOpen = True
+            Else
+                .RefreshOnFileOpen = False
+            End If
+            .BackgroundQuery = True
+            .RefreshStyle = xlOverwriteCells
+            .SavePassword = True
+            .SaveData = True
+            .AdjustColumnWidth = False    ' AdjustColumnWidth was not working properly
+            .RefreshPeriod = xrate
+            .WebSelectionType = xlEntirePage
+            .WebFormatting = xlWebFormattingNone
+            .WebPreFormattedTextToColumns = True
+            .WebConsecutiveDelimitersAsOne = True
+            .WebSingleBlockTextImport = False
+            .WebDisableDateRecognition = False
+            .WebDisableRedirections = False
+            .refresh BackgroundQuery:=True
+        End With
+
+
+    Next xwq
+
+
+    Exit Sub
+
+End Sub
+
+Public Function RPGet(username As String, password As String, url As String, ByRef Request As String) As String
+' Note: This RPGet function may have unexpected results with certain Proxy Server settings.
+
+
+    Dim oHttp As Object    ' MSXML2.XMLHTTP
+    Set oHttp = CreateObject("MSXML2.XMLHTTP")
+
+    If Len(username) = 0 Or Len(password) = 0 Then
+        RPGet = "Error: Missing Userid and/or Password"
+        Exit Function
+    End If
+    On Error GoTo RPGetFailed
+    oHttp.Open "POST", url, False, username, password
+
+    oHttp.setRequestHeader "Content-Type", "application/x-www-form-urlencoded'"
+
+    On Error Resume Next
+    Dim PostArgs As String
+
+    oHttp.send "Request=" & Request & "&Done=request"
+
+
+    If oHttp.Status = 401 Then
+        RPGet = "Error 401: Invalid Userid and/or Password"
+        Exit Function
+    ElseIf oHttp.Status = 407 Then
+        RPGet = "Error: This template is currently incompatible with your proxy server."
+        Exit Function
+    End If
+
+    Request = chomp(oHttp.responseText)
+    RPGet = Request
+    oHttp.Close
+    Set oHttp = Nothing
+    On Error GoTo 0
+    Exit Function
+RPGetFailed:
+    MsgBox "RPVerify FAILED, for this reason:" & vbCrLf & Err.Description & vbCrLf & "Please check your URL and try again.", vbCritical, PRODUCTNAME
+End Function
+
+Public Function ParseCSV(ByVal CSVLine As String, Optional ByVal RemotePlusRequest As Boolean = False) As Variant
+' Assumption: there are no double-quotes inside RemotePlus string values
+
+    Dim DumbSplit() As String
+    Dim dumbtoken As Variant
+    Dim token As String
+
+    Dim insideQuotedString As Boolean
+    ReDim RealSplit(0) As String
+    Dim RealSplitIndex As Long
+
+    ' Step 0: Handle special case of an R+-escaped comma
+    ' For this template, this should not occur.
+    CSVLine = Replace(CSVLine, "?,", "#comma#")
+
+    ' First split by commas.
+    DumbSplit = Split(CSVLine, ",")
+
+    For Each dumbtoken In DumbSplit
+        If insideQuotedString Then
+            token = token & "," & dumbtoken
+        Else
+            token = dumbtoken
+        End If
+        If (dumbtoken = """") Then
+            insideQuotedString = Not insideQuotedString
+        Else
+            If Left(dumbtoken, 1) = """" Then insideQuotedString = True
+            If Right(dumbtoken, 1) = """" Then insideQuotedString = False
+        End If
+
+        If Not insideQuotedString Then
+            ' Strip one level of double quotes unless this is a request
+            If Not RemotePlusRequest And Left(token, 1) = """" And Right(token, 1) = """" Then _
+               token = Mid(token, 2, Len(token) - 2)
+
+            RealSplit(RealSplitIndex) = ASCIIize(token)
+            RealSplitIndex = RealSplitIndex + 1
+            If RealSplitIndex > UBound(RealSplit) Then ReDim Preserve RealSplit(RealSplitIndex + 100) As String
+        End If
+    Next dumbtoken
+    If RealSplitIndex > 0 Then ReDim Preserve RealSplit(RealSplitIndex - 1) As String
+    ParseCSV = RealSplit
+End Function
+
+Public Function chomp(ByVal s As String)
+'Returns S after removing any carriage return(s) and/or
+'linefeed(s) from the end. NB: this is a VB function, and
+'doesn't work quite the same as Perl's chomp().
+
+    Dim strLen As Long
+    For strLen = Len(s) To 0 Step -1
+        Select Case Asc(Mid(s, strLen, 1))
+        Case 10, 13
+            'LF or CR : let string be shortened
+        Case Else
+            Exit For
+        End Select
+    Next
+    chomp = Mid(s, 1, strLen)
+End Function
+
+Public Function ASCIIize(C As String) As String
+' https://stackoverflow.com/questions/262537/identify-invalid-characters-in-text-based-cell
+    Dim RegEx As Object
+    Set RegEx = CreateObject("vbscript.regexp")
+    With RegEx
+        .Global = True
+        .MultiLine = True
+        .Pattern = "[^\x00-\x7F]"
+        If .Test(C) Then
+            ASCIIize = .Replace(C, "?")
+        Else
+            ASCIIize = C
+        End If
+    End With
+End Function
+
+Public Sub SaveList(theList)
+' theList is a ListBox's list
+    Dim i As Long
+    Set SavedList = New Collection
+    With Worksheets("I_____REFRESH_Template_Private").Range("RefreshItems")
+        .ClearContents
+
+        For i = 0 To UBound(theList)
+            .Cells(i + 1, 1).Value = theList(i, 0)
+            .Cells(i + 1, 2).Value = theList(i, 2)
+        Next i
+    End With
+End Sub
+
+
+Public Function GetList() As Collection
+    On Error Resume Next
+    Set GetList = New Collection
+    With Worksheets("I_____REFRESH_Template_Private").Range("RefreshItems")
+        If IsEmpty(.Cells(1, 1)) Then
+            Exit Function
+        End If
+        Dim i As Long
+        Dim theEnd As Long
+        theEnd = .End(xlDown).Row
+        If IsEmpty(.Cells(2, 1)) Then theEnd = 1
+        For i = 1 To theEnd
+            GetList.Add .Cells(i, 1).Value & "@!@" & .Cells(i, 2).Value
+        Next i
+    End With
+
+End Function
+
+Public Function SavedUsername() As String
+    SavedUsername = Worksheets("I_____REFRESH_Template_Private").Range("username").Value
+End Function
+
+Public Sub SaveUsername(username As String)
+    Worksheets("I_____REFRESH_Template_Private").Range("username").Value = username
+End Sub
+Public Function SavedPassword() As String
+    SavedPassword = Worksheets("I_____REFRESH_Template_Private").Range("password").Value
+End Function
+Public Sub SavePassword(password As String)
+    Worksheets("I_____REFRESH_Template_Private").Range("password").Value = password
+End Sub
+
+Public Function TitlesType() As String
+    On Error Resume Next
+    TitlesType = Worksheets("I_____REFRESH_Template_Private").Range("Titles").Value
+    If Len(Trim(TitlesType)) = "" Then TitlesType = "No"
+End Function
+
+Public Sub SetTitlesType(TitleType As String)
+' Note: This is "Short", "Long" or "No"
+    Worksheets("I_____REFRESH_Template_Private").Range("Titles").Value = TitleType
+End Sub
+
+Public Function AutoResize() As Boolean
+' Not currently used, as it doesn't work well with WebQuery
+    AutoResize = False
+    On Error Resume Next
+    AutoResize = Worksheets("I_____REFRESH_Template_Private").Range("AutoResize").Value
+End Function
+
+Public Sub SetAutoResize(flag As Boolean)
+' Not currently used, as it doesn't work well with WebQuery
+    Worksheets("I_____REFRESH_Template_Private").Range("AutoResize").Value = flag
+End Sub
+
+Public Function HttpMode() As Boolean
+    HttpMode = Worksheets("I_____REFRESH_Template_Private").Range("httpmode").Value
+End Function
+
+Public Function HttpPrefix() As String
+    Dim prefix As String
+    prefix = "http"
+    If Worksheets("I_____REFRESH_Template_Private").Range("httpmode").Value = False Then
+        prefix = prefix & "s"
+    End If
+    prefix = prefix & "://"
+    HttpPrefix = prefix
+End Function
+
+Public Sub SetHttpMode(flag As Boolean)
+    Worksheets("I_____REFRESH_Template_Private").Range("httpmode").Value = flag
+End Sub
+
+Public Function RefreshRates() As Variant()
+    Dim LastRow As Long
+
+    With Worksheets("I_____REFRESH_Template_Private")
+        LastRow = .Cells(.Rows.Count, .Range("frequency").Column).End(xlUp).Row
+    End With
+
+    RefreshRates = Worksheets("I_____REFRESH_Template_Private").Range("frequency").Resize(LastRow).Value
+
+
+
+End Function
+
+Public Sub SaveRefreshRates(rateList)
+    Dim FirstRow As Long
+    With Worksheets("I_____REFRESH_Template_Private").Range("frequency")
+        FirstRow = .Cells(1, 1).Row
+    End With
+
+    Worksheets("I_____REFRESH_Template_Private").Range("frequency").Resize(FirstRow + UBound(rateList)).Value = rateList
+End Sub
+
+Public Sub ResetRefreshRates()
+    Dim StrSplit() As String
+    Dim i As Long
+
+    StrSplit = Split(DEFAULTRATES, ":")
+    With Worksheets("I_____REFRESH_Template_Private").Range("frequency")
+        .ClearContents
+        For i = 0 To UBound(StrSplit)
+            .Cells(i + 1).Value = StrSplit(i)
+        Next i
+    End With
+
+End Sub
+
+Public Sub ShowTemplateLayout()
+    frmTemplateLayout.Show vbApplicationModal
+End Sub
+
+Private Sub Edit_Mode()
+
+    Dim chkVal As Long
+    chkVal = Worksheets(TEMPLATE_SHEET).CheckBoxes("chkEditMode").Value
+
+    Dim qt
+    Select Case chkVal
+    Case xlOn
+        With Worksheets(TEMPLATE_SHEET)
+            .Buttons("btnEditItems").Visible = True
+            .Buttons("btnStopStart").Visible = False    ' Start/Stop
+            .Buttons("btnRefreshNow").Visible = False    ' Refresh
+            MsgBox "Entering Edit Mode" & vbCrLf & "Please enter your identifiers into the highlighted area. Click on the ""Edit Items"" button for more.", vbInformation, Title:=PRODUCTNAME
+            .Range("I_REFRESH_Identifiers").Interior.ColorIndex = 23
+            .Range("I_REFRESH_Identifiers").Font.ColorIndex = 2
+            Stop_Start Silent:=True
+        End With
+    Case Else
+        With Worksheets(TEMPLATE_SHEET)
+            .Range("I_REFRESH_Identifiers").ClearFormats
+            Dim IdentifierLastRow As Long
+            IdentifierLastRow = .Cells(.Rows.Count, Range(ID_START).Column).End(xlUp).Row
+            If IdentifierLastRow >= Range(ID_START).Row Then _
+               Stop_Start Silent:=True, Start:=True
+            .Buttons("btnEditItems").Visible = False
+            .Buttons("btnStopStart").Visible = True
+            .Buttons("btnRefreshNow").Visible = True
+            MsgBox "Exiting Edit Mode" & vbCrLf & "Refreshes will now restart (if any).", vbInformation, Title:=PRODUCTNAME
+
+        End With
+    End Select
+
+End Sub
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+' Do not allow modification of Identifier List outside of Edit Mode
+' NOTE: It is still possible to work around this. But if you are reading
+'       this comment, you probably already know how.
+    If Target.Column = 1 And Worksheets(TEMPLATE_SHEET).CheckBoxes("chkEditMode").Value <> 1 Then
+        Application.EnableEvents = False
+        Range("B1").Activate
+        Application.EnableEvents = True
+        MsgBox "Please Enable Edit Mode to modify the Identifier List.", vbInformation, Title:=PRODUCTNAME
+    End If
+End Sub
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_Open()
+' Start up in Edit Mode if the checkbox was checked when the template was last saved
+    Dim isEditMode As Boolean
+    isEditMode = False
+    With Worksheets(TEMPLATE_SHEET)
+        If .CheckBoxes("chkEditMode").Value = 1 Then isEditMode = True
+        .Buttons("btnEditItems").Visible = isEditMode
+    End With
+End Sub
+Attribute VB_Name = "frmEditRates"
+Attribute VB_Base = "0{FE520F53-9ED7-45E5-9FEE-BECF0EF70274}{3F285E1F-B848-4D1F-B43D-8256B8BEA119}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Sub btnAddRate_Click()
+    On Error GoTo NotANumber
+    If CInt(txtMinutes.Value) > 0 Then
+        ' Check if the value already exists
+        Dim iVal
+        For Each iVal In lstRates.List
+            If CInt(iVal) = CInt(txtMinutes.Value) Then
+                MsgBox "This value already exists in the list.", vbInformation, Title:=PRODUCTNAME
+                Exit Sub
+            End If
+        Next iVal
+        lstRates.AddItem txtMinutes.Value
+        SortListBox lstRates
+        Exit Sub
+    End If
+NotANumber:
+    MsgBox "Please enter an integer value between 1 and 32767 in the textbox.", vbInformation, Title:=PRODUCTNAME
+    txtMinutes.Value = ""
+    txtMinutes.SetFocus
+End Sub
+
+Private Sub btnRemoveRate_Click()
+    If lstRates.ListIndex > -1 Then
+        If lstRates.ListCount = 1 Then
+            MsgBox "You must have at least one Refresh Rate option!", vbExclamation, Title:=PRODUCTNAME
+            Exit Sub
+        End If
+        Dim yn As VbMsgBoxResult
+        yn = MsgBox("Delete selected rate '" & lstRates.Value & "'?", vbYesNo + vbQuestion, Title:=PRODUCTNAME)
+        If yn = vbYes Then lstRates.RemoveItem lstRates.ListIndex
+    End If
+End Sub
+
+Private Sub btnRatesOK_Click()
+    SaveRefreshRates lstRates.List
+    Unload Me
+End Sub
+
+Private Sub btnRatesCancel_Click()
+    Unload Me
+End Sub
+
+Private Sub btnResetRates_Click()
+    Dim yn As VbMsgBoxResult
+    yn = MsgBox("Reset list to the original defaults (1,5,10,15,30,60)?", vbYesNo + vbQuestion, Title:=PRODUCTNAME)
+    If yn = vbYes Then
+        ResetRefreshRates
+        lstRates.List = RefreshRates
+    End If
+End Sub
+
+Private Sub lstRates_Change()
+    btnRemoveRate.Enabled = (lstRates.ListIndex > -1)
+End Sub
+
+Private Sub txtMinutes_Change()
+    btnAddRate.Enabled = (Len(Trim(txtMinutes.Value)) > 0)
+End Sub
+
+'https://stackoverflow.com/questions/10904474/restricting-user-input-to-integers-on-a-userform-textbox
+'~~> Preventing keyboard input of non numerics
+Private Sub txtMinutes_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+' Do not allow typing zero in empty field
+    If Len(Trim(txtMinutes.Value)) = 0 And KeyAscii = vbKey0 Then
+        KeyAscii = 0
+        Exit Sub
+    End If
+    Select Case KeyAscii
+    Case vbKey0 To vbKey9, vbKeyBack, vbKeyClear, vbKeyLeft, _
+         vbKeyRight, vbKeyUp, vbKeyDown, vbKeyTab
+    Case Else
+        KeyAscii = 0
+    End Select
+End Sub
+
+Private Sub UserForm_Initialize()
+    lstRates.List = RefreshRates
+End Sub
+
+Sub SortListBox(lst As MSForms.ListBox)
+    Dim i As Long
+    Dim j As Long
+    Dim temp As Variant
+
+    With Me.lstRates
+        For j = 0 To lstRates.ListCount - 2
+            For i = 0 To lstRates.ListCount - 2
+                If CInt(.List(i)) > CInt(.List(i + 1)) Then
+                    temp = .List(i)
+                    .List(i) = .List(i + 1)
+                    .List(i + 1) = temp
+                End If
+            Next i
+        Next j
+    End With
+End Sub
+Attribute VB_Name = "frmTemplateLayout"
+Attribute VB_Base = "0{1F123ED5-5BA7-40B7-9CD2-4F5FB93E1462}{077684BC-31B2-4AAA-B045-0AB70DFF5347}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Sub btnAddNewItem_Click()
+    Dim ItemName As String
+    ItemName = UCase(Trim(txtItemMnemonic.Value))
+    If Len(ItemName) > 0 Then
+        itemList.AddItem
+        Dim theIndex As Long
+        theIndex = UBound(itemList.List)
+        itemList.List(theIndex, 0) = ItemName
+        itemList.List(theIndex, 1) = "|"
+        itemList.List(theIndex, 2) = cmbRates.Value
+    Else
+        MsgBox "Please choose an item name.", vbInformation, Title:=PRODUCTNAME
+    End If
+    itemList.ListIndex = theIndex
+End Sub
+
+Private Sub btnDeleteSelected_Click()
+    If itemList.ListIndex > -1 Then itemList.RemoveItem itemList.ListIndex
+End Sub
+
+Private Sub btnAllowEdit_Click()
+    txtUsername.TabStop = True
+    txtPassword.TabStop = True
+    frmSettings.TabStop = True
+
+    txtUsername.Locked = False
+    txtPassword.Locked = False
+    txtUsername.SetFocus
+    txtUsername.SelStart = 0
+    txtUsername.SelLength = Len(txtUsername.Text)
+
+    btnAllowEdit.Visible = False
+End Sub
+
+Private Sub btnEditSelected_Click()
+    Dim ItemName As String
+    ItemName = UCase(Trim(txtItemMnemonic.Value))
+    Dim RefreshRate As String
+    RefreshRate = cmbRates.Value
+    If Len(ItemName) > 0 Then
+        Dim theIndex As Long
+        theIndex = itemList.ListIndex
+        itemList.List(theIndex, 0) = ItemName
+        cmbRates.Value = RefreshRate
+        itemList.List(theIndex, 2) = RefreshRate
+    Else
+        MsgBox "Please choose an item name.", vbInformation, Title:=PRODUCTNAME
+    End If
+    itemList.ListIndex = theIndex
+End Sub
+
+Private Sub btnMoveDown_Click()
+    btnMoveDown.Enabled = False
+    ' Do nothing if the bottom item is selected or if nothing is selected
+    With itemList
+        If .ListIndex > -1 And .ListIndex < .ListCount - 1 Then
+            Dim tmpItem As String, tmpRefresh As String
+            tmpItem = .List(.ListIndex + 1, 0)
+            tmpRefresh = .List(.ListIndex + 1, 2)
+            .List(.ListIndex + 1, 0) = .List(.ListIndex, 0)
+            .List(.ListIndex + 1, 2) = .List(.ListIndex, 2)
+            .List(.ListIndex, 0) = tmpItem
+            .List(.ListIndex, 2) = tmpRefresh
+            .ListIndex = .ListIndex + 1
+        End If
+    End With
+    btnMoveDown.Enabled = True
+    btnMoveDown.SetFocus
+
+End Sub
+
+Private Sub btnMoveUp_Click()
+    btnMoveUp.Enabled = False
+    ' Do nothing if the top item is selected or if nothing is selected
+    With itemList
+        If .ListIndex > 0 Then
+            Dim tmpItem As String, tmpRefresh As String
+            tmpItem = .List(.ListIndex - 1, 0)
+            tmpRefresh = .List(.ListIndex - 1, 2)
+            .List(.ListIndex - 1, 0) = .List(.ListIndex, 0)
+            .List(.ListIndex - 1, 2) = .List(.ListIndex, 2)
+            .List(.ListIndex, 0) = tmpItem
+            .List(.ListIndex, 2) = tmpRefresh
+            .ListIndex = .ListIndex - 1
+        End If
+    End With
+    btnMoveUp.Enabled = True
+    btnMoveUp.SetFocus
+
+End Sub
+
+Private Sub chkShowPassword_Change()
+    If chkShowPassword.Value Then
+        txtPassword.PasswordChar = ""
+    Else
+        txtPassword.PasswordChar = "*"
+    End If
+End Sub
+
+Private Sub cmbRates_KeyPress(ByVal KeyAscii As MSForms.ReturnInteger)
+    KeyAscii = 0
+End Sub
+
+
+Private Sub btnItemLookup_Click()
+
+        ' Item Lookup uses the saved user and password, so save them now
+        Dim username As String
+        Dim password As String
+        username = LCase(Trim(txtUsername.Value))
+        password = txtPassword.Value
+        If Len(username) = 0 Or Len(password) = 0 Then
+            MsgBox "Please enter a userid and password.", vbExclamation, Title:=PRODUCTNAME
+            Exit Sub
+        End If
+
+        SaveUsername username
+        SavePassword password
+    RPItemLookupForm.Show vbModal
+
+End Sub
+
+Private Sub btnEditRates_Click()
+    frmEditRates.Show vbModal
+    cmbRates.List = RefreshRates
+    cmbRates.AddItem "[None]", 0
+    cmbRates.ListIndex = 0
+End Sub
+
+Private Sub btnOK_Click()
+
+    Dim username As String
+    Dim password As String
+    username = LCase(Trim(txtUsername.Value))
+    password = txtPassword.Value
+
+    If Len(username) = 0 Or Len(password) = 0 Then
+        MsgBox "Please enter a userid and password.", vbExclamation, Title:=PRODUCTNAME
+        Exit Sub
+    End If
+
+    If itemList.ListCount = 0 Then
+        MsgBox "Please add at least one item.", vbInformation, Title:=PRODUCTNAME
+        Exit Sub
+    End If
+
+    Dim TitleMode As String
+    TitleMode = "No"
+    If rdoShortTitles.Value Then TitleMode = "Short"
+    If rdoLongTitles.Value Then TitleMode = "Long"
+
+    If TitleMode <> "No" Then
+        Dim RPResponse() As String
+        Dim RPTitles As String
+        Dim RPNAs As String
+
+        Dim itemIndex As Long
+
+        Dim AllItems As String
+        Dim mnemonic As String
+
+        For itemIndex = 0 To itemList.ListCount - 1
+            If itemIndex > 0 Then AllItems = AllItems & ","
+            mnemonic = itemList.List(itemIndex, 0)
+            If mnemonic = "---" Then mnemonic = "ZEOBZ"
+            AllItems = AllItems & mnemonic
+        Next itemIndex
+        On Error GoTo CouldntGetTitlesAtAll
+        RPResponse = Split(RPGet(username, password, HttpPrefix & DEFAULTURL & DEFAULTCGI, "GET,,(" & AllItems & "),TITLES=" & TitleMode), vbLf)
+        RPTitles = RPResponse(0)
+        ' Note: If the *first* item is OK, then an E23 might not appear until the second line
+        If UBound(RPResponse) > 0 Then
+            RPNAs = RPResponse(1)
+        End If
+        ' Error 9999 is if it's one of my internal errors.
+        If Left(RPTitles, 9) = "Error 401" Then
+            Err.Raise 9401
+        ElseIf Left(RPTitles, 5) = "Error" Then
+            Err.Raise 9999
+        End If
+        ' '"!E23",' is "item not found"
+        Dim E2Index As Long, E2String As String
+
+        E2String = RPTitles
+        E2Index = InStr(RPTitles, """!E2")
+        If E2Index = 0 Then
+            E2Index = InStr(RPNAs, """!E2")
+            E2String = RPNAs
+        End If
+        If E2Index > 0 Then
+            Dim MsgBoxString As String
+            MsgBoxString = "At least one of your items does not exist. Please check and try again."
+            If Mid(E2String, E2Index, 5) = """!E23" Then
+                Dim LastSingleQuote As Long
+                'E23 string always looks like:
+                '"!E23","The data item, 'XXXXXX', does not exist. Please check and try again."
+                mnemonic = Mid(E2String, E2Index + 23)
+                mnemonic = Left(mnemonic, InStrRev(mnemonic, "'"))
+                MsgBoxString = MsgBoxString & vbCrLf & "The first unknown item is " & mnemonic & "."
+            End If
+
+            MsgBox MsgBoxString, vbInformation, Title:=PRODUCTNAME
+            Exit Sub
+        End If
+
+
+
+        On Error Resume Next
+        ' Now, split the titles by commas; reuse RPResponse
+        RPResponse = ParseCSV(RPTitles)
+        Dim titleRange As Range
+        Set titleRange = Range(Range(TITLES_START), Range(TITLES_START).End(xlToRight))
+        titleRange.Clear
+
+        For itemIndex = 1 To UBound(RPResponse)
+            With titleRange.Cells(1, itemIndex)
+                If RPResponse(itemIndex) = "End of Data Item Indicator" Or RPResponse(itemIndex) = "ZEOBZ" Then
+                    .ClearContents
+                Else
+                    .Font.Bold = True
+                    .Value = RPResponse(itemIndex)
+                End If
+            End With
+        Next itemIndex
+    End If
+
+    ' If you got this far, clear the contents and data of the entire data area
+
+    Dim i As Integer
+    For i = Worksheets(TEMPLATE_SHEET).QueryTables.Count To 1 Step -1
+        Worksheets(TEMPLATE_SHEET).QueryTables(i).Delete
+    Next i
+
+    ActiveSheet.Range("I_REFRESH_Template_Data").Clear
+
+
+    SaveList itemList.List
+    SaveUsername username
+    SavePassword password
+    SetHttpMode chkNoHttps.Value
+    SetTitlesType TitleMode
+
+    Unload Me
+
+    Exit Sub
+CouldntGetTitlesAtAll:
+    Dim MsgBoxError As String
+    If Err.Number = 9999 Then _
+       MsgBoxError = "Warning: Titles could not be retrieved; defaulting to item names. Please set TITLES to NONE if you wish to create your own." & vbCrLf
+    MsgBoxError = MsgBoxError & RPTitles
+    MsgBox MsgBoxError, vbExclamation, Title:=PRODUCTNAME
+    RPTitles = """ ""," & AllItems
+    Exit Sub
+End Sub
+
+Private Sub btnCancel_Click()
+    Unload Me
+End Sub
+
+
+Private Sub btnInsertBlank_Click()
+    itemList.AddItem
+    Dim theIndex As Long
+
+    theIndex = UBound(itemList.List)
+    itemList.List(theIndex, 0) = "---"
+    itemList.List(theIndex, 1) = "|"
+    itemList.List(theIndex, 2) = "---"
+
+End Sub
+
+
+Private Sub itemList_Click()
+
+    If itemList.ListIndex > -1 And itemList.List(itemList.ListIndex, 0) <> "---" Then
+        txtItemMnemonic.Value = itemList.List(itemList.ListIndex, 0)
+        cmbRates.Value = itemList.List(itemList.ListIndex, 2)
+        btnEditSelected.Enabled = True
+    Else
+        btnEditSelected.Enabled = False
+    End If
+End Sub
+
+Private Sub lblLegal_Click()
+' Read http mode directly from the checkbox
+    Dim HttpMode As String
+    HttpMode = "http"
+    If Not chkNoHttps.Value Then
+        HttpMode = HttpMode & "s"
+    End If
+    HttpMode = HttpMode & "://"
+    ShellExecute 0, "Open", HttpMode & LEGALURL
+End Sub
+
+
+Private Sub UserForm_Initialize()
+
+    txtUsername.Value = SavedUsername
+    txtPassword.Value = SavedPassword
+    chkNoHttps.Value = HttpMode
+
+    Dim SavedItemList As Collection
+    Set SavedItemList = GetList
+
+    If SavedItemList.Count > 0 Then
+        Dim SILItem
+        Dim nameRefresh() As String
+        For Each SILItem In SavedItemList
+            nameRefresh = Split(SILItem, "@!@")
+            itemList.AddItem
+            itemList.List(itemList.ListCount - 1, 0) = nameRefresh(0)
+            itemList.List(itemList.ListCount - 1, 1) = "|"
+            itemList.List(itemList.ListCount - 1, 2) = nameRefresh(1)
+
+        Next SILItem
+        ' Select nothing
+
+        itemList.ListIndex = -1
+
+    End If
+
+
+
+    rdoNoTitles.Value = True
+    On Error Resume Next
+    Me.Controls("rdo" & TitlesType & "Titles").Value = True
+    On Error GoTo 0
+
+
+    cmbRates.List = RefreshRates
+    cmbRates.AddItem "[None]", 0
+    cmbRates.ListIndex = 0
+
+    If txtUsername.Value = "" Or txtPassword.Value = "" Then
+        btnAllowEdit.Visible = False
+        txtUsername.TabStop = True
+        txtPassword.TabStop = True
+        frmSettings.TabStop = True
+    Else
+        txtUsername.TabStop = False
+        txtPassword.TabStop = False
+        frmSettings.TabStop = False
+        txtUsername.Locked = True
+        txtPassword.Locked = True
+        btnAllowEdit.Visible = True
+
+    End If
+
+End Sub
+
+Public Function SetItem(theItem As String) As Boolean
+
+    txtItemMnemonic.Value = theItem
+    SetItem = True
+
+End Function
+
+' InQuest injected base64 decoded content
+' +rO*^
+' ZO*^
+' +rO*^E
+
+INQUEST-PP=macro

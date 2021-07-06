@@ -1,0 +1,4703 @@
+Attribute VB_Name = "CCacheValue"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+Public table As String
+Public cell As String
+Public value As Variant
+Public deleted As Boolean
+Public modified As Boolean
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+Option Explicit
+Private mnNotUpdateable As Boolean
+Private oldTarget As String
+Private oldFormula As String
+Private Sub Workbook_Activate()
+On Error Resume Next
+Dim pdocu As Object
+Dim oMenuBar As Object
+#If USER_EXITS = 1 Then
+Run "customer_workbook_activate"
+#End If
+#If VERSION <> 40 Then
+If Not poXLHelper Is Nothing And Not poSAPConnection Is Nothing Then
+  Set pdocu = poSAPConnection.Documentation
+  If pdocu Is Nothing Then
+    Application.Caption = sapactivexlhiddensheet.Cells(40, 12)
+  Else
+    Application.Caption = sapactivexlhiddensheet.Cells(40, 12) & " (" & pdocu.value(0, 0) & " @ " & pdocu.value(1, 0) & ")"
+  End If
+End If
+#End If
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  If Left(oMenuBar.tag, 3) = "SAP" Then
+'    oMenuBar.Visible = True
+    oMenuBar.Delete
+  End If
+Next
+For Each oMenuBar In Application.CommandBars
+  If Not oMenuBar.BuiltIn Then
+    If Left(oMenuBar.Controls(1).tag, 3) = "SAP" Then
+'      oMenuBar.Visible = (GetSetting("SAPActiveXL", "Options", "showToolbar", "1") = "1")
+      oMenuBar.Delete
+    End If
+  End If
+Next
+If poSAPConnection Is Nothing Then
+  CreateInitMenu
+Else
+  CreateMenuSAP
+  Workbook_SheetActivate ActiveSheet
+End If
+End Sub
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+  On Error Resume Next
+  pbStopChangeEvent = True
+  SaveCacheValues
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.SaveHiddenData
+  End If
+  pbStopChangeEvent = True
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.sheduleOperation "GO", "", ""  'Turn automatic refresh on - later.
+  End If
+  'Depending on wether or not we have a dialog and which calculation mode we will
+  'get all kind of recalculations
+  On Error Resume Next
+#If USER_EXITS = 1 Then
+  Run "customer_workbook_BeforeSave"
+#End If
+End Sub
+Private Sub Workbook_Deactivate()
+On Error Resume Next
+Dim oMenuBar As Object
+Application.Caption = ""
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  If Left(oMenuBar.tag, 3) = "SAP" Then
+'    oMenuBar.Visible = False
+    oMenuBar.Delete
+  End If
+Next
+For Each oMenuBar In Application.CommandBars
+  If Not oMenuBar.BuiltIn Then
+    If Left(oMenuBar.Controls(1).tag, 3) = "SAP" Then
+      SaveSetting "SAPActiveXL", "Options", "showToolbar", IIf(oMenuBar.Visible, "1", "0")
+'      oMenuBar.Visible = False
+      oMenuBar.Delete
+    End If
+  End If
+Next
+#If USER_EXITS = 1 Then
+Run "customer_workbook_deactivate"
+#End If
+End Sub
+Private Sub Workbook_NewSheet(ByVal Sh As Object)
+    'to refresh workbook
+    Dim index As String
+    Dim sht As Object
+    Dim nm As Name
+    If Left(Application.VERSION, 2) = "9." Or _
+       Left(Application.VERSION, 2) = "8." Then
+      For Each sht In Application.VBE.ActiveVBProject.vbcomponents
+        index = sht.Name
+      Next
+    End If
+    If Not sht Is Nothing Then sht = Nothing
+    For Each nm In ActiveWorkbook.Names
+      If (InStr(nm.Name, "SAPRange_" & Sh.Name) = 1) Or _
+         (InStr(nm.Name, "SAPTrigger_" & Sh.Name) = 1) Then
+        nm.Delete
+      End If
+    Next nm
+    index = 1
+On Error Resume Next
+    Err.Clear
+    Do
+      If sapactivexlhiddensheet.Cells(42, CInt(index)).value = "" Then
+        sapactivexlhiddensheet.Cells(42, CInt(index)).formula = "=SAPGuardian(""" & Sh.CodeName & """)"
+        Exit Sub
+      End If
+      If Err.number <> 0 Then
+        Err.Clear
+        sapactivexlhiddensheet.Cells(42, CInt(index)).formula = "=SAPGuardian(""" & Sh.CodeName & """)"
+        Exit Sub
+      End If
+      index = index + 1
+    Loop
+End Sub
+Public Sub Workbook_SheetActivate(ByVal Sh As Object)
+On Error Resume Next
+Dim oMenuBar As Object
+Dim pos As Integer
+If Sh Is sapactivexlhiddensheet Then Exit Sub
+psMatrixName = ""
+'Delete consolidation menu and recreate with active sheet related data (characteristics being displayed
+' on active sheet )
+If Sh.Type <> xlWorksheet Then
+  Exit Sub
+End If
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  If Left(oMenuBar.tag, 3) = "SAP" Then
+    If Left(oMenuBar.tag, 4) = "SAPC" Then
+      oMenuBar.Delete
+    Else
+      oMenuBar.Enabled = True
+    End If
+  End If
+Next oMenuBar
+
+If Not poSAPConnection Is Nothing Then
+    If Len(sapactivexlhiddensheet.Cells(40, 4)) > 0 Then
+        pos = InStr(sapactivexlhiddensheet.Cells(40, 4), " ")
+        If Sh.Name = Left(sapactivexlhiddensheet.Cells(40, 4), pos - 1) Then
+          CreateMenuConsolidation Mid(sapactivexlhiddensheet.Cells(40, 4), pos + 1)
+          sapactivexlhiddensheet.Cells(40, 4) = ""
+        Else
+          CreateMenuConsolidation
+        End If
+    Else
+        CreateMenuConsolidation
+    End If
+End If
+End Sub
+
+Private Sub Workbook_SheetBeforeRightClick(ByVal Sh As Object, ByVal Target As Excel.Range, Cancel As Boolean)
+'OK, we distinguish the following modes (A, P, S are reserved since each tag starts with SAP):
+' 0 - normal Excel Cell
+' 1 - Cell within matrix definition
+' 2 - normal range
+' 3 - one dimensional range
+' 4 - Range within matrix definition
+' 5 - Range intersecting matrix definition
+' 6 - Active data cell - normal value
+' 7 - Active data cell - SAPLocked
+' 8 - Active data cell - SAPUnLocked
+' 9 - Active data cell - formula
+' B - not logged on
+On Error Resume Next
+  Dim found As Boolean
+  Dim c As Object
+  Dim context As String
+  If poXLHelper Is Nothing Then
+    context = "B"
+  Else
+    context = poXLHelper.getcontext(Application.Selection)
+  End If
+  For Each c In Application.CommandBars("Cell").Controls
+    If Left(c.tag, 3) = "SAP" Then
+      AdjustContextBar c, context
+      found = True
+    End If
+  Next c
+  If found Then Exit Sub
+  poXLHelper.CreateContextMenu psMatrixName
+  For Each c In Application.CommandBars("Cell").Controls
+    If Left(c.tag, 3) = "SAP" Then
+      AdjustContextBar c, context
+    End If
+  Next c
+End Sub
+
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Excel.Range)
+On Error GoTo error_handler
+Dim sht As Worksheet
+Dim nm As Name
+Dim sheetname As String
+Dim matrixname As String
+Dim SheetCodeName As String
+Dim count As Integer
+Dim index As Integer
+Dim found As Boolean
+Dim i As Integer
+Dim str As String
+
+found = False
+If Sh Is sapactivexlhiddensheet Then
+  If Target.row <> 40 Then Exit Sub
+  If Target.Address = "$D$40" Then
+    If Target <> "" Then
+      Workbook_SheetActivate ActiveSheet
+    End If
+  End If
+  If Target.Address = "$H$40" Then
+    pbStopChangeEvent = sapactivexlhiddensheet.Cells(40, 8) = "X"
+    Exit Sub
+  End If
+  If Target.Address = "$I$40" Then
+    If Not poXLHelper Is Nothing Then
+      poXLHelper.DoSheduledOperations
+    End If
+    Exit Sub
+  End If
+  If Target.Address = "$N$40" Then
+    On Error Resume Next
+    If "" <> sapactivexlhiddensheet.Range("$O$40") Then
+      Run Target.value, sapactivexlhiddensheet.Range("$O$40")
+    Else
+      Run Target.value
+    End If
+  End If
+'  If Target.Address = "$J$40" Then
+'    If Not pbSilent Then
+'      MsgBox Target.Value
+'      If Not poXLHelper Is Nothing Then
+'        pbSilent = True
+'        Set poXLHelper = Nothing
+'        Set poSAPConnection = Nothing
+'        Set poHiddenData = Nothing
+'        pbSilent = False
+'        auto_open
+'      End If
+'    End If
+'    Exit Sub
+'  End If
+  If Target.Address = "$P$40" Then
+    LoadFontSettings
+    Exit Sub
+  End If
+  If sapactivexlhiddensheet.Cells(40, 3) = "1" Then
+    sapactivexlhiddensheet.Cells(40, 3) = ""
+    If Not gf_clear_f4_request Then
+      If Not Main.poXLHelper Is Nothing Then
+        poXLHelper.F4Help ActiveCell
+      Else
+        MsgBox "Not logged on", vbExclamation
+      End If
+    End If
+    gf_clear_f4_request = False
+  End If
+  Exit Sub
+Else
+  If sapactivexlhiddensheet.Cells(40, 3) = "1" Then
+    sapactivexlhiddensheet.Cells(40, 3) = ""
+  End If
+  gf_clear_f4_request = True
+End If
+'If Not poHiddenData Is Nothing And Not poSAPConnection Is Nothing And pbStopChangeEvent = False Then
+If Not poHiddenData Is Nothing And pbStopChangeEvent = False Then
+    'On every change on active sheet and if sheet is in interactive mode and if changed cell
+    'falls in selected vector ranges, refresh the data
+    'If changed cell is locked undo
+'    If Target.Style = "SAPLocked" And mnNotUpdateable = False And Len(psMatrixName) > 0 Then
+    If Target.Style = "SAPLocked" And mnNotUpdateable = False Then
+#If VERSION = 40 Then
+        If MsgBox(R3Text("CNU"), vbInformation + vbOKCancel, "Warning") = vbOK Then
+#Else
+        If MsgBox(R3Text("CNU") & " " & R3Text("CNV"), vbInformation + vbYesNo, "Warning") = vbNo Then
+#End If
+            mnNotUpdateable = True
+            Application.Undo
+            mnNotUpdateable = False
+            Exit Sub
+        Else
+            Target.Style = "SAPUnLocked"
+            Target.Validation.InputTitle = ""
+            Target.Validation.InputMessage = ""
+        End If
+    End If
+End If
+If Target.value <> "" Then
+  If oldTarget = Target.Address Then
+    If Not poXLHelper Is Nothing Then
+      If Left(Target.formula, 1) = "=" Then
+        str = poXLHelper.MergeSapCellInformation(oldFormula, , Target.formula)
+      Else
+        str = poXLHelper.MergeSapCellInformation(oldFormula, Target.value)
+      End If
+      If Left(str, 1) = "=" Then
+        If str <> Target.formula Then Target.formula = str
+      End If
+    End If
+  End If
+End If
+#If USER_EXIT_SHEETCHANGE Then
+Run "customer_workbook_sheetchange", Sh, Target
+#End If
+Exit Sub
+error_handler:
+    Exit Sub
+End Sub
+Private Sub Workbook_SheetDeactivate(ByVal Sh As Object)
+On Error Resume Next
+  Dim oMenuBar As Object
+  For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+    If Left(oMenuBar.tag, 3) = "SAP" Then
+      oMenuBar.Enabled = False
+    End If
+  Next oMenuBar
+End Sub
+Private Sub Workbook_SheetSelectionChange(ByVal Sh As Object, ByVal Target As Excel.Range)
+On Error Resume Next
+  oldTarget = ""
+  If Target.Columns.count <> 1 Or Target.rows.count <> 1 Then Exit Sub
+  If Target.value = "" Then Exit Sub
+  oldFormula = Target.formula
+  If Left(oldFormula, 9) <> "=SAPCell(" Then Exit Sub
+  oldTarget = Target.Address
+End Sub
+
+Attribute VB_Name = "Main"
+Option Explicit
+'**************Cell definition of hiddensheet**************
+'
+'1-SheetCodeName,matrixName,Aspectid,returnunit,signhandling,numberofchar,interactivemode,rol,col
+'2-hierarchy node level data
+'3 -37 CharID,Desc,Value,Vector,Summable
+'38 Triggerfunction for matrixes
+'39 Trigger cell for matrix status functions
+'40.2 Template version
+'40.3 F4 Trigger: Causes F4 Dialog to pop up
+'40.4 Matrixname taken upon sheetchange
+'40.5 F4 Trigger on off switch
+'40.6 F4 list if trigger is switched off
+'40.7 F4 shortcut key
+'40.8 Automatic reload off switch
+'40.9 GetSheduledData trigger
+'40.10 'Connection to R/3 lost' message display
+'42 Sapguardians watching for sheet deletion
+'50+ cache
+'**********************************************************
+Public pnDependencies As Integer            ' number of dependencies
+Public poSAPConnection As Object            ' Connection object
+Public poXLHelper As Object                 ' main helper object
+Public poHiddenData As Object               ' Keeps  data matrix related data in memory
+Public pbStopChangeEvent As Boolean         ' if true workbook change event will not execute
+Public psMatrixName As String
+Public pb_Locked As Boolean
+Public pbDontSearchTexts As Boolean         ' Are we trying to search longtexts on the hiddensheet ourselves if xlhelper is not available?
+Public pbSilent As Boolean                  ' Display messages written to cell(40,10)?
+Public Const INDENT_CHAR = " "    ' This character fills number of spaces in hierarchy
+Public Const TEMPLATE_VERSION = "2.1"
+Public Const SINGLEVALUES = 1
+Public Const SETS = 2
+Public Const HIERARCHIES = 3
+Public Const ATTRIBUTES = 4
+Public poActivateBar As CommandBarControl
+Public gf_clear_f4_request As Boolean
+Private moSubMenuBar As Object
+Private moSubMenu As Object
+Private mi_Indent As Integer ' Number of spaces being used to display different
+                             ' levels of hierarchy
+Private poCacheValues As New Collection
+Private pbCacheValuesLoaded As Boolean
+Private LogonType As String
+Private m_HelperVersion As String
+
+Private VariableFontFace As String
+Private VariableFontSize As Long
+Private VariableFontItalic As Boolean
+Private VariableFontWeight As Long
+Private VariableFontScript As Long
+Private FixedFontFace As String
+Private FixedFontSize As Long
+Private FixedFontItalic As Boolean
+Private FixedFontWeight As Long
+Private FixedFontScript As Long
+Private Zoom As Integer
+Function SAPTrigger(sheetname As String, matrixname As String, ParamArray dummy()) As String
+On Error GoTo err_handler
+  If poXLHelper Is Nothing Or poSAPConnection Is Nothing Or poHiddenData Is Nothing Then
+    SAPTrigger = 1
+    Exit Function
+  End If
+  If pbStopChangeEvent Then
+    SAPTrigger = 2
+    Exit Function
+  End If
+  If poHiddenData.getintmode(sheetname, matrixname) <> 1 Then
+    SAPTrigger = 3
+    Exit Function
+  End If
+  poXLHelper.sheduleOperation "GET", sheetname, matrixname
+  SAPTrigger = Now
+err_handler:
+End Function
+Function SAPGuardian(sheetname As String) As String
+  Dim ws As Worksheet
+  Dim nm As Name
+  Dim s1, s2 As String
+  Dim count As Integer
+  Dim i As Integer
+  On Error Resume Next
+  Err.Clear
+  SAPGuardian = "X"
+' exit if the sheet still exists
+  For Each ws In Worksheets
+    If ws.CodeName = sheetname Then Exit Function
+  Next
+  SAPGuardian = ""
+' Delete hidden data for all matrixes on the sheet
+  If poXLHelper Is Nothing Then
+    count = 1
+    i = Len(sheetname) + 1
+    While sapactivexlhiddensheet.Cells(1, count) <> ""
+      If Left(sapactivexlhiddensheet.Cells(1, count), i) = sheetname & "," Then
+        sapactivexlhiddensheet.Cells(1, count) = ",,CS, ,+,0,0,,,,0,0, ,1,1"
+      End If
+      count = count + 1
+    Wend
+  Else
+    For count = 0 To poHiddenData.GetMatrixCount(sheetname) - 1
+      poXLHelper.sheduleOperation "DEL", sheetname, poHiddenData.getmatrixname(sheetname, count)
+    Next
+  End If
+' Delete named ranges defined for this sheet and matrix combination
+  s1 = "SAPRange*_" & sheetname & "_*"
+  s2 = "SAPTrigger_" & sheetname & "_*"
+  For Each nm In ActiveWorkbook.Names
+    If nm.Name Like s1 Or nm.Name Like s2 Then nm.Delete
+  Next
+End Function
+Sub auto_open()
+Dim idx As Integer
+Dim sheetname As String
+Dim nm As Name
+Dim i, j As Integer
+Dim s As String
+Dim pos1 As Integer, pos2 As Integer
+Dim pos3 As Integer 'hah032301
+On Error Resume Next
+DoEvents
+#If USER_EXITS = 1 Then
+  Run "customer_auto_open"
+#End If
+On Error GoTo err_auto_open
+LoadFontSettings
+'First of all clean up dirt left over from sheet deletion.
+  idx = 1
+  'Delete guardians for deleted sheets
+  On Error Resume Next
+  Do
+    s = "ERROR"
+    s = sapactivexlhiddensheet.Cells(42, idx).value
+    If s = "" Then
+      sapactivexlhiddensheet.Cells(42, idx).formula = ""
+    End If
+    idx = idx + 1
+  Loop While sapactivexlhiddensheet.Cells(42, idx).formula <> ""
+  On Error GoTo err_auto_open
+  j = 1
+  'compact guardians.
+  For i = 1 To idx
+    If sapactivexlhiddensheet.Cells(42, i).formula <> "" Then
+      If i <> j Then
+        sapactivexlhiddensheet.Cells(42, j).formula = sapactivexlhiddensheet.Cells(42, i).formula
+        sapactivexlhiddensheet.Cells(42, i).formula = ""
+      End If
+      j = j + 1
+    End If
+  Next i
+  i = 1
+  While sapactivexlhiddensheet.Cells(1, i) <> ""
+    j = InStr(1, sapactivexlhiddensheet.Cells(1, i), ",")
+    If j > 0 Then
+      sheetname = Left(sapactivexlhiddensheet.Cells(1, i), j - 1)
+      For j = 1 To Worksheets.count
+        If Worksheets(j).CodeName = sheetname Then Exit For
+      Next j
+      If j > Worksheets.count Then
+        sapactivexlhiddensheet.Range(sapactivexlhiddensheet.Cells(1, i), sapactivexlhiddensheet.Cells(38, i)).Delete xlShiftToLeft
+        For Each nm In Names
+          If nm.Name Like "SAPRange*_" & sheetname & "_*" Or _
+             nm.Name Like "SAPTrigger_" & sheetname & "_*" Then
+            nm.Delete
+          End If
+        Next nm
+      Else
+        i = i + 1
+      End If
+    Else
+      i = i + 1
+    End If
+  Wend
+
+'if menu already exits do not create
+If sapactivexlhiddensheet.Range("L40").value = "" Then
+  Application.StatusBar = "SAP Interactive Excel"
+Else
+  Application.StatusBar = sapactivexlhiddensheet.Range("L40").value
+End If
+'Put version information in cell 40,2
+'sapactivexlhiddensheet.Cells(40, 2) = TEMPLATE_VERSION
+pbStopChangeEvent = False
+'Create initial SAP menu
+pb_Locked = sapactivexlhiddensheet.Cells(41, 1) <> ""
+mi_Indent = Val(GetSetting("SAPActiveXL", "HierNodeColor", "IndentBy", "3"))
+On Error Resume Next
+'Create helper object
+Set poXLHelper = CreateObject("SAPXLHelper.Main")
+                                                          'Start hah110200
+If poXLHelper Is Nothing Then
+  TryToRegisterDLLs
+End If
+Set poXLHelper = CreateObject("SAPXLHelper.Main")
+                                                            'End hah110200
+If poXLHelper Is Nothing Then
+  Exit Sub
+End If
+s = poXLHelper.getinterfaceversion
+If Len(s) > 3 Then
+  s = Mid(s, 4)
+  pos1 = InStr(1, s, ".")
+  pos2 = InStr(pos1 + 1, s, ".")
+  pos3 = InStr(pos2 + 1, s, "(")                          'hah032301
+  If pos3 > 0 Then s = Left(s, pos3 - 1)                  'hah032301
+  If pos2 > 0 Then
+    m_HelperVersion = Left(s, pos1) & Format(Mid(s, pos1 + 1, pos2 - pos1), "00") & "." & Format(Mid(s, pos2 + 1), "0000") 'hah032301
+  End If
+End If
+
+'pass the Hidden Sheet object
+poXLHelper.HiddenSheet = sapactivexlhiddensheet
+'pass the workbook object
+Set poXLHelper.Workbook = sapactivexlhiddensheet.Parent
+'Create Hidden Data object
+Set poHiddenData = CreateObject("SAPXLHelper.CHiddenData")
+If poHiddenData Is Nothing Then
+  pbSilent = True
+  Set poXLHelper = Nothing
+  pbSilent = False
+  Exit Sub
+End If
+If Not poHiddenData.m_loaded Then
+  pbSilent = True
+  Set poXLHelper = Nothing
+  Set poHiddenData = Nothing
+  pbSilent = False
+  Exit Sub
+End If
+'HiddenData object
+poXLHelper.HiddenData = poHiddenData
+On Error Resume Next
+CreateInitMenu
+
+Set nm = Application.Names("SAPFUNCf4HELP")
+If Err.number <> 0 Then
+  Application.Names.Add "SAPFuncF4Help", "=Main.SAPF4Help()", False
+End If
+Exit Sub
+err_auto_open:
+MsgBox Error, vbCritical
+Exit Sub
+End Sub
+Sub CreateInitMenu()
+On Error Resume Next
+  Err.Clear
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.CreateInitMenu
+  End If
+  If Err.number <> 0 Or poXLHelper Is Nothing Then
+    Err.Clear
+    CreateInitMenu_1
+  End If
+End Sub
+'
+' Function: usrLogonAccess
+'
+' Log on to access
+'
+' Published in note 122539
+'
+' IN:     user as string: Access user
+'
+' IN:     password as string: password for access
+'
+' IN:     database as string: filename of access database
+'
+' Author: Helmut Hofmann
+' History:
+'    45B:       Created
+'
+Sub usrLogonAccess(Optional user As String = "", Optional password As String = "", Optional database As String = "")
+    If Logon("MS Access", user, password, database) = False Then
+        MsgBox "Logon Failed", vbCritical
+    End If
+End Sub
+'
+' Function: usrLogonR3
+'
+' Log on to R/3
+'
+' Published in note 122539
+'
+' IN:     system as string: system ID (e.g. DEV)
+'
+' IN:     group as string: group for group selection (e.g. PUBLIC)
+'
+' IN:     user as string: Access user
+'
+' IN:     password as string: password for access
+'
+' IN:     language as string: language to log on with (e.g. EN)
+'
+' Author: Helmut Hofmann
+' History:
+'    45B:       Created
+'
+Sub usrLogonR3(Optional system As String = "", Optional group As String = "", Optional user As String = "", Optional password As String = "", Optional language As String = "", Optional appserver As String = "", Optional client As String = "", Optional msgserver As String = "", Optional number As String = "")
+    If Logon("R/3", system, group, user, password, language, appserver, client, msgserver, number) = False Then
+        MsgBox "Logon Failed", vbCritical
+    End If
+End Sub
+Sub mnuLogon()
+    If Logon(CommandBars.ActionControl.Caption) = False Then
+        MsgBox "Logon Failed", vbCritical
+    End If
+End Sub
+Private Function Logon(MenuCap As String, Optional para1 As String = "", _
+                       Optional para2 As String = "", Optional para3 As String = "", _
+                       Optional para4 As String = "", Optional para5 As String = "", _
+                       Optional para6 As String = "", Optional para7 As String = "", _
+                       Optional para8 As String = "", Optional para9 As String = "") As Boolean
+On Error Resume Next
+Dim iTrace As Integer  'To be passed as a flag in dll for debug trace
+Dim index As Integer
+Dim count As Integer
+Dim s As String
+Dim found As Boolean
+Dim ws As Worksheet
+Dim rg As Range
+Dim first As Range
+Dim pos1 As Integer, pos2 As Integer
+Dim pos3 As Integer 'hah032301
+'Logon to R/3 or Access
+LoadFontSettings   'Already done in auto_open, but I wouldn't wonder if Excel resetted my VB Project
+Logon = False
+Err.Clear
+Application.StatusBar = "Logon in Progress..."
+'Delete connection object if already exsits
+If Not poSAPConnection Is Nothing Then
+    Set poSAPConnection = Nothing
+End If
+'Logon : MS Access /R3
+Select Case MenuCap
+Case Is = "R/3"
+    Set poSAPConnection = CreateObject("SAPConsR3.GAXL")
+    LogonType = "R/3"
+Case Is = "MS Access"
+    Set poSAPConnection = CreateObject("SAPConsAccess.GAXL")
+    LogonType = "MS Access"
+Case Else
+    Set poSAPConnection = CreateObject("SAPConsAccess.GAXL")
+    LogonType = ""
+End Select
+
+If poSAPConnection Is Nothing Then
+    MsgBox "Could not create GAXL object" & vbCrLf & Err.Description, vbInformation
+    Err.Clear
+    Exit Function
+End If
+'get trace setting from registry
+iTrace = Val(GetSetting("SAPActiveXL", "Debug", "Trace"))
+found = poSAPConnection.Logon(iTrace, para1, para2, para3, para4, para5, para6, para7, para8, para9)
+If Err.number <> 0 Then
+  'if we are working with a sapcons*.dll which does not support silent logons
+  found = poSAPConnection.Logon(iTrace)
+End If
+If Not found Then
+    Err.Clear
+    Application.StatusBar = ""
+    Exit Function
+Else
+    Application.StatusBar = R3Text("LGO")
+    'Create helper object
+    If poXLHelper Is Nothing Then
+      Set poXLHelper = CreateObject("SAPXLHelper.Main")
+      If poXLHelper Is Nothing Then
+          MsgBox "Could not create SAPXLHelper.Main object" & vbCrLf & Err.Description, vbInformation
+          Err.Clear
+          Exit Function
+      End If
+      s = poXLHelper.getinterfaceversion
+      If Len(s) > 3 Then
+        s = Mid(s, 4)
+        pos1 = InStr(1, s, ".")
+        pos2 = InStr(pos1 + 1, s, ".")
+        pos3 = InStr(pos2 + 1, s, "(") 'hah032301
+        If pos3 > 0 Then s = Left(s, pos3 - 1) 'hah032301
+        If pos2 > 0 Then
+          m_HelperVersion = Left(s, pos1) & Format(Mid(s, pos1 + 1, pos2 - pos1), "00") & "." & Format(Mid(s, pos2 + 1), "0000") 'hah032301
+        End If
+      End If
+    End If
+    'pass the connection object
+    poXLHelper.Connection = poSAPConnection
+    If Err.number <> 0 Then
+      MsgBox "Could not link SAPXLHelper to database" & vbCrLf & Err.Description, vbInformation
+      Err.Clear
+      pbSilent = True
+      Set poXLHelper = Nothing
+      pbSilent = False
+      Set poSAPConnection = Nothing
+      Exit Function
+    End If
+    'pass the Hidden Sheet object
+    poXLHelper.HiddenSheet = sapactivexlhiddensheet
+    If Err.number <> 0 Then
+      MsgBox "Could not link SAPXLHelper to Interactive Excel data" & vbCrLf & Err.Description, vbInformation
+      Err.Clear
+      pbSilent = True
+      Set poXLHelper = Nothing
+      pbSilent = False
+      Set poSAPConnection = Nothing
+      Exit Function
+    End If
+    'pass the workbook object
+    Set poXLHelper.Workbook = ActiveWorkbook
+    'Create Hidden Data object
+    If Err.number <> 0 Then
+      MsgBox "Could not link SAPXLHelper to workbook" & vbCrLf & Err.Description, vbInformation
+      Err.Clear
+      pbSilent = True
+      Set poXLHelper = Nothing
+      Set poSAPConnection = Nothing
+      pbSilent = False
+      Exit Function
+    End If
+    If poHiddenData Is Nothing Then
+      Set poHiddenData = CreateObject("SAPXLHelper.CHiddenData")
+      If poHiddenData Is Nothing Then
+          MsgBox "Could not create SAPXLHelper.CHiddenData object" & vbCrLf & Err.Description, vbInformation
+          Err.Clear
+          Logon = False
+          pbSilent = True
+          Set poXLHelper = Nothing
+          Set poSAPConnection = Nothing
+          pbSilent = False
+          Exit Function
+      End If
+    Else
+      poHiddenData.LoadHiddenData
+    End If
+    If Not poHiddenData.m_loaded Or Err.number <> 0 Then
+      MsgBox "Could not load hidden data" & vbCrLf & Err.Description, vbInformation
+      Logon = False
+      Err.Clear
+      pbSilent = True
+      Set poXLHelper = Nothing
+      Set poHiddenData = Nothing
+      pbSilent = False
+      Exit Function
+    End If
+    'HiddenData object
+    poXLHelper.HiddenData = poHiddenData
+    
+    If poHiddenData.GetMatrixCount(ActiveSheet.CodeName) > 0 Then
+        psMatrixName = poHiddenData.getmatrixname(ActiveSheet.CodeName, 0)
+    Else
+        psMatrixName = ""
+    End If
+    
+    'Create SAP and Consolidation menu groups
+    CreateMenuSAP
+    CreateMenuConsolidation
+    found = False
+    'If any matrix is an active download matrix, ask user if he wants to do
+    'a refresh on logon.
+    If para1 = "" And para2 = "" And para3 = "" And para4 = "" And para5 = "" And para6 = "" And para7 = "" And para8 = "" And para9 = "" Then
+      For index = 1 To Worksheets.count
+        For count = 0 To poHiddenData.GetMatrixCount(ActiveWorkbook.Sheets(index).CodeName) - 1
+          s = poHiddenData.getmatrixname(ActiveWorkbook.Sheets(index).CodeName, count)
+          If poHiddenData.GetForUpload(ActiveWorkbook.Sheets(index).CodeName, s) = False Then
+            If poHiddenData.getintmode(ActiveWorkbook.Sheets(index).CodeName, s) = 1 Then
+#If VERSION = 40 Then
+              If MsgBox(R3Text("REL"), vbYesNo, "SAP") = vbYes Then
+#Else
+              If MsgBox(R3Text("REL"), vbYesNo, sapactivexlhiddensheet.Cells(40, 12)) = vbYes Then
+#End If
+                mnuDownloadDataWKB
+              End If
+              found = True
+              Exit For
+            End If
+          End If
+        Next count
+        If found Then Exit For
+      Next index
+    End If
+    Logon = True
+End If
+#If VERSION <> 40 Then
+Dim pdocu As Object
+If Not poXLHelper Is Nothing And Not poSAPConnection Is Nothing Then
+  Set pdocu = poSAPConnection.Documentation
+  If pdocu Is Nothing Then
+    Application.Caption = sapactivexlhiddensheet.Cells(40, 12)
+  Else
+    Application.Caption = sapactivexlhiddensheet.Cells(40, 12) & " (" & pdocu.value(0, 0) & " @ " & pdocu.value(1, 0) & ")"
+  End If
+End If
+#End If
+For Each ws In ActiveWorkbook.Worksheets
+  Set rg = ws.UsedRange.Find("# ??? #", , xlValues)
+  Set first = Nothing
+  While Not rg Is Nothing
+    If Left(rg.formula, 8) = "=SAPCell" Then
+      rg.formula = rg.formula
+    End If
+    If first Is Nothing Then If rg.value = "# ??? #" Then Set first = rg
+    Err.Clear
+    Set rg = ws.UsedRange.FindNext(rg)
+    If Err.number <> 0 Then Set rg = Nothing
+    If Not first Is Nothing And Not rg Is Nothing Then If first.Address = rg.Address Then Set rg = Nothing
+    Set rg = ws.UsedRange.FindNext
+    If first.Address = rg.Address Then Set rg = Nothing
+  Wend
+Next ws
+Exit Function
+err_logon:
+pbSilent = True
+Set poXLHelper = Nothing
+Set poHiddenData = Nothing
+Set poSAPConnection = Nothing
+Logon = False
+MsgBox Err.Description, , "Error"
+pbSilent = False
+Exit Function
+End Function
+Public Function mnuLogonNew()
+On Error Resume Next
+  Dim found As Boolean
+  Dim index As Integer
+  Dim count As Integer
+  Dim s As String
+  Dim pos1 As Integer, pos2 As Integer
+  Dim pos3 As Integer 'hah032301
+  
+  If poXLHelper Is Nothing Then
+    Set poXLHelper = CreateObject("SAPXLHelper.Main")
+    If poXLHelper Is Nothing Then
+      MsgBox "Could not create SAPXLHelper.Main object" & vbCrLf & Err.Description, vbInformation
+      Err.Clear
+      Exit Function
+    End If
+  End If
+  s = poXLHelper.getinterfaceversion
+  If Len(s) > 3 Then
+    s = Mid(s, 4)
+    pos1 = InStr(1, s, ".")
+    pos2 = InStr(pos1 + 1, s, ".")
+    pos3 = InStr(pos2 + 1, s, "(") 'hah032301
+    If pos3 > 0 Then s = Left(s, pos3 - 1) 'hah032301
+    If pos2 > 0 Then
+      m_HelperVersion = Left(s, pos1) & Format(Mid(s, pos1 + 1, pos2 - pos1), "00") & "." & Format(Mid(s, pos2 + 1), "0000") 'hah032301
+    End If
+  End If
+  
+  'pass the workbook object
+  Set poXLHelper.Workbook = ActiveWorkbook
+  'pass the Hidden Sheet object
+  poXLHelper.HiddenSheet = sapactivexlhiddensheet
+  'Create Hidden Data object
+  If poHiddenData Is Nothing Then
+    Set poHiddenData = CreateObject("SAPXLHelper.CHiddenData")
+    If poHiddenData Is Nothing Then
+      MsgBox "Could not create SAPXLHelper.CHiddenData object" & vbCrLf & Err.Description, vbInformation
+      Err.Clear
+      pbSilent = True
+      Set poXLHelper = Nothing
+      Set poSAPConnection = Nothing
+      pbSilent = False
+      Exit Function
+    End If
+  End If
+  'HiddenData object
+  poXLHelper.HiddenData = poHiddenData
+  
+  Err.Clear
+  poXLHelper.logonnew poSAPConnection, psMatrixName, poActivateBar, pbStopChangeEvent
+  'Logon new includes the code for creating the menus and doing the initial download.
+  'But we do not know if it is actually there.
+  If Err.number <> 0 Then
+    poXLHelper.Logon poSAPConnection
+    
+    If poSAPConnection Is Nothing Then Exit Function
+    If poHiddenData.GetMatrixCount(ActiveSheet.CodeName) > 0 Then
+      psMatrixName = poHiddenData.getmatrixname(ActiveSheet.CodeName, 0)
+    Else
+      psMatrixName = ""
+    End If
+    
+    'Create SAP and Consolidation menu groups
+    CreateMenuSAP
+    CreateMenuConsolidation
+    found = False
+    'If any matrix is an active download matrix, ask user if he wants to do
+    'a refresh on logon.
+    For index = 1 To Worksheets.count
+      For count = 0 To poHiddenData.GetMatrixCount(ActiveWorkbook.Sheets(index).CodeName) - 1
+        s = poHiddenData.getmatrixname(ActiveWorkbook.Sheets(index).CodeName, count)
+        If poHiddenData.GetForUpload(ActiveWorkbook.Sheets(index).CodeName, s) = False Then
+          If poHiddenData.getintmode(ActiveWorkbook.Sheets(index).CodeName, s) = 1 Then
+            If MsgBox(R3Text("REL"), vbYesNo, sapactivexlhiddensheet.Cells(40, 12)) = vbYes Then
+              mnuDownloadDataWKB
+            End If
+            found = True
+            Exit For
+          End If
+        End If
+      Next count
+      If found Then Exit For
+    Next index
+  End If
+err_logon:
+  Exit Function
+End Function
+Sub CreateMenuSAP()
+On Error Resume Next
+  Err.Clear
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.CreateMenuSAP poActivateBar, pbStopChangeEvent
+  End If
+  If Err.number <> 0 Or poXLHelper Is Nothing Then
+    CreateMenuSAP_1
+  End If
+End Sub
+Function AdjustContextBar(c As Object, tag As String) As Boolean
+  Dim c1 As Object
+  Dim str As String
+  Dim pos As Integer
+  Dim no As String
+  Dim yes As String
+  pos = InStr(c.tag, "@")
+  If pos <> 0 Then
+    str = Left(c.tag, pos - 1)
+  Else
+    str = c.tag
+  End If
+  pos = InStr(str, "!")
+  If pos <> 0 Then
+    yes = Left(str, pos - 1)
+    no = Mid(str, pos + 1)
+  Else
+    yes = str
+    no = ""
+  End If
+  
+  If (Not (yes Like tag)) Or (no Like tag) Then
+    If Left(c.tag, 4) = "SAP " Then
+      c.Visible = False
+    Else
+      c.Visible = True
+    End If
+  Else
+    If TypeName(c) = "CommandBarPopup" Then
+      For Each c1 In c.Controls
+        If AdjustContextBar(c1, tag) Then
+          c.Visible = True
+        End If
+      Next c1
+    Else
+      c.Visible = True
+    End If
+  End If
+  AdjustContextBar = c.Visible
+End Function
+Sub CreateMenuConsolidation(Optional matrixname)
+On Error Resume Next
+  Err.Clear
+  If Not poXLHelper Is Nothing Then
+    If IsMissing(matrixname) Then
+      poXLHelper.CreateMenuConsolidation psMatrixName
+    Else
+      poXLHelper.CreateMenuConsolidation psMatrixName, matrixname
+    End If
+  End If
+  If Err.number <> 0 Or poXLHelper Is Nothing Then
+    Err.Clear
+    If IsMissing(matrixname) Then
+      CreateMenuConsolidation_1
+    Else
+      CreateMenuConsolidation_1 matrixname
+    End If
+  End If
+End Sub
+Sub mnuLockWorkbook()
+  If Not poHiddenData Is Nothing Then
+    poXLHelper.lockworkbook False
+    pb_Locked = sapactivexlhiddensheet.Cells(41, 1) <> ""
+    CreateMenuSAP
+    CreateMenuConsolidation
+  End If
+End Sub
+Sub mnuSignWorksheet()
+  Dim loXLHelper As Object
+  If pb_Locked Or (poHiddenData Is Nothing) Then Exit Sub
+  If MsgBox(R3Text("ALO"), vbOKCancel) = vbCancel Then Exit Sub
+  Set loXLHelper = poXLHelper
+  auto_close
+  loXLHelper.lockworkbook True
+  pb_Locked = sapactivexlhiddensheet.Cells(41, 1) <> ""
+  pbSilent = True
+  Set poXLHelper = Nothing
+  Set poSAPConnection = Nothing
+  Set poHiddenData = Nothing
+  pbSilent = False
+  auto_open
+End Sub
+'
+' Function: mnuDeactivate
+'
+' Togles active / inactive mode
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    45A:       Created
+'
+Sub mnuDeactivate()
+  pbStopChangeEvent = Not pbStopChangeEvent
+#If VERSION <> 40 Then
+  If pbStopChangeEvent Then
+    poActivateBar.FaceId = 0
+  Else
+    poActivateBar.FaceId = 220
+  End If
+#End If
+End Sub
+Sub mnuUnlockWorkbook()
+  If Not poHiddenData Is Nothing Then
+    poXLHelper.UnLockWorkbook
+    pb_Locked = sapactivexlhiddensheet.Cells(41, 1) <> ""
+    CreateMenuSAP
+    CreateMenuConsolidation
+  End If
+End Sub
+'
+' Function: mnuLogoff
+'
+' Log off
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    40B:       Created
+'
+Sub mnuLogoff()
+'This sub deletes the menus, creates SAP initial menu and delete global objects
+Dim oMenuBar As Object
+On Error Resume Next
+'Delete public objects
+
+If Not poHiddenData Is Nothing Then
+    poHiddenData.Quit
+'    Set poHiddenData = Nothing
+End If
+If Not poSAPConnection Is Nothing Then
+    Application.StatusBar = R3Text("LGF")
+    Set poSAPConnection = Nothing
+End If
+If Not poXLHelper Is Nothing Then
+'    Set poXLHelper = Nothing
+    poXLHelper.Connection = Nothing
+End If
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  If Left(oMenuBar.tag, 3) = "SAP" Then
+    oMenuBar.Delete
+  End If
+Next oMenuBar
+
+Application.Caption = ""
+If Not moSubMenuBar Is Nothing Then Set moSubMenuBar = Nothing
+If Not moSubMenu Is Nothing Then Set moSubMenu = Nothing
+'Create initial SAP menu
+CreateInitMenu
+End Sub
+'
+' Function: mnuJobManager
+'
+' opens Job Manager dialog
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    45B:       Created
+'
+Sub mnuJobManager()
+'Replaced by mnuExternal
+    On Error GoTo err_handler
+    If Not poXLHelper Is Nothing Then
+        If psMatrixName <> "" Then
+          poXLHelper.definejob ActiveSheet.CodeName, psMatrixName
+        End If
+    End If
+err_handler:
+    Exit Sub
+End Sub
+'
+' Function: usrCallJob(jobid as string)
+'
+' executes a specific job
+'
+' Published in note 122539
+'
+' IN:     jobid as string: name of job
+'
+' Author: Helmut Hofmann
+' History:
+'    45A:       Created
+'
+Public Sub usrCallJob(jobid As String)
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.ExecuteJob jobid
+  End If
+End Sub
+Sub auto_close()
+'Excel calls this function automatically when workbook is closed
+Dim oMenuBar As Object
+On Error Resume Next
+If Not poSAPConnection Is Nothing Then
+    Set poSAPConnection = Nothing
+End If
+If Not poHiddenData Is Nothing Then
+    poHiddenData.Quit
+    Set poHiddenData = Nothing
+End If
+If Not poXLHelper Is Nothing Then
+    pbSilent = True
+   'delete the Hidden Sheet object
+    poXLHelper.HiddenSheet = Nothing
+    'delete the workbook object
+    Set poXLHelper.Workbook = Nothing
+    'delete the connection object
+    poXLHelper.Connection = Nothing
+    'delete HiddenData object
+    poXLHelper.HiddenData = Nothing
+    Set poXLHelper = Nothing
+    pbSilent = False
+End If
+Application.StatusBar = ""
+Application.Caption = ""
+'delete menus
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  If Left(oMenuBar.tag, 3) = "SAP" Then
+    oMenuBar.Delete
+  End If
+Next oMenuBar
+'delete toolbars
+For Each oMenuBar In Application.CommandBars
+  If Not oMenuBar.BuiltIn Then
+    If Left(oMenuBar.Controls(1).tag, 3) = "SAP" Then
+      SaveSetting "SAPActiveXL", "Options", "showToolbar", IIf(oMenuBar.Visible, "1", "0")
+      SaveSetting "SAPActiveXL", "Options", "ToolbarPos", CStr(oMenuBar.Position)
+      SaveSetting "SAPActiveXL", "Options", "ToolbarLeft", oMenuBar.Left
+      SaveSetting "SAPActiveXL", "Options", "ToolbarTop", oMenuBar.Top
+      SaveSetting "SAPActiveXL", "Options", "ToolbarRow", oMenuBar.RowIndex
+      oMenuBar.Delete
+    End If
+  End If
+Next
+  
+If Not moSubMenuBar Is Nothing Then Set moSubMenuBar = Nothing
+If Not moSubMenu Is Nothing Then Set moSubMenu = Nothing
+#If USER_EXITS = 1 Then
+Run "customer_auto_close"
+#End If
+End Sub
+Sub mnuAbout()
+'Called from <About Active XL> menu
+If Not poSAPConnection Is Nothing Then
+    frmAbout.Show
+Else
+    MsgBox "Not Logged on", vbInformation
+    mnuLogoff
+End If
+End Sub
+Sub mnuAttributes()
+On Error Resume Next
+Dim Overwrite As Boolean
+Dim count As Integer
+Dim CharValues() As String
+Dim srange As Range
+Dim sDir
+
+Set srange = Application.InputBox(prompt:=R3Text("SVC"), Title:=R3Text("ATT"), Type:=8)
+If Not srange Is Nothing Then
+    If (srange.rows.count >= 1 And srange.Columns.count = 1) Or (srange.Columns.count >= 1 And srange.rows.count = 1) Then
+        If Not poSAPConnection Is Nothing Then
+            'If active cell has some value inform user
+            If Len(Trim$(ActiveCell.value)) > 0 Then
+                If MsgBox(R3Text("OWD"), vbYesNo + vbQuestion, R3Text("CEL") & ":" & ActiveCell.Address(False, False)) = vbYes Then
+                    Overwrite = True
+                Else
+                    Overwrite = False
+                End If
+            Else
+                Overwrite = True
+            End If
+            If Overwrite Then
+                poXLHelper.Values ATTRIBUTES, CommandBars.ActionControl.tag, ActiveCell, psMatrixName, pnDependencies, srange
+            End If
+        Else
+            MsgBox "Not Logged on", vbInformation
+            mnuLogoff
+        End If
+    Else
+        MsgBox R3Text("SRC"), vbInformation
+    End If
+End If
+End Sub
+
+Sub mnuMatrixName()
+'Find out which menu item was clicked
+If StrComp(psMatrixName, CommandBars.ActionControl.Caption, vbTextCompare) <> 0 Then
+    psMatrixName = CommandBars.ActionControl.Caption
+    If Not poSAPConnection Is Nothing Then
+        CreateMenuConsolidation psMatrixName
+    End If
+End If
+End Sub
+'
+' Function: SAPCell
+'
+' Cell formula that encapsulates all the required information about a cell in
+' the matrix definition and displays only the desired text or id
+'
+' Input: charid: ID of characteristic
+'        value: value
+'        depth: depth in hierarchy
+'        HierID: Hierarchy ID
+'        ParentID: ID of parent in hierarchy
+'        Indent: how much indentation
+'        isset: is set?
+'        isnode: is hierarchy node?
+'        flag: show text?
+'
+' Author: Rajeev Madnawat
+' History:
+'    4.0B:      Created
+'    4.5A:
+'               Search texts on hidden sheet if poXLHelper is missing
+'               Show # ??? # if text not found
+'               Number of characters to indent by made customizable
+'               Hide @..@ Tag
+'    99A:
+'     09/16/98  Handle @@ for SPACE IDs
+'               Enable value to be a reference to another SAPCell formula
+'
+Public Function SAPCell(ParamArray para()) As Variant
+'Public Function SAPCell(charid As String, Value As Variant, depth As Integer, HierID As String, ParentID As String, NodeCharId, CompoundChar, Indent, IsSet, Optional IsHierNode, Optional flag) As Variant
+'Excel cell formula. This stores all the required information for creating vectors
+'depending on flag variable it either returns ID of Desc to the cell
+
+' In value we get either the Value ID or a reference to another cell.
+' References are only possible if we want to show the text for a value whose ID is
+' stored somewhere else on the sheet.
+' This other cell holds either the value ID as literal or another SAPCell formula
+' However, in this second sapcell formula, the value parameter ALWAYS is the value ID literal
+' Additionally, the cell we reference to could contain a different formula, but we assume
+' that the value of this formula is the value id. This ignores one case:
+'   Sheet1!A1 = =SAPCell("RITEM", "@FORM@SAP1000",0,"","",0,0,1,0)
+'   Sheet2!A1 = =Sheet1!A1
+'   Sheet2!A2 = =SAPCell("RITEM", Sheet2!A1,0, "","",0,0,1,1)
+' This is not working, since the value of the formular in Sheet2!A1 is SAP1000 and
+' we can't find a long text for this in Sheet2!A1 (the @FORM@ tag is missing)
+' I wonder if anyone ever finds this bug. Really following the references (as we do in
+' creating the vector) would be a bit too time consuming for almost no benefit.
+'Dim the parameters
+Dim charid As String
+Dim value As Variant
+'Dim depth As Integer
+'Dim HierID As String
+'Dim ParentID As String
+Dim nodecharid As String
+Dim compoundchar As String
+Dim indent As Integer
+'Dim IsSet As Boolean
+'Dim IsHierNode As Boolean
+Dim flag As String
+
+Dim result As String
+Dim res As Variant
+Dim col As Integer
+Dim row As Integer
+If UBound(para) = 8 Then
+  'Pre 2.1 Versions do not have nodecharid and compound char, therefore the variables are a bit mixed up
+  charid = CStr(para(0))
+  value = Trim(CStr(para(1)))
+'  depth = CInt(para(2))
+'  HierID = CStr(para(3))
+'  parentid = cstr(para(4))
+  nodecharid = ""
+  compoundchar = ""
+  indent = CInt(para(5))
+'  IsSet = (para(6) = 1)
+'  IsHierNode = (para(7) = 1)
+  flag = para(8)
+Else
+  charid = CStr(para(0))
+  If TypeName(para(1)) = "Range" Then
+    Set value = para(1)
+  Else
+    value = Trim(CStr(para(1)))
+  End If
+    
+'  depth = CInt(para(2))
+'  HierID = CStr(para(3))
+'  parentid = cstr(para(4))
+  nodecharid = CStr(para(5))
+  compoundchar = CStr(para(6))
+' ObjectID = cstr(para(7))
+' lazyCompound = cint(para(8))
+'Since pre 2.1 versions get the first parameters by counting from left and the last by
+'counting from right, we have to insert new parameters before indent
+  indent = CInt(para(UBound(para) - 3))
+'  IsSet = (para(ubound(para)-2) = 1)
+'  IsHierNode = (para(ubound(Para)-1) = 1)
+  flag = para(UBound(para))
+End If
+If flag = 0 Then
+    'Show ID. This implies that value holds the ID and not a reference. But the
+    'code would also work if it is a reference, since we only output the value
+    result = Trim(value)
+    If result = "@@" Then
+      'Very special case: Initial value SPACE for characteristic
+      SAPCell = String$(indent * mi_Indent, INDENT_CHAR) + sapactivexlhiddensheet.Cells(41, 9)
+      Exit Function
+    End If
+    If Left(result, 1) = "@" Then
+      'Remove the @..@ Tag
+      col = InStr(2, result, "@")
+      If col <> 0 Then
+        SAPCell = String$(indent * mi_Indent, INDENT_CHAR) + Mid(result, col + 1)
+      Else
+        SAPCell = String$(indent * mi_Indent, INDENT_CHAR) + result
+      End If
+    Else
+      SAPCell = String$(indent * mi_Indent, INDENT_CHAR) + result
+    End If
+    Exit Function
+End If
+'Determine the value ID
+If TypeName(value) = "Range" Then
+  result = value.formula
+  If Left(result, 8) = "=SAPCell" Then
+    col = InStr(8, result, ",")
+    If col <> -1 Then
+      row = InStr(col + 1, result, ",")
+      If row <> -1 Then
+        result = Mid(result, col + 1, row - col - 1)
+        If Left(result, 1) = """" And Right(result, 1) = """" Then
+          result = Mid(result, 2, Len(result) - 2)
+        Else
+          result = value
+        End If
+      Else
+        result = value
+      End If
+    Else
+      result = value
+    End If
+  Else
+    result = value
+  End If
+Else
+  'Now that's simple: a string literal
+  result = value
+End If
+If Not poXLHelper Is Nothing Then
+  If nodecharid = "" Then
+    res = String$(indent * mi_Indent, INDENT_CHAR) + poXLHelper.GetcachedText(charid, result, CInt(flag), CStr(compoundchar))
+  Else
+    res = String$(indent * mi_Indent, INDENT_CHAR) + poXLHelper.GetcachedText(CStr(nodecharid), result, CInt(flag), CStr(compoundchar))
+  End If
+  SAPCell = res
+  On Error Resume Next
+  StoreCacheValue Application.Caller.Worksheet.CodeName, Application.Caller.Address, res
+Else
+  On Error Resume Next
+  res = RetrieveCacheValue(Application.Caller.Worksheet.CodeName, Application.Caller.Address)
+  SAPCell = res
+  If res = "# ??? #" Then
+    col = 1
+    If Not pbDontSearchTexts Then
+      While sapactivexlhiddensheet.Cells(50, col) <> ""
+        If sapactivexlhiddensheet.Cells(50, col + 1) = charid Then
+          For row = 0 To sapactivexlhiddensheet.Cells(50, col)
+            If sapactivexlhiddensheet.Cells(50 + row, col) = result Then
+              SAPCell = sapactivexlhiddensheet.Cells(50 + row, col + 1)
+            Exit Function
+            End If
+          Next row
+          Exit Function
+        End If
+        col = col + 3
+      Wend
+    End If
+  End If
+End If
+End Function
+Public Function SAPScale(SheetCodeName As String, matrixname As String, ByVal Trigger As Variant) As Variant
+  On Error Resume Next
+  Dim result As Variant
+  Dim index As Integer
+  If Not poHiddenData Is Nothing Then
+    result = poHiddenData.GetUsedScale(SheetCodeName, matrixname)
+    SAPScale = result
+    StoreCacheValue Application.Caller.Worksheet.CodeName, Application.Caller.Address, result
+  Else
+    result = RetrieveCacheValue(Application.Caller.Worksheet.CodeName, Application.Caller.Address)
+    SAPScale = result
+    If result = "# ??? #" Then
+      index = 1
+      While sapactivexlhiddensheet.Cells(1, index) <> ""
+        If (sapactivexlhiddensheet.Cells(1, index) Like SheetCodeName & "," & matrixname & "*") Then
+          SAPScale = StringAsArray(sapactivexlhiddensheet.Cells(1, index), 14)
+          Exit Function
+        End If
+        index = index + 1
+      Wend
+    End If
+  End If
+End Function
+Public Function SAPUser(SheetCodeName As String, matrixname As String, ByVal Trigger As Variant) As Variant
+  On Error Resume Next
+  Dim index As Integer
+  Dim result As Variant
+  If Not poHiddenData Is Nothing Then
+    result = poHiddenData.GetUserName(SheetCodeName, matrixname)
+    SAPUser = result
+    StoreCacheValue Application.Caller.Worksheet.CodeName, Application.Caller.Address, result
+  Else
+    result = RetrieveCacheValue(Application.Caller.Worksheet.CodeName, Application.Caller.Address)
+    SAPUser = result
+    If result = "# ??? #" Then
+      index = 1
+      While sapactivexlhiddensheet.Cells(1, index) <> ""
+        If (sapactivexlhiddensheet.Cells(1, index) Like SheetCodeName & "," & matrixname & "*") Then
+          SAPUser = StringAsArray(sapactivexlhiddensheet.Cells(1, index), 7)
+          Exit Function
+        End If
+        index = index + 1
+      Wend
+    End If
+  End If
+End Function
+Public Function SAPDate(SheetCodeName As String, matrixname As String, ByVal Trigger As Variant) As Variant
+  On Error Resume Next
+  Dim result As Variant
+  Dim index As Integer
+    
+  If Not poHiddenData Is Nothing Then
+    result = poHiddenData.TimeLastUpdate(SheetCodeName, matrixname)
+    SAPDate = result
+    StoreCacheValue Application.Caller.Worksheet.CodeName, Application.Caller.Address, result
+  Else
+    result = RetrieveCacheValue(Application.Caller.Worksheet.CodeName, Application.Caller.Address)
+    SAPDate = result
+    If result = "# ??? #" Then
+      index = 1
+      While sapactivexlhiddensheet.Cells(1, index) <> ""
+        If (sapactivexlhiddensheet.Cells(1, index) Like SheetCodeName & "," & matrixname & "*") Then
+          SAPDate = StringAsArray(sapactivexlhiddensheet.Cells(1, index), 9)
+          Exit Function
+        End If
+        index = index + 1
+      Wend
+    End If
+  End If
+End Function
+'
+' Function: SAPCellAttribte
+'
+' Cell formula that encapsulates all the required information about an attribute in
+' Needs online connection to database (R/3 or access)
+'
+' Input: AspectID: ID of aspect
+'        charid: ID of characteristic
+'        AttID: Id of attribute
+'        CharValueRn: value of characteristic
+'        dependencies: number of dependencies
+'        DepCharArray: dependency bindings
+'
+' Author: Rajeev Madnawat
+' History:
+'    99A:
+'      Replaced by SAPCellAttribute1
+'    4.0B:      Created
+'
+Public Function SAPCellAttribute(AspectId As String, charid As String, AttID As String, CharValueRn As Range, Dependencies As Integer, ParamArray DepCharArray() As Variant) As String
+On Error GoTo err_handler
+'Excel cell formula
+Dim oAttribute As Object
+Dim DepChar() As String
+Dim count As Integer
+Dim index As Integer
+Dim CharValue As String
+Dim result As String
+
+  result = ""
+  If Dependencies > 0 Then
+    'Input array is one dimensional, convert it into 2-D
+    ReDim DepChar((UBound(DepCharArray) + 1) / 2 - 1, 1)
+    index = 0
+    For count = 0 To UBound(DepChar)
+      DepChar(count, 0) = DepCharArray(index)
+      index = index + 1
+      DepChar(count, 1) = DepCharArray(index)
+      index = index + 1
+    Next
+  End If
+  If Not poSAPConnection Is Nothing And Not poHiddenData Is Nothing Then
+    'extract char id from formula if exists. Other than SAPCell,
+    'which tries to work offline and even without poXLHelper object,
+    'we can rely here on the poXLHelper functions
+    If InStr(CharValueRn.formula, "=SAPCell") > 0 Then
+      If Not poXLHelper Is Nothing Then
+        CharValue = poXLHelper.GetValueFromCell(CharValueRn)
+      End If
+    Else
+      CharValue = CharValueRn.value
+    End If
+    If Len(Trim$(CharValue)) > 0 Then
+      Set oAttribute = poSAPConnection.AttributeValue(AspectId, charid, AttID, CharValue, DepChar, Dependencies)
+      If Not oAttribute Is Nothing Then
+        If oAttribute.Exception = "" Then
+          result = oAttribute.value
+        Else
+          result = "# " & oAttribute.Exception & " #"
+        End If
+      Else
+        result = "# ??? #"
+      End If
+    End If
+    StoreCacheValue Application.Caller.Worksheet.CodeName, Application.Caller.Address, result
+  Else
+    result = RetrieveCacheValue(Application.Caller.Worksheet.CodeName, Application.Caller.Address)
+  End If
+err_handler:
+  If Not oAttribute Is Nothing Then Set oAttribute = Nothing
+  SAPCellAttribute = result
+  Exit Function
+End Function
+'
+' Function: SAPCellAttribute1
+'
+' Cell formula that encapsulates all the required information about an attribute in
+' Needs online connection to database (R/3 or access)
+'
+' Input: AspectID: ID of aspect
+'        charid: ID of characteristic
+'        AttID: Id of attribute
+'        CharValueRn: value of characteristic
+'        dependencies: number of dependencies
+'        DepCharArray: dependency bindings
+'
+' Author: Rajeev Madnawat
+' History:
+'    99A:       Created
+'      Replaces SAPCellAttribute
+'
+Public Function SAPCellAttribute1(Source As String, AspectId As String, charid As String, AttID As String, CharValueRn As Range, Dependencies As Integer, ParamArray DepCharArray() As Variant) As String
+On Error GoTo err_handler
+'Excel cell formula
+Dim oAttribute As Object
+Dim DepChar() As String
+Dim count As Integer
+Dim index As Integer
+Dim CharValue As String
+
+SAPCellAttribute1 = ""
+If Dependencies > 0 Then
+    'Input array is one dimensional, convert it into 2-D
+    ReDim DepChar((UBound(DepCharArray) + 1) / 2 - 1, 1)
+    index = 0
+    For count = 0 To UBound(DepChar)
+        DepChar(count, 0) = DepCharArray(index)
+        index = index + 1
+        DepChar(count, 1) = DepCharArray(index)
+        index = index + 1
+    Next
+End If
+If Not poSAPConnection Is Nothing And Not poHiddenData Is Nothing Then
+    'extract char id from formula if exists. Other than SAPCell,
+    'which tries to work offline and even without poXLHelper object,
+    'we can rely here on the poXLHelper functions
+    If InStr(CharValueRn.formula, "=SAPCell") > 0 Then
+        If Not poXLHelper Is Nothing Then
+            CharValue = poXLHelper.GetValueFromCell(CharValueRn)
+        End If
+    Else
+        CharValue = CharValueRn.value
+    End If
+    If Len(Trim$(CharValue)) > 0 Then
+        SAPCellAttribute1 = poXLHelper.AttributeValue(Source, AspectId, charid, AttID, CharValue, DepChar, Dependencies)
+    End If
+Else
+   SAPCellAttribute1 = "# ??? #"
+End If
+Exit Function
+
+err_handler:
+
+Exit Function
+
+End Function
+Sub mnuDeleteMatrix()
+    If Not poSAPConnection Is Nothing And Not poHiddenData Is Nothing Then
+        frmDelete.Show
+    End If
+End Sub
+Sub DebugForm()
+    frmDebug.Show
+End Sub
+Sub mnuEditReport()
+If Not poSAPConnection Is Nothing Then
+    'Pass get data flag
+    frmGetSetData.Show
+Else
+    MsgBox "Not Logged on", vbInformation
+    mnuLogoff
+End If
+End Sub
+Function R3Text(TextID As String) As String
+On Error Resume Next
+    R3Text = "NOT_FOUND"
+    Err.Clear
+    If Not poXLHelper Is Nothing Then
+      R3Text = poXLHelper.GetText(TextID)
+      If Err.number = 0 Then Exit Function
+    End If
+    'Try old interface
+    If Not poSAPConnection Is Nothing Then R3Text = poSAPConnection.programtexts.GetText(TextID)
+End Function
+Function SAPF4Help() As Range
+  gf_clear_f4_request = False
+  If sapactivexlhiddensheet.Cells(40, 5) = "X" Then
+    Set SAPF4Help = sapactivexlhiddensheet.Range("F40:F40")
+  Else
+    sapactivexlhiddensheet.Cells(40, 3) = "1"
+    Set SAPF4Help = Nothing
+  End If
+End Function
+Sub SAPValueHelp()
+Attribute SAPValueHelp.VB_ProcData.VB_Invoke_Func = "h\n14"
+  gf_clear_f4_request = False
+  sapactivexlhiddensheet.Cells(40, 3) = "1"
+End Sub
+Public Sub DeleteHiddenSheet()
+  Dim ws As Worksheet
+  pbSilent = True
+  Set poXLHelper = Nothing
+  Set poHiddenData = Nothing
+  Set poSAPConnection = Nothing
+  sapactivexlhiddensheet.Range("$1:$39").value = ""
+  sapactivexlhiddensheet.Range("$42:$49").formula = ""
+  sapactivexlhiddensheet.Range("$50:$65535").Delete
+  sapactivexlhiddensheet.Range("$A$50") = 0
+  sapactivexlhiddensheet.Range("$L$40") = "SAP Interactive Excel"
+  sapactivexlhiddensheet.Range("$M$40") = "Log on"
+  
+  sapactivexlhiddensheet.rows(38).NumberFormat = ""
+  sapactivexlhiddensheet.rows(42).NumberFormat = ""
+  pbSilent = False
+  For Each ws In ActiveWorkbook.Worksheets
+    If Not ws Is sapactivexlhiddensheet Then
+      sapactivexlhiddensheet.Cells(42, ws.index).formula = "=SAPGuardian(""" & ws.CodeName & """)"
+    End If
+  Next ws
+End Sub
+Public Sub mnuRepaintTexts()
+On Error Resume Next
+  Dim sheet As Worksheet
+  Dim formulas As Range
+  Dim cell As Range
+  Dim refresh As Boolean
+  refresh = pbStopChangeEvent
+  pbStopChangeEvent = False
+  For Each sheet In Worksheets
+    Err.Clear
+    Set formulas = sheet.UsedRange.SpecialCells(xlCellTypeFormulas)
+    If Err.number = 0 Then
+      For Each cell In formulas
+        cell.formula = cell.formula
+      Next cell
+    End If
+  Next sheet
+  pbStopChangeEvent = refresh
+End Sub
+Public Sub UpDownLoadMatrix(sheetname As String, matrixname As String, SetFlag As Boolean, Optional Validate As Boolean = False, Optional simulate As Boolean = False)
+On Error GoTo error_cmdOK
+
+Dim ws As Worksheet
+Dim Vectors() As String         ' final vector array
+Dim count As Long
+Dim index As Long
+Dim xLength As Long             ' length of X vector
+Dim yLength As Long             ' length of Y vector
+Dim ErrorString() As String     ' hold error message array returned by server system
+Dim Exception As String         ' hold exception raised from server system
+Dim ExtError As String
+Dim ReturnValue As String
+Dim NumberOfChar As Integer
+Dim ArrCharDesc() As String      'these array variables are being used to
+Dim ArrCharID() As String        'store description, ID, values and
+Dim ArrCharValue() As String     'visibility of characteritics to enable
+Dim ArrCharVisible() As Boolean  'looping.
+Dim ArrCharRequired() As Boolean '
+Dim ArrCharHidden() As Boolean   '
+Dim mnOutputRow As Long
+Dim mnOutputCol As Long
+Dim saveit As Boolean
+
+If poSAPConnection Is Nothing Then Exit Sub
+Application.Cursor = xlWait
+For Each ws In Worksheets
+  If ws.CodeName = sheetname Then Exit For
+Next ws
+If ws Is Nothing Then Exit Sub
+poXLHelper.RetrieveSelection sheetname, matrixname, NumberOfChar, ArrCharDesc, ArrCharID, ArrCharValue, ArrCharVisible, ArrCharHidden, ArrCharRequired, mnOutputRow, mnOutputCol
+' Do not allow download if any of required characteritics value is missing
+For index = 0 To NumberOfChar - 1
+  If ArrCharValue(index) = "" And ArrCharRequired(index) Then
+    MsgBox R3Text("VNS") & ": " & ArrCharDesc(index), vbInformation
+    Application.Cursor = xlDefault
+    Exit Sub
+  End If
+Next
+
+'Create vectors
+ReturnValue = poXLHelper.CreateVectors(sheetname, matrixname, ArrCharID, ArrCharValue, Vectors, xLength, yLength, mnOutputRow, mnOutputCol)
+Select Case ReturnValue
+Case "SRC", "XSS", "YSS"
+    MsgBox R3Text(ReturnValue), vbInformation
+    Application.Cursor = xlDefault
+    Exit Sub
+Case "0"
+    MsgBox R3Text("ECV"), vbInformation
+    Application.Cursor = xlDefault
+    Exit Sub
+Case Else
+End Select
+
+
+'Server system needs atleast one X and one Y vector. if either of the vector not found
+'ask user
+If mnOutputCol = 0 Then
+    'set length of X-axis
+    xLength = 1
+    mnOutputCol = poHiddenData.GetColumn(sheetname, matrixname)
+    If mnOutputCol = 0 Then
+        mnOutputCol = GetOutputLocation("X")
+    End If
+    If mnOutputCol = 0 Then
+        MsgBox R3Text("NCS"), vbInformation
+        Application.Cursor = xlDefault
+        Exit Sub
+    End If
+    saveit = True
+End If
+If mnOutputRow = 0 Then
+    'set length of Y-axis
+    yLength = 1
+    mnOutputRow = poHiddenData.GetRow(sheetname, matrixname)
+    If mnOutputRow = 0 Then
+        mnOutputRow = GetOutputLocation("Y")
+    End If
+    If mnOutputRow = 0 Then
+        MsgBox R3Text("NRS"), vbInformation
+        Application.Cursor = xlDefault
+        Exit Sub
+    End If
+    saveit = True
+End If
+If saveit Then
+  poXLHelper.saveselection sheetname, matrixname, 0, ArrCharID, ArrCharValue, mnOutputRow, mnOutputCol
+End If
+If Not SetFlag Then      'Get Data
+    'retrieve and output data on active sheet
+    If Not poHiddenData.GetForUpload(sheetname, matrixname) Then
+        If poXLHelper.GetData(ws, poHiddenData.GetScale(sheetname, matrixname), mnOutputRow, mnOutputCol, xLength, yLength, poHiddenData.GetAspectID(sheetname, matrixname), poHiddenData.GetSH(sheetname, matrixname), poHiddenData.GetRU(sheetname, matrixname), Vectors, Exception, matrixname) = False Then
+            If Len(Exception) > 0 Then
+                'display exception
+                MsgBox Exception, vbInformation, R3Text("EXC")
+            End If
+            poHiddenData.setintmode sheetname, matrixname, 0
+        Else
+            ' put the data matrix in interactive mode
+            poHiddenData.setintmode sheetname, matrixname, 1
+        End If
+    Else
+        poXLHelper.GetData ws, poHiddenData.GetScale(sheetname, matrixname), mnOutputRow, mnOutputCol, xLength, yLength, poHiddenData.GetAspectID(sheetname, matrixname), poHiddenData.GetSH(sheetname, matrixname), poHiddenData.GetRU(sheetname, matrixname), Vectors, Exception, matrixname
+        If Len(Trim$(Exception)) > 0 Then
+            MsgBox Exception, vbInformation
+        End If
+        'Save the status of interactive mode on hidden sheet
+        poHiddenData.setintmode sheetname, matrixname, 0
+        'Code for inserting SUM formula for hierarchy nodes, if any
+        poXLHelper.InsertFormula ws, mnOutputRow, mnOutputCol, xLength, yLength, matrixname
+        'Display Non Updateable cells
+        poXLHelper.GetNonUpdateable ws, mnOutputRow, mnOutputCol, xLength, yLength, poHiddenData.GetAspectID(sheetname, matrixname), Vectors, Exception
+        If Len(Trim$(Exception)) > 0 Then
+            MsgBox Exception, vbInformation
+        End If
+    End If
+Else    'Set Data
+    If StrComp(poXLHelper.SetData(ws, poHiddenData.GetScale(sheetname, matrixname), mnOutputRow, mnOutputCol, xLength, yLength, poHiddenData.GetAspectID(sheetname, matrixname), poHiddenData.GetSH(sheetname, matrixname), simulate, Validate, Vectors, Exception, ErrorString), "X", vbTextCompare) = 0 Then
+    'display success/ failure message
+      If ErrorString(0, 2) = "" Then
+        ReDim ErrorString(1, 2)
+        ErrorString(0, 2) = Application.StatusBar
+        If simulate Then
+          ErrorString(1, 2) = R3Text("UST")
+        Else
+          ErrorString(1, 2) = R3Text("USD")
+        End If
+      End If
+    Else
+      MsgBox R3Text("USY"), vbInformation, matrixname
+    End If
+    If Exception <> "" Then
+        MsgBox Exception, vbOKOnly, sapactivexlhiddensheet.Cells(40, 12)
+    End If
+    ReDim ErrorTextRefCell(UBound(ErrorString, 1)) As String
+    If (UBound(ErrorString, 1) > 0) Or (ErrorString(0, 2) <> "") Then
+      For count = 0 To UBound(ErrorString, 1)
+         If IsNumeric(ErrorString(count, 1)) Then
+            ExtError = ExtError + R3Text("CEL") & " " & Cells(mnOutputRow, mnOutputCol).Offset(ErrorString(count, 1), ErrorString(count, 0)).AddressLocal & " : " & ErrorString(count, 2) & vbCrLf
+            ErrorTextRefCell(count) = "'" & ws.Name & "'!" & Cells(mnOutputRow, mnOutputCol).Offset(ErrorString(count, 1), ErrorString(count, 0)).Address
+        Else
+            ExtError = ExtError + ErrorString(count, 0) & ErrorString(count, 1) & " " & ErrorString(count, 2) & vbCrLf
+            ErrorTextRefCell(count) = ""
+        End If
+      Next count
+      If ExtError <> "" Then
+'        poXLHelper.LoadErrorForm
+        poXLHelper.ErrorMessage ExtError, ErrorTextRefCell
+'        poXLHelper.ShowErrorForm
+      End If
+    End If
+End If
+pbStopChangeEvent = False
+If Not poActivateBar Is Nothing Then poActivateBar.FaceId = 220
+Application.Cursor = xlDefault
+
+Exit Sub
+error_cmdOK:
+MsgBox Error, vbCritical, sapactivexlhiddensheet.Cells(40, 12)
+Application.Cursor = xlDefault
+Exit Sub
+
+End Sub
+Public Function GetOutputLocation(ByVal sDir As String) As Integer
+    On Error GoTo err_handler
+    Dim sPrompt As String
+    Dim sTitle As String
+    Dim srange As Range
+    
+    Select Case sDir
+    Case "X"
+        sPrompt = R3Text("SOC")
+        sTitle = R3Text("CLM")
+    Case "Y"
+        sPrompt = R3Text("SOR")
+        sTitle = R3Text("ROW")
+    End Select
+    Application.ScreenUpdating = True
+    Set srange = Application.InputBox(prompt:=sPrompt, Title:=sTitle, Type:=8)
+    If Not srange Is Nothing Then
+        Select Case sDir
+        Case "X"
+            GetOutputLocation = srange.Cells(1, 1).Column
+        Case "Y"
+            GetOutputLocation = srange.Cells(1, 1).row
+        End Select
+    End If
+    Application.ScreenUpdating = False
+    Exit Function
+err_handler:
+    GetOutputLocation = 0
+    Exit Function
+End Function
+
+Private Function StringAsArray(str As String, index As Integer) As String
+    On Error Resume Next
+    Dim count As Integer
+    
+    count = 0
+    str = str + ","  ' append a comma
+    While (Len(Trim$(str)) > 0)
+        If count = index Then
+          StringAsArray = Left(str, InStr(str, ",") - 1)
+          Exit Function
+        End If
+        count = count + 1
+        str = Right$(str, Len(str) - InStr(str, ","))
+    Wend
+    StringAsArray = "# ??? #"
+End Function
+Public Sub mnuMatrixStatus()
+  poXLHelper.ShowStatus
+End Sub
+'
+' Function: SetFontSettings
+'
+' Applies the user specified font and zoom to a form
+'
+' IN:     f as form: form to modify
+'
+' Author: Helmut Hofmann
+' History:
+'    45B:       Created
+'     10/10/98  part of Unicode support
+'
+Public Sub SetFontSettings(f As UserForm)
+On Error GoTo err_handler
+  Dim c As Control
+  Dim factor As Single
+  If FixedFontFace = "" And VariableFontFace <> "" And Zoom = 100 Then Exit Sub
+  factor = Zoom / 100
+  If VariableFontFace <> "" Then
+    f.Font.Name = VariableFontFace
+    f.Font.Size = VariableFontSize
+    f.Font.Italic = VariableFontItalic
+    f.Font.Weight = VariableFontWeight
+    f.Font.Charset = VariableFontScript
+  End If
+  If Zoom <> 100 Then
+    f.Width = f.Width * factor
+    f.Height = f.Height * factor
+  End If
+  For Each c In f.Controls
+    If Zoom <> 100 Then
+      c.Top = c.Top * factor
+      c.Left = c.Left * factor
+      c.Width = c.Width * factor
+      c.Height = c.Height * factor
+    End If
+    Select Case TypeName(c)
+      Case "ListBox", "ComboBox", "ListView", "TextBox":
+        If FixedFontFace <> "" Then
+          c.Font.Name = FixedFontFace
+          c.Font.Size = FixedFontSize
+          c.Font.Italic = FixedFontItalic
+          c.Font.Weight = FixedFontWeight
+          c.Font.Charset = FixedFontScript
+        End If
+      Case "CommandButton", "Label", "OptionButton", "CheckBox", "SSTab", "Frame", "MultiPage":
+        If VariableFontFace <> "" Then
+          c.Font.Name = VariableFontFace
+          c.Font.Size = VariableFontSize
+          c.Font.Italic = VariableFontItalic
+          c.Font.Weight = VariableFontWeight
+          c.Font.Charset = VariableFontScript
+        End If
+      Case "RefEdit", "SpinButton":
+      Case Else:
+        Debug.Print TypeName(c)
+    End Select
+  Next c
+Exit Sub
+err_handler:
+ Debug.Print TypeName(c)
+ Resume Next
+End Sub
+'
+' Function: LoadFontSettings
+'
+' Loads the user specified font and zoom from the registry
+'
+' Author: Helmut Hofmann
+' History:
+'    45B:       Created
+'     10/10/98  part of Unicode support
+'
+Public Sub LoadFontSettings()
+    FixedFontFace = GetSetting("SAPActiveXL", "Options", "FixedFontFace", "")
+    If FixedFontFace <> "" Then
+      FixedFontSize = GetSetting("SAPActiveXL", "Options", "FixedFontSize", "10")
+      FixedFontItalic = GetSetting("SAPActiveXL", "Options", "FixedFontItalic", "False")
+      FixedFontWeight = GetSetting("SAPActiveXL", "Options", "FixedFontWeight", "100")
+      FixedFontScript = GetSetting("SAPActiveXL", "Options", "FixedFontScript", "0")
+    End If
+    VariableFontFace = GetSetting("SAPActiveXL", "Options", "VariableFontFace", "")
+    If VariableFontFace <> "" Then
+      VariableFontSize = GetSetting("SAPActiveXL", "Options", "VariableFontSize", "10")
+      VariableFontItalic = GetSetting("SAPActiveXL", "Options", "VariableFontItalic", "False")
+      VariableFontWeight = GetSetting("SAPActiveXL", "Options", "VariableFontWeight", "100")
+      VariableFontScript = GetSetting("SAPActiveXL", "Options", "VariableFontScript", "0")
+    End If
+    Zoom = GetSetting("SAPActiveXL", "Options", "Zoom", "100")
+End Sub
+'
+' Function: usrIsConnected
+'
+' Checks if we are connected to the database
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    45A:       Created
+'
+Public Function usrIsConnected() As Boolean
+  usrIsConnected = Not poXLHelper Is Nothing And Not poSAPConnection Is Nothing
+End Function
+'
+' Function: usrModifySAPCell
+'
+' Changes / Creates a characteristic's value wrapped in a appropriate SAPCell formula
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    46B:       Created
+'
+Public Function usrModifySAPCell(Optional template, _
+                                 Optional charid = Empty, _
+                                 Optional value = Empty, _
+                                 Optional indent = Empty, _
+                                 Optional isset = Empty, _
+                                 Optional istext = Empty, _
+                                 Optional compoundchar = Empty)
+  If IsMissing(template) Then
+    usrModifySAPCell = poXLHelper.ModifySAPCell("", charid, value, indent, isset, istext, compoundchar)
+  Else
+    usrModifySAPCell = poXLHelper.ModifySAPCell(template.formula, charid, value, indent, isset, istext, compoundchar)
+  End If
+End Function
+'
+' Function: usrModifyStructure
+'
+' Changes a stucture definition
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    46B:       Created
+'
+Public Function usrModifyStructure(structure As Range, refresh As Boolean, value As String, ParamArray compound() As Variant)
+  Dim var As Variant
+  usrModifyStructure = ""
+  If poXLHelper Is Nothing Then
+    MsgBox "Not logged on"
+  Else
+    var = compound()
+    poXLHelper.ModifyObject structure, refresh, value, var
+  End If
+End Function
+'
+' Function: usrIsActive
+'
+' Checks if automatic reload is enabled
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    45A:       Created
+'
+Public Function usrIsActive() As Boolean
+  usrIsActive = Not pbStopChangeEvent
+End Function
+'
+' Function: usrReloadStructures
+'
+' Reloads all structures for which automatic refresh is enabled
+' (same as the menu entry import data - structure)
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    46B:       Created
+'
+Public Function usrReloadStructures()
+  On Error Resume Next
+  poXLHelper.menucallback "@ReloadObjects@Silent"
+End Function
+'
+' Function: usrSAPProtect
+'
+' Locks or unlocks a SAP-protected workbook. Resets timestamp
+'
+' Published in note 122539
+'
+' IN:     password as string: the password for locking / unlocking
+' IN:     protect as boolean: True: lock workbokk
+'                             False: Unlock workbook
+' Author: Helmut Hofmann
+' History:
+'    46C:       Created
+'
+Public Function usrSAPProtect(password As String, protect As Boolean)
+  poXLHelper.Protection password, protect
+  pb_Locked = sapactivexlhiddensheet.Cells(41, 1) <> ""
+  CreateMenuSAP
+  CreateMenuConsolidation
+End Function
+'
+' Function: usrMatrixBuild
+'
+' Rebuilds a dynamic datamatrix (aka databaselisting)
+' (same as the menu entry datamatrix - build)
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    46B:       Created
+'
+Public Sub usrMatrixBuild()
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "Databaselisting"
+  End If
+End Sub
+Public Sub mnuExternal()
+  On Error Resume Next
+  poXLHelper.menucallback CommandBars.ActionControl.tag
+End Sub
+Public Function SAPCharDef(ParamArray v()) As String
+  On Error Resume Next
+  Dim res As String
+  Dim i As Integer
+  res = CStr(v(0))
+  For i = 1 To UBound(v)
+    res = res & "," & CStr(v(i))
+  Next i
+  SAPCharDef = res
+End Function
+Public Sub usrAutoOpen()
+Attribute usrAutoOpen.VB_Description = "Restart Interactive Excel after menus disappeared.\nUse with caution!"
+Attribute usrAutoOpen.VB_ProcData.VB_Invoke_Func = "R\n14"
+  If poXLHelper Is Nothing And poHiddenData Is Nothing And poSAPConnection Is Nothing Then
+    auto_open
+  End If
+End Sub
+'----------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------
+'            OBSOLETE FUNCTIONS
+'----------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------
+'
+' Function: TakeShortcut
+'
+' Marks a shortcut character as used (removes it from the free list)
+'
+' IN:      key as string: shortcut character to remove
+'
+' IO:      s as string: list of free shortcut characters
+'
+' Author: Helmut Hofmann
+' History:
+'    99A:       Created
+'
+Private Sub TakeShortcut(s As String, key As String)
+  Dim p As Integer
+  p = InStr(1, s, key, vbTextCompare)
+  If p = 0 Then Exit Sub
+  s = Left(s, p - 1) & Mid(s, p + 1)
+End Sub
+'
+' Function: GetShortcut
+'
+' Computes the shortcut used for a menu entry
+'
+' IN:      s as string: Menu entry (e.g. &File)
+'
+' RET:     character used as shortcut (e.g. F)
+'
+' Author: Helmut Hofmann
+' History:
+'    99A:       Created
+'
+Private Function GetShortcut(s As String) As String
+  Dim p As Integer
+  p = InStr(1, s, "&")
+  If p = 0 Then
+    GetShortcut = ""
+  Else
+    GetShortcut = Mid(s, p + 1, 1)
+  End If
+End Function
+'
+' Function: AddShortcut
+'
+' Adds a shortcut character to a new menu entry, if possible
+'
+' IN:      s as string: menu entry without shortcut
+'
+' IN:      free as string: list of free shortcut characters
+'
+' RET:     menu entry with shortcut
+'
+' Author: Helmut Hofmann
+' History:
+'    99A:       Created
+'
+Private Function AddShortcut(s As String, free As String) As String
+  Dim p As Integer
+  Dim idx As Integer
+  For idx = 1 To Len(s)
+    If InStr(1, free, Mid(s, idx, 1), vbTextCompare) <> 0 Then
+      TakeShortcut free, Mid(s, idx, 1)
+      AddShortcut = Left(s, idx - 1) & "&" & Mid(s, idx)
+      Exit Function
+    End If
+  Next idx
+  AddShortcut = s
+End Function
+Public Sub mnuCellSource()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "CellSource"
+  End If
+End Sub
+Sub mnuUpgrade()
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "Upgrade"
+  End If
+End Sub
+Sub mnuPivotTable()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "PivotTable"
+  End If
+End Sub
+Sub mnuPivotTableRefresh()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "PivotRefresh"
+  End If
+End Sub
+'
+' Function: mnuDownloadDataWKS
+'
+' Downloads active worksheet
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    45B:       functionality moved to private DownloadDataWKS,
+'               function only acts as public wrapper.
+'    45A:       Rewritten
+'    40B:       Created
+'
+Public Sub mnuDownloadDataWKS()
+  On Error Resume Next
+  If m_HelperVersion > "2.00.0100" Then
+    If Not poXLHelper Is Nothing Then
+      poXLHelper.menucallback "ReadSheet"
+    End If
+  Else
+    If DownloadDataWKS() Then
+      Run "customer_postprocess_imported_data"
+    End If
+  End If
+End Sub
+'
+' Function: DownloadDataWKS
+'
+' Downloads active worksheet
+'
+' RET:    True if download successful, false on error
+'
+' Author: Helmut Hofmann
+' History:
+'    45B:       Created
+'
+Private Function DownloadDataWKS() As Boolean
+  Dim count As Integer
+  Dim matrixname As String
+  If m_HelperVersion > "2.00.0100" Then
+    On Error Resume Next
+    If Not poXLHelper Is Nothing Then
+      DownloadDataWKS = poXLHelper.menucallback("ReadSheet")
+    End If
+  Else
+    On Error GoTo err_handler
+    DownloadDataWKS = True
+    If Not poHiddenData Is Nothing And Not poSAPConnection Is Nothing Then
+      For count = 0 To poHiddenData.GetMatrixCount(ActiveSheet.CodeName) - 1
+        matrixname = poHiddenData.getmatrixname(ActiveSheet.CodeName, count)
+        Application.StatusBar = R3Text("PDM") & matrixname
+        'Pass get data flag
+        If poHiddenData.GetForUpload(ActiveSheet.CodeName, matrixname) = False Then
+          'put the sheet in non-interactive mode for a moment
+          poHiddenData.setintmode ActiveSheet.CodeName, matrixname, 0
+          Application.ScreenUpdating = False
+          UpDownLoadMatrix ActiveSheet.CodeName, matrixname, False
+          Application.ScreenUpdating = True
+          'put the sheet back in interactive mode again
+          poHiddenData.setintmode ActiveSheet.CodeName, matrixname, 1
+          Application.StatusBar = R3Text("LGO")
+          DoEvents
+        End If
+      Next
+    Else
+      MsgBox "Not Logged on", vbInformation
+      mnuLogoff
+      DownloadDataWKS = False
+    End If
+  End If
+  Exit Function
+err_handler:
+  MsgBox Error, vbCritical
+  DownloadDataWKS = False
+  Exit Function
+End Function
+'
+' Function: mnuDownloadDataWKD
+'
+' Downloads entire workbook
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    45A:       Rewritten
+'    40B:       Created
+'
+Public Sub mnuDownloadDataWKB()
+  Dim count As Integer
+  Dim index As Integer
+  Dim matrixname As String
+  Dim sheetname As String
+  Dim oldws As Worksheet
+  If m_HelperVersion > "2.00.0100" Then
+    If Not poXLHelper Is Nothing Then
+      On Error Resume Next
+      poXLHelper.menucallback "ReadBook"
+    End If
+  Else
+    On Error GoTo err_handler
+    
+    Set oldws = ActiveSheet
+    If Not poHiddenData Is Nothing And Not poSAPConnection Is Nothing Then
+      For index = 1 To Worksheets.count
+        Worksheets(index).Activate
+        DownloadDataWKS
+      Next
+      On Error Resume Next
+      Run "customer_postprocess_imported_data"
+    Else
+      MsgBox "Not Logged on", vbInformation
+      mnuLogoff
+    End If
+    oldws.Activate
+  End If
+  Exit Sub
+err_handler:
+  MsgBox Error, vbCritical
+  If Not oldws Is Nothing Then oldws.Activate
+  Exit Sub
+End Sub
+Sub mnuDoc()
+  On Error Resume Next
+  If m_HelperVersion > "2.00.0100" Then
+    If Not poXLHelper Is Nothing Then
+      poXLHelper.menucallback "Documentation"
+    End If
+  Else
+    If Not poSAPConnection Is Nothing And Not poHiddenData Is Nothing Then
+      frmDoc.Show
+    End If
+  End If
+End Sub
+Sub mnuNewReport()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "NewReport"
+  End If
+End Sub
+Sub mnuDeleteHier_1()
+On Error Resume Next
+  Dim srange As Range
+  If Not poXLHelper Is Nothing Then
+    Set srange = Application.InputBox(prompt:=R3Text("CAW"), Title:=R3Text("DHH"), Type:=8, Default:=ActiveCell.Address)
+    If Not srange Is Nothing Then
+      poXLHelper.menucallback "SAP@DeleteHier@" & srange.Address
+    End If
+  End If
+End Sub
+Sub mnuDeleteHier()
+On Error Resume Next
+    Dim count As Integer
+    Dim TempIntMode As Integer
+    Dim index As Integer
+    Dim srange As Range
+    Dim iRange As Range
+    Set srange = Application.InputBox(prompt:=R3Text("CAW"), Title:=R3Text("DHH"), Type:=8, Default:=ActiveCell.Address)
+    If Not srange Is Nothing Then
+        If Not poHiddenData Is Nothing Then
+            'set Interactive mode to none
+            TempIntMode = poHiddenData.getintmode(ActiveSheet.CodeName, psMatrixName)
+            poHiddenData.setintmode ActiveSheet.CodeName, psMatrixName, 0
+            ActiveSheet.Outline.ShowLevels 8
+            For count = 0 To poHiddenData.GetCharCount(ActiveSheet.CodeName, psMatrixName) - 1
+                If poXLHelper.isreference(poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, count)) Then
+                    Set iRange = Application.Intersect(srange, Range(poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, count)))
+                    If Not iRange Is Nothing Then
+                        Range(poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, count)).Select
+                        For index = 1 To 8
+                            Selection.rows.Ungroup
+                        Next
+                        Selection.value = ""
+                        Call poHiddenData.SetCharValue(ActiveSheet.CodeName, psMatrixName, count, "")
+                        Names(poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, count)).Delete
+                        Exit For
+                    End If
+                End If
+            Next
+            poHiddenData.getintmode(ActiveSheet.CodeName, psMatrixName) = TempIntMode
+        End If
+    End If
+    If Not iRange Is Nothing Then
+        Set iRange = Nothing
+    Else
+        MsgBox R3Text("IVS"), vbInformation
+    End If
+    
+End Sub
+'
+' Function: mnuSnapShotWKS
+'
+' creates inactive snapshot of worksheet
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    46C:       Moved to sapxlhelper
+'    45A:       Rewritten for better speed
+'    40B:       Created
+'
+Public Sub mnuSnapShotWKS()
+On Error Resume Next
+  Dim sheet As Worksheet
+  Dim snapshot As Workbook
+  Dim wkbook As Workbook
+  Dim WkSheet As Worksheet
+  Dim formulas As Range
+  Dim cell As Range
+  Dim WkbName As String
+  Dim ws As Worksheet
+  Dim ws1 As Worksheet
+  Dim i As Integer
+  
+  If m_HelperVersion > "2.00.0100" Then
+    poXLHelper.menucallback "SnapShotWKS"
+  Else
+    Set sheet = ActiveSheet
+    Set wkbook = ActiveWorkbook
+    WkbName = InputBox(R3Text("SSP"), R3Text("SST"), " ")
+    If Len(WkbName) > 0 Then
+      On Error Resume Next
+      Err.Clear
+      Set snapshot = Application.Workbooks.Open(WkbName)
+      If Err.number <> 0 Or wkbook Is Nothing Then
+        Set snapshot = Application.Workbooks.Add
+        Set WkSheet = snapshot.Worksheets(1)
+        snapshot.Worksheets(1).Name = "sapactivexlhiddensheet"
+        Application.DisplayAlerts = False
+        While snapshot.Worksheets.count > 1
+          snapshot.Worksheets(2).Delete
+        Wend
+        Application.DisplayAlerts = True
+      End If
+    Else
+      Set snapshot = Application.Workbooks.Add
+      Set WkSheet = snapshot.Worksheets(1)
+      Application.DisplayAlerts = False
+      snapshot.Worksheets(1).Name = "sapactivexlhiddensheet"
+      While snapshot.Worksheets.count > 1
+        snapshot.Worksheets(2).Delete
+      Wend
+      Application.DisplayAlerts = True
+    End If
+    If Not snapshot Is Nothing Then
+      On Error Resume Next
+      Err.Clear
+      Set ws = snapshot.Worksheets(sheet.Name)
+      If Err.number <> 0 Then
+        Err.Clear
+        For i = 0 To 32767
+          Set ws1 = snapshot.Worksheets(sheet.Name & " - " & i)
+          If Err.number = 0 Then
+            ws.Name = sheet.Name & " - " & i
+            Exit For
+          End If
+        Next i
+      End If
+      sheet.Copy Before:=snapshot.Worksheets(1)
+      Err.Clear
+      Set sheet = snapshot.Worksheets(1)
+      Set formulas = sheet.UsedRange.SpecialCells(xlCellTypeFormulas)
+      If Err.number = 0 Then
+        Set sheet = wkbook.Worksheets(sheet.Name)
+        For Each cell In formulas
+          If Left(cell.formula, 4) = "=SAP" Then
+            cell.formula = ""
+            cell.value = "'" & sheet.Range(cell.Address).value
+          Else
+            cell.formula = ""
+            cell.value = sheet.Range(cell.Address).value
+          End If
+        Next cell
+      End If
+    End If
+    If Not WkSheet Is Nothing Then
+      Application.DisplayAlerts = False
+      WkSheet.Delete
+      Application.DisplayAlerts = True
+    End If
+ End If
+End Sub
+'
+' Function: mnuSnapShotWKB
+'
+' creates inactive snapshot of workbook
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    46C:       Moved to sapxlhelper
+'    45A:       Rewritten for better speed
+'    40B:       Created
+'
+Public Sub mnuSnapShotWKB()
+  On Error Resume Next
+  Dim sheet As Worksheet
+  Dim snapshot As Workbook
+  Dim wkbook As Workbook
+  Dim WkSheet As Worksheet
+  Dim formulas As Range
+  Dim cell As Range
+  If m_HelperVersion > "2.00.0100" Then
+    If Not poXLHelper Is Nothing Then
+      poXLHelper.menucallback "SnapShotWKB"
+    End If
+  Else
+    Set wkbook = ActiveWorkbook
+    ActiveWorkbook.Worksheets.Copy
+    Set snapshot = Workbooks(Workbooks.count)
+    For Each sheet In snapshot.Worksheets
+      Err.Clear
+      Set formulas = sheet.UsedRange.SpecialCells(xlCellTypeFormulas)
+      If Err.number = 0 Then
+        Set WkSheet = wkbook.Worksheets(sheet.Name)
+        For Each cell In formulas
+          If Left(cell.formula, 4) = "=SAP" Then
+            cell.formula = ""
+            cell.value = "'" & WkSheet.Range(cell.Address).value
+          Else
+            cell.formula = ""
+            cell.value = WkSheet.Range(cell.Address).value
+          End If
+        Next cell
+      End If
+    Next sheet
+  End If
+End Sub
+Sub mnuUploadDataWKS()
+  If m_HelperVersion > "2.00.0100" Then
+    On Error Resume Next
+    If Not poXLHelper Is Nothing Then
+      poXLHelper.menucallback "PostSheet"
+    End If
+  Else
+    On Error GoTo err_handler
+    If Not poSAPConnection Is Nothing And Not poHiddenData Is Nothing Then
+      Load frmUpload
+      frmUpload.UploadWorkBook = False
+      frmUpload.Show
+    Else
+      MsgBox "Not Logged on", vbInformation
+      mnuLogoff
+    End If
+  End If
+  Exit Sub
+err_handler:
+  MsgBox Error, vbCritical
+  Exit Sub
+End Sub
+Sub mnuUploadDataWKB()
+  If m_HelperVersion > "2.00.0100" Then
+    On Error Resume Next
+    If Not poXLHelper Is Nothing Then
+      poXLHelper.menucallback "PostBook"
+    End If
+  Else
+    On Error GoTo err_handler
+    If Not poSAPConnection Is Nothing And Not poHiddenData Is Nothing Then
+      Load frmUpload
+      frmUpload.UploadWorkBook = True
+      frmUpload.Show
+    Else
+      MsgBox "Not Logged on", vbInformation
+      mnuLogoff
+    End If
+  End If
+  Exit Sub
+err_handler:
+  MsgBox Error, vbCritical
+  Exit Sub
+End Sub
+'
+' Function: mnuDownloadData
+'
+' Downloads active matrix
+'
+' Published in note 122539
+'
+' Author: Helmut Hofmann
+' History:
+'    45A:       Rewritten
+'    40B:       Created
+'
+Sub mnuDownloadData()
+  If m_HelperVersion > "2.00.0100" Then
+    On Error Resume Next
+    If Not poXLHelper Is Nothing Then
+      poXLHelper.menucallback "Read"
+    End If
+  Else
+    On Error GoTo err_handler
+    If Not poHiddenData Is Nothing Then
+      If poHiddenData.GetForUpload(ActiveSheet.CodeName, psMatrixName) Then
+        If MsgBox(R3Text("OWU"), vbYesNo, ActiveSheet.CodeName & ":" & psMatrixName) = vbNo Then Exit Sub
+      End If
+    End If
+    If Not poSAPConnection Is Nothing Then
+      'Pass get data flag
+      Application.StatusBar = R3Text("PDM") & psMatrixName
+      Application.ScreenUpdating = False
+      UpDownLoadMatrix ActiveSheet.CodeName, psMatrixName, False
+      Application.ScreenUpdating = True
+      Application.StatusBar = R3Text("LGO")
+      On Error Resume Next
+      Run "customer_postprocess_imported_data"
+    Else
+      MsgBox "Not Logged on", vbInformation
+      mnuLogoff
+    End If
+  End If
+  Exit Sub
+err_handler:
+  MsgBox Error, vbCritical
+  Exit Sub
+End Sub
+Sub mnuSets()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "SetValue"
+  End If
+End Sub
+Sub mnuHierarchies()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "HierValue"
+  End If
+End Sub
+Sub mnuSingleValues()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "SingleValue"
+  End If
+End Sub
+Sub mnuAspects()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "Aspect"
+  End If
+End Sub
+Sub mnuSettings()
+  On Error Resume Next
+  If Not poXLHelper Is Nothing Then
+    poXLHelper.menucallback "Options"
+  End If
+End Sub
+Sub CreateMenuConsolidation_1(Optional matrixname As Variant)
+'Create Consolidation menu
+On Error GoTo err_create_consolidation
+Dim count As Integer
+Dim oMenuBar As Object
+Dim oMenubarEdit As CommandBarControl
+Dim oMenuDownloadmatrix As CommandBarControl
+Dim oMenuBarSin As CommandBarControl     ' menu object  : Single values
+Dim oMenuBarSet As CommandBarControl     ' menu object  : Sets
+Dim oMenuBarHie As CommandBarControl     ' menu object  : Hierarchies
+Dim oMenuBarAtt As CommandBarControl     ' menu object  : Attributes
+Dim shortcuts As String
+Dim shortcutssub As String
+Dim poSAPMenuBar2 As Object
+
+shortcuts = "abcdefghijklmnopqrstuvwxyz"
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  TakeShortcut shortcuts, GetShortcut(oMenuBar.Caption)
+Next oMenuBar
+Set oMenuBar = Application.CommandBars.ActiveMenuBar
+Set poSAPMenuBar2 = Application.CommandBars.ActiveMenuBar.Controls.Add(Type:=msoControlPopup, Before:=oMenuBar.Controls(oMenuBar.Controls.count - 1).index, temporary:=True)
+poSAPMenuBar2.tag = "SAP"
+poSAPMenuBar2.Caption = AddShortcut(R3Text("CON"), shortcuts)
+
+shortcuts = "abcdefghijklmnopqrstuvwxyz"
+'Aspect
+Set moSubMenuBar = poSAPMenuBar2.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("AST"), shortcuts)
+moSubMenuBar.FaceId = 245
+moSubMenuBar.OnAction = "mnuAspects"
+'Report
+Set moSubMenuBar = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("NDM"), shortcuts)
+moSubMenuBar.Enabled = Not pb_Locked
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+'New
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+oMenuBar.Caption = AddShortcut(R3Text("NEW"), shortcutssub)
+oMenuBar.OnAction = "mnuNewReport"
+Set oMenubarEdit = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+'Edit
+oMenubarEdit.Caption = AddShortcut(R3Text("EDT"), shortcutssub)
+oMenubarEdit.OnAction = "mnuEditReport"
+Set oMenuBarSin = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, temporary:=True)
+oMenuBarSin.BeginGroup = True
+oMenuBarSin.Caption = AddShortcut(R3Text("SNL"), shortcuts)
+Set oMenuBarSet = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, temporary:=True)
+oMenuBarSet.Caption = AddShortcut(R3Text("SET"), shortcuts)
+Set oMenuBarHie = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, temporary:=True)
+oMenuBarHie.Caption = AddShortcut(R3Text("HIE"), shortcuts)
+Set oMenuBarAtt = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, temporary:=True)
+oMenuBarAtt.Caption = AddShortcut(R3Text("ATT"), shortcuts)
+
+'Download Menu
+Set moSubMenuBar = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, temporary:=True)
+moSubMenuBar.BeginGroup = True
+moSubMenuBar.Caption = AddShortcut(R3Text("DNL"), shortcuts)
+Set oMenuDownloadmatrix = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+oMenuDownloadmatrix.Caption = AddShortcut(R3Text("ATM"), shortcutssub)
+oMenuDownloadmatrix.OnAction = "mnuDownloadData"
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("WKS"), shortcutssub)
+oMenuBar.OnAction = "mnuDownloadDataWKS"
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("WKB"), shortcutssub)
+oMenuBar.OnAction = "mnuDownloadDataWKB"
+'Update Menu
+Set moSubMenuBar = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, id:=1, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("ULD"), shortcuts)
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+oMenuBar.Caption = AddShortcut(R3Text("WKS"), shortcutssub)
+oMenuBar.OnAction = "mnuUploadDataWKS"
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("WKB"), shortcutssub)
+oMenuBar.OnAction = "mnuUploadDataWKB"
+#If VERSION = 40 Then
+'Pivot Table Menu
+Set moSubMenuBar = poSAPMenuBar2.Controls.Add(Type:=msoControlButton, id:=1, temporary:=True)
+moSubMenuBar.BeginGroup = True
+moSubMenuBar.Caption = AddShortcut(R3Text("PVT"), shortcuts)
+moSubMenuBar.OnAction = "mnuPivotTable"
+#Else
+'Pivot Table Menu
+Set moSubMenuBar = poSAPMenuBar2.Controls.Add(Type:=msoControlPopup, id:=1, temporary:=True)
+moSubMenuBar.BeginGroup = True
+moSubMenuBar.Caption = AddShortcut(R3Text("PVT"), shortcuts)
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+oMenuBar.Caption = AddShortcut(R3Text("NEW"), shortcutssub)
+oMenuBar.OnAction = "mnuPivotTable"
+oMenuBar.Enabled = Not pb_Locked
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("REF"), shortcutssub)
+oMenuBar.OnAction = "mnuPivotTableRefresh"
+#End If
+'Data matrix names
+For count = 0 To poHiddenData.GetMatrixCount(ActiveSheet.CodeName) - 1
+    Set moSubMenuBar = poSAPMenuBar2.Controls.Add(Type:=msoControlButton, id:=1, temporary:=True)
+    'To execute only once (first time)
+    If count = 0 Then moSubMenuBar.BeginGroup = True
+    moSubMenuBar.Caption = poHiddenData.getmatrixname(ActiveSheet.CodeName, count)
+    If Not IsMissing(matrixname) Then
+        If StrComp(poHiddenData.getmatrixname(ActiveSheet.CodeName, count), matrixname, vbTextCompare) = 0 Then
+            psMatrixName = matrixname
+            moSubMenuBar.FaceId = 220  'Current data matrix indicator
+        End If
+    End If
+    moSubMenuBar.OnAction = "mnuMatrixName"
+Next
+If IsMissing(matrixname) Then
+    psMatrixName = poHiddenData.getmatrixname(ActiveSheet.CodeName, count - 1)
+    If Len(psMatrixName) > 0 Then moSubMenuBar.FaceId = 220 'Current data matrix indicator
+End If
+'Create Characteristics menu
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+If Len(Trim(psMatrixName)) > 0 Then
+    For count = 0 To poHiddenData.GetCharCount(ActiveSheet.CodeName, psMatrixName) - 1
+      If poHiddenData.GetCharVisibility(ActiveSheet.CodeName, psMatrixName, count) Then
+        If Len(Trim$(poHiddenData.GetCharDesc(ActiveSheet.CodeName, psMatrixName, count))) > 0 Then
+            Set moSubMenuBar = oMenuBarSin.Controls.Add(Type:=msoControlButton, temporary:=True)
+            shortcuts = AddShortcut(poHiddenData.GetCharDesc(ActiveSheet.CodeName, psMatrixName, count), shortcutssub)
+            moSubMenuBar.Caption = shortcuts
+            moSubMenuBar.tag = poHiddenData.GetCharID(ActiveSheet.CodeName, psMatrixName, count)
+            'Disable menu if this characteritics is hidden
+            If poHiddenData.IsHidden(ActiveSheet.CodeName, psMatrixName, count, "V") Then moSubMenuBar.Enabled = False
+            moSubMenuBar.OnAction = "mnuSingleValues"
+            Set moSubMenuBar = oMenuBarSet.Controls.Add(Type:=msoControlButton, temporary:=True)
+            moSubMenuBar.Caption = shortcuts
+            moSubMenuBar.tag = poHiddenData.GetCharID(ActiveSheet.CodeName, psMatrixName, count)
+            'Disable menu if this characteritics is hidden
+            If poHiddenData.IsHidden(ActiveSheet.CodeName, psMatrixName, count, "S") Then moSubMenuBar.Enabled = False
+            moSubMenuBar.OnAction = "mnuSets"
+            Set moSubMenuBar = oMenuBarHie.Controls.Add(Type:=msoControlButton, temporary:=True)
+            moSubMenuBar.Caption = shortcuts
+            moSubMenuBar.tag = poHiddenData.GetCharID(ActiveSheet.CodeName, psMatrixName, count)
+            'Disable menu if this characteritics is hidden
+            If poHiddenData.IsHidden(ActiveSheet.CodeName, psMatrixName, count, "H") Then moSubMenuBar.Enabled = False
+            moSubMenuBar.OnAction = "mnuHierarchies"
+            Set moSubMenuBar = oMenuBarAtt.Controls.Add(Type:=msoControlButton, temporary:=True)
+            moSubMenuBar.Caption = shortcuts
+            moSubMenuBar.tag = poHiddenData.GetCharID(ActiveSheet.CodeName, psMatrixName, count)
+            'Disable menu if this characteritics is hidden
+            If poHiddenData.IsHidden(ActiveSheet.CodeName, psMatrixName, count, "A") Then moSubMenuBar.Enabled = False
+            moSubMenuBar.OnAction = "mnuAttributes"
+        End If
+      End If
+    Next
+End If
+'Disable menus
+If Len(psMatrixName) = 0 Or pb_Locked Then
+    If psMatrixName = "" Then
+      oMenuDownloadmatrix.Enabled = False
+    Else
+      oMenuDownloadmatrix.Enabled = True
+    End If
+    oMenuBarSin.Enabled = False
+    oMenuBarSet.Enabled = False
+    oMenuBarHie.Enabled = False
+    oMenuBarAtt.Enabled = False
+    oMenubarEdit.Enabled = False
+Else
+    oMenuDownloadmatrix.Enabled = True
+    oMenuBarSin.Enabled = True
+    oMenuBarSet.Enabled = True
+    oMenuBarHie.Enabled = True
+    oMenuBarAtt.Enabled = True
+    oMenubarEdit.Enabled = True
+End If
+
+If Not oMenuBarSin Is Nothing Then Set oMenuBarSin = Nothing
+If Not oMenuBarSet Is Nothing Then Set oMenuBarSet = Nothing
+If Not oMenuBarHie Is Nothing Then Set oMenuBarHie = Nothing
+If Not oMenuBarAtt Is Nothing Then Set oMenuBarAtt = Nothing
+If Not oMenuBar Is Nothing Then Set oMenuBar = Nothing
+If Not oMenubarEdit Is Nothing Then Set oMenubarEdit = Nothing
+If Not oMenuDownloadmatrix Is Nothing Then Set oMenuDownloadmatrix = Nothing
+
+Exit Sub
+err_create_consolidation:
+MsgBox Error, vbCritical
+Exit Sub
+End Sub
+Sub CreateMenuSAP_1()
+'Create SAP menu
+pb_Locked = sapactivexlhiddensheet.Cells(41, 1) <> ""
+Dim oMenuBar As Object
+Dim poSAPMenuBar1 As Object
+Dim shortcuts As String
+Dim shortcutssub As String
+On Error GoTo err_create_sap
+shortcuts = "abcdefghijklmnopqrstuvwxyz"
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  If Left(oMenuBar.tag, 3) = "SAP" Then
+    oMenuBar.Delete
+  Else
+    TakeShortcut shortcuts, GetShortcut(oMenuBar.Caption)
+  End If
+Next
+Set oMenuBar = Application.CommandBars.ActiveMenuBar
+Set poSAPMenuBar1 = Application.CommandBars.ActiveMenuBar.Controls.Add(Type:=msoControlPopup, Before:=oMenuBar.Controls(oMenuBar.Controls.count - 1).index, temporary:=True)
+poSAPMenuBar1.tag = "SAP"
+poSAPMenuBar1.Caption = AddShortcut("SAP", shortcuts)
+
+shortcuts = "abcdefghijklmnopqrstuvwxyz"
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("LON"), shortcuts)
+moSubMenuBar.OnAction = "mnuLogon"
+moSubMenuBar.Enabled = False
+
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("LOF"), shortcuts)
+moSubMenuBar.OnAction = "mnuLogoff"
+
+#If VERSION <> 40 Then
+'Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton)
+Set poActivateBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+Set moSubMenuBar = poActivateBar
+moSubMenuBar.BeginGroup = True
+moSubMenuBar.Caption = AddShortcut(R3Text("DEA"), shortcuts)
+moSubMenuBar.OnAction = "mnuDeactivate"
+moSubMenuBar.Enabled = Not pb_Locked
+If Not pbStopChangeEvent Then moSubMenuBar.FaceId = 220
+#End If
+
+'Delete matrix menu
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton)
+moSubMenuBar.Caption = AddShortcut(R3Text("DLT"), shortcuts)
+moSubMenuBar.OnAction = "mnuDeleteMatrix"
+moSubMenuBar.Enabled = Not pb_Locked
+
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("DHH"), shortcuts)
+moSubMenuBar.OnAction = "mnuDeleteHier"
+moSubMenuBar.Enabled = Not pb_Locked
+
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlPopup, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("SST"), shortcuts)
+
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("WKS"), shortcutssub)
+oMenuBar.OnAction = "mnuSnapShotWKS"
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("WKB"), shortcutssub)
+oMenuBar.OnAction = "mnuSnapShotWKB"
+
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.BeginGroup = True
+moSubMenuBar.Caption = AddShortcut(R3Text("STN"), shortcuts)
+moSubMenuBar.OnAction = "mnuSettings"
+moSubMenuBar.Enabled = Not pb_Locked
+
+#If VERSION = 40 Then
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("TDC"), shortcuts)
+moSubMenuBar.OnAction = "mnuDoc"
+#Else
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlPopup, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("TDC"), shortcuts)
+
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("ATM"), shortcutssub)
+oMenuBar.OnAction = "mnuDoc"
+
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("CEL"), shortcutssub)
+oMenuBar.OnAction = "mnuCellSource"
+'Lock workbook menu
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlPopup, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("SEC"), shortcuts)
+
+shortcutssub = "abcdefghijklmnopqrstuvwxyz"
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+oMenuBar.Caption = AddShortcut(R3Text("SIG"), shortcutssub)
+oMenuBar.OnAction = "mnuSignWorksheet"
+oMenuBar.Enabled = Not pb_Locked
+Set oMenuBar = moSubMenuBar.Controls.Add(Type:=msoControlButton, temporary:=True)
+If pb_Locked Then
+  oMenuBar.Caption = AddShortcut(R3Text("ULK"), shortcutssub)
+  oMenuBar.OnAction = "mnuUnlockWorkbook"
+Else
+  oMenuBar.Caption = AddShortcut(R3Text("LOK"), shortcutssub)
+  oMenuBar.OnAction = "mnuLockWorkbook"
+End If
+#End If
+
+If R3Text("JOB") <> "JOB: TEXT_NOT_FOUND" Then
+  Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+  moSubMenuBar.Caption = AddShortcut(R3Text("JOB"), shortcuts)
+  moSubMenuBar.OnAction = "mnuJobManager"
+  moSubMenuBar.Enabled = Not pb_Locked
+End If
+
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = AddShortcut(R3Text("UPG"), shortcuts)
+moSubMenuBar.OnAction = "mnuUpgrade"
+moSubMenuBar.Enabled = Not pb_Locked
+
+Set moSubMenuBar = poSAPMenuBar1.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.BeginGroup = True
+moSubMenuBar.Caption = AddShortcut(R3Text("AXL"), shortcuts)
+moSubMenuBar.OnAction = "mnuAbout"
+If Not oMenuBar Is Nothing Then Set oMenuBar = Nothing
+
+Exit Sub
+err_create_sap:
+MsgBox Error + " : If you don't see SAP menu, please close MS Excel and rerun", vbCritical
+Exit Sub
+End Sub
+Private Sub CreateInitMenu_1()
+On Error Resume Next
+Dim oMenuBar As Object
+Dim poSAPMenuBar1 As Object
+Dim shortcuts As String
+shortcuts = "abcdefghijklmnopqrstuvwxyz"
+For Each oMenuBar In Application.CommandBars.ActiveMenuBar.Controls
+  If Left(oMenuBar.tag, 3) = "SAP" Then
+    oMenuBar.Delete
+  Else
+    TakeShortcut shortcuts, GetShortcut(oMenuBar.Caption)
+  End If
+Next
+Set oMenuBar = Application.CommandBars.ActiveMenuBar
+Set poSAPMenuBar1 = Application.CommandBars.ActiveMenuBar.Controls.Add(Type:=msoControlPopup, Before:=oMenuBar.Controls(oMenuBar.Controls.count - 1).index, temporary:=True)
+poSAPMenuBar1.tag = "SAP"
+poSAPMenuBar1.Caption = AddShortcut("SAP", shortcuts)
+Set moSubMenu = poSAPMenuBar1.Controls.Add(Type:=msoControlPopup, temporary:=True)
+moSubMenu.Caption = sapactivexlhiddensheet.Cells(40, 13)
+Set moSubMenuBar = moSubMenu.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = "MS Access"
+moSubMenuBar.OnAction = "mnuLogon"
+Set moSubMenuBar = moSubMenu.Controls.Add(Type:=msoControlButton, temporary:=True)
+moSubMenuBar.Caption = "R/3"
+moSubMenuBar.OnAction = "mnuLogon"
+End Sub
+Sub mnuRepair()
+On Error Resume Next
+
+Dim WorkbookOld As Workbook
+Dim WorkbookNew As Workbook
+Dim count As Integer
+Dim index As Integer
+Dim Wks As Worksheet
+Dim wksnew As Worksheet
+Dim nm As Name
+Dim FileName As Variant
+Dim i As Integer
+Dim xl As Object
+Dim cell As Range
+Dim tgt As Range
+Set xl = CreateObject("Excel.Application")
+    
+Application.Calculation = xlCalculationManual
+Application.EnableEvents = False
+Application.ScreenUpdating = False
+Set WorkbookNew = ThisWorkbook
+FileName = "C:\temp\1Notes deutsch V_1004_3116_03.xls"
+index = 1
+count = WorkbookNew.Names.count
+While WorkbookNew.Names.count >= index
+  WorkbookNew.Names(index).Delete
+  If count = WorkbookNew.Names.count Then
+    index = index + 1
+  Else
+    count = count - 1
+  End If
+Wend
+On Error GoTo 0
+Set WorkbookOld = xl.Workbooks.Open(FileName, , True)
+On Error Resume Next
+For Each Wks In WorkbookOld.Worksheets
+  Application.ScreenUpdating = True
+  Application.StatusBar = Wks.Name
+  Application.ScreenUpdating = False
+  Set wksnew = Nothing
+  Set wksnew = WorkbookNew.Worksheets(Wks.Name)
+  If wksnew Is Nothing Then
+    Set wksnew = WorkbookNew.Worksheets.Add
+    wksnew.Name = Wks.Name
+  End If
+Next Wks
+For Each Wks In WorkbookOld.Worksheets
+  Application.ScreenUpdating = True
+  Application.StatusBar = Wks.Name
+  Application.ScreenUpdating = False
+  Set wksnew = WorkbookNew.Worksheets(Wks.Name)
+  For Each nm In Wks.Names
+    wksnew.Names.Add nm.Name, nm.RefersTo, nm.Visible, nm.MacroType, nm.ShortcutKey, nm.Category, nm.NameLocal, nm.RefersToLocal, nm.CategoryLocal, nm.RefersToR1C1, nm.RefersToR1C1Local
+  Next nm
+Next Wks
+For Each Wks In WorkbookOld.Worksheets
+  Application.ScreenUpdating = True
+  Application.StatusBar = Wks.Name
+  Application.ScreenUpdating = False
+  Set wksnew = WorkbookNew.Worksheets(Wks.Name)
+  For Each cell In Wks.UsedRange
+    DoEvents
+    Set tgt = wksnew.Range(cell.Address)
+    tgt.formula = cell.formula
+    tgt.Style = cell.Style
+    tgt.NumberFormat = cell.NumberFormat
+    For i = 5 To 12
+      tgt.Borders(i) = cell.Borders(i)
+    Next i
+    tgt.Font = cell.Font
+  Next cell
+Next Wks
+For Each Wks In WorkbookOld.Worksheets
+  Application.ScreenUpdating = True
+  Application.StatusBar = Wks.Name
+  Application.ScreenUpdating = False
+  Set wksnew = WorkbookNew.Worksheets(Wks.Name)
+  For Each cell In Wks.UsedRange.rows
+    wksnew.rows(cell.row).RowHeight = cell.RowHeight
+    wksnew.rows(cell.row).Hidden = cell.Hidden
+  Next
+  For Each cell In Wks.UsedRange.Columns
+    wksnew.Columns(cell.Column).ColumnWidth = cell.ColumnWidth
+    wksnew.Columns(cell.Column).Hidden = cell.Hidden
+  Next
+Next Wks
+xl.Close
+Application.ScreenUpdating = True
+End Sub
+'
+' Function: StoreCacheValue
+'
+' Saves a function call result in a cache. If the function is called later on and we
+' can not compute the actual result, e.g. because we are offline, this cached values
+' is returned again.
+'
+' IN: table as string: table from which the function was called
+' IN: cell as string: Cell for which the function was called
+' IN: value as variant: value that the function returned the last time it was called for that cell
+'
+' Author: Helmut Hofmann
+' History:
+'    46D:       Created
+'
+Private Sub StoreCacheValue(table As String, cell As String, value As Variant)
+  Dim entry As CCacheValue
+On Error Resume Next
+  If Not pbCacheValuesLoaded Then LoadCacheValues
+  Set entry = poCacheValues.Item(table & "!" & cell)
+  If entry Is Nothing Then
+    Set entry = New CCacheValue
+    entry.table = table
+    entry.cell = cell
+    entry.value = value
+    entry.modified = True
+    poCacheValues.Add entry, table & "!" & cell
+  Else
+    If entry.value <> value Then
+      entry.value = value
+      entry.modified = True
+      entry.deleted = False
+    End If
+  End If
+End Sub
+'
+' Function: RetrieveCacheValue
+'
+' Looks up the cache of function result values for one specific cell
+'
+' IN: table as string: table from which the function was called
+' IN: cell as string: Cell for which the function was called
+' RET: value that the function returned the last time it was called for that cell
+'
+' Author: Helmut Hofmann
+' History:
+'    46D:       Created
+'
+Private Function RetrieveCacheValue(table As String, cell As String) As Variant
+On Error Resume Next
+  Dim entry As CCacheValue
+  If Not pbCacheValuesLoaded Then LoadCacheValues
+  Set entry = poCacheValues.Item(table & "!" & cell)
+  If entry Is Nothing Then
+    RetrieveCacheValue = "# ??? #"
+  Else
+    RetrieveCacheValue = entry.value
+  End If
+End Function
+'
+' Function: LoadCacheValues
+'
+' Loads the cache of function result values
+'
+' Author: Helmut Hofmann
+' History:
+'    46D:       Created
+'
+Private Sub LoadCacheValues()
+On Error Resume Next
+  Dim i As Integer
+  Dim col As Integer
+  Dim row As Integer
+  Dim ws As Worksheet
+  Dim entry As CCacheValue
+  
+  Set ws = ActiveWorkbook.Worksheets("SAPHIDDENVALUECACHE")
+  If ws Is Nothing Then Exit Sub
+  For i = 1 To poCacheValues.count
+    poCacheValues.Remove i
+  Next i
+  col = 1
+  row = 1
+  Do While ws.Cells(row, col) <> ""
+    Set entry = New CCacheValue
+    entry.table = ws.Cells(row, col)
+    entry.cell = ws.Cells(row, col + 1)
+    entry.value = ws.Cells(row, col + 2)
+    poCacheValues.Add entry, entry.table & "!" & entry.cell
+    col = col + 3
+    If col > 250 Then
+      col = 1
+      row = row + 1
+    End If
+    If row > 65000 Then Exit Do
+  Loop
+  pbCacheValuesLoaded = True
+End Sub
+'
+' Function: SaveCacheValues
+'
+' Makes the cache of function result values persistent
+'
+' Author: Helmut Hofmann
+' History:
+'    46D:       Created
+'
+Public Sub SaveCacheValues()
+On Error Resume Next
+  Dim i As Integer
+  Dim col As Integer
+  Dim row As Integer
+  Dim ws As Worksheet
+  Dim ws1 As Worksheet
+  Dim entry As CCacheValue
+  Dim formula As String
+  Dim deleted As Boolean
+  
+  If Not pbCacheValuesLoaded Then Exit Sub
+  Set ws = ActiveWorkbook.Worksheets("SAPHIDDENVALUECACHE")
+  If ws Is Nothing Then Exit Sub
+  col = 1
+  row = 1
+  For i = 1 To poCacheValues.count
+    Set entry = poCacheValues.Item(i)
+    If Not ws1.CodeName = entry.table Then
+      For Each ws1 In ActiveWorkbook.Worksheets
+        If ws1.CodeName = entry.table Then Exit For
+      Next ws1
+    End If
+    If ws1 Is Nothing Then
+      entry.deleted = True
+    Else
+      formula = ""
+      formula = ws1.Range(entry.cell).formula
+      If Left(formula, 1) <> "=" Or InStr(formula, "SAP") = 0 Then
+        entry.deleted = True
+      End If
+    End If
+    If entry.deleted Then
+      deleted = True
+    Else
+      If entry.modified Or deleted Then
+        ws.Cells(row, col) = entry.table
+        ws.Cells(row, col + 1) = entry.cell
+        ws.Cells(row, col + 2) = entry.value
+        entry.modified = False
+      End If
+      col = col + 3
+      If col > 250 Then
+        col = 1
+        row = row + 1
+        If row > 65000 Then Exit For
+      End If
+    End If
+  Next i
+End Sub
+Private Sub TryToRegisterDLLs()
+On Error Resume Next
+  Dim regsvr As String
+  Dim dllpath As String
+  
+  regsvr = GetSetting("SAPActiveXL", "Install", "Regsvr32", "")
+  If regsvr = "" Then Exit Sub
+  dllpath = GetSetting("SAPActiveXL", "Install", "DLLPath", "")
+  If dllpath = "" Then Exit Sub
+  If Right(dllpath, 1) <> "\" Then dllpath = dllpath & "\"
+  Shell regsvr & " /s """ & dllpath & "sapconsr3.dll"""
+  Shell regsvr & " /s """ & dllpath & "sapconsaccess.dll"""
+  Shell regsvr & " /s """ & dllpath & "sapxlhelper.dll"""
+  Shell regsvr & " /s """ & dllpath & "digitalsignature.ocx"""
+End Sub
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "Tabelle3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "frmAbout"
+Attribute VB_Base = "0{994509D3-9B69-4D23-B341-D719894AA8EF}{27D99D37-62BB-41D6-BBD1-E6D66BF37584}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Option Explicit
+Private Sub cmdOk_Click()
+Unload Me
+End Sub
+
+Private Sub Image2_Click()
+
+End Sub
+
+Private Sub UserForm_Initialize()
+If poSAPConnection Is Nothing Then
+  Unload Me
+  Exit Sub
+End If
+SetFontSettings Me           '10/10/98
+Me.Caption = R3Text("AXL")
+cmdOK.Caption = R3Text("OKY")
+Label2.Caption = sapactivexlhiddensheet.Cells(40, 12) & vbCrLf & TEMPLATE_VERSION
+End Sub
+Attribute VB_Name = "frmDebug"
+Attribute VB_Base = "0{A63E113F-96E0-4278-99E9-AA1A7011D94E}{313BA8D6-6BCA-4959-9D08-0F330EF402DA}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Option Explicit
+Private Sub Cancel_Click()
+Unload Me
+End Sub
+Private Sub OK_Click()
+  If Debugging.value Then
+    SaveSetting "SAPActiveXL", "Debug", "Trace", "1"
+  Else
+    SaveSetting "SAPActiveXL", "Debug", "Trace", ""
+  End If
+  
+  If TraceAccess.value Then
+    SaveSetting "SAPActiveXL", "Debug", "Access", "1"
+  Else
+    SaveSetting "SAPActiveXL", "Debug", "Access", ""
+  End If
+  
+  If TraceR3.value Then
+    SaveSetting "SAPActiveXL", "Debug", "R3", "1"
+  Else
+    SaveSetting "SAPActiveXL", "Debug", "R3", ""
+  End If
+  
+  If TraceRFC.value Then
+    SaveSetting "SAPActiveXL", "Debug", "RFC", "1"
+  Else
+    SaveSetting "SAPActiveXL", "Debug", "RFC", ""
+  End If
+  
+  If TraceGUI.value Then
+    SaveSetting "SAPActiveXL", "Debug", "GUI", "1"
+  Else
+    SaveSetting "SAPActiveXL", "Debug", "GUI", ""
+  End If
+  
+  SaveSetting "SAPActiveXL", "Debug", "File", File.value
+  Me.Hide
+End Sub
+
+
+Private Sub UserForm_Initialize()
+  Debugging = GetSetting("SAPActiveXL", "Debug", "Trace", "0") = "1"
+  TraceAccess = GetSetting("SAPActiveXL", "Debug", "Access", "0") = "1"
+  TraceR3 = GetSetting("SAPActiveXL", "Debug", "R3", "0") = "1"
+  TraceRFC = GetSetting("SAPActiveXL", "Debug", "RFC", "0") = "1"
+  TraceGUI = GetSetting("SAPActiveXL", "Debug", "GUI", "0") = "1"
+  File = GetSetting("SAPActiveXL", "Debug", "File", "")
+End Sub
+                             
+Attribute VB_Name = "frmDelete"
+Attribute VB_Base = "0{33CDC2ED-8928-4D6F-A4EB-5886A6625B6A}{58AF3638-C838-4F5E-8B84-CA4F47D6BD28}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Option Explicit
+Private Sub cmdCancel_Click()
+    Unload Me
+End Sub
+
+Private Sub cmdOk_Click()
+On Error GoTo err_handle
+Dim index As Integer
+Dim nm As Name
+Dim count As Integer
+Dim Ind As Integer
+Dim refresh As Boolean
+Dim SheetCodeName As String
+refresh = pbStopChangeEvent
+If Not poHiddenData Is Nothing Then
+    For index = 0 To lstMatrixName.ListCount - 1
+        If lstMatrixName.Selected(index) Then
+            count = 1
+            Ind = Len("=SAPTrigger(""" & ActiveSheet.CodeName & """,""" & lstMatrixName.list(index) & """,")
+            While sapactivexlhiddensheet.Cells(38, count).formula <> ""
+              If Left(sapactivexlhiddensheet.Cells(38, count).formula, Ind) = _
+                 "=SAPTrigger(""" & ActiveSheet.CodeName & """,""" & lstMatrixName.list(index) & """," Then
+                sapactivexlhiddensheet.Cells(38, count).formula = ""
+              End If
+              count = count + 1
+            Wend
+            poHiddenData.deletematrix ActiveSheet.CodeName, lstMatrixName.list(index)
+            'Delete named ranges defined for this sheet and matrix combination
+            For Each nm In ActiveWorkbook.Names
+              If Left(nm.Name, 8) = "SAPRange" Then
+                'retrieve sheet code name and matrix name  from named range name
+                count = InStr(nm.Name, "_")
+                Ind = InStr(count + 1, nm.Name, "_")
+                'Activate the sheet refered by this named range
+                SheetCodeName = Mid$(nm.Name, count + 1, Ind - count - 1)
+                If StrComp(SheetCodeName, ActiveSheet.CodeName, vbTextCompare) = 0 Then
+                    If InStr(UCase$(nm.Name), UCase$(lstMatrixName.list(index))) > 0 Then
+                        nm.Delete
+                    End If
+                End If
+              ElseIf nm.Name = "SAPTrigger_" & ActiveSheet.CodeName & "_" & lstMatrixName.list(index) Then
+                nm.Delete
+              End If
+            Next
+            'Clean the matrix on sheet
+            If RefMatrix.text <> "" Then
+              pbStopChangeEvent = True
+              Range(RefMatrix.text).Clear
+            End If
+            'Refresh the menu
+            If Not poSAPConnection Is Nothing Then
+                CreateMenuConsolidation
+            End If
+            Unload Me
+            pbStopChangeEvent = refresh
+            Exit Sub
+        End If
+    Next
+End If
+pbStopChangeEvent = refresh
+Exit Sub
+err_handle:
+MsgBox Error, vbCritical
+pbStopChangeEvent = refresh
+Exit Sub
+    
+End Sub
+
+Private Sub UserForm_Initialize()
+Dim count As Integer
+
+SetFontSettings Me         '10/10/98
+
+If Not poSAPConnection Is Nothing Then
+    'Display Ok and Cancel caption in login language
+    cmdOK.Caption = R3Text("OKY")
+    cmdCancel.Caption = R3Text("CNL")
+    Me.Caption = R3Text("DDM")
+    Label2.Caption = R3Text("SMD")
+    Label1.Caption = R3Text("SDM")
+    For count = 0 To poHiddenData.GetMatrixCount(ActiveSheet.CodeName) - 1
+        lstMatrixName.AddItem poHiddenData.getmatrixname(ActiveSheet.CodeName, count)
+    Next
+End If
+
+End Sub
+Attribute VB_Name = "frmDoc"
+Attribute VB_Base = "0{77AF5C1F-4959-4BF4-A83F-D58F4CC1A9D9}{6ECB9C79-16D7-44E1-A567-470B9F71DB5E}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Option Explicit
+Private ColorIndex() As Integer
+Private moActiveCell As Range
+
+Private Sub cmdDataVector_Click()
+On Error GoTo err_handle
+Dim index As Integer
+Dim strValue  As String
+Dim rg As Range
+
+For index = 0 To poHiddenData.GetCharCount(ActiveSheet.CodeName, psMatrixName) - 1
+    strValue = poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, index)
+    If poXLHelper.isreference(strValue) Then
+        'Ranges only on this worksheet will be highlighted
+        If StrComp(Range(strValue).Worksheet.Name, ActiveSheet.Name, vbTextCompare) = 0 Then
+            If rg Is Nothing Then
+              Set rg = Range(strValue)
+            Else
+              Set rg = Application.Union(rg, Range(strValue))
+            End If
+        End If
+    End If
+Next
+If Not rg Is Nothing Then
+    'select these ranges
+    rg.Select
+End If
+Exit Sub
+err_handle:
+MsgBox Error, vbCritical
+Exit Sub
+End Sub
+
+Private Sub cmdLocked_Click()
+On Error GoTo err_handler
+Dim iRow As Long
+Dim iCol As Long
+Dim index As Long
+Dim MinRow As Long
+Dim MaxRow As Long
+Dim MinCol As Long
+Dim MaxCol As Long
+ReDim ColorIndex(0)
+cmdLocked.Enabled = False
+
+If Not poXLHelper Is Nothing Then
+    poXLHelper.MatrixArea ActiveSheet.CodeName, psMatrixName, MinRow, MinCol, MaxRow, MaxCol
+    For iCol = MinCol To MaxCol
+        For iRow = MinRow To MaxRow
+            If Cells(iRow, iCol).Style = "SAPLocked" Then
+                index = UBound(ColorIndex) + 1
+                ReDim Preserve ColorIndex(index)
+                ColorIndex(index) = Cells(iRow, iCol).Interior.ColorIndex
+                Cells(iRow, iCol).Interior.ColorIndex = 3  'Red
+            End If
+        Next
+    Next
+End If
+Exit Sub
+err_handler:
+MsgBox Error, vbCritical
+Exit Sub
+End Sub
+
+Private Sub cmdOk_Click()
+Unload Me
+End Sub
+
+
+
+Private Sub cmdPrint_Click()
+    
+    Dim count As Long
+    Dim index As Integer
+    Dim strValue As String
+    Dim strDecs As String
+    Dim MinRow As Long
+    Dim MaxRow As Long
+    Dim MinCol As Long
+    Dim MaxCol As Long
+    Dim sCells As String
+    Dim sRows As String
+    Dim sCols As String
+    Dim iRow As Integer
+    
+    On Error GoTo err_handler
+    
+    Range(moActiveCell, moActiveCell.Offset(1, 1)).NumberFormat = "@"
+    moActiveCell.Offset(0, 0).value = R3Text("DMN") & ":"
+    moActiveCell.Offset(0, 1).value = psMatrixName
+    moActiveCell.Offset(1, 0).value = R3Text("ASP") & ":"
+    If Not poHiddenData Is Nothing And Not poXLHelper Is Nothing Then
+        moActiveCell.Offset(1, 1).value = poHiddenData.GetAspectID(ActiveSheet.CodeName, psMatrixName)
+        index = 2
+        For count = 0 To poHiddenData.GetCharCount(ActiveSheet.CodeName, psMatrixName) - 1
+            strValue = Trim$(poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, count))
+            If Len(strValue) > 0 Then
+                strDecs = Trim$(poHiddenData.GetCharDesc(ActiveSheet.CodeName, psMatrixName, count))
+                moActiveCell.Offset(index, 0).value = strDecs & ":"
+                If InStr(strValue, "SAPRange") > 0 Then
+                    moActiveCell.Offset(index, 1).value = Right$(Names(strValue).RefersTo, Len(Names(strValue).RefersTo) - 1)
+                    If Names(strValue).RefersToRange.Cells.count = 1 Then
+                        moActiveCell.Offset(index, 2).NumberFormat = "@"
+                        moActiveCell.Offset(index, 2).value = Names(strValue).RefersToRange
+                        moActiveCell.Offset(index, 3).NumberFormat = "@"
+                        moActiveCell.Offset(index, 3).value = poXLHelper.GetcachedText(Trim$(poHiddenData.GetCharID(ActiveSheet.CodeName, psMatrixName, count)), moActiveCell.Offset(index, 2).value)
+                    End If
+                Else
+                    moActiveCell.Offset(index, 1).NumberFormat = "@"
+                    moActiveCell.Offset(index, 1).value = strValue
+                End If
+                index = index + 1
+            End If
+        Next
+    End If
+    Range(moActiveCell.Offset(index, 0), moActiveCell.Offset(index + 8, 1)).NumberFormat = "@"
+    moActiveCell.Offset(index, 0).value = R3Text("USN")
+    moActiveCell.Offset(index, 1).value = lblUserName.Caption
+    moActiveCell.Offset(index + 1, 0).value = R3Text("DBN")
+    moActiveCell.Offset(index + 1, 1).value = lblSystem.Caption
+    moActiveCell.Offset(index + 2, 0).value = R3Text("LRO")
+    moActiveCell.Offset(index + 2, 1).value = lblTime.Caption
+    moActiveCell.Offset(index + 3, 0).value = R3Text("TV1")
+    moActiveCell.Offset(index + 3, 1).value = lblTempVer.Caption
+    moActiveCell.Offset(index + 4, 0).value = R3Text("TV3")
+    moActiveCell.Offset(index + 4, 1).value = lblDLLVer.Caption
+    moActiveCell.Offset(index + 5, 0).value = R3Text("TV4")
+    moActiveCell.Offset(index + 5, 1).value = lblDBVer.Caption
+    moActiveCell.Offset(index + 6, 0).value = R3Text("VIT")
+    moActiveCell.Offset(index + 6, 1).value = lblInterface.Caption
+    moActiveCell.Offset(index + 7, 0).value = R3Text("QRY")
+    moActiveCell.Offset(index + 7, 1).value = lblQueryDate.Caption
+    moActiveCell.Offset(index + 8, 0).value = R3Text("SCL")
+    moActiveCell.Offset(index + 8, 1).value = lblScale.Caption
+    'Calculate matrix area
+    If Not poXLHelper Is Nothing Then
+        poXLHelper.MatrixArea ActiveSheet.CodeName, psMatrixName, MinRow, MinCol, MaxRow, MaxCol
+        'Unupdateable cells
+        sCells = ""
+        For count = MinCol To MaxCol
+            For iRow = MinRow To MaxRow
+                If Cells(iRow, count).Style = "SAPLocked" Then
+                    sCells = sCells & Cells(iRow, count).Address(False, False) & ","
+                End If
+            Next
+        Next
+        'Remove last comma
+        If Len(sCells) > 0 Then sCells = Left$(sCells, Len(sCells) - 1)
+        moActiveCell.Offset(index + 9, 0).value = R3Text("UUC")
+        moActiveCell.Offset(index + 9, 1).value = sCells
+        'Formula cells
+        sCells = ""
+        For count = MinCol To MaxCol
+            For iRow = MinRow To MaxRow
+                If InStr(Cells(iRow, count).formula, "=") Then
+                    sCells = sCells & Cells(iRow, count).Address(False, False) & ","
+                End If
+            Next
+        Next
+        'Remove last comma
+        If Len(sCells) > 0 Then sCells = Left$(sCells, Len(sCells) - 1)
+        moActiveCell.Offset(index + 10, 0).value = R3Text("FCL")
+        moActiveCell.Offset(index + 10, 1).value = sCells
+        'Vailable rows and columns
+        poXLHelper.GetFreeRowAndCol ActiveSheet.CodeName, psMatrixName, sRows, sCols
+        moActiveCell.Offset(index + 11, 0).value = R3Text("FRU")
+        moActiveCell.Offset(index + 11, 1).NumberFormat = "@"
+        moActiveCell.Offset(index + 11, 1).value = sRows
+        moActiveCell.Offset(index + 12, 0).value = R3Text("FCU")
+        moActiveCell.Offset(index + 12, 1).value = sCols
+    End If
+    Exit Sub
+err_handler:
+MsgBox Error, vbCritical
+Exit Sub
+End Sub
+
+
+
+Private Sub UserForm_Initialize()
+On Error GoTo err_handler
+Dim index As Integer
+Dim oVer As Object
+
+SetFontSettings Me            '10/10/98
+
+'Display Ok and Cancel caption in login language
+cmdOK.Caption = R3Text("CLS")
+cmdPrint.Caption = R3Text("PRN")
+Me.Caption = R3Text("TED")
+lblCharID.Caption = R3Text("TE1")
+Label5.Caption = R3Text("GPS")
+Label3.Caption = R3Text("USN")
+Label4.Caption = R3Text("DBN")
+Label6.Caption = R3Text("LRO")
+Label12.Caption = R3Text("TV1")
+Label10.Caption = R3Text("TV3")
+Label14.Caption = R3Text("TV4")
+Label7.Caption = R3Text("MIN")
+lblScalingFactor.Caption = R3Text("SCL")
+lblQueryModDate.Caption = R3Text("QRY")
+lblDataInterface.Caption = R3Text("VIT")
+cmdDataVector.Caption = R3Text("DVC")
+cmdLocked.Caption = R3Text("UUC")
+Set oVer = poSAPConnection.Documentation
+If Not oVer Is Nothing Then
+    lblDLLVer.Caption = oVer.value(2, 0)
+    lblDBVer.Caption = oVer.value(3, 0)
+    lblQueryDate.Caption = oVer.value(4, 0)
+    Set oVer = Nothing
+End If
+lblUserName.Caption = poHiddenData.GetUserName(ActiveSheet.CodeName, psMatrixName)
+lblTime.Caption = poHiddenData.TimeLastUpdate(ActiveSheet.CodeName, psMatrixName)
+lblSystem.Caption = poHiddenData.GetSystemName(ActiveSheet.CodeName, psMatrixName)
+lblTempVer.Caption = sapactivexlhiddensheet.Cells(40, 2)
+lblInterface.Caption = poXLHelper.getinterfaceversion()
+lblScale.Caption = poHiddenData.GetScale(ActiveSheet.CodeName, psMatrixName)
+For index = 0 To poHiddenData.GetCharCount(ActiveSheet.CodeName, psMatrixName) - 1
+    If Len(Trim$(poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, index))) > 0 Then
+        If Not poXLHelper.isreference(poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, index)) Then
+            lstCharID.AddItem poHiddenData.GetCharID(ActiveSheet.CodeName, psMatrixName, index) + "   :   " + _
+                              poHiddenData.GetCharValue(ActiveSheet.CodeName, psMatrixName, index)
+        End If
+    End If
+Next
+Set moActiveCell = ActiveCell
+Exit Sub
+err_handler:
+MsgBox Error, vbCritical
+Exit Sub
+End Sub
+
+Private Sub UserForm_Terminate()
+On Error GoTo err_handler
+Dim iCol As Integer, iRow As Integer, index As Integer
+index = 0
+If cmdLocked.Enabled = False Then
+    For iCol = 1 To ActiveSheet.UsedRange.Columns.count
+        For iRow = 1 To ActiveSheet.UsedRange.rows.count
+            If Cells(iRow, iCol).Style = "SAPLocked" Then
+                index = index + 1
+                Cells(iRow, iCol).Interior.ColorIndex = ColorIndex(index)
+            End If
+        Next
+    Next
+End If
+If Not moActiveCell Is Nothing Then Set moActiveCell = Nothing
+Exit Sub
+err_handler:
+Exit Sub
+End Sub
+Attribute VB_Name = "frmGetSetData"
+Attribute VB_Base = "0{C2051C8C-398C-4F8C-BB25-3A9259025532}{5FC15959-9C7C-435E-B5E4-2D7853CFA1B9}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+Option Explicit
+
+Private NumberOfChar As Integer
+Private ArrCharDesc() As String      'these array variables are being used to
+Private ArrCharID() As String        'store description, ID, values and
+Private ArrCharValue() As String     'visibility of characteritics to enable
+Private ArrCharVisible() As Boolean  'looping.
+Private ArrCharRequired() As Boolean '
+Private ArrCharHidden() As Boolean   '
+Private ArrCharDynamic() As Boolean   '
+Private mnOutputRow As Long          ' upper left corner cell of range to hold incoming data
+Private mnOutputCol As Long          '
+Private Sub cboSign_Click()
+  Select Case cboSign.ListIndex
+    Case 0: cboSign.tag = "0"
+    Case 1: cboSign.tag = "+"
+    Case 2: cboSign.tag = "-"
+  End Select
+End Sub
+
+Private Sub chkUpload_Click()
+    chkPostEmpty.Visible = chkUpload.value
+    lblUpdMode.Visible = chkUpload.value
+    cboUpdMode.Visible = chkUpload.value
+    chkPreparation.Visible = chkUpload.value And chkPreparation.Enabled 'hah110200
+End Sub
+
+Private Sub cmdCancel_Click()
+    Unload Me
+End Sub
+Private Sub cmdOk_Click()
+    Me.Hide
+    'Display message on status bar
+    Application.StatusBar = R3Text("PDM") & psMatrixName
+    DoEvents
+    Application.ScreenUpdating = False
+    ProcessData
+    UpDownLoadMatrix ActiveSheet.CodeName, psMatrixName, False
+    Application.StatusBar = R3Text("LGO")
+    Application.ScreenUpdating = True
+    Unload Me
+End Sub
+Private Sub RemoveF4Help(id As String)
+On Error Resume Next
+  ThisWorkbook.Names(id).RefersToRange.Validation.Delete
+End Sub
+Private Sub AddF4Help(id As String)
+On Error GoTo err_handler
+  Dim rg As Range
+  Dim cl As Range
+  Set rg = ThisWorkbook.Names(id).RefersToRange
+  sapactivexlhiddensheet.Cells(40, 5) = "X"
+  For Each cl In rg.Cells
+    'If cl.Formula <> "" Then
+      If Left(cl.formula, 8) <> "=SAPCell" Or InStr(1, cl.formula, ","""","""",") <> 0 Then
+        'Not a hierarchy
+        cl.Validation.Delete
+        cl.Validation.Add xlValidateList, , , "=SAPFuncF4Help"
+      End If
+    'End If
+  Next cl
+err_handler:
+  sapactivexlhiddensheet.Cells(40, 5) = ""
+End Sub
+Public Sub ProcessData()
+On Error GoTo error_cmdOK
+
+Dim Vectors() As String         ' final vector array
+Dim count As Integer
+Dim index As Integer
+Dim nm As Name
+Dim CellFormula As String
+Dim xLength As Integer          ' length of X vector
+Dim yLength As Integer          ' length of Y vector
+Dim ErrorString() As String       ' hold error message array returned by server system
+Dim Exception As String         ' hold exception raised from server system
+Dim ExtError As String
+Dim ReturnValue As String
+Dim ErrorTextRefCell() As String
+Dim HasX As Boolean
+Dim HasY As Boolean
+Dim cols As Integer
+Dim rows As Integer
+
+Application.Cursor = xlWait
+lstCharDescRC.TextColumn = 1
+'copy values/range of chararacteritics into an temporary array
+For count = 0 To NumberOfChar - 1
+  If Left(ArrCharValue(count), 8) <> "SAPRange" Then ' not already a named range
+    If poXLHelper.isreference(ArrCharValue(count)) Then
+      'Make a named range
+      On Error Resume Next
+      Err.Clear
+      poXLHelper.BuildRange ActiveSheet.CodeName, psMatrixName, ArrCharID(count)
+      If Err.number <> 0 Then
+        'Try old interface
+        RemoveF4Help "SAPRange" + ArrCharID(count) + "_" + ActiveSheet.CodeName + "_" + psMatrixName
+        ActiveWorkbook.Names.Add Name:="SAPRange" + ArrCharID(count) + "_" + ActiveSheet.CodeName + "_" + psMatrixName, RefersTo:="=" & ArrCharValue(count)
+        ArrCharValue(count) = "SAPRange" + ArrCharID(count) + "_" + ActiveSheet.CodeName + "_" + psMatrixName
+        AddF4Help "SAPRange" + ArrCharID(count) + "_" + ActiveSheet.CodeName + "_" + psMatrixName
+      End If
+      On Error GoTo error_cmdOK
+    End If
+  End If
+  If Left(ArrCharValue(count), 8) <> "SAPRange" Then
+    'Clear drop downs in old range
+    Set nm = Nothing
+    On Error Resume Next
+    Set nm = Application.Names("SAPRange" + ArrCharID(count) + "_" + ActiveSheet.CodeName + "_" + psMatrixName)
+    On Error GoTo error_cmdOK
+    If Not nm Is Nothing Then
+      RemoveF4Help "SAPRange" + ArrCharID(count) + "_" + ActiveSheet.CodeName + "_" + psMatrixName
+      nm.Delete
+    End If
+  End If
+Next
+HasX = False
+HasY = False
+For count = 0 To NumberOfChar - 1
+    If Left(ArrCharValue(count), 8) = "SAPRange" Then ' not already a named range
+      If poXLHelper.isreference(ArrCharValue(count)) Then
+        If Names(ArrCharValue(count)).RefersToRange.rows.count > 1 Then
+          If Not ArrCharDynamic(count) Then
+            If Names(ArrCharValue(count)).RefersToRange.Columns.count > 1 Then
+                MsgBox R3Text("SRC"), vbInformation
+'                Application.Cursor = xlDefault
+'                Exit Sub
+            End If
+            If rows <> 0 And Names(ArrCharValue(count)).RefersToRange.rows.count <> rows Then
+                MsgBox R3Text("XSS"), vbInformation
+'                Application.Cursor = xlDefault
+'                Exit Sub
+            End If
+            If rows = 0 Then rows = Names(ArrCharValue(count)).RefersToRange.rows.count
+          End If
+          HasY = True
+        End If
+        If Names(ArrCharValue(count)).RefersToRange.Columns.count > 1 Then
+            HasX = True
+            If cols <> 0 And Names(ArrCharValue(count)).RefersToRange.Columns.count <> cols Then
+                MsgBox R3Text("YSS"), vbInformation
+'                Application.Cursor = xlDefault
+'                Exit Sub
+            End If
+            If cols = 0 Then cols = Names(ArrCharValue(count)).RefersToRange.Columns.count
+        End If
+      End If
+    End If
+Next count
+
+'Server system needs atleast one X and one Y vector. if either of the vector not found
+'ask user
+If Not HasX Then
+    'set length of X-axis
+    xLength = 1
+    mnOutputCol = poHiddenData.GetColumn(ActiveSheet.CodeName, psMatrixName)
+    mnOutputCol = GetOutputLocation("X")
+    If mnOutputCol = 0 Then
+        MsgBox R3Text("NCS"), vbInformation
+'        Application.Cursor = xlDefault
+'        Exit Sub
+    End If
+End If
+
+If Not HasY Then
+    'set length of Y-axis
+    yLength = 1
+    mnOutputRow = poHiddenData.GetRow(ActiveSheet.CodeName, psMatrixName)
+    mnOutputRow = GetOutputLocation("Y")
+    If mnOutputRow = 0 Then
+        MsgBox R3Text("NRS"), vbInformation
+'        Application.Cursor = xlDefault
+'        Exit Sub
+    End If
+End If
+If Not poHiddenData Is Nothing Then
+'Save hidden char
+    On Error Resume Next
+    For index = 0 To UBound(ArrCharHidden)
+        poHiddenData.SetHidden ActiveSheet.CodeName, psMatrixName, index, ArrCharHidden(index)
+    Next
+    If MultiPage1.Pages("pageDynamic").Visible Then
+      For index = 0 To UBound(ArrCharDynamic)
+        poHiddenData.SetDynamic ActiveSheet.CodeName, psMatrixName, index, ArrCharDynamic(index)
+      Next
+      poHiddenData.SetAddDefaults ActiveSheet.CodeName, psMatrixName, chkAddDef.value
+    End If
+    poHiddenData.SetSH ActiveSheet.CodeName, psMatrixName, cboSign.tag
+    poHiddenData.SetScale ActiveSheet.CodeName, psMatrixName, Val(txtScale.text)
+    poHiddenData.SetForUpload ActiveSheet.CodeName, psMatrixName, chkUpload.value
+    poHiddenData.SetRU ActiveSheet.CodeName, psMatrixName, chkYes.value
+    poHiddenData.SetHideNull ActiveSheet.CodeName, psMatrixName, Not chkNullRow.value
+    poHiddenData.SetHideNull ActiveSheet.CodeName, psMatrixName, Not chkNullCol.value, True
+    poHiddenData.SetPostEmpty ActiveSheet.CodeName, psMatrixName, chkPostEmpty
+    poHiddenData.SetDoPreparation ActiveSheet.CodeName, psMatrixName, chkPreparation 'hah110200
+    'save update mode
+    For index = 0 To 9
+      If cboUpdMode.text = R3Text("UM" & index) Then
+        poHiddenData.SetUpdateMode ActiveSheet.CodeName, psMatrixName, index
+        Exit For
+      End If
+    Next index
+End If
+'save the characteristic ranges/values
+poXLHelper.saveselection ActiveSheet.CodeName, psMatrixName, NumberOfChar, ArrCharID, ArrCharValue, mnOutputRow, mnOutputCol
+
+pbStopChangeEvent = False
+If Not poActivateBar Is Nothing Then poActivateBar.FaceId = 220
+'Create consolidation menu again to reflect new Hidden chararctritics
+CreateMenuConsolidation
+Application.Cursor = xlDefault
+
+Exit Sub
+error_cmdOK:
+MsgBox Error, vbCritical, "SAP"
+Application.Cursor = xlDefault
+Exit Sub
+End Sub
+
+Private Sub cmdSave_Click()
+    Me.Hide
+    DoEvents
+    ProcessData
+    'Set interactive mode on if not for upload
+'    If chkUpload.Value = False Then
+'        poHiddenData.SetIntMode ActiveSheet.CodeName, psMatrixName, 1
+'    Else
+'        poHiddenData.SetIntMode ActiveSheet.CodeName, psMatrixName, 0
+'    End If
+    Unload Me
+End Sub
+
+Private Sub cmdSet_Click()
+    Dim i As Integer
+    On Error GoTo err_handler
+    If lstCharDesc.ListCount > 0 Then
+        For i = 0 To UBound(ArrCharDesc)
+            If ArrCharDesc(i) = lstCharDesc.text Then Exit For
+        Next i
+        If i > UBound(ArrCharDesc) Then Exit Sub
+        ArrCharValue(i) = RefChar.text
+        lstCharDesc.list(lstCharDesc.ListIndex, 1) = RefChar.text
+    End If
+    Exit Sub
+err_handler:
+    MsgBox Error, vbCritical
+    Exit Sub
+End Sub
+Private Sub cmdSetRC_Click()
+    On Error GoTo err_handler
+    Dim i As Integer
+    If lstCharDescRC.ListCount > 0 Then
+        For i = 0 To UBound(ArrCharDesc)
+            If ArrCharDesc(i) = lstCharDescRC.text Then Exit For
+        Next i
+        If i > UBound(ArrCharDesc) Then Exit Sub
+        ArrCharValue(i) = RefCharRC.text
+        lstCharDescRC.list(lstCharDescRC.ListIndex, 1) = RefCharRC.text
+    End If
+    Exit Sub
+err_handler:
+    MsgBox Error, vbCritical
+    Exit Sub
+End Sub
+
+Private Sub Label13_Click()
+
+End Sub
+
+Private Sub lstCharDesc_Click()
+    On Error Resume Next
+    Dim i As Integer
+    RefChar.Enabled = True
+    For i = 0 To UBound(ArrCharValue)
+      If lstCharDesc.text = ArrCharDesc(i) Then
+        RefChar.text = ArrCharValue(i)
+        Exit For
+      End If
+    Next
+    RefChar.SetFocus
+    RefChar.SelStart = 0
+    RefChar.SelLength = 32767
+End Sub
+Private Sub lstCharDescRC_Click()
+    On Error Resume Next
+    Dim i As Integer
+    For i = 0 To UBound(ArrCharDesc)
+      If lstCharDescRC.text = ArrCharDesc(i) Then
+        RefCharRC.text = ArrCharValue(i)
+        Exit For
+      End If
+    Next
+    RefCharRC.SetFocus
+    RefCharRC.SelStart = 0
+    RefCharRC.SelLength = 32767
+End Sub
+
+Private Sub lstHiddenChar_Change()
+On Error GoTo err_handler
+  Dim i As Integer
+  Dim j As Integer
+  Dim s As String
+  If lstHiddenChar.ListCount = 0 Then Exit Sub
+  If lstHiddenChar.tag <> "" Then Exit Sub
+  s = lstHiddenChar.list(lstHiddenChar.ListIndex)
+  For i = 0 To UBound(ArrCharDesc)
+    If ArrCharDesc(i) = s Then
+      ArrCharHidden(i) = Not ArrCharHidden(i)
+      Exit For
+    End If
+  Next i
+err_handler:
+  Err.Clear
+End Sub
+Private Sub lstDynamicChar_Change()
+On Error GoTo err_handler
+  Dim i As Integer
+  Dim j As Integer
+  Dim s As String
+  If lstDynamicChar.ListCount = 0 Then Exit Sub
+  If lstDynamicChar.tag <> "" Then Exit Sub
+  s = lstDynamicChar.list(lstDynamicChar.ListIndex)
+  For i = 0 To UBound(ArrCharDesc)
+    If ArrCharDesc(i) = s Then
+      ArrCharDynamic(i) = Not ArrCharDynamic(i)
+      Exit For
+    End If
+  Next i
+err_handler:
+  Err.Clear
+End Sub
+Private Sub MultiPage1_Change()
+  Dim i As Integer
+  Dim rg As Range
+  If MultiPage1.SelectedItem Is MultiPage1.Pages("PageReqChar") Then
+      FillList lstCharDescRC, True
+      If lstCharDescRC.ListCount = 0 Then
+          'Set MultiPage1.SelectedItem = MultiPage1.Pages("PageAllChar")
+          MultiPage1.Pages("PageReqChar").Visible = False
+      End If
+  ElseIf MultiPage1.SelectedItem Is MultiPage1.Pages("PageAllChar") Then
+      FillList lstCharDesc, False
+  ElseIf MultiPage1.SelectedItem Is MultiPage1.Pages("PageSetting") Then
+      For i = 0 To UBound(ArrCharDynamic)
+        If ArrCharDynamic(i) Then
+          chkNullRow.Enabled = False
+          Exit For
+        End If
+      Next i
+  ElseIf MultiPage1.SelectedItem Is MultiPage1.Pages("pageFixed") Then
+      lstHiddenChar.Clear
+      lstHiddenChar.tag = "X"
+      For i = 0 To UBound(ArrCharDesc)
+          If ArrCharVisible(i) Then
+              If ArrCharValue(i) = "" Then
+                 lstHiddenChar.AddItem ArrCharDesc(i)
+                 If ArrCharHidden(i) Then lstHiddenChar.Selected(lstHiddenChar.ListCount - 1) = True
+              ElseIf Not poXLHelper.isreference(ArrCharValue(i)) Then
+                 lstHiddenChar.AddItem ArrCharDesc(i)
+                 If ArrCharHidden(i) Then lstHiddenChar.Selected(lstHiddenChar.ListCount - 1) = True
+              End If
+          End If
+      Next i
+      lstHiddenChar.tag = ""
+  ElseIf MultiPage1.SelectedItem Is MultiPage1.Pages("pageDynamic") Then
+      lstDynamicChar.Clear
+      lstDynamicChar.tag = "X"
+      For i = 0 To UBound(ArrCharDesc)
+        If ArrCharVisible(i) Then
+          If ArrCharValue(i) <> "" Then
+            If poXLHelper.isreference(ArrCharValue(i)) Then
+              Set rg = Nothing
+              Set rg = Application.Range(ArrCharValue(i))
+              If Not rg Is Nothing Then
+                If rg.Columns.count = 1 And rg.rows.count > 1 Then
+                  lstDynamicChar.AddItem ArrCharDesc(i)
+                  If ArrCharDynamic(i) Then lstDynamicChar.Selected(lstDynamicChar.ListCount - 1) = True
+                End If
+              End If
+            End If
+          End If
+        End If
+      Next i
+      lstDynamicChar.tag = ""
+  End If
+End Sub
+Private Sub FillList(list As Object, Required As Boolean)
+    Dim i As Integer
+    On Error Resume Next 'hah110200
+    list.Clear
+    For i = 0 To UBound(ArrCharDesc)
+        If ArrCharVisible(i) And Not ArrCharHidden(i) Then
+            If Not Required Or (ArrCharRequired(i) And ArrCharValue(i) = "") Then
+                list.AddItem ArrCharDesc(i)
+                If poXLHelper.isreference(ArrCharValue(i)) Then
+                    If Left(ArrCharValue(i), 8) = "SAPRange" Then
+                        list.list(list.ListCount - 1, 1) = Names(ArrCharValue(i)).RefersTo
+                    Else
+                        list.list(list.ListCount - 1, 1) = ArrCharValue(i)
+                    End If
+                Else
+                    list.list(list.ListCount - 1, 1) = ArrCharValue(i)
+                End If
+            End If
+        End If
+    Next i
+End Sub
+Private Sub SpinButton1_SpinDown()
+    On Error Resume Next
+    If Val(txtScale.text) > 1 Then txtScale.text = Val(txtScale.text) / 10
+End Sub
+Private Sub SpinButton1_SpinUp()
+    On Error Resume Next
+    txtScale.text = Val(txtScale.text) * 10
+End Sub
+Private Sub UserForm_Initialize()
+On Error Resume Next
+Dim index As Integer
+Dim count As Integer
+Dim modes As Integer
+Dim mymode As Integer
+
+SetFontSettings Me              '10/10/98
+
+'Display Ok and Cancel caption in login language
+cmdOK.Caption = R3Text("SVD")
+cmdSave.Caption = R3Text("SAV")
+cmdCancel.Caption = R3Text("CNL")
+'chkValidate.Caption = R3Text("VAL")
+chkUpload.Caption = R3Text("FUP")
+chkPostEmpty.Caption = R3Text("PEM")
+If chkPostEmpty.Caption = "PEM: TEXT_NOT_FOUND" Then
+  chkPostEmpty.Visible = False
+End If
+chkNullRow.Caption = R3Text("NUL")
+If chkNullRow.Caption = "NUL: TEXT_NOT_FOUND" Then
+  chkNullRow.Visible = False
+End If
+chkNullCol.Caption = R3Text("NUS")
+If chkNullCol.Caption = "NUS: TEXT_NOT_FOUND" Then
+  chkNullCol.Visible = False
+End If
+chkAddDef.Caption = R3Text("GDF")
+If chkAddDef.Caption = "GDF: TEXT_NOT_FOUND" Then
+  chkAddDef.Visible = False
+End If
+chkPreparation.Caption = R3Text("GUC")                 'hah110200
+If chkPreparation.Caption = "GUC: TEXT_NOT_FOUND" Then 'hah110200
+  chkPreparation.Visible = False                       'hah110200
+End If                                                 'hah110200
+lblUpdMode.Caption = R3Text("UMS")
+If chkAddDef.Caption = "UMS: TEXT_NOT_FOUND" Then
+  lblUpdMode.Visible = False
+  cboUpdMode.Visible = False
+End If
+count = 1
+modes = poXLHelper.aspectproperty(ActiveSheet.CodeName, psMatrixName, 10)
+mymode = poHiddenData.getUpdateMode(ActiveSheet.CodeName, psMatrixName)
+For index = 0 To 9
+  If modes And count Then
+    cboUpdMode.AddItem R3Text("UM" & index)
+    If cboUpdMode.text = "" Or index = mymode Then
+      cboUpdMode.text = R3Text("UM" & index)
+    End If
+  End If
+  count = count * 2
+Next index
+
+Label12.Caption = R3Text("LOC")
+lblLoc.Caption = R3Text("LOC")
+lblSign.Caption = R3Text("DCS")
+lblScale.Caption = R3Text("SCL")
+lblChar.Caption = R3Text("CHR")
+cmdSet.Caption = R3Text("SVL")
+cmdSetRC.Caption = R3Text("SVL")
+lblDatasource.Caption = R3Text("DSO")
+lblCharAll.Caption = R3Text("CHR")
+lblDataSourceAll.Caption = R3Text("DSO")
+MultiPage1.Pages("pagereqchar").Caption = R3Text("REQ")
+MultiPage1.Pages("pageallchar").Caption = R3Text("ALL")
+MultiPage1.Pages("pagesetting").Caption = R3Text("STG")
+MultiPage1.Pages("pagefixed").Caption = R3Text("FIX")
+MultiPage1.Pages("pagedynamic").Caption = R3Text("DBL")
+cboSign.AddItem R3Text("SN0")
+cboSign.AddItem R3Text("SN+")
+cboSign.AddItem R3Text("SN-")
+If Not poHiddenData Is Nothing Then
+    Select Case poHiddenData.GetSH(ActiveSheet.CodeName, psMatrixName)
+    Case "0"
+        cboSign.ListIndex = 0
+    Case "+"
+        cboSign.ListIndex = 1
+    Case "-"
+        cboSign.ListIndex = 2
+    End Select
+    txtScale.text = poHiddenData.GetScale(ActiveSheet.CodeName, psMatrixName)
+    chkUpload.value = poHiddenData.GetForUpload(ActiveSheet.CodeName, psMatrixName)
+    chkPostEmpty.value = poHiddenData.GetPostEmpty(ActiveSheet.CodeName, psMatrixName)
+    chkPostEmpty.Visible = chkUpload.value
+    lblUpdMode.Visible = chkUpload.value
+    cboUpdMode.Visible = chkUpload.value
+    chkPreparation.Visible = chkUpload.value And chkPreparation.Enabled 'hah110200
+    chkYes.value = poHiddenData.GetRU(ActiveSheet.CodeName, psMatrixName)
+    Err.Clear
+    chkNullRow.value = Not poHiddenData.GetHideNull(ActiveSheet.CodeName, psMatrixName)
+    If Err.number <> 0 Then chkNullRow.Visible = False
+    chkNullCol.value = Not poHiddenData.GetHideNull(ActiveSheet.CodeName, psMatrixName, True)
+    If Err.number <> 0 Then chkNullCol.Visible = False
+    'Read number of characteristics from hiddensheet
+    NumberOfChar = poHiddenData.GetCharCount(ActiveSheet.CodeName, psMatrixName)
+    Err.Clear
+    chkAddDef.value = poHiddenData.GetAddDefaults(ActiveSheet.CodeName, psMatrixName)
+    If Err.number <> 0 Then chkAddDef.Visible = False
+    Err.Clear                                                                                'hah110200
+    chkPreparation.value = poHiddenData.GetDoPreparation(ActiveSheet.CodeName, psMatrixName) 'hah110200
+    If Err.number <> 0 Then                                                                  'hah110200
+      chkPreparation.Visible = False                                                         'hah110200
+      chkPreparation.Enabled = False                                                         'hah110200
+    End If                                                                                   'hah110200
+End If
+pbStopChangeEvent = True
+'Display the characteristics and their values (if any)
+If Not poSAPConnection Is Nothing Then
+    On Error Resume Next
+    Err.Clear
+    poXLHelper.RetrieveSelection ActiveSheet.CodeName, psMatrixName, NumberOfChar, ArrCharDesc, ArrCharID, ArrCharValue, ArrCharVisible, ArrCharHidden, ArrCharRequired, mnOutputRow, mnOutputCol, ArrCharDynamic
+    If Err.number <> 0 Then
+      'Try old interface
+      poXLHelper.RetrieveSelection ActiveSheet.CodeName, psMatrixName, NumberOfChar, ArrCharDesc, ArrCharID, ArrCharValue, ArrCharVisible, ArrCharHidden, ArrCharRequired, mnOutputRow, mnOutputCol
+      ReDim ArrCharDynamic(UBound(ArrCharID))
+      MultiPage1.Pages("pageDynamic").Visible = False
+    End If
+    'copy data into respective controls
+Else
+    MsgBox "Not Logged On", vbInformation
+    Exit Sub
+End If
+MultiPage1.value = 0
+End Sub
+Private Sub UserForm_Terminate()
+On Error Resume Next
+    pbStopChangeEvent = False
+    If Not poActivateBar Is Nothing Then poActivateBar.FaceId = 220
+End Sub
+Attribute VB_Name = "frmUpload"
+Attribute VB_Base = "0{4544926A-5E10-4320-A543-239CD002A24C}{1AFF742B-FF0C-453D-82C2-0E46573A1577}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Option Explicit
+Private mbUploadWKB As Boolean
+Public Property Let UploadWorkBook(flag As Boolean)
+    mbUploadWKB = flag
+End Property
+
+Private Sub cmdCancel_Click()
+    Unload Me
+End Sub
+
+Private Sub cmdOk_Click()
+    On Error GoTo err_handler
+    Dim matrixname As String
+    Dim sheetname As String
+    Dim index As Integer
+    Dim count As Integer
+    Me.Hide
+    poXLHelper.LoadErrorForm
+    If mbUploadWKB Then
+      For index = 1 To Worksheets.count
+        sheetname = Worksheets(index).CodeName
+        For count = 0 To poHiddenData.GetMatrixCount(sheetname) - 1
+          matrixname = poHiddenData.getmatrixname(sheetname, count)
+          If poHiddenData.GetForUpload(sheetname, matrixname) Then
+            Application.StatusBar = R3Text("PUM") & matrixname
+            If poHiddenData.getintmode(sheetname, matrixname) = 0 Then
+              'Pass set data flag
+              Application.ScreenUpdating = False
+              UpDownLoadMatrix sheetname, matrixname, True, chkValidate.value, chkSimulate.value
+              Application.ScreenUpdating = True
+              Application.StatusBar = R3Text("LGO")
+            End If
+          End If
+        Next
+      Next
+    Else
+      sheetname = ActiveSheet.CodeName
+      For count = 0 To poHiddenData.GetMatrixCount(sheetname) - 1
+        matrixname = poHiddenData.getmatrixname(sheetname, count)
+        If poHiddenData.GetForUpload(sheetname, matrixname) Then
+          Application.StatusBar = R3Text("PUM") & matrixname
+          If poHiddenData.getintmode(sheetname, matrixname) = 0 Then
+            'Pass set data flag
+            Application.ScreenUpdating = False
+            UpDownLoadMatrix sheetname, matrixname, True, chkValidate.value, chkSimulate.value
+            Application.ScreenUpdating = True
+            Application.StatusBar = R3Text("LGO")
+          End If
+        End If
+      Next
+    End If
+    Unload Me
+    poXLHelper.ShowErrorForm
+    Exit Sub
+err_handler:
+    MsgBox Error, vbCritical
+    Me.Show
+    Exit Sub
+End Sub
+Private Sub UserForm_Initialize()
+Dim matrixname As String
+Dim sheetname As String
+Dim index As Integer
+Dim count As Integer
+On Error Resume Next
+SetFontSettings Me              '10/10/98
+
+Me.Caption = R3Text("ULD")
+chkSimulate.Caption = R3Text("SIM")
+cmdOK.Caption = R3Text("OKY")
+cmdCancel.Caption = R3Text("CNL")
+chkValidate.Caption = R3Text("VAL")
+mbUploadWKB = False
+
+chkValidate.Visible = False
+For index = 1 To Worksheets.count
+  sheetname = Worksheets(index).CodeName
+  For count = 0 To poHiddenData.GetMatrixCount(sheetname) - 1
+    matrixname = poHiddenData.getmatrixname(sheetname, count)
+    If Not poXLHelper.aspectproperty(sheetname, matrixname, 6) Then
+      chkValidate.Visible = True
+      Exit For
+    End If
+  Next count
+  If chkValidate.Visible Then Exit For
+Next
+End Sub
+Attribute VB_Name = "sapactivexlhiddensheet"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "saphiddenbackup"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+Attribute VB_Name = "saphiddenpivotdefinition"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+Attribute VB_Name = "saphiddenvaluecache"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+
+
+INQUEST-PP=macro

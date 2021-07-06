@@ -1,0 +1,921 @@
+Attribute VB_Name = "Module1"
+Public UserCredential, UserText, PasswordText, ExportId, ModelId, WorkspaceId, FilePath, EffectiveDateDesc, EffectiveDate, Header(30) As String
+Public ModelRow As Integer
+Public dict As Scripting.Dictionary
+Public CheckDictionary As Scripting.Dictionary
+Public LogoDictionary As Scripting.Dictionary
+
+Sub PriceSheets()
+Dim ws As Worksheet
+
+Set ADOStream = VBA.CreateObject("ADODB.Stream")
+
+Dim TestMode As Boolean
+
+Dim MonthSelection As Integer
+Dim AccountSelection As String
+
+Dim CredentialData() As Byte
+Dim LArray() As String
+Dim ChunkStringJson As String
+
+Set dict = CreateObject("Scripting.Dictionary")
+Set CheckDictionary = CreateObject("Scripting.Dictionary")
+Set LogoDictionary = CreateObject("Scripting.Dictionary")
+
+For Each CheckBox In Sheets("Run").CheckBoxes
+    If (CheckBox.Value = 1) Then
+        CheckDictionary.Add CheckBox.Caption, "True"
+    End If
+Next CheckBox
+
+TestMode = False
+
+MonthSelection = Sheets("Run").DropDowns("Month Selector").Value
+
+AccountSelection = Sheets("Config").Cells(Sheets("Run").DropDowns("Account Selector").Value + 1, 11)
+
+'Whirlpool Pricesheet model
+WorkspaceId = "8a81b010678fa9350167a8ac1df42290"
+ModelId = "2D0C671121714D50B2C765098712189A"
+
+FilePath = Sheets("Config").Cells(1, 2)
+
+UserText = ""
+PasswordText = ""
+
+While (Len(UserText) < 1 Or Len(PasswordText) < 1)
+    PasswordEntry.Show
+    If (Len(UserText) < 1 Or Len(PasswordText) < 1) Then
+        MsgBox ("Please enter user name and password")
+    Else
+    Unload PasswordEntry
+    End If
+Wend
+
+Application.DisplayAlerts = False
+If (Sheets.Count > 2) Then
+    For i = 3 To Sheets.Count
+    Sheets(3).Delete
+    Next i
+End If
+Application.DisplayAlerts = True
+
+LogoSizeRow = 5
+
+While Not IsEmpty(Sheets("Config").Cells(LogoSizeRow, 1))
+    LogoDictionary.Add CStr(Sheets("Config").Cells(LogoSizeRow, 1)), CInt(Sheets("Config").Cells(LogoSizeRow, 2))
+    LogoSizeRow = LogoSizeRow + 1
+Wend
+  
+CredentialData = StrConv(UserText & ":" & PasswordText, vbFromUnicode)
+
+Set objXML = CreateObject("MSXML2.DOMDocument")
+Set objNode = objXML.createElement("b64")
+
+objNode.DataType = "bin.base64"
+objNode.nodeTypedValue = CredentialData
+
+UserCredential = "Basic " & objNode.Text
+
+Set httpRequest = CreateObject("WINHTTP.WinHTTPRequest.5.1")
+
+' Base Price Sheet Export
+ExportId = Sheets("Config").Cells(2, 2)
+
+' TEST
+
+Dim asciiString As String
+
+'Dim FSO As FileSystemObject
+Set FSO = CreateObject("Scripting.FileSystemObject")
+
+If 0 = 1 Then 'FSO.FileExists(FilePath & "\PriceSheets.csv") Then
+    ' ProcessChunk
+    TestMode = True
+    Open FilePath & "\PriceSheets.csv" For Input As #1
+    asciiString = Input(LOF(1), 1)
+    Close #1
+    ProcessChunk asciiString, AccountSelection, MonthSelection
+Else
+    Url = "https://api.anaplan.com/1/3/workspaces/" & WorkspaceId & "/models/" & ModelId & "/exports/" & ExportId & "/tasks"
+    Application.StatusBar = "Anaplan " & Url
+    httpRequest.Open "POST", Url, False
+    httpRequest.SetRequestHeader "Authorization", UserCredential
+    httpRequest.SetRequestHeader "Content-Type", "application/json"
+    httpRequest.Send "{ ""localeName"": ""en_US""}"
+        
+    If httpRequest.Status <> 200 Then
+      MsgBox ("Error: " & httpRequest.ResponseText)
+      DoShutdown
+      Exit Sub
+    End If
+      
+    TaskId = GetJsonString("taskId", httpRequest.ResponseText)
+    CompleteStatus = WaitExportCompletion(TaskId)
+    
+    ' Get list of exports and # of chunks
+    Url = "https://api.anaplan.com/1/3/workspaces/" & WorkspaceId & "/models/" & ModelId & "/files"
+    Application.StatusBar = "Anaplan " & Url
+    httpRequest.Open "GET", Url, False
+    httpRequest.SetRequestHeader "Authorization", UserCredential
+    httpRequest.SetRequestHeader "Content-Type", "application/json"
+    httpRequest.Send
+    
+    If httpRequest.Status <> 200 Then
+      MsgBox ("Error: " & httpRequest.ResponseText)
+      DoShutdown
+      Exit Sub
+    End If
+        
+    'Debug
+    'Open Environ("TEMP") & "\" & "temp.txt" For Output As #1
+    'Write #1, httpRequest.ResponseText
+    'Close #1
+    
+    
+    IdOffset = InStr(httpRequest.ResponseText, ExportId)
+    ChunkStringJson = Mid(httpRequest.ResponseText, IdOffset)
+    TotalChunks = GetJsonInteger("chunkCount", ChunkStringJson)
+    
+    If (TotalChunks < 1) Then
+      MsgBox ("File with export id: " & ExportId & " has no data!")
+      DoShutdown
+      Exit Sub
+    End If
+    
+    CurrentChunk = 0
+   
+    While CurrentChunk < CInt(TotalChunks)
+        Url = "https://api.anaplan.com/1/3/workspaces/" & WorkspaceId & "/models/" & ModelId & "/files/" & ExportId & "/chunks/" + CStr(CurrentChunk)
+        httpRequest.Open "GET", Url, False
+        httpRequest.SetRequestHeader "Authorization", UserCredential
+        httpRequest.SetRequestHeader "Charset", "utf-8"
+        httpRequest.SetRequestHeader "Content-Type", "application/json"
+        httpRequest.Send
+        
+        If httpRequest.Status <> 200 Then
+          MsgBox ("Error: " & httpRequest.ResponseText)
+          DoShutdown
+          Exit Sub
+        End If
+        
+        ' Process output of the http request so we have proper character set.
+        ADOStream.Charset = "utf-8"
+        ADOStream.Mode = 3
+        ADOStream.Open
+        ADOStream.Type = 1
+        ADOStream.Write httpRequest.ResponseBody
+        ADOStream.Position = 0
+        ADOStream.Type = 2
+        asciiString = asciiString + ADOStream.ReadText
+        ADOStream.Close
+        CurrentChunk = CurrentChunk + 1
+        DoEvents
+    Wend
+        
+        Open Environ("TEMP") & "\" & "pricesheets_temp.csv" For Output As #1
+        Write #1, asciiString
+        Close #1
+        
+        ProcessChunk asciiString, AccountSelection, MonthSelection
+        
+
+End If
+
+
+If (Sheets.Count > 1) Then
+    For i = 3 To Sheets.Count
+    Application.StatusBar = "Writing file " & Sheets.Item(i).Name
+    FormatSheet Sheets.Item(i).Name, CStr(dict(Sheets.Item(i).Name)), TestMode
+    Next i
+End If
+        
+DoShutdown
+
+Set PasswordEntry = Nothing
+Set objNode = Nothing
+Set objXML = Nothing
+Set httpRequest = Nothing
+End Sub
+Function GetJsonString(JsonElement As String, JsonString As String) As String
+    JsonElement = JsonElement & """"
+    
+    'Look for Element Name
+    StringOffset = InStr(JsonString, JsonElement)
+    ColonString = Mid(JsonString, StringOffset)
+    
+    ' Look for comma
+    ColonOffset = InStr(ColonString, ":")
+    QuoteString = Mid(ColonString, ColonOffset + 1)
+    QuoteOffset = InStr(QuoteString, """")
+    Quote2String = Mid(QuoteString, QuoteOffset + 1)
+    Quote2Offset = InStr(Quote2String, """")
+    GetJsonString = Mid(Quote2String, 1, Quote2Offset - 1)
+End Function
+Function GetJsonInteger(JsonElement As String, JsonString As String) As String
+    JsonElement = JsonElement
+    
+    'Look for Element Name
+    StringOffset = InStr(JsonString, JsonElement)
+    ColonString = Mid(JsonString, StringOffset)
+    
+    ' Look for comma
+    ColonOffset = InStr(ColonString, ":")
+    NumeralString = Mid(ColonString, ColonOffset + 2)
+    CommaOffset = InStr(NumeralString, ",")
+    GetJsonInteger = Mid(NumeralString, 1, CommaOffset - 1)
+End Function
+Function WaitExportCompletion(TaskId As Variant) As String
+    TaskState = "IN_PROGRESS"
+    Status = 200
+    
+    'IN_PROGRESS
+    'COMPLETE
+    'CAN (Canceled / Cancelling)
+    Set httpRequest = CreateObject("WINHTTP.WinHTTPRequest.5.1")
+
+    While (TaskState = "IN_PROGRESS" And Status = 200)
+        ' Wait 3 seconds.
+        DoEvents
+        Application.StatusBar = "Task State: " & TaskState & " Status: " & Status
+        Application.Wait (Now() + TimeValue("0:00:03"))
+        Url = "https://api.anaplan.com/1/3/workspaces/" & WorkspaceId & "/models/" & ModelId & "/exports/" & ExportId & "/tasks/" & TaskId
+        Application.StatusBar = "Anaplan " & Url
+        httpRequest.Open "GET", Url, False
+        httpRequest.SetRequestHeader "Authorization", UserCredential
+        httpRequest.SetRequestHeader "Content-Type", "application/json"
+        httpRequest.Send
+        Status = httpRequest.Status
+        TaskState = GetJsonString("taskState", httpRequest.ResponseText)
+        httpRequest.Abort
+    Wend
+    
+    WaitExportCompletion = TaskState
+End Function
+Sub FormatSheet(SheetName As String, NumRows As String, MakeCopies As Boolean)
+            Dim NameArray() As String
+            NameArray = Split(SheetName, "_")
+            Sheets(SheetName).Select
+            
+            ActiveSheet.Cells(2, 2) = "BRAND"
+            'ActiveSheet.Cells(2, 3) = "MAIN CATEGORY"
+            'ActiveSheet.Cells(2, 4) = "SUBCATEGORY"
+            
+            'LastPrintableCol = Sheets("Config").Cells(13, 8)
+            ActiveSheet.Cells(2, 2) = UCase(Header(4))
+            
+            For i = 4 To 24
+                If Len(Header(i)) > 0 Then
+                    ActiveSheet.Cells(2, i - 1) = UCase(Header(i + 2))
+                    If Header(i + 2) = "Sort Order" Then
+                    LastPrintableCol = Chr(65 + i - 3)
+                    SortCol = Chr(65 + i - 2)
+                    End If
+                End If
+            Next i
+            
+            'Resize first row - realize we delete first column and hide last
+            Rows("1:1").Select
+            Selection.RowHeight = 100
+        
+            ActiveSheet.Cells(1, 2) = NameArray(0)
+            
+            ActiveSheet.Cells(1, 3) = UCase(EffectiveDateDesc) & ":" & vbCrLf & EffectiveDate
+            
+            FormatAccountEffective "B1", -11489280
+            
+            FormatAccountEffective "C1", 0
+                
+            Range("A1:" & LastPrintableCol & "2").Select
+            Selection.Font.Bold = True
+            Range("A1").Select
+            Application.CutCopyMode = False
+            
+            
+            RowNum = 3
+            
+            While Not IsEmpty(ActiveSheet.Cells(RowNum, 1))
+                RowNum = RowNum + 1
+            Wend
+            
+            ' Sort based on P being last row (Sort Key)
+            Range("A3:" & SortCol & RowNum).Sort Key1:=Range(SortCol & "3"), Order1:=xlAscending, Header:=xlNo
+            
+            'Hide post sort
+            Columns(SortCol & ":" & SortCol).Select
+            Selection.EntireColumn.Hidden = True
+            
+            CurrentCategory = ""
+            
+            ' Reset to starting row
+            RowNum = 3
+            
+            'Category highlighting
+            While Not IsEmpty(ActiveSheet.Cells(RowNum, 1))
+                If CurrentCategory <> ActiveSheet.Cells(RowNum, 1) Then
+                    CurrentCategory = ActiveSheet.Cells(RowNum, 1)
+                    FormatCategory RowNum, LastPrintableCol, CurrentCategory
+                    DoEvents
+                Else
+                CenterText ("B" & RowNum & ":" & LastPrintableCol & RowNum)
+                End If
+                
+                RowNum = RowNum + 1
+            Wend
+                      
+            Columns("A:A").Select
+            Selection.Delete Shift:=xlToLeft
+            
+            LastRowNum = RowNum + 1
+                 
+            RowNum = 5
+            
+            FormatConfigCol = 4
+            
+            While Not IsEmpty(Sheets("Config").Cells(RowNum, FormatConfigCol))
+            
+                Range(CStr(Sheets("Config").Cells(RowNum, FormatConfigCol)) & "3:" & CStr(Sheets("Config").Cells(RowNum, FormatConfigCol)) & LastRowNum).Select
+                Selection.VerticalAlignment = xlBottom
+                
+                Columns(CStr(Sheets("Config").Cells(RowNum, FormatConfigCol))).ColumnWidth = Sheets("Config").Cells(RowNum, FormatConfigCol + 1)
+                
+                If Sheets("Config").Cells(RowNum, FormatConfigCol + 4) = "xlCenter" Then
+                Selection.HorizontalAlignment = xlCenter
+                Else
+                If Sheets("Config").Cells(RowNum, FormatConfigCol + 4) = "xlRight" Then
+                Selection.HorizontalAlignment = xlRight
+                Else
+                If Sheets("Config").Cells(RowNum, FormatConfigCol + 4) = "xlLeft" Then
+                Selection.HorizontalAlignment = xlLeft
+                End If
+                End If
+                End If
+                
+                If Sheets("Config").Cells(RowNum, FormatConfigCol + 2) <> "General" Then
+                    Selection.Style = Sheets("Config").Cells(RowNum, FormatConfigCol + 2)
+                End If
+                
+                If Not IsEmpty(ActiveSheet.Cells(RowNum, FormatConfigCol + 3)) Then
+                    Selection.NumberFormat = Sheets("Config").Cells(RowNum, FormatConfigCol + 3)
+                End If
+            
+                If UCase(Sheets("Config").Cells(RowNum, FormatConfigCol + 5)) = "YES" Then
+                    Selection.WrapText = True
+                    Selection.Orientation = 0
+                    Selection.AddIndent = False
+                    Selection.IndentLevel = 0
+                    Selection.ShrinkToFit = False
+                    Selection.ReadingOrder = xlContext
+                    Selection.MergeCells = False
+                End If
+            
+            RowNum = RowNum + 1
+            Wend
+            
+            logoName = FilePath & "\logo\" & "UNB.jpg"
+          
+            Range("D1").Select
+            
+            If (LogoDictionary.Exists("UNB")) Then
+                LogoHeight = LogoDictionary("UNB")
+            Else
+                LogoHeight = 85
+            End If
+                        
+            
+            Set S = ActiveSheet.Shapes.AddPicture( _
+             Filename:=logoName, _
+             LinkToFile:=msoFalse, _
+             SaveWithDocument:=msoTrue, _
+             Left:=0, _
+             Top:=1, _
+             Height:=-1, _
+             Width:=-1)
+            
+            S.ScaleHeight Factor:=1, RelativeToOriginalSize:=msoTrue
+            S.ScaleWidth Factor:=1, RelativeToOriginalSize:=msoTrue
+            S.LockAspectRatio = msoTrue
+            S.ScaleHeight (LogoHeight / S.Height), msoTrue
+            
+            ' Calculate the left hand pixel location for the current logo image based on the width of the printable rows
+            S.Left = (Columns("A:" & LastPrintableCol).Width - S.Width) / 2 + Sheets("Config").Cells(1, 5)
+ 
+            'Copy Footer over
+            Worksheets("Config").Range("B15:B32").Copy Range("A" & LastRowNum)
+            
+            ' Increment last row for footer so it prints
+            LastRowNum = LastRowNum + 15
+            
+            'Header Row
+            Rows("2:2").Select
+        
+            With Selection
+                .RowHeight = 38
+                .Font.Size = Sheets("Config").Cells(2, 5)
+                .VerticalAlignment = xlBottom
+                .Orientation = 0
+                .AddIndent = False
+                .ShrinkToFit = False
+                .ReadingOrder = xlContext
+                .MergeCells = False
+            End With
+            
+            CenterText ("A2:" & LastPrintableCol & "2")
+            
+            ActiveWindow.Zoom = CInt(Sheets("Config").Cells(1, 9))
+            
+            PageSetup ("A1" & ":" & LastPrintableCol & LastRowNum)
+            
+            
+End Sub
+Sub Norm(RowCell As String)
+    Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+    Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlInsideVertical)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlInsideHorizontal)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    
+    Range(RowCell).Select
+    Selection.Font.Underline = xlUnderlineStyleSingle
+    Selection.Font.Bold = True
+    With Selection.Font
+        .ThemeColor = xlThemeColorAccent1
+        .TintAndShade = -0.249977111117893
+    End With
+    
+End Sub
+Sub Green(Row As String)
+    Selection.Font.Bold = True
+    With Selection.Font
+        .Color = -11489280
+        .TintAndShade = 0
+    End With
+    Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+    Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlInsideVertical)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlInsideHorizontal)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+End Sub
+Private Sub DoShutdown()
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    Application.Cursor = xlDefault
+End Sub
+Sub FormatCategory(RowNum As Variant, LastPrintableCol As Variant, CurrentCategory As Variant)
+    Rows(RowNum & ":" & RowNum).Select
+    
+    Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+    ActiveSheet.Cells(RowNum, 2) = CurrentCategory
+    Range("B" & RowNum).Select
+    With Selection.Font
+        .Name = "Arial"
+        .Size = 24
+        .Bold = False
+        .Strikethrough = False
+        .Superscript = False
+        .Subscript = False
+        .OutlineFont = False
+        .Shadow = False
+        .Underline = xlUnderlineStyleNone
+        .ThemeColor = xlThemeColorLight1
+        .TintAndShade = 0
+        .ThemeFont = xlThemeFontNone
+    End With
+    
+    With Selection
+        .HorizontalAlignment = xlLeft
+        .VerticalAlignment = xlTop
+        .WrapText = False
+        .Orientation = 0
+        .AddIndent = False
+        .IndentLevel = 0
+        .ShrinkToFit = False
+        .ReadingOrder = xlContext
+        .MergeCells = False
+    End With
+    
+    Range("B" & RowNum & ":" & LastPrintableCol & RowNum).Select
+    Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+    Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+    Selection.Borders(xlEdgeLeft).LineStyle = xlNone
+    Selection.Borders(xlEdgeTop).LineStyle = xlNone
+    Selection.Borders(xlEdgeBottom).LineStyle = xlNone
+    Selection.Borders(xlEdgeRight).LineStyle = xlNone
+    Selection.Borders(xlInsideVertical).LineStyle = xlNone
+    Selection.Borders(xlInsideHorizontal).LineStyle = xlNone
+    Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+    Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlMedium
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlMedium
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlMedium
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlMedium
+    End With
+    Selection.Borders(xlInsideVertical).LineStyle = xlNone
+    Selection.Borders(xlInsideHorizontal).LineStyle = xlNone
+    With Selection.Interior
+        .Pattern = xlSolid
+        .PatternColorIndex = xlAutomatic
+        .Color = 65535
+        .TintAndShade = 0
+        .PatternTintAndShade = 0
+    End With
+End Sub
+Sub FormatAccountEffective(Ranges As Variant, Color As Variant)
+    Range(Ranges).Select
+    With Selection.Font
+        .Name = "Arial"
+        .Size = 20
+        .Strikethrough = False
+        .Superscript = False
+        .Subscript = False
+        .OutlineFont = False
+        .Shadow = False
+        .Underline = xlUnderlineStyleNone
+        .ThemeColor = xlThemeColorLight1
+        .TintAndShade = 0
+        .ThemeFont = xlThemeFontNone
+    End With
+    Selection.Font.Bold = True
+    With Selection.Font
+        .Color = Color
+        .TintAndShade = 0
+    End With
+    With Selection
+        .HorizontalAlignment = xlGeneral
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+        .Orientation = 0
+        .AddIndent = False
+        .IndentLevel = 0
+        .ShrinkToFit = False
+        .ReadingOrder = xlContext
+        .MergeCells = False
+    End With
+    With Selection
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+        .Orientation = 0
+        .AddIndent = False
+        .IndentLevel = 0
+        .ShrinkToFit = False
+        .ReadingOrder = xlContext
+        .MergeCells = False
+    End With
+End Sub
+Sub CenterText(Ranges As Variant)
+    Range(Ranges).Select
+    With Selection
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlBottom
+        .WrapText = True
+        .Orientation = 0
+        .AddIndent = False
+        .IndentLevel = 0
+        .ShrinkToFit = False
+        .ReadingOrder = xlContext
+        .MergeCells = False
+    End With
+End Sub
+Sub PageSetup(Ranges As Variant)
+ With ActiveSheet.PageSetup
+        .PrintTitleRows = "$1:$2"
+        .PrintArea = Ranges
+        .LeftHeader = ""
+        .CenterHeader = ""
+        .RightHeader = ""
+        .LeftFooter = "Issued: &D"
+        .CenterFooter = "Whirlpool Confidential"
+        .RightFooter = "Page: &P"
+        .LeftMargin = Application.InchesToPoints(0)
+        .RightMargin = Application.InchesToPoints(0)
+        .TopMargin = Application.InchesToPoints(0.25)
+        .BottomMargin = Application.InchesToPoints(0.25)
+        .HeaderMargin = Application.InchesToPoints(0)
+        .FooterMargin = Application.InchesToPoints(0)
+        .PrintHeadings = False
+        .PrintGridlines = False
+        .PrintComments = xlPrintNoComments
+        '.PrintQuality = 600
+        .CenterHorizontally = True
+        .CenterVertically = False
+        .Orientation = xlLandscape
+        .Draft = False
+        .PaperSize = xlPaperLetter
+        .FirstPageNumber = xlAutomatic
+        .Order = xlDownThenOver
+        .BlackAndWhite = False
+        .Zoom = CInt(Sheets("Config").Cells(2, 9))
+        .PrintErrors = xlPrintErrorsDisplayed
+        .OddAndEvenPagesHeaderFooter = False
+        .DifferentFirstPageHeaderFooter = False
+        .ScaleWithDocHeaderFooter = True
+        .AlignMarginsHeaderFooter = True
+        .EvenPage.LeftHeader.Text = ""
+        .EvenPage.CenterHeader.Text = ""
+        .EvenPage.RightHeader.Text = ""
+        .EvenPage.LeftFooter.Text = ""
+        .EvenPage.CenterFooter.Text = ""
+        .EvenPage.RightFooter.Text = ""
+        .FirstPage.LeftHeader.Text = ""
+        .FirstPage.CenterHeader.Text = ""
+        .FirstPage.RightHeader.Text = ""
+        .FirstPage.LeftFooter.Text = ""
+        .FirstPage.CenterFooter.Text = ""
+        .FirstPage.RightFooter.Text = ""
+    End With
+End Sub
+
+
+Sub ProcessChunk(asciiString As String, AccountSelection As String, MonthSelection As Integer)
+
+
+    Dim LineArray() As String
+    Dim LinesArray() As String
+    
+    Dim regex As Object
+    Set regex = CreateObject("vbscript.regexp")
+    regex.IgnoreCase = True
+    regex.Global = True
+    
+    'This pattern matches only commas outside quotes
+    'Pattern = ",(?=([^"]*"[^"]*")*(?![^"]*"))"
+    regex.Pattern = ",(?=([^" & Chr(34) & "]*" & Chr(34) & "[^" & Chr(34) & "]*" & Chr(34) & ")*(?![^" & Chr(34) & "]*" & Chr(34) & "))"
+
+  
+    With ActiveWorkbook.Styles("Normal").Font
+        .Name = "Arial"
+        .Size = 12
+    End With
+    
+  
+    Application.ScreenUpdating = False
+    Application.Cursor = xlWait
+
+    LinesArray() = Split(asciiString, vbCrLf)
+    
+    CurrentLine = 0
+    
+    CurrentMonth = 1
+    CurrentMonthString = ""
+    
+    RowsProcessed = 0
+    
+    For Each Line In LinesArray
+        DoEvents
+        LineArray = Split(regex.Replace(Line, "|"), "|")
+        
+        If (CurrentLine = 0) Then
+        
+        If UBound(LineArray) > 10 Then
+            For i = 1 To UBound(LineArray)
+                Header(i) = LineArray(i)
+            Next i
+        End If
+        
+        End If
+        
+        If (UBound(LineArray) > 10) Then
+        If Len(LineArray(0)) > 1 Then
+                If (CurrentMonthString = "") Then
+                    CurrentMonth = 1
+                    CurrentMonthString = LineArray(0)
+                ElseIf CurrentMonthString <> LineArray(0) Then
+                    CurrentMonth = CurrentMonth + 1
+                    CurrentMonthString = LineArray(0)
+                End If
+            End If
+        End If
+        
+        If ((CurrentMonth = MonthSelection) And (CurrentLine > 0) And (UBound(LineArray) > 10)) Then
+        
+            EffectiveDateDesc = Header(3)
+            
+            EffectiveDateArray = Split(LineArray(3), "-")
+            
+            EffectiveDate = EffectiveDateArray(1) + "/" + EffectiveDateArray(2) + "/" + EffectiveDateArray(0)
+        
+            If (LineArray(1) = AccountSelection) And CheckDictionary.Exists(LineArray(4)) Then
+            
+            RowsProcessed = RowsProcessed + 1
+        
+            CurrentAccountBrand = AccountSelection
+                
+            If Not dict.Exists(CurrentAccountBrand) Then
+                DestinationRow = 3
+                dict.Add CurrentAccountBrand, 3
+                With ThisWorkbook
+                    Set ws = .Sheets.Add(After:=.Sheets(.Sheets.Count))
+                    ws.Name = CurrentAccountBrand
+                End With
+            Else
+                DestinationRow = dict(CurrentAccountBrand)
+                DestinationRow = DestinationRow + 1
+                dict(CurrentAccountBrand) = DestinationRow
+            End If
+            
+            Sheets(CurrentAccountBrand).Activate
+            
+            ActiveWindow.DisplayGridlines = False
+            
+            If (CurrentLine Mod 100 = 0) Then
+                DoEvents
+                Application.StatusBar = "Updating " & CurrentAccountBrand
+            End If
+            
+        
+            ActiveSheet.Cells(DestinationRow, 1) = LineArray(5) ' Main Category
+            ActiveSheet.Cells(DestinationRow, 2) = LineArray(4) ' Brand
+            ActiveSheet.Cells(DestinationRow, 3) = LineArray(6) 'Sub Categ
+            ActiveSheet.Cells(DestinationRow, 4) = LineArray(7) 'Detail
+           
+            ModelArray = Split(LineArray(8), "]")
+            
+            ModelCol = 5
+            ModelColAlpha = Chr(ModelCol + 64)
+            
+            If UBound(ModelArray) > 0 Then
+                ActiveSheet.Cells(DestinationRow, ModelCol).Select
+                ActiveSheet.Hyperlinks.Add Anchor:=Selection, Address:=ModelArray(1), TextToDisplay:=Mid(ModelArray(0), 2)
+            Else
+                ActiveSheet.Cells(DestinationRow, ModelCol) = LineArray(8 + Offset) ' Model
+            End If
+            
+            For i = 6 + Offset To UBound(LineArray) - 3
+                ActiveSheet.Cells(DestinationRow, i) = LineArray(i + 3)
+            Next i
+            
+            ActiveSheet.Range("A" & DestinationRow & ":" & Chr(65 + UBound(LineArray) - 4) & DestinationRow).Select
+           
+           ' Sort Order
+            
+            'If Len(LineArray(13)) > 0 Then
+            '    Green (DestinationRow)
+            'Else
+                Norm (ModelColAlpha & DestinationRow)
+            'End If
+            End If ' CheckDictionary
+        End If
+        
+        CurrentLine = CurrentLine + 1
+        
+    Next
+    
+    If RowsProcessed = 0 Then
+        MsgBox ("Selected Brands were not found in Anaplan Module!")
+    End If
+    
+End Sub
+Sub CheckAll()
+For Each CheckBox In Sheets("Run").CheckBoxes
+  CheckBox.Value = True
+Next CheckBox
+End Sub
+Sub UncheckAll()
+For Each CheckBox In Sheets("Run").CheckBoxes
+  CheckBox.Value = False
+Next CheckBox
+End Sub
+
+Attribute VB_Name = "Module2"
+Attribute VB_Name = "Module3"
+Attribute VB_Name = "PasswordEntry"
+Attribute VB_Base = "0{C2E079F8-804A-4214-8AEA-F77D1A908300}{3F3B3308-9181-4BF3-BD25-D77CBFB73B1D}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Public Sub CommandOk_Click()
+Me.Tag = "OK"
+UserText = PasswordEntry.UserNameField.Text
+PasswordText = PasswordEntry.PasswordField.Text
+'Unload Me
+Me.hide
+End Sub
+Attribute VB_Name = "Sheet14"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet58"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' 5oMt
+' )^J)
+
+INQUEST-PP=macro

@@ -1,0 +1,204 @@
+Attribute VB_Name = "frmNewHearing"
+Attribute VB_Base = "0{F69A5E6C-2FDF-4573-91FA-45E09F5431F4}{3C3CE72F-E7B4-4FB2-81AF-BAA1B89B5C6B}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'When TRUE, form should not be processed
+Public bCancel As Boolean
+
+Private Sub btnCancel_Click()
+    Me.bCancel = True
+    Me.Hide
+End Sub
+
+Private Sub btnOK_Click()
+    'Check for empty string
+    If Me.txtHearingName.TextLength = 0 Then
+        MsgBox "Please enter a hearing name."
+        Exit Sub
+    End If
+    
+    'Check for invalid characters
+    If Not IsValidHearingName(Me.txtHearingName) Then
+        MsgBox "Hearing name contains invalid characters. Please do not use /\*?:<>|"
+        Exit Sub
+    End If
+  
+    Me.bCancel = False
+    Me.Hide
+End Sub
+
+Private Sub UserForm_Activate()
+    'On showing the control, give focus to the text field.
+    Me.txtHearingName.SetFocus
+    'Initialize to cancel in case user closes dialog without pressing Cancel button
+    bCancel = True
+End Sub
+
+Private Sub UserForm_Initialize()
+    'Observed max file length name is 50 (plus 4 for ".mp3")
+    Me.txtHearingName.MaxLength = 50
+End Sub
+'Check for invalid characters /\:*?<>|
+Private Function IsValidHearingName(sHearingName) As Boolean
+    IsValidHearingName = _
+        InStr(sHearingName, "/") = 0 And _
+        InStr(sHearingName, "\") = 0 And _
+        InStr(sHearingName, ":") = 0 And _
+        InStr(sHearingName, "*") = 0 And _
+        InStr(sHearingName, "?") = 0 And _
+        InStr(sHearingName, "<") = 0 And _
+        InStr(sHearingName, ">") = 0 And _
+        InStr(sHearingName, "|") = 0
+End Function
+
+Attribute VB_Name = "mdlHearings"
+'____________________________________________________________________
+'Project: Hearings
+'Module: mdlHearings
+'Author: Henry Hickling
+'
+'Description:
+' Supports user adding Hearings Start and Hearing End notes.
+' These notes are used by SingleFile Duplicator service to automatically export recordings to Single File Format.
+' This format is compatible with CM/ECF used by some US Federal Courts
+'
+'Index of public routines:
+
+'___________________________________________________________________
+'   Declarations
+'____________________________________________________________________
+
+Option Explicit
+
+Public Sub a_Tag_H__earing_Start()
+    Dim bRO As Boolean
+    Dim ls As LOGDATALib.LogSheet
+    Dim note As LOGDATALib.LogNote
+    Dim noteTime As Date
+    Dim row As Long
+    
+    'Check there is an active log sheet
+    On Error Resume Next
+    bRO = ActiveWindow.Grid.ReadOnly
+    If Err Then
+        MsgBox "No open log sheet", , "Error"
+        Exit Sub
+    End If
+    
+    On Error GoTo ErrorHandle
+        
+    'Check for read only log sheet
+    If bRO Then
+        MsgBox "Log sheet is read-only", , "Error"
+        Exit Sub
+    End If
+        
+    'Prompt for hearing name
+    With frmNewHearing
+        .txtHearingName = ""
+        .Show
+        If .bCancel Then Exit Sub
+    End With
+    
+    'Add note with current record/play time
+    Set ls = ActiveWindow.LogSheet
+    With ActiveWindow.Grid
+    On Error Resume Next
+    
+    noteTime = .NoteTimeProvider.noteTime
+    Set note = ls.LogNotes.Add(noteTime)
+    If Err = -534929406 Then
+        MsgBox Err.Description + " (0x" + Hex(Err) + ")", , "Error"
+        Exit Sub
+    End If
+    On Error GoTo ErrorHandle
+    note.NoteItemEx("speaker") = "<Hearing Start>"
+    note.NoteItemEx("text") = "<" + frmNewHearing.txtHearingName + "> MP3 file name - DO NOT EDIT THIS NOTE"
+    note.NoteItemEx("tagid") = GenerateTag(frmNewHearing.txtHearingName)
+    ' change current cell to ensure text is visible
+    row = .FindRowAfterTime(noteTime)
+    .SetCurrentCell row, 2
+    .SetCurrentCell row, 3
+    .SetCurrentCell .Rows, 2
+    End With
+   
+    'Add Hearing Present tag
+    ls.LogHeaderEx.HeaderItemEx("tagged") = "hearings"
+        
+    Exit Sub
+    
+ErrorHandle:
+    MsgBox "Unhandled error: " + Err.Description + "(0x" + Hex(Err) + ") from: " + Err.Source
+End Sub
+
+Public Sub b_Tag_Hearing_Stop__()
+    Dim sTemp As String
+    Dim bRO As Boolean
+    'Check there is an active log sheet
+    On Error Resume Next
+    bRO = ActiveWindow.Grid.ReadOnly
+    If Err Then
+        MsgBox "No open log sheet", , "Error"
+        Exit Sub
+    End If
+    
+    On Error GoTo ErrorHandle
+        
+    'Check for read only log sheet
+    If bRO Then
+        MsgBox "Log sheet is read-only", , "Error"
+        Exit Sub
+    End If
+        
+    'Check there is a hearing present
+    On Error Resume Next
+    sTemp = ActiveWindow.LogSheet.LogHeaderEx.HeaderItemEx("tagged")
+    If Err Or StrComp(sTemp, "hearings") <> 0 Then
+        MsgBox "Cannot enter Hearing Stop note because no hearing was found", , "Error"
+        Exit Sub
+    End If
+    
+    On Error GoTo ErrorHandle
+    'Add note
+    With ActiveWindow.Grid
+        On Error Resume Next
+        .CreateLogNote
+        'Check for no timestamp source and exit
+        If Err = -534929406 Then
+            MsgBox Err.Description + " (0x" + Hex(Err) + ")", , "Error"
+            Exit Sub
+        End If
+        On Error GoTo ErrorHandle
+        .CurrentCell.InsertText "<Hearing Stop>"
+    End With
+    
+    Exit Sub
+ErrorHandle:
+    MsgBox "Unhandled error: " + Err.Description + "(0x" + Hex(Err) + ") from: " + Err.Source
+End Sub
+
+
+Function GenerateTag(txt As String) As String
+
+Dim mask, j, nC, Crc As Integer
+ 
+ 
+Crc = &HAB
+ 
+For nC = 1 To Len(txt)
+    j = Asc(Mid(txt, nC, 1))
+    Crc = Crc Xor j
+Next nC
+ 
+GenerateTag = Hex$(Crc) 'Checksum
+ 
+
+End Function
+
+
+
+INQUEST-PP=macro

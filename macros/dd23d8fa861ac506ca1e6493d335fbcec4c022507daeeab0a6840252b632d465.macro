@@ -1,0 +1,438 @@
+Attribute VB_Name = "Form1"
+Attribute VB_Base = "0{04F48D3C-EEE4-4AF1-8000-54B7C852A599}{AD421443-747D-4D6E-A017-EC4F21789EDC}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private vwPTPRH As AccpacCOMAPI.AccpacView
+Private vwWDRDOC As AccpacCOMAPI.AccpacView
+Private vwWDRDOCD As AccpacCOMAPI.AccpacView
+Private lngRQNHSEQ As Long
+Private lngAttach As Long
+Private strPR As String
+Private strFirstAttach As String
+
+Private Sub cbPR_Change()
+
+    mDBLinkCmpRW.OpenView "PT0040", vwPTPRH
+    
+    Dim x As Integer
+
+    For x = 1 To 999
+        cbAttach.Clear
+    Next x
+    
+    If CStr(cbPR.Value) <> "" Then
+        strPR = Left(CStr(cbPR.Value), InStr(CStr(cbPR.Value), " - ") - 1)
+    End If
+
+    vwPTPRH.Order = 1
+    vwPTPRH.Fields("RQNNUMBER").Value = strPR
+    If vwPTPRH.Read Then
+        lngRQNHSEQ = vwPTPRH.Fields("RQNHSEQ").Value
+    End If
+    
+    LoadAttachCbo cbAttach
+    'cbAttach.Text = strFirstAttach
+    
+    vwPTPRH.Close
+    
+End Sub
+
+Private Sub cbProcess_Click()
+    
+    With mDBLinkCmpRW
+        .OpenView "PT0040", vwPTPRH
+        .OpenView "WD0100", vwWDRDOC
+    End With
+    
+    Dim FetchSuccess As Boolean
+    Dim blnSecOK As Boolean
+    Dim intNumWDAttachmentsDeleted As Integer
+
+    If cbPR.ListIndex = -1 Then
+        strPR = vbNullString
+        tbStatus.Text = "A PR must be selected"
+        Form1.Repaint
+        Exit Sub
+    End If
+    
+    If cbAttach.ListIndex = -1 Then
+        'strPR = vbNullString
+        tbStatus.Text = "An attachment must be selected"
+        Form1.Repaint
+        Exit Sub
+    End If
+    
+    vwPTPRH.Order = 1
+    vwPTPRH.Fields("RQNNUMBER").Value = strPR
+    If vwPTPRH.Read Then
+        lngRQNHSEQ = vwPTPRH.Fields("RQNHSEQ").Value
+    End If
+
+    'get WD DOCNumber from strAttach
+    strAttach = CStr(cbAttach.Value)
+    vwWDRDOC.Browse "", True
+    vwWDRDOC.GoTop
+    brStr = "RQNHSEQ = " & lngRQNHSEQ & ""
+    vwWDRDOC.Browse brStr, True
+    FetchSuccess = vwWDRDOC.Fetch
+    Do While FetchSuccess
+        If vwWDRDOC.Fields("DOCPATH").Value = strAttach Then
+            lngAttach = vwWDRDOC.Fields("DOCSEQ").Value
+        End If
+        FetchSuccess = vwWDRDOC.Fetch
+    Loop
+    
+    'Check_Security blnSecOK
+    'hardcoding for security setting
+    blnSecOK = True
+    
+    If blnSecOK Then
+        If blnWDActive Then
+            If Delete_WDAttachment(lngRQNHSEQ, lngAttach, intNumWDAttachmentsDeleted) Then
+            End If
+            If intNumWDAttachmentsDeleted > 0 Then
+                Form1.tbStatus.Text = "PR WD attachment deleted"
+                Form1.Repaint
+            Else
+                Form1.tbStatus.Text = "No PR WD attachments deleted"
+                Form1.Repaint
+            End If
+        Else
+            Form1.tbStatus.Text = "The WD module has not been activated"
+            Form1.Repaint
+        End If
+    Else
+'        Form1.tbStatus.Text = "User does not have adequate security for PT"
+'        Form1.Repaint
+    End If
+   
+   'refresh PR list
+    For x = 1 To 999
+        cbPR.Clear
+    Next x
+
+   LoadPRCbo cbPR
+   
+   vwWDRDOC.Close
+   vwPTPRH.Close
+   
+End Sub
+
+Private Function Delete_WDAttachment(inRQNHSEQ As Long, inAttach As Long, _
+                                                            outNumWDAttachmentsDeleted As Integer) As Boolean
+
+    On Error GoTo ErrorHandler
+    
+    With mDBLinkCmpRW
+        .OpenView "WD0100", vwWDRDOC
+        .OpenView "WD0101", vwWDRDOCD
+        .OpenView "PT0040", vwPTPRH
+    End With
+    vwWDRDOC.Compose Array(vwWDRDOCD)
+    vwWDRDOCD.Compose Array(vwWDRDOC)
+    
+    Dim brStr As String
+    Dim FetchSuccess As Boolean
+    Dim intCtr As Integer
+    Dim lngTest As Long
+    Dim lngCountParts As Long
+    
+    Delete_WDAttachment = False
+    outNumWDAttachmentsDeleted = 0
+    lngCountParts = 0
+    
+    vwWDRDOC.Fields("RQNHSEQ").Value = inRQNHSEQ
+    vwWDRDOC.Fields("DOCSEQ").Value = lngAttach
+    vwWDRDOC.Fields("DOCREV").Value = 1     'hardcoded - currently WD only supports a value of 1 for DOCREV
+    
+    If vwWDRDOC.Read Then
+        vwWDRDOCD.Browse "", True
+        FetchSuccess = vwWDRDOCD.Fetch
+        Do While FetchSuccess
+            lngTest = vwWDRDOCD.Fields("DOCPARTSEQ").Value
+            lngCountParts = lngCountParts + 1
+            vwWDRDOCD.Delete
+            FetchSuccess = vwWDRDOCD.Fetch
+        Loop
+        vwWDRDOC.Delete
+        Delete_WDAttachment = True
+        outNumWDAttachmentsDeleted = 1
+    End If
+    
+    vwWDRDOC.Close
+    vwWDRDOCD.Close
+    vwPTPRH.Close
+    
+    Exit Function
+    
+ErrorHandler:
+    
+  Dim lCount As Long
+  Dim lIndex As Long
+  
+  Delete_WDAttachment = False
+
+  
+  If objSession.Errors Is Nothing Then
+       'MsgBox Err.Description
+       'MsgBox "VBA Macros cannot run where Accpac is deployed as a Web Server"
+  Else
+      lCount = objSession.Errors.Count
+
+      If lCount = 0 Then
+          MsgBox Err.Description
+      Else
+          For lIndex = 0 To lCount - 1
+              MsgBox objSession.Errors.Item(lIndex)
+          
+          Next
+          objSession.Errors.Clear
+      End If
+  End If
+
+End Function
+
+Public Sub refresh()
+    
+    Me.Repaint
+    
+End Sub
+
+Private Sub cbClose_Click()
+    
+    Unload Form1
+    Exit Sub
+    
+    vwPTPRH.Close
+    
+End Sub
+
+Private Sub UserForm_Initialize()
+
+    'With mDBLinkCmpRW
+    '    .OpenView "PT0041", vwPTPRH
+'        .OpenView "WD0100", vwWDRDOC
+    'End With
+    
+    LoadPRCbo cbPR
+    
+    'cbPR.Text = "ZZZZZZZZZZZZZ"
+    
+End Sub
+
+Public Sub LoadPRCbo(FormCombo As ComboBox)
+
+    With mDBLinkCmpRW
+        .OpenView "WD0100", vwWDRDOC
+        .OpenView "PT0040", vwPTPRH
+    End With
+    
+    Dim FetchSuccess As Long
+    Dim brStr As String
+    Dim strTest As String
+    
+    vwPTPRH.Browse "STATUS < 50", True
+    FetchSuccess = vwPTPRH.Fetch
+    Do While FetchSuccess
+        strTest = vwPTPRH.Fields("RQNNUMBER").Value
+        'check to see if the PR has any attachments
+        'vwWDRDOC.Browse "", True
+        'vwWDRDOC.GoTop
+        brStr = "RQNHSEQ = " & vwPTPRH.Fields("RQNHSEQ").Value & ""
+        vwWDRDOC.Browse brStr, True
+        If vwWDRDOC.Fetch Then
+
+            FormCombo.AddItem Trim(vwPTPRH.Fields("RQNNUMBER").Value) & " - " & Trim(vwPTPRH.Fields("REQRID").Value)
+        End If
+        FetchSuccess = vwPTPRH.Fetch
+    Loop
+    
+    vwWDRDOC.Close
+    vwPTPRH.Close
+    
+End Sub
+
+Public Sub LoadAttachCbo(FormCombo As ComboBox)
+    
+    mDBLinkCmpRW.OpenView "WD0100", vwWDRDOC
+    
+    Dim FetchSuccess As Boolean
+    Dim brStr As String
+    Dim intAttachCount As Integer
+    
+    intAttachCount = 0
+    
+    vwWDRDOC.Browse "", True
+    vwWDRDOC.GoTop
+    brStr = "RQNHSEQ = " & lngRQNHSEQ & ""
+    vwWDRDOC.Browse brStr, True
+    FetchSuccess = vwWDRDOC.Fetch
+    Do While FetchSuccess
+        lngTest = vwWDRDOC.Fields("DOCSEQ").Value
+        intAttachCount = intAttachCount + 1
+        FormCombo.AddItem Trim(vwWDRDOC.Fields("DOCPATH").Value)
+        If intAttachCount = 1 Then strFirstAttach = Trim(vwWDRDOC.Fields("DOCPATH").Value)
+        FetchSuccess = vwWDRDOC.Fetch
+    Loop
+    
+    vwWDRDOC.Close
+    
+End Sub
+
+
+Private Function Check_Security(outSecOK) As Boolean
+
+    On Error GoTo ErrorHandler
+
+    Check_Security = False
+    outSecOK = False
+   
+   '*** check that user has security rights to maintain the PT PR table
+    If mDBLinkCmpRW.SecCheck("PTSETUP") Then
+        outSecOK = True
+    Else
+        MsgBox "User does not have security access to maintain the PT PR table"
+        Exit Function
+    End If
+    Check_Security = True
+    
+    Exit Function
+    
+ErrorHandler:
+    
+    Check_Security = False
+    
+  Dim lCount As Long
+  Dim lIndex As Long
+  
+  If objSession.Errors Is Nothing Then
+       MsgBox Err.Description
+       MsgBox "VBA Macros cannot run where Accpac is deployed as a Web Server"
+  Else
+      lCount = objSession.Errors.Count
+
+      If lCount = 0 Then
+          MsgBox Err.Description
+      Else
+          For lIndex = 0 To lCount - 1
+              MsgBox objSession.Errors.Item(lIndex)
+          
+          Next
+          objSession.Errors.Clear
+      End If
+
+  End If
+
+End Function
+
+
+Attribute VB_Name = "MainModule"
+'********************************************************************************************
+'* This macro deletes a WD attachment to a PT PR.
+'* Rules:
+'*  - PR cannot be in Completed status
+'*  - if two attachments have the same name, the macro deletes the first attachment with that name
+'*
+'******************************************************************************************
+'
+'To Do:
+'-
+' -
+
+Option Explicit
+
+Public objSession As AccpacCOMAPI.AccpacSession
+Public mDBLinkCmpRW As AccpacCOMAPI.AccpacDBLink
+Public blnWDActive As Boolean
+
+Public Sub MainSub()
+
+    On Error GoTo ACCPACErrorHandler
+    
+    Set objSession = AccpacCOMAPI.AccpacSession
+    If Not objSession.IsOpened Then
+        MsgBox "Session not opened"
+        Exit Sub
+    End If
+    
+    Set mDBLinkCmpRW = objSession.OpenDBLink(DBLINK_COMPANY, DBLINK_FLG_READWRITE)
+    
+    blnWDActive = False
+    
+    AppIsActive ("WD")
+
+    Form1.Top = 500
+    Form1.Left = 500
+    Form1.Show
+
+Exit Sub
+
+ACCPACErrorHandler:
+  Dim lCount As Long
+  Dim lIndex As Long
+
+  If objSession.Errors Is Nothing Then
+       MsgBox Err.Description
+       MsgBox "VBA Macros cannot run where Accpac is deployed as a Web Server"
+  Else
+      lCount = objSession.Errors.Count
+
+      If lCount = 0 Then
+          MsgBox Err.Description
+      Else
+          For lIndex = 0 To lCount - 1
+              MsgBox objSession.Errors.Item(lIndex)
+
+          Next
+          objSession.Errors.Clear
+      End If
+      Resume Next
+
+  End If
+
+End Sub
+
+
+Private Sub AppIsActive(strApp As String)
+On Error GoTo ErrHandler
+    Debug.Print "AppIsActive"
+    Dim apps As AccpacActiveApp
+
+    Set apps = mDBLinkCmpRW.GetActiveApp
+    If Not (apps Is Nothing) Then
+        With apps
+            Dim app As AccpacApplication
+            Dim i As Integer
+            
+            For i = 0 To .Count - 1
+                Set app = .Item(i)
+                
+                If (app.PgmID = strApp) Then
+                    Select Case strApp
+                        Case "WD"
+                            blnWDActive = True
+                    End Select
+                    Exit Sub
+                End If
+            Next i
+        End With ' apps
+    End If
+
+Exit Sub
+
+ErrHandler:
+    Debug.Assert False
+
+    With Err
+        
+        .Raise .Number, .Source, .Description, .HelpFile, .HelpContext
+    End With ' Err
+End Sub
+
+
+
+INQUEST-PP=macro

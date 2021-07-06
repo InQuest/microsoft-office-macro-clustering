@@ -1,0 +1,979 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+'Accuracy of functions, used by Traffic, Agents, FractionalAgents
+Const MaxAccuracy = 0.00001
+Const MaxLoops = 100
+'******************************************************************************
+'Version 1.1 date 11 June 1999
+'*Added ErlangBExt function
+'*Corrected bug in Agents function due to overflow error on large call volumes
+'*   NoAgents variable is now Long
+'******************************************************************************
+'Version 1.2. date 17 June 1999
+'*Simplied loop in ErlangB and ErlangBExt
+'*Removed superfluous line in QueueTime
+'******************************************************************************
+'Version 1.3. date 12 July 1999
+'*Added ServiceTime function to calculate the queueing time for a given
+'*   percentage of calls answered (reverse of SLA)
+'******************************************************************************
+'Version 1.4 date 24 August 1999
+'*Added EngsetB formula
+'*Agents will always return 1 if Intensity>0 (was >0.5)
+'*Trunks will always return 1 if Intensity>0
+'******************************************************************************
+'Version 1.4a date 25 August 1999
+'*Added CallCapacity formula to get max call load for number of agents
+'******************************************************************************
+'Version 1.4b date 16 September 1999
+'*Added Servers routine to calculate number of servers for given
+'   intensity and blocking factor (reverse of ErlangB)
+'******************************************************************************
+'Version 1.5 date 4 January 2000
+'*Added NBTrunks to calculate trunks from busy erlang hour
+'   and blocking factor required (thanks to Edwin Barendse)
+'*Fixed bug in Agents which returned 0 for low traffic
+'*Added exception handling to NumberTrunks to conform to standard
+'******************************************************************************
+'Version 1.6 date 8 October 2000
+'Corrected bug in NBTrunks due to wrong variable type passed to ErlangB
+'Added FractionalAgents function to return the "exact" number of agents based on
+'   a psuedo-proportional calculation
+'******************************************************************************
+'Version 1.6a date 4 December 2000
+'Added FractionalCallCapacity to return the maximum number of calls that can be handled
+'   by a fractional number of agents
+'******************************************************************************
+'Version 1.7 date 19 July 2001
+'Added Traffic function to calculate traffic intensity (erlangs) from the trunks and blocking
+'Corrected negative input to CallCapacity
+'******************************************************************************
+'Version 1.7a date 6 August 2001
+'Added MaxLoop check to stop Traffic infinitely looping when large number of trunks are used
+' (use of single variable type means that precision cannot be maintained with large numbers)
+'Changed all counters to Long type
+'******************************************************************************
+'Version 1.8 date 15 October 2001
+'Added NBAgents to calculate agents required based on average speed of answer,
+'supplied by Michael Benn
+'Added IntCeiling function to replace Worksheet function - better portability in VB
+'Changes to SLA function to reflect exponential distribution of wait times,
+'changes to Abandon to reflect exponential queueing times
+'changes to Agents  - ditto
+'changes to FractionalAgents - ditto
+'this change suggested and programmed by Tim Bolte and J|fffd|rn Lodahl
+'******************************************************************************
+'-----------------------------------------------------------------------
+' Basic telephony functions e.g. ErlangB/C
+'-----------------------------------------------------------------------
+Public Function ErlangB(Servers As Single, Intensity As Single) As Single
+Attribute ErlangB.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copyright |fffd| T&C Limited 1996, 1999
+'The Erlang B formula calculates the percentage likelyhood of the call
+' being blocked, that is that all the trunks are in use and the caller
+' will receive a busy signal.
+' Servers = Number of telephone lines
+' Intensity = Arrival rate of calls / Completion rate of calls
+'   Arrival rate = the number of calls arriving per hour
+'   Completion rate = the number of calls completed per hour
+Dim Val As Single, Last As Single, B As Single
+Dim Count As Long, MaxIterate As Long
+On Error GoTo ErlangBError
+     If (Servers < 0) Or (Intensity < 0) Then
+          ErlangB = 0
+          Exit Function
+     End If
+     MaxIterate = Fix(Servers)
+     Val = Intensity
+     Last = 1 ' for server = 0
+     For Count = 1 To MaxIterate
+          B = (Val * Last) / (Count + (Val * Last))
+          Last = B
+     Next Count
+ErlangBExit:
+     ErlangB = MinMax(B, 0, 1)
+     Exit Function
+     
+ErlangBError:
+     B = 0
+     Resume ErlangBExit
+End Function
+'-----------------------------------------------------------------------
+Public Function ErlangBExt(Servers As Single, Intensity As Single, Retry As Single) As Single
+Attribute ErlangBExt.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copyright |fffd| T&C Limited 1996, 1999
+'The Extended Erlang B formula calculates the percentage likelyhood of the call
+' being blocked, that is that all the trunks are in use and the caller
+' will receive a busy signal. The Extended version allows input of a percentage
+' figure for those blocked callers who will immediately retry.
+' Servers = Number of telephone lines
+' Intensity = Arrival rate of calls / Completion rate of calls
+'   Arrival rate = the number of calls arriving per hour
+'   Completion rate = the number of calls completed per hour
+' Retry = Number of blocked callers who will retry immediately (0.1 = 10%)
+Dim Val As Single, Last As Single, B As Single, Retries As Single, Attempts As Single
+Dim Count As Long, MaxIterate As Long
+On Error GoTo ErlangBXError
+     If (Servers < 0) Or (Intensity < 0) Then
+          ErlangBExt = 0
+          Exit Function
+     End If
+     MaxIterate = Fix(Servers)
+     Retries = MinMax(Retry, 0, 1)
+     Val = Intensity
+     Last = 1  'for servers = 0
+     For Count = 1 To MaxIterate
+'find out the blocking factor (for servers = 2 to n)
+          B = (Val * Last) / (Count + (Val * Last))
+'and the increased traffic intensity
+          Attempts = 1 / (1 - (B * Retries))
+          B = (Val * Last * Attempts) / (Count + (Val * Last * Attempts))
+          Last = B
+     Next Count
+ErlangBXExit:
+     ErlangBExt = MinMax(B, 0, 1)
+     Exit Function
+     
+ErlangBXError:
+     B = 0
+     Resume ErlangBXExit
+End Function
+'-----------------------------------------------------------------------
+Public Function EngsetB(Servers As Single, Events As Single, Intensity As Single) As Single
+Attribute EngsetB.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copyright |fffd| T&C Limited 1996, 1999
+'The Engset B formula calculates the percentage likelyhood of the call
+' being blocked, that is that all the trunks are in use and the caller
+' will receive a busy signal. This uses the Engset model, based on the
+' hindrance formula.
+' Servers = Number of telephone lines
+' Events = Number of calls
+' Intensity = average intensity per call
+Dim Val As Single, Last As Single, B As Single, Ev As Single
+Dim Count As Long, MaxIterate As Long
+On Error GoTo EngsetError
+     If (Servers < 0) Or (Intensity < 0) Then
+          EngsetB = 0
+          Exit Function
+     End If
+     MaxIterate = Fix(Servers)
+     Val = Intensity
+     Ev = Events
+     Last = 1  'for servers = 0
+     For Count = 1 To MaxIterate
+          B = (Last * (Count / ((Ev - Count) * Val))) + 1
+          Last = B
+     Next Count
+EngsetExit:
+     If B = 0 Then EngsetB = 0 Else EngsetB = MinMax((1 / B), 0, 1)
+     Exit Function
+     
+EngsetError:
+     B = 0
+     Resume EngsetExit
+End Function
+'-----------------------------------------------------------------------
+Public Function ErlangC(Servers As Single, Intensity As Single) As Single
+Attribute ErlangC.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copyright |fffd| T&C Limited 1996, 1999
+'This formula gives the percentage likelyhood of the caller being
+' placed in a queue.
+' Servers = Number of agents
+' Intensity = Arrival rate of calls / Completion rate of calls
+'   Arrival rate = the number of calls arriving per hour
+'   Completion rate = the number of calls completed per hour
+Dim B As Single, C As Single
+Dim Count As Long, MaxIterate As Long
+On Error GoTo ErlangCError
+     If (Servers < 0) Or (Intensity < 0) Then
+          ErlangC = 0
+          Exit Function
+     End If
+     B = ErlangB(Servers, Intensity)
+     C = B / (((Intensity / Servers) * B) + (1 - (Intensity / Servers)))
+ErlangCExit:
+     ErlangC = MinMax(C, 0, 1)
+     Exit Function
+     
+ErlangCError:
+     C = 0
+     Resume ErlangCExit
+End Function
+'-----------------------------------------------------------------------
+Public Function NBTrunks(Intensity As Single, Blocking As Single) As Long
+'Copyright |fffd| T&C Limited 2000, 2001
+'This function has been supplied by Edwin Barendse
+'This formula gives the number of telephone lines required to
+' handle the Busyhour traffic in Erlang against a required blocking factor
+' Intensity = Busyhour Traffic in erlangs
+' Blocking = blocking factor percentage e.g. 0.10  (10% of calls may receive busy tone)
+Dim B As Single, Count As Long, SngCount As Single
+Dim MaxIterate As Long
+
+On Error GoTo NBError
+     MaxIterate = 0
+     If (Intensity <= 0) Or (Blocking <= 0) Then
+          NBTrunks = 0
+          Exit Function
+     End If
+     MaxIterate = 65535  'max integer value
+     For Count = IntCeiling(Intensity) To MaxIterate
+          SngCount = Count
+          B = ErlangB(SngCount, Intensity)
+          If (B <= Blocking) Then Exit For
+     Next Count
+     If Count = MaxIterate Then Count = 0  'did not find the answer so return as error
+NBExit:
+     NBTrunks = Count
+     Exit Function
+
+NBError:
+    Count = 0
+    Resume NBExit
+    
+End Function
+'-----------------------------------------------------------------------
+Public Function NumberTrunks(Servers As Single, Intensity As Single) As Long
+'Copyright |fffd| T&C Limited 1996, 1999, 2000
+'This formula gives the maximum number of telephone trunks required to
+' handle the answered and queuing calls. (up to a maximum of 255)
+' Servers = Number of agents
+' Intensity = Arrival rate of calls / Completion rate of calls
+'   Arrival rate = the number of calls arriving per hour
+'   Completion rate = the number of calls completed per hour
+Dim B As Single, Server As Single
+Dim Count As Long, MaxIterate As Long
+     
+On Error GoTo TrunkError
+     If (Servers < 0) Or (Intensity < 0) Then
+          NumberTrunks = 0
+          Exit Function
+     End If
+     MaxIterate = 65535  'max integer value
+     For Count = IntCeiling(Servers) To MaxIterate
+          Server = Count
+          B = ErlangB(Server, Intensity)
+          If B < 0.001 Then Exit For
+     Next Count
+TrunkExit:
+     NumberTrunks = Count
+     Exit Function
+     
+TrunkError:
+    Count = 0
+    Resume TrunkExit
+     
+End Function
+Public Function Servers(Blocking As Single, Intensity As Single) As Single
+'Copyright |fffd| T&C Limited 1996, 1999
+'The Servers formula calculates the number of servers required to
+' service the given traffic intensity with the given blocking factor.
+' Blocking = The blocking factor requires <1, e.g. 0.80 = 80%
+' Intensity = Arrival rate of calls / Completion rate of calls
+'   Arrival rate = the number of calls arriving per hour
+'   Completion rate = the number of calls completed per hour
+Dim Val As Single, Last As Single, B As Single
+Dim Count As Long
+On Error GoTo ServersError
+     If (Blocking < 0) Or (Intensity < 0) Then
+          Servers = 0
+          Exit Function
+     End If
+     Val = Intensity
+     Last = 1
+     B = 1
+     Count = 0
+     While (B > Blocking) And (B > 0.001)
+          Count = Count + 1
+          B = (Val * Last) / (Count + (Val * Last))
+          Last = B
+     Wend
+ServersExit:
+     Servers = Count
+     Exit Function
+     
+ServersError:
+     Count = 0
+     Resume ServersExit
+End Function
+Public Function Traffic(Servers As Single, Blocking As Single) As Single
+'Copyright |fffd| T&C Limited 1996, 1999, 2001
+'The Traffic formula calculates the traffic intensity in erlangs for the number
+' of servers (trunks) with the given blocking factor.
+' Servers = Number of trunks handling the traffic, whole number
+' Blocking = The blocking factor achieved <1, e.g. 0.10 = 10%
+Dim B As Single, Incr As Single, Trunks As Single
+Dim MaxI As Single
+
+On Error GoTo TrafficError
+    Trunks = Fix(Servers)
+    If Servers < 1 Or Blocking < 0 Then
+        Traffic = 0
+        Exit Function
+    End If
+'find a reasonable maximum number to work with
+    MaxI = Trunks
+    B = ErlangB(Servers, MaxI)
+    Do While B < Blocking
+        MaxI = MaxI * 2
+        B = ErlangB(Servers, MaxI)
+    Loop
+'find the increment to start with (multiple of 10)
+    Incr = 1
+    Do While Incr <= (MaxI) / 100
+        Incr = Incr * 10
+    Loop
+    Traffic = LoopingTraffic(Trunks, Blocking, Incr, MaxI, 0)
+    Exit Function
+TrafficError:
+    Traffic = 0
+    Exit Function
+End Function
+'-----------------------------------------------------------------------
+' Private functions, used within the module
+'-----------------------------------------------------------------------
+Private Function LoopingTraffic(Trunks As Single, Blocking As Single, Increment As Single, MaxIntensity As Single, MinIntensity As Single) As Single
+'This function tries values from MinIntensity to MaxIntensity, increasing the traffic by Increment until
+'the approximate blocking is found, processing then loops with stepping of Increment/10 (e.g. 10, 1, 0.1, 0.01, 0.001)
+'until the value is found to the precision required (defined by global constant MaxAccuracy)
+Dim Incr As Single, LoopNo As Integer
+Dim B As Single, MinI As Single, MaxI As Single, Intensity As Single
+
+On Error GoTo LoopTError
+    MinI = MinIntensity
+    MaxI = MaxIntensity
+    B = ErlangB(Trunks, MinI)
+    If B = Blocking Then
+        LoopingTraffic = MinI
+        Exit Function
+    End If
+    Incr = Increment
+    Intensity = MinI
+    LoopNo = 0
+'Large numbers for trunks caused locking as precision of single variable Intensity is reduced with very high values
+' added maxloop protection
+    Do While Incr >= MaxAccuracy And LoopNo < MaxLoops
+        B = ErlangB(Trunks, Intensity)
+        If B > Blocking Then
+            MaxI = Intensity
+            Incr = Incr / 10
+            Intensity = MinI
+        End If
+        MinI = Intensity
+        Intensity = Intensity + Incr
+        LoopNo = LoopNo + 1
+    Loop
+LoopTExit:
+    LoopingTraffic = MinI
+    Exit Function
+    
+LoopTError:
+    MinI = 0
+    Resume LoopTExit
+End Function
+'-----------------------------------------------------------------------
+Private Function Secs(Amount As Single) As Integer
+Attribute Secs.VB_ProcData.VB_Invoke_Func = " \n14"
+'Convert a number of hours into seconds
+Dim S As Integer
+
+     S = Fix(Amount * 3600 + 0.5)
+     Secs = S
+End Function
+'-----------------------------------------------------------------------
+Private Function MinMax(Val As Single, Min As Single, Max As Single) As Single
+Attribute MinMax.VB_ProcData.VB_Invoke_Func = " \n14"
+'Apply minimum and maximum bounds to a value
+    MinMax = Val
+    If Val < Min Then MinMax = Min
+    If Val > Max Then MinMax = Max
+End Function
+'-----------------------------------------------------------------------
+Private Function IntCeiling(Val As Single) As Long
+'Ceiling function, rounds to the nearest numerically higher integer
+Dim S As Single
+
+On Error GoTo CeilError
+        If Val < 0 Then
+            S = Val - 0.9999
+        Else
+            S = Val + 0.9999
+        End If
+CeilExit:
+        IntCeiling = Fix(S)
+        Exit Function
+        
+CeilError:
+        S = 0
+        Resume CeilExit
+End Function
+'-----------------------------------------------------------------------
+' Call Center functions
+'-----------------------------------------------------------------------
+Public Function Abandon(Agents As Single, AbandonTime As Single, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1996, 1999, 2001
+'Calculate the percentage of calls which will abandon after the time given
+' Agents is the number of agents available
+' AbandonTime is time in seconds before the caller will abandon
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Aband As Single, C As Single, Server As Single, Utilisation As Single
+
+On Error GoTo AbandError
+
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Server = Agents
+     Utilisation = TrafficRate / Server
+     If Utilisation >= 1 Then Utilisation = 0.99
+     C = ErlangC(Server, TrafficRate)
+'take all queueing calls (C) and subtract calls queueing within abandontime
+     Aband = C * Exp((TrafficRate - Server) * (AbandonTime / AHT))
+AbandExit:
+     Abandon = MinMax(Aband, 0, 1)
+     Exit Function
+     
+AbandError:
+    Aband = 0
+    Resume AbandExit
+
+End Function
+'-----------------------------------------------------------------------
+Public Function Agents(SLA As Single, ServiceTime As Integer, CallsPerHour As Single, AHT As Integer) As Long
+Attribute Agents.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copyright |fffd| T&C Limited 1996, 1999, 2001
+'Calculate the number of agents required to service a given number of calls to meet the service level
+' SLA is the % of calls to be answered within the ServiceTime period  e.g. 0.95  (95%)
+' ServiceTime is target answer time in seconds e.g. 15
+' CallsPerHour is the number of calls received in one hour period
+' AHT is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Erlangs As Single, Utilisation As Single, C As Single, SLQueued As Single
+Dim NoAgents As Long, MaxIterate As Long, Count As Long
+Dim Server As Single
+
+On Error GoTo AgentsError
+     If SLA > 1 Then SLA = 1
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+'calculate the number of Erlangs/hours
+     Erlangs = Fix((BirthRate * (AHT)) / 3600 + 0.5)
+'start at number of agents for 100% utilisation
+     If Erlangs < 1 Then NoAgents = 1 Else NoAgents = Int(Erlangs)
+     Utilisation = TrafficRate / NoAgents
+'now get real and get number below 100%
+     While Utilisation >= 1
+          NoAgents = NoAgents + 1
+          Utilisation = TrafficRate / NoAgents
+     Wend
+     MaxIterate = NoAgents * 100
+'try each number of agents until the correct SLA is reached
+     For Count = 1 To MaxIterate
+          Utilisation = TrafficRate / NoAgents
+          If Utilisation < 1 Then
+               Server = NoAgents
+               C = ErlangC(Server, TrafficRate)
+'find the level of SLA with this number of agents
+               SLQueued = 1 - C * Exp((TrafficRate - Server) * ServiceTime / AHT)
+               If SLQueued < 0 Then SLQueued = 0
+               If SLQueued >= SLA Then Count = MaxIterate
+'put a limit on the accuracy required (it will never actually get to 100%)
+               If SLQueued > (1 - MaxAccuracy) Then Count = MaxIterate
+          End If
+          If Count <> MaxIterate Then NoAgents = NoAgents + 1
+     Next Count
+    
+AgentsExit:
+    Agents = NoAgents
+    Exit Function
+    
+AgentsError:
+    NoAgents = 0
+    Resume AgentsExit
+End Function
+'-----------------------------------------------------------------------
+Public Function AgentsASA(ASA As Single, CallsPerHour As Single, AHT As Integer) As Long
+'Copyright |fffd| T&C Limited 1996, 1999, 2001
+'Calculate the number of agents required to service a given number of calls to meet the average speed of answer
+' ASA is the Average Speed of Answer in seconds
+' CallsPerHour is the number of calls received in one hour period
+' AHT is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Erlangs As Single, Utilisation As Single, C As Single, AnswerTime As Single
+Dim NoAgents As Long, MaxIterate As Long, Count As Long
+Dim Server As Single
+
+On Error GoTo AgentAError
+     If ASA < 0 Then ASA = 1
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+'calculate the number of Erlangs/hours
+     Erlangs = Fix((BirthRate * (AHT)) / 3600 + 0.5)
+'start at number of agents for 100% utilisation
+     If Erlangs < 1 Then NoAgents = 1 Else NoAgents = Int(Erlangs)
+     Utilisation = TrafficRate / NoAgents
+'now get real and get number below 100%
+     While Utilisation >= 1
+          NoAgents = NoAgents + 1
+          Utilisation = TrafficRate / NoAgents
+     Wend
+     MaxIterate = NoAgents * 100
+'try each number of agents until the correct ASA is reached
+     For Count = 1 To MaxIterate
+          Server = NoAgents
+          Utilisation = TrafficRate / NoAgents
+          C = ErlangC(Server, TrafficRate)
+          AnswerTime = C / (Server * DeathRate * (1 - Utilisation))
+          If (AnswerTime * 3600) <= ASA Then Count = MaxIterate
+          If Count <> MaxIterate Then NoAgents = NoAgents + 1
+     Next Count
+    
+AgentAExit:
+    AgentsASA = NoAgents
+    Exit Function
+    
+AgentAError:
+    NoAgents = 0
+    Resume AgentAExit
+End Function
+'-----------------------------------------------------------------------
+Public Function NBAgents(CallsPH As Single, AvgSA As Single, AvgHT As Integer) As Long
+
+Dim B As Single, Count As Long, SngCount As Single
+Dim MaxIterate As Long
+
+On Error GoTo NBError
+     MaxIterate = 0
+     If (CallsPH <= 0) Or (AvgSA <= 0) Or (AvgHT <= 0) Then
+          NBAgents = 0
+          Exit Function
+     End If
+     MaxIterate = 65535  'max integer value
+     For Count = 1 To MaxIterate
+          SngCount = Count
+          B = ASA(SngCount, CallsPH, AvgHT)
+          If (B <= AvgSA) Then Exit For
+     Next Count
+     If Count = MaxIterate Then Count = 0  'did not find the answer so return As Error
+
+NBExit:
+     NBAgents = Count
+     Exit Function
+
+NBError:
+    Count = 0
+    Resume NBExit
+    
+End Function
+'-----------------------------------------------------------------------
+Public Function ASA(Agents As Single, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1996, 1999
+'Calculate the Average Speed to Answer for the given number of agents
+' Agents is the number of agents available
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Utilisation As Single, AnswerTime As Single, AveAnswer As Integer
+Dim C As Single, Server As Single
+
+On Error GoTo ASAError
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Server = Agents
+     Utilisation = TrafficRate / Server
+     If Utilisation >= 1 Then Utilisation = 0.99
+     C = ErlangC(Server, TrafficRate)
+     AnswerTime = C / (Server * DeathRate * (1 - Utilisation))
+     AveAnswer = Secs(AnswerTime)
+ASAExit:
+     ASA = AveAnswer
+     Exit Function
+     
+ASAError:
+    AveAnswer = 0
+    Resume ASAExit
+
+End Function
+'--------------------------------------------------------------
+Public Function CallCapacity(NoAgents As Single, SLA As Single, ServiceTime As Integer, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1999, 2001
+'Calculate the number of calls which can be handled by the given number of agents whilst still
+'  achieving the grade of service
+' NoAgents is the number of agents available
+' SLA is target percentage of calls to be answered e.g. 0.85 = 85%
+' ServiceTime is target answer time in seconds e.g. 15
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim Calls As Single, xAgent As Long, MaxIterate As Long, xNoAgent As Long
+
+On Error GoTo CapacityError
+'Make sure Number of agents available is a whole number
+    xNoAgent = Fix(NoAgents)
+'Maximum number of calls at 100% utilisation
+    Calls = IntCeiling(3600 / AHT) * xNoAgent
+    xAgent = Agents(SLA, ServiceTime, Calls, AHT)
+'Now count down call load until the current level of agents is met
+    While (xAgent > xNoAgent) And (Calls > 0)
+        Calls = Calls - 1
+        xAgent = Agents(SLA, ServiceTime, Calls, AHT)
+    Wend
+CapacityExit:
+    CallCapacity = Calls
+    Exit Function
+    
+CapacityError:
+    Calls = 0
+    Resume CapacityExit
+    
+End Function
+'-----------------------------------------------------------------------
+Public Function FractionalAgents(SLA As Single, ServiceTime As Integer, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1996, 1999, 2000, 2001
+'Calculate the number of agents required to service a given number of calls to meet the service level
+' SLA is the % of calls to be answered within the ServiceTime period  e.g. 0.95  (95%)
+' ServiceTime is target answer time in seconds e.g. 15
+' CallsPerHour is the number of calls received in one hour period
+' AHT is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Erlangs As Single, Utilisation As Single, C As Single, SLQueued As Single
+Dim LastSLQ As Single, Fract As Single, OneAgent As Single, NoAgentsSng As Single
+Dim NoAgents As Long, MaxIterate As Long, Count As Long
+Dim Server As Single
+
+On Error GoTo FAgentsError
+     If SLA > 1 Then SLA = 1
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+'calculate the number of Erlangs/hours
+     Erlangs = Fix((BirthRate * (AHT)) / 3600 + 0.5)
+'start at number of agents for 100% utilisation
+     If Erlangs < 1 Then NoAgents = 1 Else NoAgents = Int(Erlangs)
+     Utilisation = TrafficRate / NoAgents
+'now get real and get number below 100%
+     While Utilisation >= 1
+          NoAgents = NoAgents + 1
+          Utilisation = TrafficRate / NoAgents
+     Wend
+     SLQueued = 0
+     MaxIterate = NoAgents * 100
+'try each number of agents until the correct SLA is reached
+     For Count = 1 To MaxIterate
+          LastSLQ = SLQueued
+          Utilisation = TrafficRate / NoAgents
+          If Utilisation < 1 Then
+               Server = NoAgents
+               C = ErlangC(Server, TrafficRate)
+'find the level of SLA with this number of agents
+               SLQueued = 1 - C * Exp((TrafficRate - Server) * ServiceTime / AHT)
+               If SLQueued < 0 Then SLQueued = 0
+               If SLQueued > 1 Then SLQueued = 1
+               If SLQueued >= SLA Then Count = MaxIterate
+'put a limit on the accuracy required (it will never actually get to 100%)
+               If SLQueued > (1 - MaxAccuracy) Then Count = MaxIterate
+          End If
+          If Count <> MaxIterate Then NoAgents = NoAgents + 1
+     Next Count
+     NoAgentsSng = NoAgents
+     If SLQueued > SLA Then  'any fraction to calculate?
+        OneAgent = SLQueued - LastSLQ  ' difference made by 1 agent
+        Fract = SLA - LastSLQ  'difference we want
+        NoAgentsSng = (Fract / OneAgent) + (NoAgents - 1)
+     End If
+FAgentsExit:
+    FractionalAgents = NoAgentsSng
+    Exit Function
+    
+FAgentsError:
+    NoAgentsSng = 0
+    Resume FAgentsExit
+End Function
+'-----------------------------------------------------------------------
+Public Function FractionalCallCapacity(NoAgents As Single, SLA As Single, ServiceTime As Integer, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1999, 2001
+'Calculate the number of calls which can be handled by the given number of agents whilst still
+'  achieving the grade of service
+' NoAgents is the number of fractional agents available
+' SLA is target percentage of calls to be answered e.g. 0.85 = 85%
+' ServiceTime is target answer time in seconds e.g. 15
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim Calls As Single, xAgent As Single, MaxIterate As Long, xNoAgent As Single
+
+On Error GoTo FCapacityError
+'xNoAgent is single so we can accept fractional numbers
+    xNoAgent = NoAgents
+'Maximum number of calls at 100% utilisation
+    Calls = IntCeiling(3600 / AHT * xNoAgent)
+    xAgent = FractionalAgents(SLA, ServiceTime, Calls, AHT)
+'Now count down call load until the current level of agents is met
+    While (xAgent > xNoAgent) And (Calls > 0)
+        Calls = Calls - 1
+        xAgent = FractionalAgents(SLA, ServiceTime, Calls, AHT)
+    Wend
+FCapacityExit:
+    FractionalCallCapacity = Calls
+    Exit Function
+    
+FCapacityError:
+    Calls = 0
+    Resume FCapacityExit
+    
+End Function
+'-----------------------------------------------------------------------
+Public Function Queued(Agents As Single, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1996, 1999
+'Calculate the percentage of calls which will queue for the given number of agents
+' Agents is the number of agents available
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Q As Single, Server As Single
+
+On Error GoTo QError
+
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Server = Agents
+'just use ErlangC
+     Q = ErlangC(Server, TrafficRate)
+QExit:
+     Queued = MinMax(Q, 0, 1)
+     Exit Function
+     
+QError:
+    Q = 0
+    Resume QExit
+
+End Function
+'-----------------------------------------------------------------------
+Public Function QueueSize(Agents As Single, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1996, 1999
+'Calculate the average queue size for a given number of agents
+' Agents is the number of agents available
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim C As Single, Server As Single, QSize As Single, Utilisation As Single
+
+On Error GoTo QSizeError
+
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Server = Agents
+     Utilisation = TrafficRate / Server
+     If Utilisation >= 1 Then Utilisation = 0.99
+     C = ErlangC(Server, TrafficRate)
+     QSize = (Utilisation * C) / (1 - Utilisation)
+QSizeExit:
+     QueueSize = Fix(QSize + 0.5)
+     Exit Function
+     
+QSizeError:
+    QSize = 0
+    Resume QSizeExit
+
+End Function
+'-----------------------------------------------------------------------
+Public Function QueueTime(Agents As Single, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1996, 1999
+'Calculate the average queue time for those calls which will queue
+' Agents is the number of agents available
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim C As Single, Server As Single, QTime As Single, Utilisation As Single
+
+On Error GoTo QTimeError
+
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Server = Agents
+     Utilisation = TrafficRate / Server
+     If Utilisation >= 1 Then Utilisation = 0.99
+'calculate average in the queue time for queued calls
+     QTime = 1 / (Server * DeathRate * (1 - Utilisation))
+QTimeExit:
+     QueueTime = Secs(QTime)
+     Exit Function
+     
+QTimeError:
+    QTime = 0
+    Resume QTimeExit
+
+End Function
+'-----------------------------------------------------------------------
+Public Function ServiceTime(Agents As Single, SLA As Single, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1999
+'Calculate the average waiting time in which a given percentage of the calls will be answered
+' Agents is the number of agents available
+' SLA is target percentage of calls to be answered e.g. 0.85 = 85%
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single, Utilisation As Single
+Dim C As Single, Server As Single, STime As Single, QTime As Single
+Dim Ag As Integer, Adjust As Single
+
+On Error GoTo STimeError
+
+     Adjust = 0
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     C = ErlangC(Agents, TrafficRate)
+     If C < (1 - SLA) Then Error 9999 'none will be queued so return 0 seconds
+     Server = Agents
+     Utilisation = TrafficRate / Server
+     If Utilisation >= 1 Then Utilisation = 0.99
+     QTime = 1 / (Server * DeathRate * (1 - Utilisation)) * 3600
+     STime = QTime * (1 - ((1 - SLA) / C))
+'check rounding errors here and adjust
+     Ag = Module1.Agents(SLA, Fix(STime), CallsPerHour, AHT)
+     If Ag <> Agents Then Adjust = 1
+STimeExit:
+     ServiceTime = Fix(STime + Adjust)
+     Exit Function
+     
+STimeError:
+    STime = 0
+    Adjust = 0
+    Resume STimeExit
+
+End Function
+'-----------------------------------------------------------------------
+Public Function SLA(Agents As Single, ServiceTime As Single, CallsPerHour As Single, AHT As Integer) As Single
+'Copyright |fffd| T&C Limited 1996, 1999, 2001
+'Calculate the service level achieved for the given number of agents
+' Agents is the number of agents available
+' ServiceTime is target answer time in seconds e.g. 15
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Utilisation As Single, C As Single, SLQueued As Single
+Dim Server As Single
+On Error GoTo SLAError
+
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Utilisation = TrafficRate / Agents
+     If Utilisation >= 1 Then Utilisation = 0.99
+     Server = Agents
+     C = ErlangC(Server, TrafficRate)
+'now calculate SLA % as those not queuing plus those queuing
+'revised formula with thanks to Tim Bolte and J|fffd|rn Lodahl for their input
+     SLQueued = 1 - C * Exp((TrafficRate - Server) * ServiceTime / AHT)
+
+SLAExit:
+     SLA = MinMax(SLQueued, 0, 1)
+     Exit Function
+     
+SLAError:
+    SLQueued = 0
+    Resume SLAExit
+
+End Function
+'-----------------------------------------------------------------------
+Public Function Trunks(Agents As Single, CallsPerHour As Single, AHT As Integer) As Long
+Attribute Trunks.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copyright |fffd| T&C Limited 1996, 1999
+'Calculate the number of telephone lines required to service a given number of calls and agents
+' Agents is the number of agents available
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Utilisation As Single, C As Single, AnswerTime As Single
+Dim NoTrunks As Long
+Dim Server As Single, R As Single
+          
+On Error GoTo TrunkError
+
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Server = Agents
+     Utilisation = TrafficRate / Server
+     If Utilisation >= 1 Then Utilisation = 0.99
+     C = ErlangC(Server, TrafficRate)
+     AnswerTime = C / (Server * DeathRate * (1 - Utilisation))
+'now calculate new intensity using average life time of call (queuing time + handle time)
+     R = BirthRate / (3600 / (AHT + Secs(AnswerTime)))
+     NoTrunks = NumberTrunks(Server, R)
+'if there is traffic (Trafficrate>0) then always return at least 1 trunk
+     If (NoTrunks < 1) And (TrafficRate > 0) Then NoTrunks = 1
+TrunkExit:
+     Trunks = NoTrunks
+     Exit Function
+     
+TrunkError:
+    NoTrunks = 0
+    Resume TrunkExit
+End Function
+'-----------------------------------------------------------------------
+Public Function Utilisation(Agents As Single, CallsPerHour As Single, AHT As Integer) As Single
+Attribute Utilisation.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copyright |fffd| T&C Limited 1996, 1999
+'Calculate the utilisation percentage for the given number of agents
+' Agents is the number of agents available
+' CallsPerHour is the number of calls received in one hour period
+' AHT (Average handle time) is the call duration including after call work in seconds  e.g 180
+Dim BirthRate As Single, DeathRate As Single, TrafficRate As Single
+Dim Util As Single
+
+On Error GoTo UtilError
+
+     BirthRate = CallsPerHour
+     DeathRate = 3600 / AHT
+'calculate the traffic intensity
+     TrafficRate = BirthRate / DeathRate
+     Util = TrafficRate / Agents
+
+UtilExit:
+     Utilisation = MinMax(Util, 0, 1)
+     Exit Function
+     
+UtilError:
+    Util = 0
+    Resume UtilExit
+
+End Function
+'-----------------------------------------------------------------------
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' *'jP
+
+INQUEST-PP=macro

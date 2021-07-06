@@ -1,0 +1,4368 @@
+Attribute VB_Name = "Module1"
+Public c As Range
+Public Question As String
+Public rowOff As Integer
+Public colOff As Integer
+Public rowStart As Integer
+Public iRow As Integer
+Public PolyAlert As Boolean
+Public done As Boolean
+
+Sub PolyCheckA()
+
+    Set c = Cells.Find(What:=Question, After:=Cells(rowStart, 1), LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:= _
+        xlNext, MatchCase:=False)
+    
+    If c.Offset(rowOff, colOff) = "" Or c.Offset(rowOff, colOff) = "[select]" Then
+    
+        MsgBox "Alert: For this document to be accepted by P&G, additional questions about polymeric " _
+        & "constituents must be answered. An unanswered question has been detected, and this document may " _
+        & "not be acceptable as is. Please answer all questions before submitting to avoid delays.", vbExclamation, "Polyermic Constituents"
+        
+        PolyAlert = True
+        
+    End If
+
+End Sub
+
+Sub PolyCheckB()
+
+    Do Until done = True
+        
+        Set c = Nothing
+        
+        Set c = Cells.Find(What:=Question, After:=Cells(iRow + 1, 1), LookIn:= _
+            xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:= _
+            xlNext, MatchCase:=False)
+        
+        If Not c Is Nothing And c.Row > iRow Then
+        
+            If c.Offset(rowOff, colOff) = "" Or c.Offset(rowOff, colOff) = "[select]" Then
+    
+                MsgBox "Alert: For this document to be accepted by P&G, additional questions about polymeric " _
+                & "constituents must be answered. An unanswered question has been detected, and this document may " _
+                & "not be acceptable as is. Please answer all questions before submitting to avoid delays."
+                
+               PolyAlert = True
+                
+            End If
+            
+            iRow = c.Row
+
+        Else
+        
+            done = True
+        
+        End If
+    
+    Loop
+    
+    done = False
+
+
+End Sub
+
+
+Sub PageSetup()
+
+'   Prompts user for type and quantity of page to create, then sets up page based
+'   on customization for that type
+
+  '----------------------------------'
+  ' Declarations and initializations '
+  '----------------------------------'
+  
+  Dim i As Long
+  Dim strType As String, strHighestWSName As String, strNewWSName As String, strWorksheetType As String
+  Dim strEmbeddedWorkbook As String, strRegInfo As String
+  Dim wsNew As Worksheet, wsData As Worksheet, wsTemplate As Worksheet
+  Dim lngNumCopies As Long, lngHighestExisting As Long, lngNum As Long
+  Dim rngImpuritiesType As Range, rngImpuritiesImpurity As Range, rngImpuritiesCAS As Range
+  Dim rngAddnlType As Range, rngAddnlText As Range, rngAddnlOrder As Range, rngAddnlStart As Range
+  Dim rngFind As Range, rng As Range
+  Dim strText As String
+  Dim lngFirstRow As Long, lngRow As Long
+  Dim rngMergeRows As Range
+  Dim rngHeader As Range
+  Dim rngPrint As Range
+  Dim obj As OLEObject
+  Dim t As Range
+  Dim btn As Button
+  Dim blProtectContents
+  
+  ' Turn off screen updating to speed up processing
+  With Application
+    .ScreenUpdating = False
+    '.Calculation = xlCalculationManual
+  End With
+  
+  ' Turn off Workbook_SheetChange monitoring
+  blIgnoreChanges = True
+
+
+'Clear the Print_Control table
+Sheets("Print_Control").Range(("C6"), ("Q30")).Value = ""
+
+
+
+
+  '------------------------------------------------------------------'
+  ' Show form for user to select number and type of sheets to create '
+  '------------------------------------------------------------------'
+  
+  With FormNumber
+    
+    ' Display form
+    '.Show
+    
+    ' Get page type (blank means user cancelled or didn't select a type)
+    'strType = .cmboTypes.Value
+    If Len(strType) = 0 Then GoTo EXIT_SUB
+    
+    ' Get number of copies to make
+    On Error Resume Next
+      lngNumCopies = CInt(.txtQuantity)
+      If lngNumCopies = 0 Then lngNumCopies = 1
+    On Error GoTo 0
+    
+    strWorksheetType = "Assembled"
+    'strEmbeddedWorkbook = .lblEmbeddedWorkbook.Caption
+    'strRegInfo = .lblRegInfo.Caption
+    
+  End With
+    
+  ' Figure out where to put the new page
+  lngHighestExisting = FindHighestWorksheet
+  
+  If lngHighestExisting > 0 Then
+    strHighestWSName = strNewWSNamePart & CStr(lngHighestExisting)
+  Else
+    strHighestWSName = strInstructionsWS
+  End If
+  
+  ' Make sure it's possible to unprotect the sheet, otherwise abort
+  Set wsTemplate = Worksheets(strWorksheetType)
+  blProtectContents = wsTemplate.ProtectContents
+  
+  If blProtectContents Then
+    If Not UnprotectSheet(wsTemplate, "Unable to create a new sheet.") Then GoTo EXIT_SUB
+  End If
+  
+  ' Create new page by copying template
+  With Worksheets(strWorksheetType)
+    .Visible = True
+    .Copy After:=Worksheets(strHighestWSName)
+  End With
+    
+  ' Rename page and set ws variable
+  strNewWSName = strNewWSNamePart & CStr(lngHighestExisting) + 1
+  ActiveSheet.Name = strNewWSName
+    
+  Set wsNew = Worksheets(strNewWSName)
+
+  ' Set title
+  wsNew.Range(strFormulatedTitle) = strType
+
+  If strWorksheetType = strAssembledWS Then GoTo ASSEMBLED_SHEET
+
+  '-----------------------------------------------------------'
+  ' Add default Unintentional Constituents based on page type '
+  '-----------------------------------------------------------'
+  
+  Set rngImpuritiesType = GetTableCol(strImpurities, strImpuritiesType)
+  Set rngImpuritiesImpurity = GetTableCol(strImpurities, strImpuritiesImpurity)
+  Set rngImpuritiesCAS = GetTableCol(strImpurities, strImpuritiesCAS)
+
+  lngNum = Application.WorksheetFunction.CountIf(rngImpuritiesType, strType)
+
+  ' Insert new rows if necessary
+  For i = lngConstituentRows + 1 To lngNum
+    FindRow(strFormulatedImpuritiesInsert, wsNew).Insert
+  Next i
+  
+  ' Merge inserted cells
+  Set rngHeader = FindRow(strFormulatedImpuritiesRow, wsNew)
+  Set rngHeader = GrowOrShrinkRange(Intersect(wsNew.UsedRange, rngHeader), 1)
+  Set rngMergeRows = GetRangeFromIdentifiers(wsNew, strFormulatedImpuritiesRow, strFormulatedImpuritiesInsert, 1, 0)
+  MergeRows rngMergeRows, rngHeader
+
+  ' Add constituents and CASs
+  lngFirstRow = FindRow(strFormulatedImpuritiesRow, wsNew).Row
+  Set rngFind = rngImpuritiesType.Find(strType, LookIn:=xlFormulas) ' Note: This must be done AFTER any FindRow calls or Find function will reset!!
+  Set wsData = Worksheets(strDataWS)
+    
+  With wsNew
+    For i = 1 To lngNum
+      .Cells(lngFirstRow, lngFormulatedImpuritiesChemCol).Offset(i, 0) = wsData.Cells(rngFind.Row, rngImpuritiesImpurity.Column)
+      .Cells(lngFirstRow, lngFormulatedImpuritiesCASCol).Offset(i, 0) = wsData.Cells(rngFind.Row, rngImpuritiesCAS.Column)
+      Set rngFind = rngImpuritiesType.FindNext(rngFind)
+    Next i
+  End With
+    
+  '--------------------------------------------'
+  ' Add Additional Quesions based on page type '
+  '--------------------------------------------'
+  
+  Set rngAddnlType = GetTableCol(strAddnl, strAddnlType)
+  Set rngAddnlText = GetTableCol(strAddnl, strAddnlText)
+  Set rngAddnlOrder = GetTableCol(strAddnl, strAddnlOrder)
+  Set rngAddnlStart = FindRow(strFormulatedAddnlStart, wsNew).Cells(1, 1)
+  
+  lngNum = Application.WorksheetFunction.CountIf(rngAddnlType, strType)
+  
+  If lngNum = 0 Then
+  
+    wsNew.Range(FindRow(strFormulatedAddnlStart, wsNew), FindRow(strFormulatedAddnlEnd, wsNew)).Hidden = True
+    
+    GoTo NO_QUESTIONS
+    
+  End If
+  
+  ' Insert new rows if necessary
+  For i = lngAddnlQuestionRows + 1 To lngNum
+  
+    FindRow(strFormulatedAddnlStart, wsNew).Offset(1, 0).Insert CopyOrigin:=xlFormatFromRightOrBelow
+    
+
+  Next i
+
+  ' Add Text
+  With wsData
+    For Each rng In rngAddnlType
+      If rng = strType Then
+      
+        ' Get values
+        lngRow = .Cells(rng.Row, rngAddnlOrder.Column)
+        strText = .Cells(rng.Row, rngAddnlText.Column)
+        
+        ' Add text
+        rngAddnlStart.Offset(lngRow, 2) = strText 'new code
+        
+      End If
+    Next rng
+  End With
+  
+  ' Merge inserted cells
+  Set rngHeader = FindRow(strFormulatedAddnlStart, wsNew)
+  Set rngHeader = GrowOrShrinkRange(Intersect(wsNew.UsedRange, rngHeader), 1)
+  Set rngMergeRows = GetRangeFromIdentifiers(wsNew, strFormulatedAddnlStart, strFormulatedAddnlEnd, 1, 0)
+  MergeRows rngMergeRows, rngHeader
+  
+  
+    'add buttons to insert evidence
+    
+    Range("A1").Select
+    
+    Set c = Cells.Find(What:="Additional", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+        rowStart = c.Row
+        colNum = 6 'evidence column
+        
+    Set c = Cells.Find(What:="AdditionalEnd", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+        rowEnd = c.Row
+        
+    countRow = rowEnd - rowStart
+    
+    For i = 1 To countRow
+    
+        
+        Set t = ActiveSheet.Cells(rowStart + i, colNum)
+    
+        Set btn = ActiveSheet.Buttons.Add(t.Left + 1.5, t.Top, t.Width - 2, t.Height - 2) 'requires small adjustments to fit properly in cell
+    
+        With btn
+    
+            .OnAction = "insertPDF1"
+      
+            .Caption = "Insert"
+      
+        End With
+    
+    Next i
+  
+  
+  
+NO_QUESTIONS:
+
+  '-----------------------------------------------------------'
+  ' Unhide Regulatory Inventory Information section as needed '
+  '-----------------------------------------------------------'
+  If strRegInfo Then GetRangeFromIdentifiers(wsNew, strFormulatedRegulatory, strFormulatedRegulatoryEnd).Hidden = False
+    
+ASSEMBLED_SHEET: ' the Assembled version of the sheet skips all the customization
+  
+  '----------------------------'
+  ' Finalize and create copies '
+  '----------------------------'
+  
+  ' Remove extra embedded workbooks if necessary
+  For Each obj In wsNew.OLEObjects
+    With obj
+      If .OLEType = xlOLEEmbed Then
+        If .Name <> strEmbeddedWorkbook Then
+          .Delete
+        End If
+      End If
+    End With
+  Next obj
+  
+  ' Reprotect sheets
+  If blProtectContents Then
+    Worksheets(strWorksheetType).Protect strDefaultPassword
+    wsNew.Protect strDefaultPassword
+  End If
+  
+  'Enable check for polymeric constituents (causes error if active before sheet is done building_
+  ActiveSheet.Range("A1").Value = "TRUE"
+  
+  
+  ' Create copies
+  strHighestWSName = wsNew.Name
+  For i = 2 To lngNumCopies
+    wsNew.Copy After:=Worksheets(strHighestWSName)
+    strHighestWSName = strNewWSNamePart & CStr(lngHighestExisting + i)
+    ActiveSheet.Name = strHighestWSName
+    
+    
+    ' Setup Print_Control table
+    Set rngPrint = Sheets("Print_Control").Range("E45").End(xlUp).Offset(1, 0)
+    rngPrint.Value = strHighestWSName
+    rngPrint.Offset(1, 0).Value = strHighestWSName
+    rngPrint.Offset(2, 0).Value = strHighestWSName
+    
+    'Supplier Information print info
+    rngPrint.Offset(, -2).Value = "Assembled Material"
+    rngPrint.Offset(, -1).Value = "On"
+    rngPrint.Offset(, 2).Value = "P"
+    rngPrint.Offset(, 3).Value = "A4"
+    rngPrint.Offset(, 4).Value = "1"
+    rngPrint.Offset(, 6).Value = "1"
+    rngPrint.Offset(, 7).Value = "0"
+    rngPrint.Offset(, 8).Value = "0"
+    rngPrint.Offset(0, 10).NumberFormat = "General"
+    rngPrint.Offset(0, 10).Formula = "=" & strHighestWSName & "!B1:J58" 'initial range
+    
+    'Ingredients print info
+    rngPrint.Offset(1, -2).Value = "Assembled Material"
+    rngPrint.Offset(1, -1).Value = "On"
+    rngPrint.Offset(1, 2).Value = "L"
+    rngPrint.Offset(1, 3).Value = "A4"
+    rngPrint.Offset(1, 4).Value = "1"
+    rngPrint.Offset(1, 6).Value = "1"
+    rngPrint.Offset(1, 7).Value = "0"
+    rngPrint.Offset(1, 8).Value = "0"
+    rngPrint.Offset(1, 10).NumberFormat = "General"
+    rngPrint.Offset(1, 10).Formula = "=" & strHighestWSName & "!B60:0183" 'initial range
+    
+    'Additional, Regional, Regulatory, and Poly print info
+    rngPrint.Offset(2, -2).Value = "Assembled Material"
+    rngPrint.Offset(2, -1).Value = "On"
+    rngPrint.Offset(2, 2).Value = "P"
+    rngPrint.Offset(2, 3).Value = "A4"
+    rngPrint.Offset(2, 4).Value = "1"
+    rngPrint.Offset(2, 5).Value = "1"
+    rngPrint.Offset(2, 7).Value = "0"
+    rngPrint.Offset(2, 8).Value = "0"
+    rngPrint.Offset(2, 10).NumberFormat = "General"
+    rngPrint.Offset(2, 10).Formula = "=" & strHighestWSName & "!B186:J195" 'initial range
+
+    
+  Next i
+  
+  ' Rehide sheet
+  Worksheets(strWorksheetType).Visible = False
+  
+
+   MsgBox "New forms have been added."
+  
+
+EXIT_SUB:
+  ' Turn on screen updating
+  With Application
+    .ScreenUpdating = True
+    .Calculation = xlCalculationAutomatic
+  End With
+  
+  
+  ' Turn off Workbook_SheetChange monitoring
+  blIgnoreChanges = False
+
+End Sub
+
+Sub insertPDF1()
+
+Dim buttonName As Object
+Dim rowNum, colNum As Integer
+Dim ojbI As Object
+Dim rngI As Range
+Dim vFile As String
+
+ActiveSheet.Unprotect ("RMI")
+
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+    
+    Cells(rowNum, colNum).Select
+    Set rngI = ActiveCell
+    
+    'Application.Dialogs(xlDialogInsertObject).Show
+    
+    vFile = Application.GetOpenFilename("All Files,*.*", Title:="Find file to insert")
+    
+    On Error GoTo Error
+    Set objI = ActiveSheet.OLEObjects.Add(Filename:=vFile, Link:=False, DisplayAsIcon:=True, IconLabel:=vFile)
+    
+    objI.Height = rngI.Height
+    objI.Width = rngI.Width
+    
+    objI.ShapeRange.Fill.Visible = msoTrue
+    objI.ShapeRange.Fill.Solid
+    objI.ShapeRange.Fill.ForeColor.SchemeColor = 53
+
+
+
+ActiveSheet.Protect Password:="RMI"
+
+Error:
+End Sub
+
+
+Sub ClearPrintControl()
+
+'   Removed unused sheets from Print_Control
+
+Dim rcell As Range
+
+    For Each rcell In Sheets("Print_Control").Range("Print_Area")
+    
+        If Left(rcell.Offset(0, 9).Formula, 5) = "=#REF" Or Left(rcell.Offset(0, 9).Formula, 5) = "" Then
+        
+            Range(rcell.Offset(0, -3), rcell.Offset(0, 11)).Cells.ClearContents
+            
+        End If
+        
+    Next rcell
+
+
+End Sub
+
+Sub CenterOnCell(OnCell As Range)
+
+Dim VisRows As Integer
+Dim VisCols As Integer
+
+Application.ScreenUpdating = False
+'
+' Switch over to the OnCell's workbook and worksheet.
+'
+    OnCell.Parent.Parent.Activate
+    OnCell.Parent.Activate
+'
+' Get the number of visible rows and columns for the active window.
+'
+    With ActiveWindow.VisibleRange
+        VisRows = .Rows.Count
+        VisCols = .Columns.Count
+    End With
+'
+' Now, determine what cell we need to GOTO. The GOTO method will
+' place that cell reference in the upper left corner of the screen,
+' so that reference needs to be VisRows/2 above and VisCols/2 columns
+' to the left of the cell we want to center on. Use the MAX function
+' to ensure we're not trying to GOTO a cell in row <=0 or column <=0.
+'
+    With Application
+        .GoTo Reference:=OnCell.Parent.Cells( _
+            .WorksheetFunction.Max(1, OnCell.Row + _
+            (OnCell.Rows.Count / 2) - (VisRows / 2)), _
+            .WorksheetFunction.Max(1, OnCell.Column + _
+            (OnCell.Columns.Count / 2) - _
+            .WorksheetFunction.RoundDown((VisCols / 2), 0))), _
+         Scroll:=True
+    End With
+
+OnCell.Select
+Application.ScreenUpdating = True
+
+End Sub
+Attribute VB_Name = "ReferencesAndConstants"
+Option Explicit
+
+' Worksheet Names
+Public Const strDataWS As String = "BuildData"                                ' Worksheet containing all the tables, etc
+Public Const strFormulatedWS As String = "Formulated"                         ' Worksheet with the formulated template
+Public Const strAssembledWS As String = "Assembled"                           ' Worksheet with the assembled template
+Public Const strInstructionsWS As String = "Instructions"                     ' Worksheet with the instructions on it
+
+' Table Names
+Public Const strPageTypes As String = "tblPageTypes"                          ' Table with all the chemical types
+Public Const strPageTypesType As String = "Type"                              '   Types column
+Public Const strPageTypesWorksheetType As String = "WorksheetType"            '   Worksheet type (assembled/formulated) column
+Public Const strPageTypesEmbeddedWorkbook As String = "EmbeddedWorkbook"      '   Workbook object name to use
+Public Const strPageTypesRegInfo As String = "RegInfo"                        '   Whether to unhide Regulatory Information section (Dyes only right now)
+Public Const strPageTypesDescription As String = "Description"                '   Description column
+
+Public Const strImpurities As String = "tblImpurities"                        ' Table with all the impurities listed by type
+Public Const strImpuritiesType As String = "PageType"                         '   Type name
+Public Const strImpuritiesImpurity As String = "Impurity"                     '   Impurity name
+Public Const strImpuritiesCAS As String = "CAS"                               '   CAS #
+
+Public Const strAddnl As String = "tblAdditionalQuestions"                    ' Table with all the additional questions
+Public Const strAddnlType As String = "PageType"                              '   Chemical type name
+Public Const strAddnlText As String = "Text"                                  '   Text value to be displayed
+Public Const strAddnlOrder As String = "Order"                                '   Order in which values are to be displayed
+
+' Cell references
+Public Const strFormulatedTitle As String = "$A$2"                            ' Title of page where chemical type goes
+Public Const strFormulatedIntentional As String = "Intentional"               ' Row that contains headers for Intentionals
+Public Const strFormulatedIntentionalInsert As String = "InsertIntentional"   ' Col A identifier for row to insert additional Intentionals
+Public Const lngFormulatedIntentionalChemCol As Long = 3                      ' First "Chemical Name" cell in Intentionally added section (Column C)
+Public Const strFormulatedImpuritiesRow As String = "Unintentional"           ' Row that contains headers for Impurities
+Public Const lngFormulatedImpuritiesChemCol As Long = 3                       ' First "Chemical Name" cell in Impurities section (Column C)
+Public Const lngFormulatedImpuritiesCASCol As Long = 5                        ' First "CAS #" cell in Impurities section (Column D)
+Public Const strFormulatedImpuritiesInsert As String = "insertUnintentional"  ' Column A identifier for row to insert impurities
+Public Const strFormulatedAddnlStart As String = "Additional"                 ' Col A identifier for row to insert additional questions
+Public Const strFormulatedAddnlEnd As String = "AdditionalEnd"                ' Col A identifier for last row in Additional Question section
+Public Const strFormulatedPolymer As String = "Polymer"                       ' Row that contains headers for Polymers
+Public Const strFormulatedPolymerEnd As String = "PolymerEnd"                 ' Row that contains last row in polymers questions
+Public Const strFormulatedTrackPolymers As String = "$A$1"                    ' Cell that contains true/false telling Workbook_SheetChange to run
+Public Const strFormulatedRegulatory As String = "RegulatoryInventoryStart"   ' Cell that contains first row of regulatory questions (Dyes only right now)
+Public Const strFormulatedRegulatoryEnd As String = "RegulatoryInventoryEnd"  ' Cell that contains last row of regulatory questions (dyes only right now)
+Public Const strFormulatedRegional As String = "Regional"                     ' Regional Constituent Information section top
+Public Const strFormulatedRegionalEnd As String = "RegionalEnd"               ' Regional constituent information section bottom
+Public Const strFormulatedMfgInsert As String = "InsertMfg"                   ' Manufacturer address insert location
+
+Public Const strAssembledNameAddress As String = "$A$2"                       ' Cell containing "Articles or Product Formulas" (to tell what kind of sheet it is)
+Public Const lngAssembledIntentionalChemCol As Long = 3                       ' First "Trade Name" cell in Intentionally added section (Column C)
+Public Const lngAssembledIntentionalClassCol As Long = 12                     ' First "Material Class" cell in Intentionally added section (Column L)
+
+Public Const strMaterialClass As String = "Material_Class"                    ' Range name of "Material Class" list -- list of all material classes
+Public Const strMaterialClassPolymer As String = "Matl_Class_Polymer"         ' Range name of "Material Class Polymer" list -- whether given material class is a polymer
+
+' Miscellaneous
+Public Const strNewWSNamePart As String = "RM"                                ' Title of RM sheets, not including sequential number
+Public Const lngConstituentRows As Long = 16                                  ' Number of default unintentional constituent rows
+Public Const lngAddnlQuestionRows As Long = 1                                 ' Number of default Additional Question rows
+Public Const strDefaultPassword As String = ""                                ' Password to use as default when programmatically locking pages
+Public Const strPolymerClasses As String = "Silicon"
+
+' Other Public variables
+Public blIgnoreChanges As Boolean                                             ' Tells Workbook_SheetChange whether or not to monitor (defaults to False on load)
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Worksheet_Activate()
+
+    ActiveSheet.Range("D32").Select
+
+
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+
+Dim myCell, returnCell, rngTarget, iCell, cel As Range
+Dim chemName, CAS As String
+Dim Checkbox As Integer
+Dim ws As String
+Dim UndoList As String
+
+
+Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+On Error GoTo ErrorHandle
+
+
+'Last Updates
+'   01/04/17 --  Modified error checking code for substitute materials
+'   01/05/17 --  Added step to check changes to levels for substitute materials
+'   01/05/17 --  Improved code to handle multiple targets and ctrl+v pasting
+'   02/03/17 --  Modified for format change
+
+
+'**************************Steps****************************
+'   1)  Detrmine range of intentional chemical names
+'   2)  Determine if change was made to intentional chemical names
+'   3)  Determine if change was made to intentional CAS numbers
+'   4)  Determine if material is a substitute for another material (Column J)
+'   5)  Check for changes to levels for substitute materials
+'   6)  Determine if Upper Level value > 100
+'   7)  Check for changes to midpoint options and apply to target levels
+'   8)  Check if Unintentional Ingredient is not intentionally added
+
+'*************************************************************
+    
+    
+'   Variable used to return user to active cell after change event
+    Set returnCell = ActiveCell
+    
+    On Error Resume Next
+    
+    'Get the undo List to capture the last action performed by user
+    UndoList = Application.CommandBars("Standard").Controls("&Undo").List(1)
+     
+    If UndoList = "" Then UndoList = "Paste"
+     
+    'Check if the last action should trigger the change event
+    If Left(UndoList, 5) = "Paste" Or UndoList = "Clear" Or Left(UndoList, 6) = "Typing" Or UndoList = "Entry" Then
+    
+     
+    'Here the code starts to cycle through each cell in the target
+    
+    For Each cel In Target
+
+
+
+'*** 1) Determine the range for the Intentional Constuents (Table A)
+
+    
+    Set c = Cells.Find(What:="Intentional", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+    If Not c Is Nothing Then
+    
+        iStart = c.Row + 2
+    
+        iCol = c.Column + 2
+        
+        Range("A1").Activate
+        
+        Set c = Cells.Find(What:="insertIntentional", After:=ActiveCell, LookIn:= _
+            xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+            xlNext, MatchCase:=False, SearchFormat:=False)
+            
+        If Not c Is Nothing Then
+    
+            iEnd = c.Row - 1
+    
+        End If
+        
+        'Set data validation list size for substitute material column
+        
+        rowEnd = ActiveSheet.Cells(iEnd, 3).End(xlUp).Row
+        
+ContinueA:
+
+        temp = "=OFFSET($C$" & iStart & ",0,0,COUNTA($C$" & iStart & ":$C$" & rowEnd & ")+COUNTBLANK($C$" & iStart & ":$C$" & rowEnd & "),1)"
+        
+        ActiveSheet.Unprotect ("RMI")
+        
+        With Range(ActiveSheet.Cells(iStart, 10), Cells(iEnd, 10)).Validation
+            .Delete
+            .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, Operator:= _
+            xlBetween, Formula1:=temp
+            .IgnoreBlank = True
+            .InCellDropdown = True
+            .InputTitle = ""
+            .ErrorTitle = ""
+            .InputMessage = ""
+            .ErrorMessage = ""
+            .ShowInput = True
+            .ShowError = True
+        End With
+    
+        'ActiveSheet.Protect Password:="RMI"
+
+    End If
+    
+    
+'*** 2) If change was made to Intentional Constituents then ask about polymers
+            
+        If Not Intersect(Target, Range(Cells(iStart, iCol), Cells(iEnd, iCol))) Is Nothing Then
+        
+            On Error GoTo skipthis 'error skipped when deleting multiple chemical names at once
+            Application.DisplayAlerts = False
+                
+            chemName = cel
+        
+            If chemName <> "" And Range("A1").Value = "True" Then
+        
+                Checkbox = MsgBox("Is " & "'" & chemName & "'" & " considered a polymer?" & Chr(10) & Chr(10) _
+                    & "If ""Yes,"" the chemical will be added to the Polymeric question set below.", _
+                    vbYesNo, "Additional Information is Requested")
+        
+                If Checkbox = vbYes Then
+            
+                    ActiveSheet.Unprotect ("RMI")
+                    
+                    'First, verify that this polymer is not already listed in poly section
+                    
+                    Set c = Cells.Find(What:=chemName, After:=Range("rngPolySec"), LookIn:= _
+                        xlValues, LookAt:=xlWhole, SearchOrder:=xlByRows, SearchDirection:= _
+                        xlNext, MatchCase:=False, SearchFormat:=False)
+                    
+                    If Not c Is Nothing Then
+                    
+                        iRow = c.Row
+                        
+                        If iRow > Range("rngPolySec").Row Then
+                    
+                            MsgBox "" & chemName & " is already listed in the polymeric section."
+                            
+                            GoTo skipthis
+                            
+                        End If
+                        
+                    End If
+                    
+                    'Add polymer to polymeric question section
+            
+                    Call ThisWorkbook.NewPolyAssembled
+                
+                    Range("A1").Activate
+                
+                    Set c = Cells.Find(What:="insertPoly", After:=ActiveCell, LookIn:= _
+                        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                        xlNext, MatchCase:=False, SearchFormat:=False)
+                
+                    iRow = c.Row
+                    iCol = c.Column
+                
+                    Cells(iRow - 50, 4).Value = chemName
+                            
+                    returnCell.Select
+                
+                
+                ElseIf Checkbox = vbNo Then
+            
+                    'do nothing
+            
+                End If
+        
+            End If
+        
+        End If
+            
+ 
+        
+        
+ '*** 3) If change was made to Intentional CAS numbers then check if it's in the polymers section
+            
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 2), Cells(iEnd, iCol + 2))) Is Nothing Then
+        
+        CAS = Target.Value
+        chemName = Target.Offset(0, -2).Value
+        
+        
+        Set c = Cells.Find(What:=chemName, After:=Range("rngPolySec"), LookIn:= _
+            xlValues, LookAt:=xlWhole, SearchOrder:=xlByRows, SearchDirection:= _
+            xlNext, MatchCase:=False)
+            
+            iRow = c.Row
+            
+        If Not c Is Nothing And iRow > Range("rngPolySec").Row Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            iRow = c.Row + 2
+            iCol = c.Column
+            
+            Cells(iRow, iCol).Value = CAS
+            
+             'ActiveSheet.Protect Password:="RMI"
+            
+        End If
+        
+        returnCell.Select
+        
+    End If
+    
+    
+'*** 4) Determine if material is a substitute for another material (Column J)
+    
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 7), Cells(iEnd, iCol + 7))) Is Nothing Then
+    
+        If cel.Value <> "" Then
+        
+            If cel.Value = cel.Offset(0, -7).Value Then
+            
+                MsgBox "Material cannot be a substitue for itself.", vbExclamation, "Substitute Materials"
+                
+                cel.Value = ""
+                
+                GoTo skipthis
+                
+            End If
+        
+        
+            If cel.Offset(0, -3) <> "" Or cel.Offset(0, -2) <> "" Or cel.Offset(0, -1) <> "" Then
+            
+                ActiveSheet.Unprotect ("RMI")
+            
+                cel.Offset(0, -3).Value = ""
+                cel.Offset(0, -2).Value = ""
+                cel.Offset(0, -1).Value = ""
+                      
+                cel.Offset(0, -3).Locked = True
+                cel.Offset(0, -2).Locked = True
+                cel.Offset(0, -1).Locked = True
+                
+                
+                
+                MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+                
+            
+            End If
+            
+        Else
+        
+            cel.Offset(0, -3).Locked = False
+            cel.Offset(0, -2).Locked = False
+            cel.Offset(0, -1).Locked = False
+        
+        
+        End If
+   
+    
+    End If
+    
+    
+'*** 5) Check for changes to levels for substitute materials
+    
+    'Lower Level
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 4), Cells(iEnd, iCol + 4))) Is Nothing Then
+    
+        If Cells(Target.Row, 10) <> "" Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            cel.Value = ""
+
+            MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+            
+        
+        End If
+        
+    End If
+    
+    'Target Level
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 5), Cells(iEnd, iCol + 5))) Is Nothing Then
+    
+        If Cells(Target.Row, 10) <> "" Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            cel.Value = ""
+
+            MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+            
+        
+        End If
+    
+    End If
+    
+    'Upper Level
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 6), Cells(iEnd, iCol + 6))) Is Nothing Then
+    
+        If Cells(Target.Row, 10) <> "" Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            cel.Value = ""
+
+            MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+            
+        
+        End If
+        
+    End If
+    
+    
+'*** 6) Determine if Upper Level value > 100
+    
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 6), Cells(iEnd, iCol + 6))) Is Nothing Then
+    
+        If cel.Value > 100 Then
+        
+            MsgBox "Upper Levels cannot be greater than 100%.", vbExclamation, "Error"
+            
+            Target.Value = ""
+        
+        End If
+        
+    End If
+    
+    
+    
+'*** 7) Determine which answer is selected for midpoints
+
+    If Not Intersect(Target, Range("rngMidpoint")) Is Nothing Then
+    
+        If Target <> "" Then
+    
+            ActiveSheet.Unprotect ("RMI")
+            Application.EnableEvents = False
+            
+            'A) use midpoints for targets (no normalization error checking)
+            
+            If Left(Range("rngMidpoint").Value, 1) = "A" Then
+        
+                'setup range
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                Set c = Cells.Find(What:="Unintentional Ingredients", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowEnd = c.Row - 3
+                
+                x = rowEnd - rowStart
+                
+                'set cells to 'calculation' style
+                
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Interior.color = 15921906
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Font.color = 32250
+                
+                'lock cells
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Locked = True
+                
+                'set formula for target level cells
+                
+                For i = 0 To x
+                
+                    Range("H" & rowStart).Formula = "=IFERROR(AVERAGE(G" & rowStart & ",I" & rowStart & "),"""")"
+                    
+                    rowStart = rowStart + 1
+                
+                Next i
+                
+                'reset rowStart variable
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                'set formula for target level total
+                
+                Range("H" & rowEnd + 1).Formula = "=Sum(H" & rowStart & ":H" & rowEnd & ")"
+                
+                Range("rngTargets").Locked = True
+                
+                Range("rngMidpoint").Offset(0, 1).Value = ""
+                
+           'B) use midpoints for targets (normalization error checking active)
+           
+            ElseIf Left(Range("rngMidpoint").Value, 1) = "B" Then
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                Set c = Cells.Find(What:="Unintentional Ingredients", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowEnd = c.Row - 3
+                
+                x = rowEnd - rowStart
+                
+                'set cells to 'calculation' style
+                
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Interior.color = 15921906
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Font.color = 32250
+                
+                'lock cells
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Locked = True
+                
+                For i = 0 To x
+                
+                    Range("H" & rowStart).Formula = "=IFERROR(AVERAGE(G" & rowStart & ",I" & rowStart & "),"""")"
+                    
+                    rowStart = rowStart + 1
+                
+                Next i
+                
+                Range("rngMidpoint").Select
+            
+                Set c = Nothing
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 1
+                
+                Range("H" & rowEnd + 1).Formula = "=Sum(H" & rowStart + 2 & ":H" & rowEnd & ")"
+                
+                Range("rngTargets").Locked = True
+                
+                Range("rngMidpoint").Offset(0, 1).Value = "Normalization will not occur until error checking is performed."
+            
+            'C) User will specify midoints manually
+            
+            ElseIf Left(Range("rngMidpoint").Value, 1) = "C" Then
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                Set c = Cells.Find(What:="Unintentional Ingredients", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowEnd = c.Row - 3
+                
+                x = rowEnd - rowStart
+                
+                'set cells to 'manual' style
+                
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Interior.color = 13434879
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Font.color = 0
+                
+                'unlock cells
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Locked = False
+                
+                For i = 0 To x
+                
+                    Range("H" & rowStart).Formula = ""
+                    
+                    rowStart = rowStart + 1
+                
+                Next i
+                
+                Range("rngMidpoint").Select
+            
+                Set c = Nothing
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 1
+                
+                Range("H" & rowEnd + 1).Formula = "=Sum(H" & rowStart + 2 & ":H" & rowEnd & ")"
+                
+                Range("rngMidpoint").Offset(0, 1).Value = ""
+                
+            Else
+            
+                Range("rngMidpoint").Offset(0, 1).Value = ""
+              
+            End If
+        
+        End If
+    
+    End If
+    
+    
+    
+'*** 8) Check if Unintentional Ingredient is not intentionally added
+
+    Set c = Cells.Find(What:="Unintentional", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlWhole, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+    
+    iStart = c.Row
+    
+    Set c = Cells.Find(What:="insertUnintentional", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlWhole, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+    
+    iEnd = c.Row
+    
+    If Not Intersect(Target, Range(Cells(iStart, 4), Cells(iEnd, 4))) Is Nothing Then
+    
+        If Target.Count = 1 Then
+    
+            If Target = "Not intentionally added" Then
+            
+                Target.Offset(0, 4) = 0
+                Target.Offset(0, 5) = "ppm"
+            
+            End If
+            
+        Else
+        
+            Set rngTarget = Target
+            
+            For Each iCell In rngTarget
+            
+                If iCell = "Not intentionally added" Then
+                
+                    iCell.Offset(0, 4) = 0
+                    iCell.Offset(0, 5) = "ppm"
+                
+                End If
+            
+            Next iCell
+        
+        
+        End If
+    
+    End If
+    
+    
+skipthis:
+
+
+    Next cel
+
+    End If
+
+    
+        
+'   end code
+
+    returnCell.Select
+        
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    ActiveSheet.Protect Password:="RMI"
+
+    Exit Sub
+
+ErrorHandle:
+
+    MsgBox "Error Detected If possible, continue with the information sheet. Please report this error to P&G.", vbExclamation, "Error Detected"
+
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    ActiveSheet.Protect Password:="RMI"
+
+    
+
+End Sub
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "Sheet8"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Worksheet_Activate()
+
+    ActiveSheet.Range("D32").Select
+
+
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+
+Dim myCell, returnCell, rngTarget, iCell, cel As Range
+Dim chemName, CAS As String
+Dim Checkbox As Integer
+Dim ws As String
+Dim UndoList As String
+
+
+Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+On Error GoTo ErrorHandle
+
+
+'Last Updates
+'   01/04/17 --  Modified error checking code for substitute materials
+'   01/05/17 --  Added step to check changes to levels for substitute materials
+'   01/05/17 --  Improved code to handle multiple targets and ctrl+v pasting
+'   02/03/17 --  Modified for format change
+
+
+'**************************Steps****************************
+'   1)  Detrmine range of intentional chemical names
+'   2)  Determine if change was made to intentional chemical names
+'   3)  Determine if change was made to intentional CAS numbers
+'   4)  Determine if material is a substitute for another material (Column J)
+'   5)  Check for changes to levels for substitute materials
+'   6)  Determine if Upper Level value > 100
+'   7)  Check for changes to midpoint options and apply to target levels
+'   8)  Check if Unintentional Ingredient is not intentionally added
+
+'*************************************************************
+    
+    
+'   Variable used to return user to active cell after change event
+    Set returnCell = ActiveCell
+    
+    On Error Resume Next
+    
+    'Get the undo List to capture the last action performed by user
+    UndoList = Application.CommandBars("Standard").Controls("&Undo").List(1)
+     
+    If UndoList = "" Then UndoList = "Paste"
+     
+    'Check if the last action should trigger the change event
+    If Left(UndoList, 5) = "Paste" Or UndoList = "Clear" Or Left(UndoList, 6) = "Typing" Or UndoList = "Entry" Then
+    
+     
+    'Here the code starts to cycle through each cell in the target
+    
+    For Each cel In Target
+
+
+
+'*** 1) Determine the range for the Intentional Constuents (Table A)
+
+    
+    Set c = Cells.Find(What:="Intentional", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+    If Not c Is Nothing Then
+    
+        iStart = c.Row + 2
+    
+        iCol = c.Column + 2
+        
+        Range("A1").Activate
+        
+        Set c = Cells.Find(What:="insertIntentional", After:=ActiveCell, LookIn:= _
+            xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+            xlNext, MatchCase:=False, SearchFormat:=False)
+            
+        If Not c Is Nothing Then
+    
+            iEnd = c.Row - 1
+    
+        End If
+        
+        'Set data validation list size for substitute material column
+        
+        rowEnd = ActiveSheet.Cells(iEnd, 3).End(xlUp).Row
+        
+ContinueA:
+
+        temp = "=OFFSET($C$" & iStart & ",0,0,COUNTA($C$" & iStart & ":$C$" & rowEnd & ")+COUNTBLANK($C$" & iStart & ":$C$" & rowEnd & "),1)"
+        
+        ActiveSheet.Unprotect ("RMI")
+        
+        With Range(ActiveSheet.Cells(iStart, 10), Cells(iEnd, 10)).Validation
+            .Delete
+            .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, Operator:= _
+            xlBetween, Formula1:=temp
+            .IgnoreBlank = True
+            .InCellDropdown = True
+            .InputTitle = ""
+            .ErrorTitle = ""
+            .InputMessage = ""
+            .ErrorMessage = ""
+            .ShowInput = True
+            .ShowError = True
+        End With
+    
+        'ActiveSheet.Protect Password:="RMI"
+
+    End If
+    
+    
+'*** 2) If change was made to Intentional Constituents then ask about polymers
+            
+        If Not Intersect(Target, Range(Cells(iStart, iCol), Cells(iEnd, iCol))) Is Nothing Then
+        
+            On Error GoTo skipthis 'error skipped when deleting multiple chemical names at once
+            Application.DisplayAlerts = False
+                
+            chemName = cel
+        
+            If chemName <> "" And Range("A1").Value = "True" Then
+        
+                Checkbox = MsgBox("Is " & "'" & chemName & "'" & " considered a polymer?" & Chr(10) & Chr(10) _
+                    & "If ""Yes,"" the chemical will be added to the Polymeric question set below.", _
+                    vbYesNo, "Additional Information is Requested")
+        
+                If Checkbox = vbYes Then
+            
+                    ActiveSheet.Unprotect ("RMI")
+                    
+                    'First, verify that this polymer is not already listed in poly section
+                    
+                    Set c = Cells.Find(What:=chemName, After:=Range("rngPolySec"), LookIn:= _
+                        xlValues, LookAt:=xlWhole, SearchOrder:=xlByRows, SearchDirection:= _
+                        xlNext, MatchCase:=False, SearchFormat:=False)
+                    
+                    If Not c Is Nothing Then
+                    
+                        iRow = c.Row
+                        
+                        If iRow > Range("rngPolySec").Row Then
+                    
+                            MsgBox "" & chemName & " is already listed in the polymeric section."
+                            
+                            GoTo skipthis
+                            
+                        End If
+                        
+                    End If
+                    
+                    'Add polymer to polymeric question section
+            
+                    Call ThisWorkbook.NewPolyAssembled
+                
+                    Range("A1").Activate
+                
+                    Set c = Cells.Find(What:="insertPoly", After:=ActiveCell, LookIn:= _
+                        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                        xlNext, MatchCase:=False, SearchFormat:=False)
+                
+                    iRow = c.Row
+                    iCol = c.Column
+                
+                    Cells(iRow - 50, 4).Value = chemName
+                            
+                    returnCell.Select
+                
+                
+                ElseIf Checkbox = vbNo Then
+            
+                    'do nothing
+            
+                End If
+        
+            End If
+        
+        End If
+            
+ 
+        
+        
+ '*** 3) If change was made to Intentional CAS numbers then check if it's in the polymers section
+            
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 2), Cells(iEnd, iCol + 2))) Is Nothing Then
+        
+        CAS = Target.Value
+        chemName = Target.Offset(0, -2).Value
+        
+        
+        Set c = Cells.Find(What:=chemName, After:=Range("rngPolySec"), LookIn:= _
+            xlValues, LookAt:=xlWhole, SearchOrder:=xlByRows, SearchDirection:= _
+            xlNext, MatchCase:=False)
+            
+            iRow = c.Row
+            
+        If Not c Is Nothing And iRow > Range("rngPolySec").Row Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            iRow = c.Row + 2
+            iCol = c.Column
+            
+            Cells(iRow, iCol).Value = CAS
+            
+             'ActiveSheet.Protect Password:="RMI"
+            
+        End If
+        
+        returnCell.Select
+        
+    End If
+    
+    
+'*** 4) Determine if material is a substitute for another material (Column J)
+    
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 7), Cells(iEnd, iCol + 7))) Is Nothing Then
+    
+        If cel.Value <> "" Then
+        
+            If cel.Value = cel.Offset(0, -7).Value Then
+            
+                MsgBox "Material cannot be a substitue for itself.", vbExclamation, "Substitute Materials"
+                
+                cel.Value = ""
+                
+                GoTo skipthis
+                
+            End If
+        
+        
+            If cel.Offset(0, -3) <> "" Or cel.Offset(0, -2) <> "" Or cel.Offset(0, -1) <> "" Then
+            
+                ActiveSheet.Unprotect ("RMI")
+            
+                cel.Offset(0, -3).Value = ""
+                cel.Offset(0, -2).Value = ""
+                cel.Offset(0, -1).Value = ""
+                      
+                cel.Offset(0, -3).Locked = True
+                cel.Offset(0, -2).Locked = True
+                cel.Offset(0, -1).Locked = True
+                
+                
+                
+                MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+                
+            
+            End If
+            
+        Else
+        
+            cel.Offset(0, -3).Locked = False
+            cel.Offset(0, -2).Locked = False
+            cel.Offset(0, -1).Locked = False
+        
+        
+        End If
+   
+    
+    End If
+    
+    
+'*** 5) Check for changes to levels for substitute materials
+    
+    'Lower Level
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 4), Cells(iEnd, iCol + 4))) Is Nothing Then
+    
+        If Cells(Target.Row, 10) <> "" Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            cel.Value = ""
+
+            MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+            
+        
+        End If
+        
+    End If
+    
+    'Target Level
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 5), Cells(iEnd, iCol + 5))) Is Nothing Then
+    
+        If Cells(Target.Row, 10) <> "" Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            cel.Value = ""
+
+            MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+            
+        
+        End If
+    
+    End If
+    
+    'Upper Level
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 6), Cells(iEnd, iCol + 6))) Is Nothing Then
+    
+        If Cells(Target.Row, 10) <> "" Then
+        
+            ActiveSheet.Unprotect ("RMI")
+        
+            cel.Value = ""
+
+            MsgBox "Lower Level, Target Level, and Upper Level values cannot be entered for substitue materials.", vbInformation, "Substitute Materials"
+            
+        
+        End If
+        
+    End If
+    
+    
+'*** 6) Determine if Upper Level value > 100
+    
+    If Not Intersect(Target, Range(Cells(iStart, iCol + 6), Cells(iEnd, iCol + 6))) Is Nothing Then
+    
+        If cel.Value > 100 Then
+        
+            MsgBox "Upper Levels cannot be greater than 100%.", vbExclamation, "Error"
+            
+            Target.Value = ""
+        
+        End If
+        
+    End If
+    
+    
+    
+'*** 7) Determine which answer is selected for midpoints
+
+    If Not Intersect(Target, Range("rngMidpoint")) Is Nothing Then
+    
+        If Target <> "" Then
+    
+            ActiveSheet.Unprotect ("RMI")
+            Application.EnableEvents = False
+            
+            'A) use midpoints for targets (no normalization error checking)
+            
+            If Left(Range("rngMidpoint").Value, 1) = "A" Then
+        
+                'setup range
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                Set c = Cells.Find(What:="Unintentional Ingredients", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowEnd = c.Row - 3
+                
+                x = rowEnd - rowStart
+                
+                'set cells to 'calculation' style
+                
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Interior.color = 15921906
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Font.color = 32250
+                
+                'lock cells
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Locked = True
+                
+                'set formula for target level cells
+                
+                For i = 0 To x
+                
+                    Range("H" & rowStart).Formula = "=IFERROR(AVERAGE(G" & rowStart & ",I" & rowStart & "),"""")"
+                    
+                    rowStart = rowStart + 1
+                
+                Next i
+                
+                'reset rowStart variable
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                'set formula for target level total
+                
+                Range("H" & rowEnd + 1).Formula = "=Sum(H" & rowStart & ":H" & rowEnd & ")"
+                
+                Range("rngTargets").Locked = True
+                
+                Range("rngMidpoint").Offset(0, 1).Value = ""
+                
+           'B) use midpoints for targets (normalization error checking active)
+           
+            ElseIf Left(Range("rngMidpoint").Value, 1) = "B" Then
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                Set c = Cells.Find(What:="Unintentional Ingredients", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowEnd = c.Row - 3
+                
+                x = rowEnd - rowStart
+                
+                'set cells to 'calculation' style
+                
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Interior.color = 15921906
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Font.color = 32250
+                
+                'lock cells
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Locked = True
+                
+                For i = 0 To x
+                
+                    Range("H" & rowStart).Formula = "=IFERROR(AVERAGE(G" & rowStart & ",I" & rowStart & "),"""")"
+                    
+                    rowStart = rowStart + 1
+                
+                Next i
+                
+                Range("rngMidpoint").Select
+            
+                Set c = Nothing
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 1
+                
+                Range("H" & rowEnd + 1).Formula = "=Sum(H" & rowStart + 2 & ":H" & rowEnd & ")"
+                
+                Range("rngTargets").Locked = True
+                
+                Range("rngMidpoint").Offset(0, 1).Value = "Normalization will not occur until error checking is performed."
+            
+            'C) User will specify midoints manually
+            
+            ElseIf Left(Range("rngMidpoint").Value, 1) = "C" Then
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 3
+                
+                Set c = Cells.Find(What:="Unintentional Ingredients", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowEnd = c.Row - 3
+                
+                x = rowEnd - rowStart
+                
+                'set cells to 'manual' style
+                
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Interior.color = 13434879
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Font.color = 0
+                
+                'unlock cells
+                Range(Cells(rowStart, 8), Cells(rowEnd, 8)).Locked = False
+                
+                For i = 0 To x
+                
+                    Range("H" & rowStart).Formula = ""
+                    
+                    rowStart = rowStart + 1
+                
+                Next i
+                
+                Range("rngMidpoint").Select
+            
+                Set c = Nothing
+                
+                Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                    xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                    xlNext)
+                    
+                rowStart = c.Row + 1
+                
+                Range("H" & rowEnd + 1).Formula = "=Sum(H" & rowStart + 2 & ":H" & rowEnd & ")"
+                
+                Range("rngMidpoint").Offset(0, 1).Value = ""
+                
+            Else
+            
+                Range("rngMidpoint").Offset(0, 1).Value = ""
+              
+            End If
+        
+        End If
+    
+    End If
+    
+    
+    
+'*** 8) Check if Unintentional Ingredient is not intentionally added
+
+    Set c = Cells.Find(What:="Unintentional", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlWhole, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+    
+    iStart = c.Row
+    
+    Set c = Cells.Find(What:="insertUnintentional", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlWhole, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+    
+    iEnd = c.Row
+    
+    If Not Intersect(Target, Range(Cells(iStart, 4), Cells(iEnd, 4))) Is Nothing Then
+    
+        If Target.Count = 1 Then
+    
+            If Target = "Not intentionally added" Then
+            
+                Target.Offset(0, 4) = 0
+                Target.Offset(0, 5) = "ppm"
+            
+            End If
+            
+        Else
+        
+            Set rngTarget = Target
+            
+            For Each iCell In rngTarget
+            
+                If iCell = "Not intentionally added" Then
+                
+                    iCell.Offset(0, 4) = 0
+                    iCell.Offset(0, 5) = "ppm"
+                
+                End If
+            
+            Next iCell
+        
+        
+        End If
+    
+    End If
+    
+    
+skipthis:
+
+
+    Next cel
+
+    End If
+
+    
+        
+'   end code
+
+    returnCell.Select
+        
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    ActiveSheet.Protect Password:="RMI"
+
+    Exit Sub
+
+ErrorHandle:
+
+    MsgBox "Error Detected If possible, continue with the information sheet. Please report this error to P&G.", vbExclamation, "Error Detected"
+
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    ActiveSheet.Protect Password:="RMI"
+
+    
+
+End Sub
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "Sheet9"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Public Sub Print_Reports()
+'
+' Print_Reports
+' Written Nov 2002
+' by Hui:
+'
+' Published at Chandoo.org
+' August 2011
+'
+               
+Dim PrintArea As Variant
+Dim i As Integer
+Dim j As Integer
+Dim sht As Long
+Dim Orientation As String
+Dim NCopies As Integer
+Dim PWide As Integer
+Dim PTall As Integer
+Dim Footer As String
+Dim Header As String
+Dim Sheets As String
+Dim gRow As Integer
+Dim gCol As Integer
+Dim PaperSize As String
+Dim msg As String
+Dim tmp As String
+
+Application.Calculation = xlCalculationManual
+
+PrintArea = Worksheets("Print_Control").Range("Print_Control").Value 'Loads the Print_Control Named Range
+               
+For j = 1 To [Copies].Value         'Loop through the No of Copies
+  For i = 1 To UBound(PrintArea, 1)   'Loop through the print area
+    If UCase(PrintArea(i, 3)) = "ON" Then    'When On is enabled Print using the settings
+
+      Header = PrintArea(i, 2)      'Set Header variable
+      Orientation = PrintArea(i, 6) 'Set Orientation variable
+      PWide = PrintArea(i, 8)       'Set Pages Wide variable
+      PTall = PrintArea(i, 9)       'Set Pages Tall variable
+      NCopies = PrintArea(i, 10)    'Set No Copies variable
+      gRow = PrintArea(i, 11)       'Set Row Group Expansion
+      gCol = PrintArea(i, 12)       'Set Column Group Expansion
+      Footer = PrintArea(i, 13)     'Set Footer variable
+              
+      'Set Paper size
+      If PrintArea(i, 7) = "A4" Then
+        PaperSize = 9
+      ElseIf PrintArea(i, 7) = "A3" Then
+        PaperSize = 8
+      ElseIf PrintArea(i, 7) = "A5" Then
+        PaperSize = 11
+      ElseIf PrintArea(i, 7) = "Legal" Then
+        PaperSize = 5
+      ElseIf PrintArea(i, 7) = "Letter" Then
+        PaperSize = 1
+      ElseIf PrintArea(i, 7) = "Quarto" Then
+        PaperSize = 15
+      ElseIf PrintArea(i, 7) = "Executive" Then
+        PaperSize = 7
+      ElseIf PrintArea(i, 7) = "B4" Then
+        PaperSize = 12
+      ElseIf PrintArea(i, 7) = "B5" Then
+        PaperSize = 13
+      ElseIf PrintArea(i, 7) = "10x14" Then
+        PaperSize = 16
+      ElseIf PrintArea(i, 7) = "11x17" Then
+        PaperSize = 17
+      ElseIf PrintArea(i, 7) = "Csheet" Then
+        PaperSize = 24
+      ElseIf PrintArea(i, 7) = "Dsheet" Then
+        PaperSize = 25
+      Else
+        PaperSize = 9 'Defaults to A4
+      End If
+      
+      'Activate the relevent Sheet
+      tmp = PrintArea(i, 4)
+      If Not SheetExists(tmp) Then
+        msg = "Sheet '" + PrintArea(i, 4) + "' not found." + vbCrLf + "Check the sheets Name."
+        msg = msg + vbCrLf + vbCrLf + "Processing will continue for remaining sheets."
+        tmp = MsgBox(msg, vbExclamation, "Sheet not Found")
+      
+      Else
+        'The sheet exists now process
+        Application.Sheets(PrintArea(i, 4)).Select
+        
+        If ActiveSheet.Type = -4167 Then 'Its a worksheet
+          
+          Application.ScreenUpdating = False
+          
+          ActiveSheet.PageSetup.PrintArea = PrintArea(i, 5) 'Select the relevent Print Area on the Sheet
+          ActiveSheet.Outline.ShowLevels RowLevels:=gRow, ColumnLevels:=gCol   'Set Outline Grouping
+          
+          With ActiveSheet.PageSetup    'Set print settings
+            .PrintTitleRows = ""
+            .PrintTitleColumns = ""
+            .LeftHeader = ""
+            .CenterHeader = Header    'User Defined Header (Shift to Left or Right as required)
+            .RightHeader = ""
+            .LeftFooter = Footer      'User Defined Footer (Shift to Left or Right as required)
+            .CenterFooter = ""
+            .RightFooter = ""
+            .LeftMargin = Application.InchesToPoints(0.1)
+            .RightMargin = Application.InchesToPoints(0.1)
+            .TopMargin = Application.InchesToPoints(0.4)
+            .BottomMargin = Application.InchesToPoints(0.4)
+            .HeaderMargin = Application.InchesToPoints(0)
+            .FooterMargin = Application.InchesToPoints(0)
+            .PrintHeadings = False
+            .PrintGridlines = False
+            .PrintComments = xlPrintNoComments
+            .CenterHorizontally = False
+            .CenterVertically = False
+            .Draft = False
+            .PaperSize = PaperSize      ' User Defined Paper Size
+            .FirstPageNumber = xlAutomatic
+            .Order = xlDownThenOver
+            .BlackAndWhite = False
+            .Zoom = False
+            .FitToPagesWide = PWide     'User Defined No Pages Wide
+            .FitToPagesTall = PTall     'User Defined No Pages Tall
+            .PrintErrors = xlPrintErrorsDisplayed
+          End With
+          
+          If Orientation = "L" Then     'User Defined Page Orientation
+            ActiveSheet.PageSetup.Orientation = xlLandscape
+          Else
+            ActiveSheet.PageSetup.Orientation = xlPortrait
+          End If
+          
+          Application.ScreenUpdating = True
+          'Finished setting up Worksheet goto Printing
+        
+        Else  'Its a Chart page
+          
+          Application.ScreenUpdating = False
+          
+          With ActiveChart.PageSetup
+            .LeftHeader = ""
+            .CenterHeader = Header
+            .RightHeader = ""
+            .LeftFooter = Footer
+            .CenterFooter = ""
+            .RightFooter = ""
+            .LeftMargin = Application.InchesToPoints(0.1)
+            .RightMargin = Application.InchesToPoints(0.1)
+            .TopMargin = Application.InchesToPoints(0.4)
+            .BottomMargin = Application.InchesToPoints(0.4)
+            .HeaderMargin = Application.InchesToPoints(0)
+            .FooterMargin = Application.InchesToPoints(0)
+            .ChartSize = xlScreenSize
+            .PrintQuality = 600
+            .CenterHorizontally = True
+            .CenterVertically = True
+            .Orientation = xlLandscape
+            .Draft = False
+            .OddAndEvenPagesHeaderFooter = False
+            .DifferentFirstPageHeaderFooter = False
+            .EvenPage.LeftHeader.Text = ""
+            .EvenPage.CenterHeader.Text = ""
+            .EvenPage.RightHeader.Text = ""
+            .EvenPage.LeftFooter.Text = ""
+            .EvenPage.CenterFooter.Text = ""
+            .EvenPage.RightFooter.Text = ""
+            .FirstPage.LeftHeader.Text = ""
+            .FirstPage.CenterHeader.Text = ""
+            .FirstPage.RightHeader.Text = ""
+            .FirstPage.LeftFooter.Text = ""
+            .FirstPage.CenterFooter.Text = ""
+            .FirstPage.RightFooter.Text = ""
+            .PaperSize = PaperSize
+            .FirstPageNumber = xlAutomatic
+            .BlackAndWhite = False
+            .Zoom = 100
+          End With
+          Application.ScreenUpdating = True
+        
+        End If
+        
+        ActiveWindow.SelectedSheets.PrintOut Copies:=NCopies, Collate:=True
+      
+      End If
+    End If
+  Next i
+Next j
+
+PrintArea = Null
+Application.Calculation = xlCalculationAutomatic
+Application.Sheets("Print_Control").Select
+
+End Sub
+
+
+Sub Setup_Print_Control_Named_Formula()
+'
+' Setup Print Control Named Range
+'
+ActiveWorkbook.Names.Add Name:="Print_Control", RefersToR1C1:= _
+    "=OFFSET(Print_Control!R4C2,1,,COUNTA(Print_Control!R5C2:R24C2),COUNTA(Print_Control!R4))"
+ActiveWorkbook.Names("Print_Control").Comment = _
+    "Used by the Print_Reports Subroutine"
+
+ActiveWorkbook.Names.Add Name:="Copies", RefersToR1C1:= _
+    "=Print_Control!R26C13"
+ActiveWorkbook.Names("Copies").Comment = _
+    "Specifies the No. of Copies for the Print_Reports Subroutine"
+End Sub
+
+
+Function SheetExists(SheetName As String) As Boolean
+' Returns TRUE if the sheet exists in the active workbook
+'
+' http://www.exceltip.com/st/Determine_if_a_sheet_exists_in_a_workbook_using_VBA_in_Microsoft_Excel/485.html
+'
+  SheetExists = False
+  On Error GoTo NoSuchSheet
+  If Len(Sheets(SheetName).Name) > 0 Then
+      SheetExists = True
+      Exit Function
+  End If
+NoSuchSheet:
+End Function
+
+Sub UpdatePrintArea()
+
+Dim strArea, strSheet, shtName, rng As String
+Dim cntSheetName As Integer
+Dim rcell As Range
+Dim startRow, endRow, rngSize As Integer
+Dim PrintControl As Range
+
+
+Application.ScreenUpdating = False
+
+
+
+'Get values for print area from relative formula
+
+Sheets("Print_Control").Select
+
+For Each rcell In Range("Print_Area")
+
+rcell.Select
+
+
+    If rcell.Offset(0, 9).Formula <> "" Then
+
+    strArea = rcell.Offset(0, 9).Formula
+    strSheet = "=" & rcell.Offset(0, -1).Value & "!"
+    rcell.Value = Replace(strArea, strSheet, "", 1)
+    
+
+    rng = rcell.Value
+    rngSize = Range(rng).Rows.Count
+    
+    
+    rcell.Offset(0, 10).Value = rngSize
+    rcell.Offset(0, 11).Value = rngSize / 50
+    
+    If rcell.Offset(0, 11).Value < 1 Then rcell.Offset(0, 11).Value = 1
+    If rcell.Offset(0, 11).Value > 1 And rcell.Offset(0, 11).Value < 2 Then rcell.Offset(0, 11).Value = 2
+    If rcell.Offset(0, 11).Value > 2 And rcell.Offset(0, 11).Value < 3 Then rcell.Offset(0, 11).Value = 3
+    If rcell.Offset(0, 11).Value > 3 And rcell.Offset(0, 11).Value < 4 Then rcell.Offset(0, 11).Value = 4
+        
+    
+    rcell.Offset(0, 4).Value = rcell.Offset(0, 11).Value
+    
+    
+    End If
+    
+    
+    
+Next rcell
+
+'resize Print_Control area
+
+startRow = 6
+endRow = Sheets("Print_Control").Range("C6").End(xlDown).Row
+
+Set PrintControl = Sheets("Print_Control").Range(Cells(startRow, 2), Cells(endRow, 14))
+
+ActiveWorkbook.Names.Add Name:="Print_Control", RefersTo:=PrintControl
+
+
+
+
+Application.ScreenUpdating = True
+
+End Sub
+
+
+
+Attribute VB_Name = "SupportFunctions"
+Option Explicit
+
+Function GetTableCol(strTableName As String, strColName As String) As Range
+' PURPOSE: Returns range representing a column within one of the named tables
+' WRITTEN: 2014-04-11
+' UPDATED: 2014-07-17 -- force Range.Find to look in Formulas
+' INPUTS : strTableName -- name of table (in Row 1 of BuildData worksheet)
+'          strColName -- name of column to return, not including header row
+' OUTPUT : GetTableCol -- range object representing all data in column. Returns Nothing if not found
+' NOTE   : Function assumes that first column in table has no null values
+
+  Dim ws As Worksheet
+  Dim rngFind As Range, rngHeaders As Range, rngFirstCol As Range
+  Dim rngOutput As Range
+  
+  ' Set worksheet
+  Set ws = Worksheets(strDataWS)
+  
+  ' Find table in question (name must be in first row)
+  Set rngFind = ws.Range("1:1").Find(strTableName, LookIn:=xlFormulas)
+  If rngFind Is Nothing Then GoTo EXIT_FUNCTION
+  
+  With rngFind
+    ' Find first column (used to determine total number of rows
+    Set rngFirstCol = .Offset(2, 0)
+    If Len(.Offset(3, 0)) > 0 Then Set rngFirstCol = ExpandRangeToEnd(rngFirstCol, xlDown)
+      
+    ' If first column is one desired, then we are done
+    If .Offset(1, 0) = strColName Then
+      Set rngOutput = rngFirstCol
+      GoTo EXIT_FUNCTION
+    End If
+    
+    ' Find desired column
+    Set rngHeaders = .Offset(1, 0)
+    If Len(.Offset(1, 1)) > 0 Then Set rngHeaders = ExpandRangeToEnd(rngHeaders, xlToRight)
+  
+  End With
+  
+  Set rngFind = rngHeaders.Find(strColName)
+  If rngFind Is Nothing Then GoTo EXIT_FUNCTION
+   
+  Set rngOutput = rngFind.Offset(1, 0).Resize(rngFirstCol.Rows.Count, 1)
+
+EXIT_FUNCTION:
+  Set GetTableCol = rngOutput
+End Function
+
+Function FindHighestWorksheet() As Long
+' PURPOSE: Find name of "highest" worksheet, i.e. highest numbered
+' WRITTEN: 2014-04-14
+' UPDATED:
+' INPUTS :
+' OUTPUT : Number of highest worksheet
+' NOTES  : Worksheets are named "Raw Material X", where X is a sequential number starting at 1
+
+  Dim ws As Worksheet
+  Dim lngMax As Long
+  
+  For Each ws In Worksheets
+    If Left(ws.Name, Len(strNewWSNamePart)) = strNewWSNamePart Then
+      lngMax = Application.WorksheetFunction.Max(lngMax, Mid(ws.Name, Len(strNewWSNamePart) + 1))
+    End If
+  Next ws
+  
+  FindHighestWorksheet = lngMax
+
+End Function
+
+Function ExpandRangeToEnd(rngStart As Range, Direction As XlDirection) As Range
+' PURPOSE: Used to expand a given range out to the end
+' WRITTEN: 2013-07-10
+' UPDATED:
+' INPUTS : rngStart -- one or more cells at the start of the range
+'          Direction -- which way to expand the range
+' OUTPUT : ExpandRangeToEnd -- range containing rngStart and continuing in Direction
+
+  Set ExpandRangeToEnd = rngStart.Worksheet.Range(rngStart, rngStart.End(Direction))
+  
+End Function
+
+Function FindRow(strIdentifier As String, ws As Worksheet) As Range
+' PURPOSE: Hidden row identifiers are kept in Column A of the sheet to keep track of rows that might move.
+' WRITTEN: 2014-04-24
+' UPDATED: 2014-07-17 -- force Range.Find to look in formulas (because values are blank for the hidden row identifiers)
+' INPUTS : strIdentifier -- string that identifies the row (placed in Column A) (Identifiers must be unique)
+'          ws -- worksheet to modify
+' OUTPUT : FindRow -- range object that contains the entire row (empty object if not found)
+
+  Dim rngOutput As Range, rngFind As Range
+  
+  Set rngFind = ws.Range("A:A").Find(strIdentifier, LookIn:=xlFormulas)
+  If Not rngFind Is Nothing Then Set rngOutput = rngFind.EntireRow
+  
+  Set FindRow = rngOutput
+
+End Function
+
+Function GetRangeFromIdentifiers(ws As Worksheet, strTopIdentifier As String, strEndIdentifier As String, _
+  Optional lngTopOffset As Long, Optional lngEndOffset As Long) As Range
+' PURPOSE: Gets a complete range given two different hidden identifiers
+' WRITTEN: 2014-05-01
+' UPDATED:
+' INPUTS : ws -- worksheet containing ranges to find
+'          strTopIdentifier -- identifier that comes first in the sheet (Column A)
+'          strEndIdentifier -- identifier that comes last in the sheet (Column A)
+'          (lngTopOffset) -- how many rows up or down from the top to include
+'          (lngEndOffset) -- how many rows up or down from the bottom to include
+' OUTPUT : GetRangeFromIdentifiers -- range object representing all the rows inbetween (and including) strTopIdentifier
+'            and strBottomIdentifier, modified by lngTopOffset and lngEndOffset
+
+  Dim rngOutput As Range
+  
+  On Error Resume Next
+  
+  Set rngOutput = FindRow(strTopIdentifier, ws).Offset(lngTopOffset, 0)
+  Set rngOutput = Range(rngOutput, FindRow(strEndIdentifier, ws).Offset(lngEndOffset, 0))
+  
+  Set GetRangeFromIdentifiers = rngOutput
+
+End Function
+
+Sub MergeRows(rngRows As Range, rngHeaders As Range)
+' PURPOSE: Uses the headers of a given data table to determine how to merge cells
+' WRITTEN: 2014-05-01
+' UPDATED:
+' INPUTS : rngRows -- row of data to be merged
+'          rngHeaders -- header row to copy merging
+' OUTPUT : (on sheet) -- row cells merged to match mergin in header
+
+  Dim rng As Range
+    
+  For Each rng In rngHeaders
+    With rng
+      If .MergeCells Then
+        If .Address = .MergeArea.Cells(1, 1).Address Then
+          Intersect(rngRows.EntireRow.Rows, .MergeArea.EntireColumn).Merge True
+        End If
+      End If
+    End With
+  Next rng
+
+End Sub
+
+Sub SetFormulatedWatchGrid(ws As Worksheet, ByRef rngIntentional As Range, ByRef rngUnintentional As Range)
+' PURPOSE: Set the cells to watch for changes. Selects an intentional and unintentional range, each 1 column wide by X rows tall
+' WRITTEN: 2014-05-01
+' UPDATED: 2014-??-?? -- changed from function to subroutine
+'          2014-08-19 -- Split from SetWatchGrid into Formulated and Assembled versions, since two were different enough
+' INPUTS : ws -- worksheet containing watched cells
+'          rngIntentional -- returned range containing Intentional Ingredient cells to be watched
+'          rngUnintentional -- returned range contianing Unintentional Ingredient cells to be watched
+' OUTPUT : rngIntentional, rngUnintentional -- returned ByRef
+
+  Dim rngOutput As Range
+  
+  On Error Resume Next
+  
+  ' Get intentional grid
+  Set rngOutput = GetRangeFromIdentifiers(ws, strFormulatedIntentional, strFormulatedIntentionalInsert, 1, 0)
+  Set rngIntentional = Intersect(rngOutput, ws.Columns(lngFormulatedIntentionalChemCol))
+
+  ' Get unintentional grid
+  Set rngOutput = GetRangeFromIdentifiers(ws, strFormulatedImpuritiesRow, strFormulatedImpuritiesInsert, 1, 0)
+  Set rngUnintentional = Intersect(rngOutput, ws.Columns(lngFormulatedImpuritiesChemCol))
+
+End Sub
+
+Sub SetAssembledWatchGrid(ws As Worksheet, rngClasses)
+' PURPOSE: Set the cells to watch for changes. Selects a Name range and Class range, each 1 column wide by X rows tall
+' WRITTEN: 2014-08-20
+' UPDATED:
+' INPUTS : ws -- worksheet containing watched cells
+'          rngclasses -- returned range contianing Ingredient Class cells to be watched
+' OUTPUT : rngIntentional, rngUnintentional -- returned ByRef
+
+  Dim rngOutput As Range
+  
+  ' Get material classes
+  Set rngOutput = GetRangeFromIdentifiers(ws, strFormulatedIntentional, strFormulatedIntentionalInsert, 1, 0)
+  Set rngClasses = Intersect(rngOutput, ws.Columns(lngAssembledIntentionalClassCol))
+
+End Sub
+
+Public Function Wrap(ByVal str As String, Optional ByVal strWrapChar As String = """") As String
+' PURPOSE: Wraps a given string in a given character
+' WRITTEN: 2013-11-07
+' UPDATED: 2014-02-27 -- change variables to ByVal to allow passing properly-typed Variants
+' INPUTS : str -- string to wrap
+'          strWrapChar -- string with which to wrap (default to quotation mark)
+' OUTPUT : Wrap -- output string
+
+  Wrap = strWrapChar & str & strWrapChar
+
+End Function
+
+Public Function GrowOrShrinkRange(rng As Range, Optional lngLeft As Long, Optional lngRight As Long, _
+                                  Optional lngTop As Long, Optional lngBottom As Long) As Range
+' PURPOSE: Expand or shrink the boundaries of a range
+' WRITTEN: 2014-05-05
+' UPDATED:
+' INPUTS : rng -- range to be changed                   <0    >0
+'          lngLeft -- amount to shift left border      left  rght
+'          lngRight -- amount to shift right border    left  rght
+'          lngTop -- amount to shift top border         up   down
+'          lngBottom -- amount to shift bottom border   up   down
+' OUTPUT : Expanded/shrunk range
+                                  
+  Dim rngOutput As Range
+  Dim lngHeight As Long, lngWidth As Long
+  
+  Set rngOutput = rng
+  
+  lngHeight = rngOutput.Rows.Count - lngTop + lngBottom
+  lngWidth = rngOutput.Columns.Count - lngLeft + lngRight
+  
+  Set rngOutput = rngOutput.Offset(lngTop, lngLeft)
+  Set rngOutput = rngOutput.Resize(lngHeight, lngWidth)
+  
+  Set GrowOrShrinkRange = rngOutput
+                                  
+End Function
+
+Sub InsertRow(ws As Worksheet, rngInsertRow As Range, rngHeader As Range)
+' PURPOSE: Operates the "insert row" buttons to add a new row to the sheet
+' WRITTEN: 2014-06-24 (generalized from individual command buttons)
+' UPDATED:
+' INPUTS : ws -- worksheet to which rows are being inserted
+'          rngInsertRow -- entire row above which new row is to be inserted
+'          range representing the header row, from which merged cells will be determined
+' OUTPUT : New row inserted onto sheet
+
+  Dim blProtectionMode As Boolean
+  
+  ' Keep button from being pressed on template
+  If ws.Name = strFormulatedWS Then GoTo EXIT_SUB
+  If ws.Name = strAssembledWS Then GoTo EXIT_SUB
+  
+  ' Check if worksheet is protected; if so, unprotect
+  blProtectionMode = ws.ProtectContents
+  
+  If blProtectionMode Then
+    If Not UnprotectSheet(ws, "Unable to insert a new row.") Then
+      blProtectionMode = False
+      GoTo EXIT_SUB
+    End If
+  End If
+     
+  ' Turn off tracking, screen updating
+  blIgnoreChanges = True
+  With Application
+    .ScreenUpdating = False
+    .Calculation = xlCalculationManual
+  End With
+
+  rngInsertRow.Insert CopyOrigin:=xlFormatFromLeftOrAbove
+  MergeRows rngInsertRow.Offset(-1, 0), rngHeader
+
+EXIT_SUB:
+  
+  ' Turn tracking, screen updating back on
+  blIgnoreChanges = False
+  
+  If blProtectionMode Then ws.Protect strDefaultPassword
+  
+  With Application
+    .ScreenUpdating = True
+    .Calculation = xlCalculationAutomatic
+  End With
+End Sub
+
+Function UnprotectSheet(ws As Worksheet, Optional strAction As String) As Boolean
+' PURPOSE: Unprotect the sheet with error handling for passwords
+' WRITTEN: 2014-06-24
+' UPDATED:
+' INPUTS : ws -- worksheet object representing worksheet to unprotect
+'          strAction -- Action being performed (i.e. "Can not add a new row.")
+' OUTPUT : UnprotectSheet -- True if operation successful; False otherwise (after showing error message)
+  
+  ' Default to success
+  UnprotectSheet = True
+  
+  On Error Resume Next
+      
+    ' Attempt to unprotect sheet
+    ws.Unprotect
+    
+    If Err.Number > 0 Then ' wrong password entered
+      MsgBox "Wrong password entered. " & strAction & vbNewLine & vbNewLine & "Please contact your GPS contact for support.", vbCritical
+      UnprotectSheet = False
+    End If
+    
+  On Error GoTo 0
+  
+End Function
+
+Function AddPolymer(Sh As Object, Target As Range, blProtectContents As Boolean) As Boolean
+' PURPOSE: Add a polymer to the polymer grid
+' WRITTEN: 2014-08-20
+' UPDATED:
+' INPUTS : Sh -- worksheet object representing worksheet being changed
+'          Target -- target cell containing polymer name to copy down
+'          blProtectContents -- default state of worsheet protection status (NOTE: this routine turns off protection but does not turn it back on)
+' OUTPUT : AddPolymer -- True if function executed successfully, otherwise False
+      
+  Dim rngPolymer As Range
+  
+  ' Unprotect sheet
+  If blProtectContents Then
+    If Not UnprotectSheet(Sh, "Unable to open polymer grid.") Then
+      blProtectContents = False
+      GoTo FAIL
+    End If
+  End If
+
+  ' Unhide polymer questions
+  
+  GetRangeFromIdentifiers(Sh, strFormulatedPolymer, strFormulatedPolymerEnd).Hidden = False
+  
+  
+  ' Copy down to next available column
+
+  Set rngPolymer = FindRow(strFormulatedPolymer, Sh).Cells(2, 5)
+  
+  Do While Len(rngPolymer) > 0
+        
+    Set rngPolymer = rngPolymer.Offset(0, 1)
+    
+  Loop
+      
+  rngPolymer = Target.Value
+      
+  AddPolymer = True
+      
+EXIT_FUNCTION:
+  Exit Function
+      
+FAIL:
+  AddPolymer = False
+  GoTo EXIT_FUNCTION
+  
+End Function
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+
+
+'   Reset Ctrl+V paste to default
+    Application.OnKey "^v"
+       
+    
+End Sub
+
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+
+'   Code for error checking
+
+Dim Checkbox As Integer
+Dim cntShtRM, rowEnd, colStart, i As Integer
+Dim upperSubtotal As Long
+Dim wrksht As Worksheet
+Dim dashCount, cntChems As Integer
+Dim targetRange, rcell As Range
+Dim typeAssembled, typeFormulated, typeBotanical, Normalize, TableB, NormalizeAll As Boolean
+Dim chemName As String
+Dim arrChems(), chem As Variant
+
+
+
+
+    On Error GoTo ErrorHandle
+    
+'Updates
+
+'   01/04/17 -- Modified for substitue materials.
+'   02/03/17 -- Changed rules for error checking to remove several categories for step 5
+'   10/11/17 -- Added 6)Polymeric section should be completed if needed
+
+'************************
+'Part I. Data Validation
+'************************
+
+'The macro performs the following data validation checks:
+
+    '1) Upper specification levels cannot be above 100 for individual constituents.
+    '2) The sum of upper levels cannot be below 100.
+    '3) Check CAS to notify about chemicals with no CAS
+    '4) Only one CAS per constituent.
+    '5) Intentional and Unintentional ingredient tables must be filled out (with exceptions)
+    '6) Polymeric section should be completed if needed
+
+Application.ScreenUpdating = False
+
+    Normalize = True
+
+'   Only ask about error checking if data has been entered in an RMI sheet
+
+    For Each wrksht In Worksheets
+    
+        If Left(wrksht.Name, 3) = "RMI" Then
+        
+            'if the first trade name is entered for intentional ingredients, assume data has been entered in sheet that could use error check
+                
+            If wrksht.Range("rngTradeName") <> "" Then
+            
+                GoTo RunErrorCheck
+            
+            End If
+        
+        End If
+    
+    Next wrksht
+
+    Exit Sub
+
+RunErrorCheck:
+
+
+'   ask user if they want to run check at save
+
+Checkbox = MsgBox("Perform error checking now? This will help ensure the material information " & _
+    "you provided can be accpted as is.", vbYesNo, "Error Checking?")
+
+    If Checkbox = 7 Then
+        
+        Exit Sub
+
+    Else
+    
+
+'   setup variables
+
+
+    For Each wrksht In ActiveWorkbook.Worksheets
+
+        If Left(wrksht.Name, 2) = "RM" Then
+    
+            wrksht.Select
+    
+            ActiveSheet.Unprotect ("RMI")
+            
+            cntShtRM = cntShtRM + 1
+        
+            'find intentional section range (lower level)
+         
+            Set c = Cells.Find(What:="Lower Level", After:=Range("A1"), LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+                
+            If Not c Is Nothing Then
+        
+                rowStart = c.Row + 3
+                colStart = c.Column
+            
+            Set c = Cells.Find(What:="insertIntentional", After:=Range("A1"), LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+                
+                rowEnd = c.Row - 2
+                
+            End If
+        
+        
+'*** 1) Intentional Table Check
+        
+        
+            Set targetRange = ActiveSheet.Range(Cells(rowStart, colStart), Cells(rowEnd, colStart))
+        
+            For Each rcell In targetRange
+            
+                chemName = rcell.Offset(0, -4).Value
+                
+                'A. Lower level must not be greater than 100
+                
+                If rcell.Offset(0, -4).Value <> "" And rcell.Value > 100 Then
+                
+                    Checkbox = MsgBox("Lower specification levels for intentionally added materials or chemical constituents cannot be greater than 100." _
+                    & Chr(10) & Chr(10) & "Click Cancel to stop error checking now, or click OK to continue checking the rest of the document." _
+                   , vbOKCancel, "Error Detected")
+                    
+                    Normalize = False
+                     
+                    If Checkbox = vbCancel Then
+                     
+                        rcell.Activate
+                        CenterOnCell ActiveCell
+                        
+                        Exit Sub
+                        
+                    End If
+                    
+                'B. Lower level, uppper level, and target level must be provided if it is not a substitute material
+                
+                ElseIf rcell.Offset(0, -4) <> "" And rcell.Offset(0, 3) = "" Then
+                
+                    If rcell = "" Or rcell.Offset(0, 1) = "" Or rcell.Offset(0, 2) = "" Then
+                    
+                        Checkbox = MsgBox("All Lower, Upper, and Target Levels for intentionally added materials or chemical constituents must be provided." _
+                        & Chr(10) & Chr(10) & "Click Cancel to stop error checking now, or click OK to continue checking the rest of the document." & vbNewLine _
+                        & vbNewLine _
+                        & chemName, vbOKCancel, "Answer Required")
+                        
+                        Normalize = False
+                        
+                        If Checkbox = vbCancel Then
+                        
+                            rcell.Offset(0, -4).Activate
+                            CenterOnCell ActiveCell
+                            
+                            Exit Sub
+                            
+                        End If
+                        
+                    End If
+        
+                'C. Target level cannot be greater than 100
+                
+                ElseIf rcell.Offset(0, -4).Value <> "" And rcell.Offset(0, 1).Value > 100 And rcell.Offset(0, 1).Value <> "" Then
+                
+                    Checkbox = MsgBox("Target specification levels for intentionally added materials or chemical constituents cannot be greater than 100." _
+                    & Chr(10) & Chr(10) & "Click Cancel to stop error checking now, or click OK to continue checking the rest of the document." & vbNewLine _
+                    & vbNewLine _
+                    & chemName & ", Target Level", vbOKCancel, "Error Detected")
+                    
+                    If Checkbox = vbCancel Then
+                    
+                        rcell.Activate
+                        CenterOnCell ActiveCell
+                        
+                        Exit Sub
+                        
+                    End If
+        
+                'D. Upper level cannot be greater than 100
+                    
+                ElseIf rcell.Offset(0, -4).Value <> "" And rcell.Offset(0, 2).Value > 100 Then
+            
+                    Checkbox = MsgBox("Upper specification levels for intentionally added materials or chemical constituents cannot be greater than 100." _
+                    & Chr(10) & Chr(10) & "Click Cancel to stop error checking now, or click OK to continue checking the rest of the document." & vbNewLine _
+                    & vbNewLine _
+                    & chemName & ", Upper Level", vbOKCancel, "Error Detected")
+                    
+                    Normalize = False
+                    
+                    If Checkbox = vbCancel Then
+                    
+                        rcell.Activate
+                        CenterOnCell ActiveCell
+                        
+                        Exit Sub
+                        
+                    End If
+        
+                
+                End If
+        
+        
+                
+            Next rcell
+            
+        
+        
+'*** 2) Check that the sum of upper levels is not below 100
+        
+            upperSubtotal = Cells(rowEnd + 1, colStart + 2).Value 'cell with the upper level subtotal
+        
+            If upperSubtotal < 100 Then
+            
+                Checkbox = MsgBox("The total of upper levels for intentionally added materials or chemical constituents must be greater than or equal to 100." _
+                & vbNewLine & vbNewLine & "Click Cancel to stop error checking now, or click OK to continue checking the rest of the document.", vbOKCancel, "Error Detected")
+                
+                Normalize = False
+                
+                If Checkbox = vbCancel Then
+                
+                    Cells(rowStart, 9).Activate
+                    CenterOnCell ActiveCell
+        
+                    Exit Sub
+                    
+                End If
+                
+            End If
+            
+            
+'*** 3) Check CAS to notify
+                
+            For Each rcell In Range(Cells(rowStart, 5), Cells(rowEnd, 5))
+                
+                If rcell.Value = "" And rcell.Offset(0, -2).Value <> "" Then
+                    
+                    chemName = rcell.Offset(0, -2).Value
+                        
+                    cntChems = cntChems + 1
+                        
+                    ReDim Preserve arrChems(1 To cntChems)
+                        
+                    arrChems(cntChems) = chemName
+            
+                End If
+                
+            Next rcell
+            
+            
+            If cntChems <> 0 Then
+            
+                For i = LBound(arrChems) To UBound(arrChems)
+                    
+                    If i = 1 Then
+                    
+                        chem = arrChems(i)
+                    
+                    Else
+                    
+                        chem = chem & ", " & arrChems(i)
+                    
+                    End If
+                    
+                Next i
+            
+                MsgBox "Please be aware that the following intentionally added materials or chemical constituents do not have a CAS# provided:" & vbNewLine _
+                & vbNewLine _
+                & chem & vbNewLine _
+                & vbNewLine _
+                & "If a CAS# is available, please provide it, otherwise a CAS# is not required.", vbInformation, "Error Checking"
+                    
+            End If
+            
+            
+'*** 4) Check if there is only one CAS per constituent
+        
+            Set c = Cells.Find(What:="CAS # and/or Regulatory Identifier", After:=Range("A1"), LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+                
+            If Not c Is Nothing Then
+        
+                rowStart = c.Row + 3
+                colStart = c.Column
+        
+            Set targetRange = ActiveSheet.Range(Cells(rowStart, colStart), Cells(rowEnd, colStart)) 'column with CAS numbers
+        
+            For Each rcell In targetRange
+            
+                dashCount = 0
+            
+                dashCount = Len(rcell) - Len(Replace(rcell, "-", ""))
+                
+                If dashCount > 2 Then
+                    
+                    Checkbox = MsgBox("Only one CAS number per constituent is permitted." & Chr(10) & _
+                    "Please review the selected cell and ensure only one CAS# is being entered." & vbNewLine & vbNewLine & _
+                    "Click OK to stop error checking now, or click Cancel to continue." _
+                    , vbOKCancel, "Error Detected")
+                    
+                    If Checkbox = vbCancel Then
+                    
+                        rcell.Activate
+                        CenterOnCell ActiveCell
+                        
+                        Exit Sub
+                    
+                    End If
+                    
+                Else
+                
+                    End If
+                
+                Next rcell
+        
+            End If
+        
+        
+            
+'*** 5) Check that the Unintentional is completed
+        
+         
+            'Check unintentional ingredients
+        
+            Set c = Cells.Find(What:="Table B: Unintentional Constituents From Raw Materials", After:=Range("A1"), LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+            
+            rowStart = c.Row + 3
+            
+            Set c = Cells.Find(What:="Polymeric Constituents", After:=Range("A1"), LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+                    
+            rowEnd = c.Row - 6
+            
+            TableB = True
+            
+            For Each rcell In Range(Cells(rowStart, 3), Cells(rowEnd, 3))
+            
+                If rcell.Value <> "" Then
+                
+                    'check for max level value
+                   If rcell.Offset(0, 5) = "" Then
+                   
+                        TableB = False
+                    
+                    End If
+                    
+                    'check for max level units
+                    If rcell.Offset(0, 6) = "" Then
+                   
+                        TableB = False
+                    
+                    End If
+                    
+                    'check for Source ID
+                    
+                    If rcell.Offset(0, 1) = "" Then
+                   
+                        TableB = False
+        
+                    End If
+        
+                End If
+            
+            Next rcell
+                
+                If TableB = False Then
+            
+                    Checkbox = MsgBox("Table B: Unintentional Constituents From Raw Materials is incomplete." & vbNewLine & vbNewLine & _
+                    "Additional answers may be required before this document can be accepted." & vbNewLine & vbNewLine & _
+                    "Click Cancel to stop error checking now, or click OK to continue checking the rest of the document." _
+                    , vbOKCancel, "Answer Required")
+                            
+                    If Checkbox = vbCancel Then
+                            
+                        Cells(rowStart, 4).Activate
+                        CenterOnCell ActiveCell
+                                
+                        Exit Sub
+                                
+                    End If
+                        
+                End If
+            
+            
+            End If
+    
+    
+        Next 'next worksheet named "RM"
+ 
+ 
+    End If
+
+    
+done:
+    
+    
+    If cntShtRM = 0 Then
+        
+        MsgBox "No material sheets detected. Error checking not performed.", vbExclamation, "Error Checking"
+    
+        Exit Sub
+    
+    End If
+    
+
+'*** 6) Polymeric section should be completed if needed
+
+
+    'verify that all required questions in the polyermic section are answered
+    
+    'a) determine if polymeric questions needed to be answered and setup range
+    'b) cycle through questions
+    'c) determine if question was answered
+    
+'a)
+    
+    Set c = Nothing
+    
+    Set c = Cells.Find(What:="Polymeric Constituents", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False)
+      
+    rowStart = c.Row
+    
+    Set c = Cells.Find(What:="PolymerEnd", After:=Range("A1"), LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False)
+    
+    rowEnd = c.Row
+    
+    If rowEnd - rowStart > 10 Then
+    
+    
+'b) - c)
+        
+        PolyAlert = False
+        done = False
+        
+        'chemical name
+        Question = "Chemical Name"
+        rowOff = 0
+        colOff = 1
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'CAS#
+        Question = "CAS # of constituent"
+        rowOff = 0
+        colOff = 1
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 1
+        Question = "1.  Are there any toxicological studies (human or environmental)that have been conducted on this material?"
+        rowOff = 0
+        colOff = 5
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 2
+        Question = "2. If this raw material is or contains a particulate, please provide the particle size distribution."
+        rowOff = 0
+        colOff = 4
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 3
+        Question = "3.  Has testing of this constituent been performed on animals?"
+        rowOff = 0
+        colOff = 2
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 4
+        Question = "4.  What is the average molecular weight of the constituent?"
+        rowOff = 0
+        colOff = 2
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 5
+        Question = "5.  What is the molecular weight range of the polymer?"
+        rowOff = 0
+        colOff = 2
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 6
+        Question = "6.  If there are portions below 1000 Daltons, what is the percentage of the polymer with molecular weight <1000 daltons?"
+        rowOff = 0
+        colOff = 5
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 7
+        Question = "7.  Number of repeating units if not specified in the chemical structure PDF file"
+        rowOff = 0
+        colOff = 3
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 8
+        Question = "8.  Is the polymer expected to hydrolyze, degrade, decompose, depolymerize, or otherwise break down during use or upon disposal?"
+        rowOff = 0
+        colOff = 5
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 9
+        Question = "9.  Please list the following conditions under which you expect the individual polymer(s)"
+        rowOff = 1
+        colOff = 1
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 10
+        Question = "10.  Is the polymer expected to carry an anionic or cationic charge following synthesis, during use, or upon disposal?"
+        rowOff = 0
+        colOff = 5
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+        'question 11
+        Question = "11.  Are there any functional groups present which are expected to be reactive"
+        rowOff = 0
+        colOff = 5
+        Call Module1.PolyCheckA
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        iRow = c.Row
+        Call Module1.PolyCheckB
+        If PolyAlert = True Then GoTo Done_PolyCheck
+        
+    End If
+      
+Done_PolyCheck:
+      
+'*********************************
+'Part II. Normalize Target Values
+'*********************************
+
+Dim targetLevelTotal, targetTotal, gapAdjustment, gapRequired, upperLevel, targetLevel, maxRange
+Dim targetSubtotal As Range
+Dim Normalized As Boolean
+
+
+
+'************
+'Description
+'************
+
+'The purpose of this macro is to normalize target specification levels when the column subtotal is less than 100%
+
+'The macro performs calculations to normalize the target values such that:
+
+    '1) The total of the target specification level is set equal to 100
+    '2) The acceptable range for the normalized target specifications is between the lower and upper levels supplied by the user
+    '3) The target levels with the acceptable range are normlized by the following equation:
+    
+        'Each normalized target level = original target level + ((upper level - target level) * (100 - sum of the differences of max ranges))
+    
+
+
+    For Each wrksht In Worksheets
+    
+    
+        If Left(ActiveSheet.Range("rngMidpoint").Value, 1) = "B" And NormalizeAll = False Then
+
+            Checkbox = MsgBox("Normalize target values now?", vbYesNo, "Target Values")
+
+            If Checkbox = vbNo Then
+                
+                Exit Sub
+        
+            End If
+            
+            If Normalize = False Then GoTo NormalizeError
+    
+            NormalizeAll = True
+        
+        'Set initial variables for target level
+        
+        Application.EnableEvents = False
+        
+            Range("A1").Select
+         
+            Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+            
+                rowStart = c.Row + 3
+                colStart = c.Column - 3
+                
+            Set c = Cells.Find(What:="insertIntentional", After:=ActiveCell, LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+                
+                rowEnd = c.Row - 1
+            
+        
+            Set targetRange = ActiveSheet.Range(Cells(rowStart, colStart), Cells(rowEnd - 1, colStart)) 'column with target levels
+        
+        
+            targetLevelTotal = Cells(rowEnd, 8).Value
+        
+            gapAdjustment = 100 - targetLevelTotal
+        
+        
+        
+        'Adjust Target Values
+            
+            If gapAdjustment = 0 Then
+            
+                GoTo skipNormalization
+            
+            ElseIf gapAdjustment <> 0 Then
+            
+                Normalized = True
+            
+            'Determine sum of differences between upper level and target level (maxRange)
+            
+            For Each rcell In targetRange
+            
+                If rcell.Value <> "" Then
+                
+                    upperLevel = rcell.Offset(0, 1).Value
+                    targetLevel = rcell.Value
+                
+                    maxRange = maxRange + (upperLevel - targetLevel)
+                
+                End If
+                
+                Next rcell
+            
+            End If
+            
+            
+            'Use above calculation to solve for variables
+            
+            gapRequired = gapAdjustment / maxRange
+            
+            
+            'Adjust target values if needed using variables from above
+        
+            For Each rcell In targetRange
+            
+                If rcell.Value = "" Then
+                    
+                    GoTo skipthis
+                
+               ElseIf rcell.Value >= rcell.Offset(0, 1) Then
+                    
+                    rcell.Value = rcell.Offset(0, 1)
+                
+                ElseIf rcell.Value <= rcell.Offset(0, -1) Then
+                    
+                    rcell.Value = rcell.Offset(0, -1)
+                
+                Else
+                
+                    upperLevel = rcell.Offset(, 1).Value
+                    targetLevel = rcell.Value
+                
+                    rcell.Value = rcell.Value + ((upperLevel - targetLevel) * gapRequired)
+                
+                End If
+                
+skipthis:
+                
+            Next rcell
+            
+            'Check to make sure it worked
+            
+            For Each rcell In targetRange
+            
+                If rcell.Value > rcell.Offset(0, 1).Value Then
+                
+                    MsgBox "Looks like we have a problem here..." & Chr(10) & "Please alert P&G support personnel that target level normalization did not work."
+                    
+                    GoTo ErrorHandle
+                    
+                ElseIf rcell.Value < rcell.Offset(0, -1).Value Then
+                
+                    MsgBox "Looks like we have a problem here..." & Chr(10) & "Please alert P&G support personnel that target level normalization did not work."""
+                    
+                    GoTo ErrorHandle
+                Else
+                    
+                    End If
+                
+            Next rcell
+            
+            If Normalized = True Then
+            
+                MsgBox "Target levels for intentional raw materials have been adjusted. Please verify that these changes are acceptable. If you need to change the upper or lower values for any constituent, " _
+                & "you must first reset the normalized target values by selection option B again.", vbExclamation, "Normalization Complete"
+            
+                GoTo ExitSub
+            
+            End If
+            
+        Else
+        
+           
+           'code for checking target subtotal for option A and C
+           
+            Range("A1").Select
+                
+            Set c = Nothing
+         
+            Set c = Cells.Find(What:="Specify Feedstock", After:=ActiveCell, LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+                
+            If Not c Is Nothing Then
+        
+                rowStart = c.Row + 3
+                colStart = c.Column - 3
+                    
+            Set c = Nothing
+            
+            Set c = Cells.Find(What:="insertIntentional", After:=ActiveCell, LookIn:= _
+                xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+                xlNext, MatchCase:=False)
+                
+                rowEnd = c.Row - 1
+                
+            End If
+            
+            Set targetSubtotal = Cells(rowEnd, colStart) 'cell with the target level subtotal
+                
+            If targetSubtotal <> 100 Then
+            
+                Checkbox = MsgBox("The sum of target specification levels for intentional constituents must equal to 100.00." & Chr(10) & Chr(10) _
+                & "Please be aware that the values you have entered might not be acceptable as is.", vbCritical, "Error Detected")
+            
+                GoTo ExitSub
+                    
+            End If
+        
+        End If
+        
+  
+skipNormalization:
+    
+    
+    Next wrksht
+    
+
+    MsgBox "Error checking is complete.", vbInformation, "Error Checking"
+
+       
+    
+'*** Error Checking Completed
+
+    Application.EnableEvents = True
+    ActiveSheet.Protect Password:="RMI"
+
+    Exit Sub
+
+ErrorHandle:
+
+    MsgBox "Error Detected If possible, continue with the information sheet. Please report this error to P&G.", vbExclamation, "Error Detected"
+    ActiveSheet.Protect Password:="RMI"
+    Application.EnableEvents = True
+    
+NormalizeError:
+
+    MsgBox "Error(s) have been detected with the intentional ingredient values. Normalization cannot be completed.", vbExclamation, "Error Detected"
+    ActiveSheet.Protect Password:="RMI"
+    Application.EnableEvents = True
+    
+ExitSub:
+
+    ActiveSheet.Protect Password:="RMI"
+    Application.EnableEvents = True
+
+End Sub
+
+Sub NewRow()
+
+'Inserts a new row above a command button
+
+'Step 1: Insert new row on same row as button
+'Step 2: Copy row from above and paste formats in new row
+
+
+Dim buttonName As Object
+Dim c As Range
+Dim rowNum, colNum, rowStart, rowEnd, rangeSize As Integer
+
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+'******
+'Step 1
+'******
+
+Set buttonName = ActiveSheet.Buttons(Application.Caller)
+    With buttonName.TopLeftCell
+        rowNum = .Row
+        colNum = .Column
+    End With
+
+Cells(rowNum, colNum).EntireRow.Insert
+
+'******
+'Step 2
+'******
+
+Cells(rowNum - 1, colNum).EntireRow.Copy
+
+Cells(rowNum, 1).PasteSpecial (xlPasteFormats)
+
+
+Application.ScreenUpdating = True
+Application.EnableEvents = True
+ActiveSheet.Protect Password:="RMI"
+
+
+End Sub
+
+Sub NewRow1a()
+
+'creates a new row for assembled intentional ingredients
+
+'Step 1: Insert new row on same row as button
+'Step 2: Adjust formulas in table to include new row
+
+
+Dim buttonName As Object
+Dim shtName, namedRange As String
+Dim c As Range
+Dim rowNum, colNum, rowStart, rowEnd, rangeSize As Integer
+
+On Error GoTo ErrorHandle
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+'******
+'Step 1
+'******
+
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+    
+    Cells(rowNum, colNum).EntireRow.Insert
+    
+    
+'******
+'Step 2
+'******
+
+
+'Adjust subtotal formulas
+    
+Range("A1").Select
+ 
+    Set c = Cells.Find(What:="Lower Level", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False)
+        
+    If Not c Is Nothing Then
+
+        rowStart = c.Row + 3
+    
+    Set c = Cells.Find(What:="insertIntentional", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False)
+        
+        rowEnd = c.Row - 2
+        
+    End If
+        
+        
+    'Lower Level subtotal
+    Excel.ActiveSheet.Cells(rowNum + 1, colNum + 4).Value = "=SUM(G" & rowStart & ":G" & rowEnd & " )"
+    
+    'Target Level subtotal
+    Excel.ActiveSheet.Cells(rowNum + 1, colNum + 5).Value = "=SUM(H" & rowStart & ":H" & rowEnd & " )"
+    
+    'Upper Level subtotal
+    Excel.ActiveSheet.Cells(rowNum + 1, colNum + 6).Value = "=SUM(I" & rowStart & ":I" & rowEnd & " )"
+
+
+
+    'copy target formula
+    Cells(rowNum - 1, colNum + 5).Copy
+    Cells(rowNum, colNum + 5).PasteSpecial (xlPasteFormulas)
+
+
+
+    Cells(rowNum, colNum).Select
+
+    
+
+    Application.CutCopyMode = False
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    ActiveSheet.Protect Password:="RMI"
+    Exit Sub
+    
+ErrorHandle:
+
+    MsgBox "Error Detected If possible, continue with the information sheet. Please report this error to P&G.", vbExclamation, "Error Detected"
+    ActiveSheet.Protect Password:="RMI"
+
+
+End Sub
+
+Sub NewRow1b()
+
+'creates a new row for formulated intentional ingredients with regional information (dyes only)
+
+'Step 1: Insert new row on same row as button
+'Step 2: Adjust formulas in table to include new row
+'Step 3: Copy Insert buttons to new row
+'Step 4: Adjust Regional Section to include new intentional ingredient
+
+
+
+Dim buttonName, btn As Object
+Dim c, t As Range
+Dim iRow, colNum, rowStart, rowEnd, rangeSize, i, ingredientRow As Integer
+
+On Error GoTo ErrorHandle
+ 
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+
+'******
+'Step 1
+'******
+
+Set buttonName = ActiveSheet.Buttons(Application.Caller)
+    With buttonName.TopLeftCell
+        iRow = .Row
+        colNum = .Column
+        
+        ingredientRow = .Row
+        
+    End With
+
+Cells(iRow, colNum).EntireRow.Insert
+
+'******
+'Step 2
+'******
+
+'Copy target level formula to new row
+
+Cells(iRow - 1, colNum + 7).Copy
+Cells(iRow, colNum + 7).PasteSpecial (xlFormulas)
+
+Range("a1").Select
+
+
+'Adjust subtotal formulas
+
+Set c = Cells.Find(What:="Intentional", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+        rowStart = c.Row + 1
+
+        
+Set c = Cells.Find(What:="insertIntentional", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+        rowEnd = c.Row - 1
+        
+        
+    'Lower Level subtotal
+    Cells(iRow + 1, colNum + 5).Value = "=SUM(H" & rowStart & ":H" & rowEnd & " )"
+    
+    'Upper Level subtotal
+    Cells(iRow + 1, colNum + 6).Value = "=SUM(I" & rowStart & ":I" & rowEnd & " )"
+    
+    'Target Level subtotal
+    Cells(iRow + 1, colNum + 7).Value = "=SUM(J" & rowStart & ":J" & rowEnd & " )"
+
+
+'******
+'Step 3
+'******
+
+  
+  For i = 0 To 1
+  
+    Set t = ActiveSheet.Range(Cells(iRow, colNum + 11 + i), Cells(iRow, colNum + 11 + i))
+    
+    Set btn = ActiveSheet.Buttons.Add(t.Left + 3, t.Top - 2, t.Width - 1.5, t.Height - 1) 'requires small adjustments to fit properly in cell
+    
+    With btn
+    
+      .OnAction = "insertPDF1"
+      
+      .Caption = "Insert"
+      
+    End With
+    
+  Next i
+  
+  
+'******
+'Step 4
+'******
+
+    'insert new rows for new intentional ingredient
+
+  Set c = Cells.Find(What:="insertRegional", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+
+
+    iRow = c.Row
+    
+    Rows(iRow).EntireRow.Insert
+    Rows(iRow).EntireRow.Insert
+    Rows(iRow).EntireRow.Insert
+    Rows(iRow).EntireRow.Insert
+    
+    'copy formats from range two entries above new rows (maitains alternative white/grey pattern
+    'of table)
+    
+    Range(Cells(iRow - 8, 3), Cells(iRow - 5, 10)).Copy
+    Cells(iRow, 3).PasteSpecial (xlPasteFormats)
+    
+    'merge cells in constituent colummn
+    
+    Range(Cells(iRow, 3), Cells(iRow + 3, 3)).Merge
+    
+    'Write country / region values in column D
+    
+    Cells(iRow, 4).Value = "All"
+    Cells(iRow + 1, 4).Value = "USA"
+    Cells(iRow + 2, 4).Value = "EU"
+    Cells(iRow + 3, 4).Value = "Other"
+    
+    'Write formula in new constituent cell to caputure new intentional ingredient
+    
+    Cells(iRow, 3).Value = "=IF(C" & ingredientRow & ">0,C" & ingredientRow & ","""")"
+    
+    'select new ingredient cell
+    
+    Cells(ingredientRow, 3).Select
+
+    
+    Application.CutCopyMode = False
+    Application.ScreenUpdating = True
+    ActiveSheet.Protect Password:="RMI"
+    Exit Sub
+    
+ErrorHandle:
+
+    MsgBox "Error Detected If possible, continue with the information sheet. Please report this error to P&G.", vbExclamation, "Error Detected"
+    ActiveSheet.Protect Password:="RMI"
+    Application.CutCopyMode = False
+    Application.ScreenUpdating = True
+
+End Sub
+
+Sub NewRow2()
+
+
+'Inserts a new row in Table C and Table D on the Botanicals sheet
+
+Dim buttonName As Object
+Dim rowNum, colNum As Integer
+
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+
+
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+    
+    
+    Cells(rowNum, colNum).EntireRow.Insert
+        
+    Cells(rowNum, colNum).Select
+    
+    Call ThisWorkbook.Borders
+    
+    Cells(rowNum, colNum + 1).Select
+    
+    Call ThisWorkbook.Borders
+    
+    Cells(rowNum, colNum + 2).Select
+    
+    Call ThisWorkbook.Borders
+
+Application.ScreenUpdating = True
+ActiveSheet.Protect Password:="RMI"
+
+
+End Sub
+
+
+Sub NewRow1c()
+
+'creates a new row for formulated/botanical intentional ingredients
+
+'Step 1: Insert new row on same row as button
+'Step 2: Adjust formulas in table to include new row
+'Step 3: Copy Insert buttons to new row
+
+
+
+
+Dim buttonName, btn As Object
+Dim c, t As Range
+Dim iRow, colNum, rowStart, rowEnd, rangeSize, i, ingredientRow As Integer
+
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+
+'******
+'Step 1
+'******
+
+Set buttonName = ActiveSheet.Buttons(Application.Caller)
+    With buttonName.TopLeftCell
+        iRow = .Row
+        colNum = .Column
+        
+        ingredientRow = .Row
+        
+    End With
+
+Cells(iRow, colNum).EntireRow.Insert
+
+'******
+'Step 2
+'******
+
+'Copy target level formula to new row
+
+Cells(iRow - 1, colNum + 7).Copy
+Cells(iRow, colNum + 7).PasteSpecial (xlFormulas)
+
+Range("a1").Select
+
+
+'Adjust subtotal formulas
+
+Set c = Cells.Find(What:="Intentional", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+        rowStart = c.Row + 1
+
+        
+Set c = Cells.Find(What:="insertIntentional", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+        rowEnd = c.Row - 1
+        
+        
+    'Lower Level subtotal
+    Cells(iRow + 1, colNum + 5).Value = "=SUM(H" & rowStart & ":H" & rowEnd & " )"
+    
+    'Upper Level subtotal
+    Cells(iRow + 1, colNum + 6).Value = "=SUM(I" & rowStart & ":I" & rowEnd & " )"
+    
+    'Target Level subtotal
+    Cells(iRow + 1, colNum + 7).Value = "=SUM(J" & rowStart & ":J" & rowEnd & " )"
+
+
+'******
+'Step 3
+'******
+
+  
+  For i = 0 To 1
+  
+    Set t = ActiveSheet.Range(Cells(iRow, colNum + 11 + i), Cells(iRow, colNum + 11 + i))
+    
+    Set btn = ActiveSheet.Buttons.Add(t.Left + 3, t.Top - 2, t.Width - 1.5, t.Height - 1) 'requires small adjustments to fit properly in cell
+    
+    With btn
+    
+      .OnAction = "insertPDF1"
+      
+      .Caption = "Insert"
+      
+    End With
+    
+  Next i
+  
+
+
+Application.CutCopyMode = False
+Application.ScreenUpdating = True
+ActiveSheet.Protect Password:="RMI"
+
+End Sub
+
+
+Sub NewRow3()
+
+'Inserts a new row in Table E on the Botanicals sheet
+
+
+Dim buttonName As Object
+Dim rowNum, colNum As Integer
+Dim ojbI As Object
+Dim rngI As Range
+Dim vFile As String
+
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+    
+    Cells(rowNum, colNum).EntireRow.Insert
+        
+    Range(Cells(rowNum, colNum), Cells(rowNum, colNum + 1)).Merge
+    
+    Cells(rowNum, colNum).Select
+    
+    Call ThisWorkbook.Borders
+
+Application.ScreenUpdating = True
+ActiveSheet.Protect Password:="RMI"
+
+
+End Sub
+Sub NewRow4()
+
+'Inserts new row in the Regional Constituent Information Table
+
+Dim buttonName As Object
+Dim rowNum, colNum As Integer
+Dim ojbI As Object
+Dim rngI As Range
+Dim vFile As String
+
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+
+    Cells(rowNum, colNum).EntireRow.Insert
+    Cells(rowNum, colNum).EntireRow.Insert
+    Cells(rowNum, colNum).EntireRow.Insert
+    Cells(rowNum, colNum).EntireRow.Insert
+    
+    Range(Cells(rowNum - 4, colNum), Cells(rowNum - 1, colNum + 7)).Copy
+    Cells(rowNum, colNum).PasteSpecial (xlPasteFormats)
+    
+    If ActiveCell.Interior.color = 16777215 Then 'if pasted cell has no color
+    
+        Range(Cells(rowNum, colNum), Cells(rowNum + 3, colNum + 6)).Interior.color = 15921906 'change nofill to grey
+        Cells(rowNum + 3, colNum + 7).Interior.color = 15921906
+        
+    Else 'else change grey to nofill
+    
+        Range(Cells(rowNum, colNum), Cells(rowNum + 3, colNum + 6)).Interior.color = 16777215
+        Cells(rowNum + 3, colNum + 7).Interior.color = 16777215
+        
+    End If
+    
+    Cells(rowNum, colNum + 1).Value = "All"
+    Cells(rowNum + 1, colNum + 1).Value = "USA"
+    Cells(rowNum + 2, colNum + 1).Value = "EU"
+    Cells(rowNum + 3, colNum + 1).Value = "Other"
+
+Application.ScreenUpdating = True
+ActiveSheet.Protect Password:="RMI"
+
+
+
+End Sub
+
+Sub NewRow5()
+
+Dim buttonName As Object
+Dim rowNum, colNum As Integer
+Dim ojbI As Object
+Dim rngI As Range
+Dim vFile As String
+
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+
+
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+    
+    Cells(rowNum, colNum).EntireRow.Insert
+    
+    Range(Cells(rowNum, colNum), Cells(rowNum, colNum + 7)).Merge
+    
+    Cells(rowNum, colNum).Select
+    
+    Call ThisWorkbook.Borders
+
+Application.ScreenUpdating = True
+ActiveSheet.Protect Password:="RMI"
+
+
+End Sub
+
+Sub NewPolyAssembled()
+
+'Adds a new question set for polymeric constituents on the Assembled sheet
+
+Dim c As Range
+Dim iRow, iCol As Integer
+
+ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+
+    Sheets("FormData").Range("rngPolyAssembled").Copy
+    
+    
+     Set c = Cells.Find(What:="insertPoly", After:=ActiveCell, LookIn:= _
+            xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:= _
+            xlNext, MatchCase:=False, SearchFormat:=False)
+        If Not c Is Nothing Then
+            iRow = c.Row
+            iCol = c.Column
+        End If
+        
+    ActiveSheet.Cells(iRow, iCol).Select
+    
+    Selection.Insert Shift:=xlDown
+    
+     Set c = Cells.Find(What:="PolymerEnd", After:=ActiveCell, LookIn:= _
+            xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:= _
+            xlNext, MatchCase:=False, SearchFormat:=False)
+            
+    iRow = c.Row
+    
+    'Cells(iRow - 38, 5).Select 'location of last chemical name in Polymeric section
+
+
+Application.ScreenUpdating = True
+Application.EnableEvents = True
+ActiveSheet.Protect Password:="RMI"
+
+
+End Sub
+Sub NewPolyFormulated()
+
+'Adds a new question set for polymeric constituents on the Assembled sheet
+
+Dim c As Range
+Dim iRow, iCol As Integer
+
+'ActiveSheet.Unprotect ("RMI")
+Application.ScreenUpdating = False
+
+    Sheets("FormData").Range("rngPolyFormulated").Copy
+    
+     Set c = Cells.Find(What:="insertPoly", After:=ActiveCell, LookIn:= _
+            xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:= _
+            xlNext, MatchCase:=False, SearchFormat:=False)
+        If Not c Is Nothing Then
+            iRow = c.Row
+            iCol = c.Column
+        End If
+    
+    ActiveSheet.Cells(iRow, iCol).Select
+    
+    Selection.Insert Shift:=xlDown
+
+
+    Set c = Cells.Find(What:="PolymerEnd", After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+    iRow = c.Row
+    
+    Cells(iRow - 38, 5).Select 'location of last chemical name in Polymeric section
+
+
+Application.ScreenUpdating = True
+'ActiveSheet.Protect Password:="RMI"
+
+End Sub
+
+Sub Borders()
+   
+    Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+    Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .ThemeColor = 1
+        .TintAndShade = -0.349986266670736
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .ThemeColor = 1
+        .TintAndShade = -0.349986266670736
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ThemeColor = 1
+        .TintAndShade = -0.349986266670736
+        .Weight = xlThin
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .ThemeColor = 1
+        .TintAndShade = -0.349986266670736
+        .Weight = xlThin
+    End With
+    Selection.Borders(xlInsideVertical).LineStyle = xlNone
+    Selection.Borders(xlInsideHorizontal).LineStyle = xlNone
+
+
+End Sub
+
+Sub PrintForm()
+
+Dim shtName As String
+Dim rcell, c As Range
+Dim Checkbox As Integer
+Dim iRow, iCol As Integer
+
+On Error GoTo ErrorHandle
+
+Application.ScreenUpdating = False
+ActiveSheet.Unprotect ("RMI")
+
+    Checkbox = MsgBox("Do you want to print this information sheet?" & vbNewLine _
+        & vbNewLine & _
+        "It will be sent to your default printer.", vbYesNo)
+
+    If Checkbox <> 6 Then 'not equal to Yes
+    
+        Exit Sub
+    
+    Else
+
+        Application.ScreenUpdating = False
+        
+        shtName = ActiveSheet.Name
+
+        Sheets("Print_Control").Visible = True
+        Sheets("Print_Control").Select
+        
+        For Each rcell In Range("Print_Area")
+        
+            If rcell.Value <> "" Then rcell.Offset(, -2).Value = "Off"
+            
+        Next rcell
+        
+
+        Set c = Cells.Find(What:=shtName, After:=ActiveCell, LookIn:= _
+        xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:= _
+        xlNext, MatchCase:=False, SearchFormat:=False)
+        
+        If Not c Is Nothing Then
+        
+            iRow = c.Row
+            iCol = c.Column - 1
+        
+            Cells(iRow, iCol).Value = "on"
+            Cells(iRow + 1, iCol).Value = "on"
+            Cells(iRow + 2, iCol).Value = "on"
+    
+
+            Call Sheet9.UpdatePrintArea
+    
+            Call Sheet9.Print_Reports
+        
+        End If
+    
+    
+        Sheets(shtName).Select
+
+        Sheets("Print_Control").Visible = False
+
+        ActiveSheet.Protect Password:="RMI"
+        Application.ScreenUpdating = True
+
+
+    End If
+    
+    Exit Sub
+
+ErrorHandle:
+
+    MsgBox "Error Detected If possible, continue with the information sheet. Please report this error to P&G.", vbExclamation, "Error Detected"
+    ActiveSheet.Protect Password:="RMI"
+    Application.ScreenUpdating = True
+
+End Sub
+
+
+Private Sub Workbook_Open()
+
+Application.EnableEvents = True
+'Use pastevalues anytime CTRL+V is used
+    Application.OnKey "^v", "ThisWorkbook.subPasteValues"
+
+End Sub
+
+Sub subPasteValues()
+
+    On Error GoTo errHandler
+    Application.ScreenUpdating = False
+    Application.EnableEvents = True
+    
+    Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+    
+ActiveWorkbook.RefreshAll
+
+CleanUp:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Sub
+    
+errHandler:
+    ActiveSheet.PasteSpecial Format:="Text", Link:=False, DisplayAsIcon:=False
+    'MsgBox Err.Description
+    Resume CleanUp
+    
+    
+End Sub
+
+Sub AddNewForm()
+
+'Code to create new RMI worksheets for Assembled RMI
+'Creates a new worksheet and modifies the Print_Control sheet to make printing easier
+
+Dim wrksht As Worksheet
+Dim qty, shtCount As Integer
+Dim strNewWSName, currentSheet, shtFirstForm As String
+Dim rngPrint As Range
+Dim firstForm As Boolean
+
+Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+
+'*** Steps
+'1) Reset Print_Control sheet
+'2) Setup variables
+'3) Create new worksheet
+'4) Setup Print_Control table for new worksheet
+
+
+
+'*** 1) Reset Print_Control sheet
+'   Clear unused sheet names from Print Control
+
+    Call Module1.ClearPrintControl
+
+
+'*** 2) Setup variables
+    
+    qty = 1
+    shtCount = 1
+    
+    
+'   Get RMI sheet count
+
+    For Each wrksht In ActiveWorkbook.Worksheets
+    
+        If Left(wrksht.Name, 3) = "RMI" Then
+        
+            shtCount = shtCount + 1
+        
+        End If
+        
+    Next wrksht
+    
+
+'*** 3) Create new worksheet
+
+back:
+
+   Do Until qty = 0
+   
+
+        Sheets("Assembled").Visible = True
+        Sheets("Assembled").Copy Before:=Sheets("Print_Control")
+        
+        On Error GoTo SheetName
+        
+        Sheets("Assembled (2)").Name = "RMI" & shtCount
+        Sheets("Assembled").Visible = False
+       
+        strNewWSName = ActiveSheet.Name
+        ActiveWindow.DisplayGridlines = False
+        ActiveWindow.Zoom = 90
+        shtCount = shtCount + 1
+        qty = qty - 1
+        Range("rngMatType").Select
+        ActiveSheet.Protect Password:="RMI"
+        
+        On Error Resume Next
+        
+'*** 4) Setup Print_Control table for new worksheet
+
+        Set rngPrint = Sheets("Print_Control").Range("E45").End(xlUp).Offset(1, 0)
+        rngPrint.Value = strNewWSName
+        
+        rngPrint.Offset(, 0).Value = strNewWSName
+        rngPrint.Offset(1, 0).Value = strNewWSName
+        rngPrint.Offset(2, 0).Value = strNewWSName
+        
+        'Supplier Information print info
+        rngPrint.Offset(, -2).Value = "Assembled Material"
+        rngPrint.Offset(, -1).Value = "On"
+        rngPrint.Offset(, 2).Value = "P"
+        rngPrint.Offset(, 3).Value = "A4"
+        rngPrint.Offset(, 4).Value = "1"
+        rngPrint.Offset(, 6).Value = "1"
+        rngPrint.Offset(, 7).Value = "0"
+        rngPrint.Offset(, 8).Value = "0"
+        rngPrint.Offset(0, 10).NumberFormat = "General"
+        rngPrint.Offset(0, 10).Formula = "=" & strNewWSName & "!B1:J58" 'initial range
+        
+        'Ingredients print info
+        rngPrint.Offset(1, -2).Value = "Assembled Material"
+        rngPrint.Offset(1, -1).Value = "On"
+        rngPrint.Offset(1, 2).Value = "L"
+        rngPrint.Offset(1, 3).Value = "A4"
+        rngPrint.Offset(1, 4).Value = "1"
+        rngPrint.Offset(1, 6).Value = "1"
+        rngPrint.Offset(1, 7).Value = "0"
+        rngPrint.Offset(1, 8).Value = "0"
+        rngPrint.Offset(1, 10).NumberFormat = "General"
+        rngPrint.Offset(1, 10).Formula = "=" & strNewWSName & "!B60:O172" 'initial range
+        
+        'Additional, Regional, Regulatory, and Poly print info
+        rngPrint.Offset(2, -2).Value = "Assembled Material"
+        rngPrint.Offset(2, -1).Value = "On"
+        rngPrint.Offset(2, 2).Value = "P"
+        rngPrint.Offset(2, 3).Value = "A4"
+        rngPrint.Offset(2, 4).Value = "1"
+        rngPrint.Offset(2, 6).Value = "1"
+        rngPrint.Offset(2, 7).Value = "0"
+        rngPrint.Offset(2, 8).Value = "0"
+        rngPrint.Offset(2, 10).NumberFormat = "General"
+        rngPrint.Offset(2, 10).Formula = "=" & strNewWSName & "!B173:J184" 'initial range
+   
+    Loop
+      
+        
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    
+    
+    
+    MsgBox "A new form has been added."
+     
+    Exit Sub
+    
+    
+    
+SheetName:
+
+
+'   Alternative code for cases when there are existing RMI sheets that are numbered out of order
+    'Solves a problem with code crashing when attempting to name an RMI sheet with an existing name
+    
+        Sheets("Assembled (2)").Name = "RMI" & shtCount - 1
+        Sheets("Assembled").Visible = False
+       
+        strNewWSName = ActiveSheet.Name
+        ActiveWindow.DisplayGridlines = False
+        ActiveWindow.Zoom = 80
+        shtCount = shtCount + 1
+        qty = qty - 1
+        Range("D8").Select
+        ActiveSheet.Protect Password:="RMI"
+
+        
+'       Setup Print_Control table
+
+        Set rngPrint = Sheets("Print_Control").Range("E45").End(xlUp).Offset(1, 0)
+        rngPrint.Value = strNewWSName
+        
+        rngPrint.Offset(, 0).Value = strNewWSName
+        rngPrint.Offset(1, 0).Value = strNewWSName
+        rngPrint.Offset(2, 0).Value = strNewWSName
+        
+        'Supplier Information print info
+        rngPrint.Offset(, -2).Value = "Assembled Material"
+        rngPrint.Offset(, -1).Value = "On"
+        rngPrint.Offset(, 2).Value = "P"
+        rngPrint.Offset(, 3).Value = "A4"
+        rngPrint.Offset(, 4).Value = "1"
+        rngPrint.Offset(, 6).Value = "1"
+        rngPrint.Offset(, 7).Value = "0"
+        rngPrint.Offset(, 8).Value = "0"
+        rngPrint.Offset(0, 10).NumberFormat = "General"
+        rngPrint.Offset(0, 10).Formula = "=" & strNewWSName & "!B1:J58" 'initial range
+        
+        'Ingredients print info
+        rngPrint.Offset(1, -2).Value = "Assembled Material"
+        rngPrint.Offset(1, -1).Value = "On"
+        rngPrint.Offset(1, 2).Value = "L"
+        rngPrint.Offset(1, 3).Value = "A4"
+        rngPrint.Offset(1, 4).Value = "1"
+        rngPrint.Offset(1, 6).Value = "1"
+        rngPrint.Offset(1, 7).Value = "0"
+        rngPrint.Offset(1, 8).Value = "0"
+        rngPrint.Offset(1, 10).NumberFormat = "General"
+        rngPrint.Offset(1, 10).Formula = "=" & strNewWSName & "!B60:0172" 'initial range
+        
+        'Additional, Regional, Regulatory, and Poly print info
+        rngPrint.Offset(2, -2).Value = "Assembled Material"
+        rngPrint.Offset(2, -1).Value = "On"
+        rngPrint.Offset(2, 2).Value = "P"
+        rngPrint.Offset(2, 3).Value = "A4"
+        rngPrint.Offset(2, 4).Value = "1"
+        rngPrint.Offset(2, 6).Value = "1"
+        rngPrint.Offset(2, 7).Value = "0"
+        rngPrint.Offset(2, 8).Value = "0"
+        rngPrint.Offset(2, 10).NumberFormat = "General"
+        rngPrint.Offset(2, 10).Formula = "=" & strNewWSName & "!B173:J184" 'initial range
+        
+        GoTo back
+
+    
+End Sub
+
+Sub RemovePoly()
+
+'Purpose:   Removes the selected Polymeric question set from the information sheet
+'By:        Colin Kaczynski
+'Date:      8/18/2016
+'Inputs:    Command button click
+'Outputs:   Remove question set for Polymeric constituent
+'Updates:
+
+
+Dim buttonName As Object
+Dim btn As Shape
+Dim ws As Worksheet
+Dim c, rngBTN, rng As Range
+Dim chemName As String
+Dim rowNum, colNum, rowStart, rowEnd As Integer
+Dim x, y As Integer
+Dim Checkbox As Variant
+
+ActiveSheet.Unprotect ("RMI")
+
+'Application.ScreenUpdating = False
+Application.EnableEvents = False
+
+
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+
+    chemName = Cells(rowNum, 4)
+
+    Checkbox = MsgBox("Delete the polymeric question set for " & chemName & "?", vbOKCancel)
+
+    If Checkbox = vbOK Then
+    
+     Set rng = Range(Cells(rowNum + 1, 1), Cells(rowNum + 49, 11))
+        
+        For Each btn In ActiveSheet.Shapes
+            
+            On Error Resume Next
+            
+            x = btn.TopLeftCell.Row
+            y = btn.TopLeftCell.Column
+            Set rngBTN = Cells(x, y)
+            
+            If Not Intersect(rngBTN, rng) Is Nothing Then
+                btn.Delete
+            End If
+            
+        Next btn
+    
+        Range(Cells(rowNum - 1, 1), Cells(rowNum + 49, 1)).EntireRow.Delete
+    
+    End If
+
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+
+End Sub
+
+Sub AddIRMS()
+
+'   Code to add a row for additional IRMS numbers
+
+Dim buttonName As Object
+Dim rowNum, colNum As Integer
+
+Application.EnableEvents = False
+
+    ActiveSheet.Unprotect ("RMI")
+    
+    Set buttonName = ActiveSheet.Buttons(Application.Caller)
+        With buttonName.TopLeftCell
+            rowNum = .Row
+            colNum = .Column
+        End With
+        
+'   Insert Row
+    
+    Cells(rowNum + 1, colNum).EntireRow.Insert
+    
+'   Format new cell for IRMS
+
+    Cells(rowNum, colNum - 1).Copy
+    Cells(rowNum + 1, colNum - 1).PasteSpecial (xlPasteFormats)
+    
+'   Format cell below "other" material type
+
+    Cells(rowNum, colNum).Copy
+    Cells(rowNum + 1, colNum - 4).PasteSpecial (xlPasteFormats)
+    
+    ActiveSheet.Protect Password:="RMI"
+  
+Application.EnableEvents = True
+
+
+
+End Sub
+
+' InQuest injected base64 decoded content
+' &F(!
+' 't*'
+
+INQUEST-PP=macro

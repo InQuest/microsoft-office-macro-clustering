@@ -1,0 +1,1169 @@
+Attribute VB_Name = "CopyStuff"
+Option Explicit
+
+Public G_Abbruch As Boolean
+Public G_UploadData As Boolean
+
+
+' ACHTUNG! Die AccessDB IDV-Suite.mdb ist eine Kopie der g|fffd|ltigen IDV-TrackerDataOri.mdb aus der jeweiligen Verion
+' Wenn die Kopie erzeugt wurde muss in IDV-Suite.mdb vorbereiten.xlsm aufgerufen werden!
+
+' Nur f|fffd|r Stromwerken, das ist der Weg zur|fffd|ck
+Sub UploadData()
+
+    CreateTables False
+    
+    Dim connOld As Object
+    Dim connNew As Object
+    
+    Dim errtxt As String
+    
+   Set connOld = GetConnection(errtxt)
+   Set connNew = GetAccessConnection(errtxt)
+
+  If connNew Is Nothing Then
+    MsgBox "Die Verbindung zu " & ThisWorkbook.Path & "\IDV-Suite.mdb konnte nicht hergestellt werden!"
+    Exit Sub
+  End If
+
+   G_UploadData = True
+    
+    Dim ok As Boolean
+    
+    Dim y As Long
+    y = 18
+    Do
+        If IsEmpty(ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 1)) Then Exit Do
+'        If ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 1) = "gCLFragen" Then
+'          Debug.Print "Gaga"
+'        End If
+        ok = CopyOneTable(ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 1).Value, y, connNew, connOld, True, True)
+        VBA.Interaction.DoEvents
+        If G_Abbruch Then Exit Sub
+        y = y + 1
+    Loop
+    
+    connOld.Close
+    connNew.Close
+
+    Set connOld = Nothing
+    Set connNew = Nothing
+    G_UploadData = False
+    
+    MsgBox "Der Kopiervorgang ist abgeschlossen."
+End Sub
+
+
+
+
+Function GetAccessConnection(ByRef errtxt As String) As Object
+
+        errtxt = ""
+        Err.Clear
+        On Error Resume Next
+        
+        Dim Conn As Object
+        Set Conn = CreateObject("ADODB.Connection")
+        Conn.CursorLocation = ADODB.adUseServer
+        Set GetAccessConnection = Nothing
+        Conn.ConnectionTimeout = 5
+        
+        ' Read the User and the password from cell B3 and B4
+        Dim conString As String
+        Conn.Open "Driver={Microsoft Access Driver (*.mdb)};DBQ=" & ThisWorkbook.Path & "\IDV-Suite.mdb;"
+        
+        ' Any errror? Try again!
+        If Err.Number <> 0 Then
+
+            Err.Clear
+            On Error Resume Next
+            Conn.Open "Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=" & ThisWorkbook.Path & "\IDV-Suite.mdb;"
+            If Err.Number <> 0 Then
+                errtxt = Err.Number & " - " & Err.Description
+                Exit Function
+            End If
+
+        End If
+        
+        ' Ok, thats it
+        Err.Clear
+        Set GetAccessConnection = Conn
+
+End Function
+
+
+Sub RunCopy()
+
+    If Not CreateTables(True) Then Exit Sub
+    
+    Dim connOld As Object
+    Dim connNew As Object
+    
+    Dim errtxt As String
+    
+    Set connOld = GetConnection(errtxt)
+    Set connNew = GetAccessConnection(errtxt)
+
+    If connNew Is Nothing Then
+      MsgBox "Die Verbindung zu " & ThisWorkbook.Path & "\IDV-Suite.mdb konnte nicht hergestellt werden!"
+      Exit Sub
+    End If
+    
+    Dim ok As Boolean
+    
+    Dim y As Long
+    y = 18
+    Do
+        If IsEmpty(ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 1)) Then Exit Do
+        ok = CopyOneTable(ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 1).Value, y, connOld, connNew, True)
+        VBA.Interaction.DoEvents
+        If G_Abbruch Then Exit Sub
+        y = y + 1
+    Loop
+    
+    connOld.Close
+    connNew.Close
+
+    Set connOld = Nothing
+    Set connNew = Nothing
+    
+    MsgBox "Der Kopiervorgang ist abgeschlossen." & vbCrLf & vbCrLf & "Die Daten wurden anonymisiert, Excel- oder Access-Dateien wurden nicht geladen. Sie k|fffd|nnen die Ergebnisdatenbank einsehen." & vbCrLf & vbCrLf & "Bitte senden Sie die Ergebnisdatei '" & ThisWorkbook.Path & "\IDV-Suite.mdb' an info@stromwerken.de"
+End Sub
+
+Function OpenRS(ByVal sqlstring As String, ByRef Conn As Object, ByVal cursorytype As ADODB.CursorTypeEnum, ByVal locktype As ADODB.LockTypeEnum) As Object
+        
+        Dim rs As Object
+        Set rs = CreateObject("ADODB.Recordset")
+        On Error Resume Next
+
+        Set OpenRS = Nothing
+        rs.Open sqlstring, Conn, cursorytype, locktype
+        Set OpenRS = rs
+End Function
+
+Function CopyOneTable(ByVal tablename As String, ByVal y As Long, ByRef connOld As Object, ByRef connNew As Object, Optional disableIdentity As Boolean = False, Optional isUpload As Boolean = False) As Boolean
+
+    Dim trigger As Object
+
+    Debug.Print tablename
+    
+    CopyOneTable = True
+    Dim setIdentityFlag As Boolean
+    setIdentityFlag = False
+    
+    On Error GoTo setIdentFehler
+    
+    If disableIdentity Then
+      If isUpload Then
+        If Tabelle1.ComboBox1.Value = "Oracle" Then
+        
+          Set trigger = OpenRS("select * from all_triggers where table_name = '" & UCase(tablename) & "'", connNew, ADODB.CursorTypeEnum.adOpenDynamic, ADODB.LockTypeEnum.adLockReadOnly)
+          Do While Not trigger.EOF
+            Debug.Print trigger.Fields("TABLE_NAME").Value & " - " & trigger.Fields("TRIGGER_NAME").Value
+            connNew.Execute "ALTER TRIGGER """ & trigger.Fields("TRIGGER_NAME").Value & """ DISABLE;"
+            trigger.MoveNext
+          Loop
+          trigger.Close
+          Set trigger = Nothing
+        Else
+          connNew.Execute "SET IDENTITY_INSERT " & tablename & " on"
+        End If
+      Else
+        'AccessSetIdentitiyInsert tablename, True
+        ' connNew.Execute "SET IDENTITY_INSERT " & tablename & " on"
+      End If
+    End If
+    setIdentityFlag = True
+setIdentFehler:
+    On Error GoTo raus
+    
+    If isUpload Then
+      If Tabelle1.ComboBox1.Value = "Oracle" Then
+        If Not ExecuteSQL(connNew, "Truncate table """ & Tabelle1.Cells(8, 2) & """.""" & UCase(tablename) & """") Then GoTo setIdentity
+      Else
+        If Not ExecuteSQL(connNew, "Truncate table " & tablename) Then GoTo setIdentity
+      End If
+    Else
+      If Not ExecuteSQL(connNew, "delete * from " & tablename) Then GoTo setIdentity
+    End If
+    
+    Dim trSchema As Object
+    Set trSchema = OpenRS("SELECT * FROM '" & tablename & "' where 1 = 0", connNew, ADODB.CursorTypeEnum.adOpenDynamic, ADODB.LockTypeEnum.adLockReadOnly)
+    
+    Dim trs As Object
+    Set trs = OpenRS("SELECT * FROM " & tablename, connOld, ADODB.CursorTypeEnum.adOpenDynamic, ADODB.LockTypeEnum.adLockReadOnly)
+    Dim errorRows As Long
+    errorRows = 0
+    If Not trs Is Nothing Then
+        If trs.state <> 0 Then
+            Dim z As Long
+            z = 0
+            Dim drs As Object
+            Set drs = CreateObject("ADODB.Recordset")
+            
+            ' Bei den Events holen wir Errors (1) und Systemevents (6)
+            If UCase(tablename) = "IDVDATEIENEVENTLOG" Then
+              drs.Open "SELECT * FROM " & tablename & " WHERE EventTyp = 1 or EventTyp = 6", connNew, ADODB.CursorTypeEnum.adOpenDynamic, ADODB.LockTypeEnum.adLockPessimistic
+            Else
+              drs.Open "SELECT * FROM " & tablename & " WHERE 1=0", connNew, ADODB.CursorTypeEnum.adOpenDynamic, ADODB.LockTypeEnum.adLockPessimistic
+            End If
+            If Not trs.EOF Then
+              If isUpload Then
+                connNew.BeginTrans
+              End If
+              Do While Not trs.EOF
+                  ' f|fffd|r alle alten Daten den Wert in einem neuen Recordset f|fffd|r die neue Connection setzen
+                  z = z + 1
+                  If z Mod 10 = 0 Then
+                    ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 2).Value = "'" & z & " Zeile(n) kopiert. " & IIf(errorRows > 0, errorRows & " Datens|fffd|tze fehlerhaft!", "")
+                    VBA.Interaction.DoEvents
+                  End If
+                  
+                  drs.AddNew
+                  CopyFields trs, drs, tablename
+                  If Not DoUpdate(drs) Then
+                    errorRows = errorRows + 1
+                  End If
+                  trs.MoveNext
+                  If G_Abbruch Then Exit Do
+              Loop
+              If isUpload Then
+                connNew.CommitTrans
+              End If
+            End If
+            drs.Close
+            Set drs = Nothing
+        End If
+    End If
+    
+setIdentity:
+    If setIdentityFlag Then
+        setIdentityFlag = False
+        If disableIdentity Then
+          If isUpload Then
+            If Tabelle1.ComboBox1.Value = "Oracle" Then
+              Set trigger = OpenRS("select * from all_triggers where table_name = '" & UCase(tablename) & "'", connNew, ADODB.CursorTypeEnum.adOpenDynamic, ADODB.LockTypeEnum.adLockReadOnly)
+              Do While Not trigger.EOF
+                connNew.Execute "ALTER TRIGGER """ & trigger.Fields("TRIGGER_NAME").Value & """ ENABLE;"
+                trigger.MoveNext
+              Loop
+              trigger.Close
+              Set trigger = Nothing
+            Else
+              connNew.Execute "SET IDENTITY_INSERT " & tablename & " off"
+            End If
+          Else
+            ' connNew.Execute "SET IDENTITY_INSERT " & tablename & " off"
+            'AccessSetIdentitiyInsert tablename, False
+          End If
+        End If
+    End If
+    ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 2).Value = "'" & z & " Zeile(n) kopiert. " & IIf(errorRows > 0, errorRows & " Datens|fffd|tze fehlerhaft!", "")
+    Exit Function
+raus:
+    ThisWorkbook.Worksheets("IDV-Suite DB-Download").Cells(y, 2).Value = "'" & Err.Description & vbCrLf & PrintErrors(connNew)
+    On Error Resume Next
+    If setIdentityFlag Then
+      If disableIdentity Then
+        If isUpload Then
+          If Tabelle1.ComboBox1.Value = "Oracle" Then
+              Set trigger = OpenRS("select * from all_triggers where table_name = '" & UCase(tablename) & "'", connNew, ADODB.CursorTypeEnum.adOpenDynamic, ADODB.LockTypeEnum.adLockReadOnly)
+              Do While Not trigger.EOF
+                connNew.Execute "ALTER TRIGGER """ & trigger.Fields("TRIGGER_NAME").Value & """ ENABLE;"
+                trigger.MoveNext
+              Loop
+              trigger.Close
+              Set trigger = Nothing
+          Else
+            connNew.Execute "SET IDENTITY_INSERT " & tablename & " off"
+          End If
+        Else
+          ' connNew.Execute "SET IDENTITY_INSERT " & tablename & " off"
+          'AccessSetIdentitiyInsert tablename, False
+        End If
+      End If
+    End If
+End Function
+
+Function DoUpdate(ByRef rs As Object) As Boolean
+  On Error GoTo nogo
+  rs.Update
+  DoUpdate = True
+  Exit Function
+nogo:
+  rs.CancelUpdate
+  DoUpdate = False
+End Function
+
+Function CopyFields(ByRef trs As Object, ByRef drs As Object, ByVal tablename As String) As Boolean
+
+    On Error Resume Next
+   
+    Dim f As Long
+    For f = 0 To trs.Fields.Count - 1
+        Dim na As String
+        na = trs.Fields(f).name
+        
+        If UCase(na) <> "BINARY" And UCase(na) <> "DATEN" Then
+          Dim v As Variant
+          v = trs.Fields(f).Value
+          If G_UploadData Then
+              drs.Fields(na).Value = v
+          Else
+            If (UCase(tablename) = "GWINDOWSUSER" Or UCase(tablename) = "GWINDOWSUSERAKTUELL" Or UCase(tablename) = "SECUSER") And _
+              UCase(na) = "NAME" Or UCase(na) = "NACHNAME" Or UCase(na) = "VORNAME" Or UCase(na) = "EMAIL" Then
+              drs.Fields(na).Value = "AAA"
+            Else
+              drs.Fields(na).Value = v
+            End If
+          End If
+        End If
+    Next
+    
+    CopyFields = True
+
+End Function
+
+Function PrintErrors(ByRef connNew As Object) As String
+    Dim i As Long
+    Dim s As String
+    s = ""
+    For i = 0 To connNew.Errors.Count - 1
+        s = s & "Source " & connNew.Errors(i).Source
+        s = s & "NativeError: " & connNew.Errors(i).NativeError
+        s = s & "(SQLState: " & connNew.Errors(i).Description & " " & connNew.Errors(i).SQLState & ")"
+    Next i
+    PrintErrors = s
+End Function
+
+Private Sub WBRemoveTags()
+
+    Dim nameItem As Excel.name
+
+goAgain:
+    Dim i As Long
+    If ThisWorkbook.Names.Count > 0 Then
+      For i = 1 To ThisWorkbook.Names.Count
+          If ThisWorkbook.Names(i).Visible = False Then
+              If Left(ThisWorkbook.Names(i).name, Len("_IDVTracker")) = "_IDVTracker" Then
+                  ThisWorkbook.Names.Item(i).Delete
+                  GoTo goAgain
+              End If
+          End If
+      Next i
+    End If
+
+End Sub
+
+Private Function CreateTables(ByVal deleteTables As Boolean) As Boolean
+
+
+On Error GoTo nogo
+  
+  Dim y As Long
+  y = 18
+  Dim appAccess As Object
+  Set appAccess = CreateObject("Access.Application")
+  
+  'open the acces project
+  appAccess.OpenCurrentDatabase ThisWorkbook.Path & "\IDV-Suite.mdb"
+  appAccess.Visible = True
+  
+  Do While appAccess.CurrentDb.Relations.Count > 0
+    appAccess.CurrentDb.Relations.Delete appAccess.CurrentDb.Relations(0).name
+  Loop
+   
+   
+  Dim td
+  For Each td In appAccess.CurrentDb.TableDefs
+    If (td.Attributes And &H80000002) = 0 Then
+      Select Case UCase(td.name)
+        Case "ECCDATEIENFORMELN"
+        Case "IDVDATEIENCHANGELOG0" ' idvDateienChangeLog0
+        Case Else
+          Cells(y, 1) = td.name
+          y = y + 1
+      End Select
+      If deleteTables Then
+        appAccess.DoCmd.SetWarnings False
+        appAccess.DoCmd.RunSQL "DELETE * FROM " & td.name
+        Dim fld
+        For Each fld In td.Fields
+          If (CLng(fld.Attributes) And 16) <> 0 Then ' 16 = dbAutoIncrField
+            appAccess.CurrentDb.Execute "ALTER TABLE " & td.name & " ALTER COLUMN " & fld.name & " LONG;", 128 ' 128 = dbFailOnError
+          End If
+        Next fld
+        appAccess.DoCmd.SetWarnings True
+      End If
+    End If
+  Next td
+  
+  Do While y < 300
+    Cells(y, 1) = ""
+    y = y + 1
+  Loop
+  
+  appAccess.Visible = False
+  appAccess.CloseCurrentDatabase
+  appAccess.Quit
+  Set appAccess = Nothing
+  CreateTables = True
+  Exit Function
+nogo:
+  
+  MsgBox "FEHLER: Der Download konnte nicht durchgef|fffd|hrt werden! Fehlernummer: " & Err.Number & " - " & Err.Description
+End Function
+
+
+Function ExecuteSQL(ByRef connNew As Object, ByVal sql As String) As Boolean
+  On Error GoTo nogo:
+  connNew.Execute sql
+  ExecuteSQL = True
+  Exit Function
+nogo:
+End Function
+
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_Open()
+  Dim driverArray As Variant
+  
+  driverArray = ListODBCDrivers()
+  
+  Dim i As Long
+  Dim y As Long
+  y = 7
+  For i = LBound(driverArray) To UBound(driverArray)
+    Dim s As String
+    s = GetDriverDLL(driverArray(i))
+    If s <> "" Then
+      Tabelle1.ComboBox2.AddItem driverArray(i)
+      y = y + 1
+    End If
+  Next i
+  
+  Cells(4, 3) = GetDriverDLL(Tabelle1.ComboBox2)
+
+End Sub
+Attribute VB_Name = "DriverHandler"
+Option Explicit
+
+Private Const SQL_FETCH_NEXT As Long = 1
+Private Const SQL_FETCH_FIRST As Long = 2
+Private Const SQL_SUCCESS As Long = 0
+Private Const SQL_NO_DATA_FOUND As Long = 100
+
+Private Const SQL_NTS As Long = -3
+Private Const SQL_DROP As Long = 1
+
+Private Const SQL_MAX_DESC_LENGTH As Long = 128
+Private Const SQL_MAX_DSN_LENGTH As Long = 32
+
+Private Const SQL_NULL_HANDLE As Long = 0
+Private Const SQL_HANDLE_ENV As Long = 1
+Private Const SQL_HANDLE_DBC As Long = 2
+Private Const SQL_HANDLE_STMT As Long = 3
+Private Const SQL_HANDLE_DESC As Long = 4
+
+Private Const SQL_ATTR_ODBC_VERSION As Long = 200
+Private Const SQL_OV_ODBC3 As Long = 3
+Private Const SQL_IS_INTEGER As Long = (-6)
+Private Const ODBC_ADD_DSN As Long = 1
+Private Const ODBC_BOTH_DSN As Long = 0
+Private Const ODBC_USER_DSN As Long = 1
+Private Const ODBC_SYSTEM_DSN As Long = 2
+Private Const SQL_NEED_DATA As Long = 99
+Private Const SQL_ERROR As Long = -1
+
+#If Win64 Then
+Private Declare PtrSafe Function SQLAllocEnv Lib "odbc32.dll" (ByRef phenv As LongPtr) As Integer
+Private Declare PtrSafe Function SQLFreeEnv Lib "odbc32.dll" (ByVal hEnv As LongPtr) As Integer
+Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+Declare PtrSafe Function SQLDrivers Lib "odbc32.dll" _
+                                    (ByVal hEnv As LongPtr, _
+                                     ByVal fDirection As Integer, _
+                                     ByVal szDriverDesc As String, _
+                                     ByVal cbDriverDescMax As Integer, _
+                                     pcbDriverDesc As Integer, _
+                                     ByVal szDriverAttr As String, _
+                                     ByVal cbDrvrAttrMax As Integer, _
+                                     pcbDrvrAttr As Integer) As Integer
+
+#Else
+Declare Function SQLAllocEnv Lib "odbc32.dll" (phenv As Long) As Integer
+Declare Function SQLFreeEnv Lib "odbc32.dll" (ByVal hEnv As Long) As Integer
+Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+Declare Function SQLDrivers Lib "odbc32.dll" _
+                                    (ByVal hEnv As Long, _
+                                     ByVal fDirection As Integer, _
+                                     ByVal szDriverDesc As String, _
+                                     ByVal cbDriverDescMax As Integer, _
+                                     pcbDriverDesc As Integer, _
+                                     ByVal szDriverAttr As String, _
+                                     ByVal cbDrvrAttrMax As Integer, _
+                                     pcbDrvrAttr As Integer) As Integer
+
+#End If
+
+
+
+'Gibt eine Liste aller im System installierten ODBC-Treiber in einem String-Array zur|fffd|ck
+'Bsp.: ListODBCDrivers(0) >> "Microsoft Access-Treiber (*.mdb)"
+Public Function ListODBCDrivers() As String()
+    Dim ret As Long
+    Dim j As Long
+#If Win64 Then
+    Dim hEnv As LongPtr
+#Else
+    Dim hEnv As Long
+#End If
+    Dim arrDrv() As String
+    Dim strDriver As String * 512
+    Dim strAttrib As String * 512
+    Dim lDrv As Integer
+    Dim lAtr As Integer
+
+    ret = SQLAllocEnv(hEnv)
+    Do While ret = SQL_SUCCESS
+        ret = SQLDrivers(hEnv, SQL_FETCH_NEXT, strDriver, 512, lDrv, strAttrib, 512, lAtr)
+        If ret <> SQL_NO_DATA_FOUND Then
+            ReDim Preserve arrDrv(j)
+            arrDrv(j) = Left(strDriver, lDrv)
+'            Debug.Print "D:" & arrDrv(j)
+            j = j + 1
+        End If
+    Loop
+    ListODBCDrivers = arrDrv
+    Call SQLFreeEnv(hEnv)
+
+End Function
+
+
+
+
+Public Function GetDriverDLL(strDriverName) As String
+  Dim s As String
+  s = RegKeyRead("HKEY_CURRENT_USER\SOFTWARE\ODBC\ODBC.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_LOCAL_MACHINE\SOFTWARE\ODBC\ODBC.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_CLASSES_ROOT\SOFTWARE\ODBC\ODBC.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+  
+  s = RegKeyRead("HKEY_CURRENT_USER\SOFTWARE\ODBC\ODBCINST.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_LOCAL_MACHINE\SOFTWARE\ODBC\ODBCINST.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_CLASSES_ROOT\SOFTWARE\ODBC\ODBCINST.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+  
+  s = RegKeyRead("HKEY_CURRENT_USER\SOFTWARE\WOW6432Node\ODBC\ODBC.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\ODBC\ODBC.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_CLASSES_ROOT\SOFTWARE\WOW6432Node\ODBC\ODBC.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+  
+  
+  s = RegKeyRead("HKEY_CURRENT_USER\SOFTWARE\WOW6432Node\ODBC\ODBCINST.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\ODBC\ODBCINST.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+
+  s = RegKeyRead("HKEY_CLASSES_ROOT\SOFTWARE\WOW6432Node\ODBC\ODBCINST.INI\" & strDriverName & "\DRIVER")
+  If s <> "" Then
+    GetDriverDLL = s
+    Exit Function
+  End If
+  
+End Function
+
+Private Function RegKeyRead(i_RegKey As String) As String
+Dim myWS As Object
+
+  On Error Resume Next
+  'access Windows scripting
+  Set myWS = CreateObject("WScript.Shell")
+  'read key from registry
+  RegKeyRead = myWS.RegRead(i_RegKey)
+End Function
+
+
+Attribute VB_Name = "Globals"
+Option Explicit
+
+Public G_Y As Long
+
+        Dim G_pw As String
+        Dim G_usr As String
+        
+
+
+' Get Database Connection
+Function GetConnection(ByRef errtxt As String, Optional ByVal waitendless As Boolean = False) As Object
+
+        errtxt = ""
+        Err.Clear
+        On Error Resume Next
+        
+        Dim Conn As Object
+        Set Conn = CreateObject("ADODB.Connection")
+        Conn.CursorLocation = 3
+        Set GetConnection = Nothing
+        Dim cnt As Long
+        cnt = 0
+
+        Dim tim As Single
+        tim = Timer
+checkAgain:
+        Conn.ConnectionTimeout = 5
+        
+        ' Read the User and the password from cell B3 and B4
+        Dim conString As String
+        
+        
+        If Tabelle1.ComboBox1.Value = "MS-SQL" Then
+          conString = "Driver={" & Tabelle1.ComboBox2 & "};Server=" & Cells(5, 2) & ";Port=" & IIf(Cells(6, 2) <> "", Cells(6, 2), "1433") & ";Database=" & Cells(7, 2) & ";"
+        Else
+          conString = "Driver={" & Tabelle1.ComboBox2 & "};dbq=" & Cells(5, 2) & ":" & IIf(Cells(6, 2) <> "", Cells(6, 2), "1521") & IIf(Cells(7, 2) <> "", "/" & Cells(7, 2), "") & ";"
+        End If
+        
+        If Tabelle1.Cells(8, 2) = "" Then
+          G_usr = InputBox("Bitte geben Sie den Username des technischen Users der Datenbank ein", "User", G_usr)
+          If G_usr = "" Then Exit Function
+        Else
+          G_usr = Tabelle1.Cells(8, 2)
+        End If
+        If Tabelle1.Cells(9, 2) = "" Then
+          G_pw = InputBox("Bitte geben Sie das Passwort des technischen Users der Datenbank ein", "Passwort", G_pw)
+          If G_pw = "" Then Exit Function
+        Else
+          G_pw = Tabelle1.Cells(9, 2)
+        End If
+        
+        Conn.Open conString, G_usr, G_pw
+        
+        ' Any errror? Try again!
+        If Err.Number <> 0 Then
+            errtxt = Err.Number & " - " & Err.Description
+            Err.Clear
+            Sleep 100
+            cnt = cnt + 1
+            If Not waitendless Then
+                If cnt > 5 Then
+                    Set Conn = Nothing
+                    Exit Function
+                End If
+                GoTo checkAgain
+            End If
+        End If
+        
+        ' Ok, thats it
+        Err.Clear
+        Set GetConnection = Conn
+
+End Function
+
+
+Attribute VB_Name = "Helpers"
+Option Explicit
+
+Function WorksheetExists(wb As Workbook, ByVal wsname As String)
+  On Error GoTo doesntExist
+  WorksheetExists = False
+  
+  Dim s As String
+  s = wb.Sheets(wsname).name
+  WorksheetExists = True
+  Exit Function
+doesntExist:
+End Function
+
+Sub CreateNewSheet(ByVal sheetname As String)
+  If WorksheetExists(ThisWorkbook, sheetname) Then
+    Sheets(sheetname).Delete
+  End If
+  Sheets.Add After:=Sheets(Sheets.Count)
+  Sheets(Sheets.Count).name = sheetname
+End Sub
+Attribute VB_Name = "MyOpenDlg"
+Option Explicit
+
+'  Shell File Operations
+
+Private Const FO_MOVE = &H1
+Private Const FO_COPY = &H2
+Private Const FO_DELETE = &H3
+Private Const FO_RENAME = &H4
+Private Const FOF_MULTIDESTFILES = &H1
+Private Const FOF_CONFIRMMOUSE = &H2
+Private Const FOF_SILENT = &H4                      '  don't create progress/report
+Private Const FOF_RENAMEONCOLLISION = &H8
+Private Const FOF_NOCONFIRMATION = &H10             '  Don't prompt the user.
+Private Const FOF_WANTMAPPINGHANDLE = &H20          '  Fill in SHFILEOPSTRUCT.hNameMappings
+                                      '  Must be freed using SHFreeNameMappings
+Private Const FOF_ALLOWUNDO = &H40
+Private Const FOF_FILESONLY = &H80                  '  on *.*, do only files
+Private Const FOF_SIMPLEPROGRESS = &H100            '  means don't show names of files
+Private Const FOF_NOCONFIRMMKDIR = &H200            '  don't confirm making any needed dirs
+
+
+#If VBA7 And Win64 Then
+  ' Done
+     Type SHFILEOPSTRUCT
+         hwnd As LongPtr
+         wFunc As Long
+         pFrom As String
+         pTo As String
+         fFlags As Integer
+         fAborted As Boolean
+         hNameMaps As LongPtr
+         sProgress As String
+     End Type
+     Declare PtrSafe Function SHFileOperation Lib "shell32.dll" Alias "SHFileOperationA" _
+                                      (lpFileOp As SHFILEOPSTRUCT) As LongPtr
+ #Else
+     Type SHFILEOPSTRUCT
+         hwnd As Long
+         wFunc As Long
+         pFrom As String
+         pTo As String
+         fFlags As Integer
+         fAborted As Boolean
+         hNameMaps As Long
+         sProgress As String
+     End Type
+     Declare Function SHFileOperation Lib "shell32.dll" Alias "SHFileOperationA" _
+                                      (lpFileOp As SHFILEOPSTRUCT) As Long
+ #End If
+
+Const OFN_READONLY           As Long = &H1
+Const OFN_EXPLORER           As Long = &H80000
+Const OFN_LONGNAMES          As Long = &H200000
+Const OFN_CREATEPROMPT       As Long = &H2000
+Const OFN_NODEREFERENCELINKS As Long = &H100000
+Const OFN_OVERWRITEPROMPT    As Long = &H2
+Const OFN_HIDEREADONLY       As Long = &H4
+Const OFN_NOCHANGEDIR        As Long = &H8
+Const OFN_PATHMUSTEXIST      As Long = &H800
+Const OFN_ENABLEHOOK As Long = &H20
+Const OFN_ENABLESIZING As Long = &H800000
+
+Public Const OFS_FILE_OPEN_FLAGS    As Long = OFN_EXPLORER _
+                                    Or OFN_LONGNAMES _
+                                    Or OFN_CREATEPROMPT _
+                                    Or OFN_NODEREFERENCELINKS _
+                                    Or OFN_NOCHANGEDIR
+                                    
+Public Const OFS_FILE_SAVE_FLAGS    As Long = OFN_EXPLORER _
+                                    Or OFN_LONGNAMES _
+                                    Or OFN_OVERWRITEPROMPT _
+                                    Or OFN_HIDEREADONLY
+Public Const OFS_FILE_SAVE_FLAGS_NO_PROMPT    As Long = OFN_EXPLORER _
+                                    Or OFN_LONGNAMES _
+                                    Or OFN_HIDEREADONLY
+
+Public Const WM_INITDIALOG As Long = &H110
+Private Const SW_SHOWNORMAL As Long = 1
+
+
+Private Const BIF_RETURNONLYFSDIRS = 1
+
+Private Const MAX_PATH = 260
+
+#If VBA7 And Win64 Then
+
+Public Declare PtrSafe Function GetOpenFileName Lib "comdlg32.dll" Alias _
+             "GetOpenFileNameA" (pOpenfilename As OPENFILENAME) As Long
+        
+     Public Type OPENFILENAME
+         lStructSize As Long
+         hwndOwner As LongPtr
+         hInstance As LongPtr
+         lpstrFilter As String
+         lpstrCustomFilter As String
+         nMaxCustFilter As Long
+         nFilterIndex  As Long
+         lpstrFile As String
+         nMaxFile As Long
+         lpstrFileTitle As String
+         nMaxFileTitle  As Long
+         lpstrInitialDir As String
+         lpstrTitle As String
+         flags As Long
+         nFileOffset As Integer
+         nFileExtension As Integer
+         lpstrDefExt As String
+         lCustData As LongPtr
+         lpfnHook As LongPtr
+         lpTemplateName As String
+     End Type
+    
+
+  ' Done
+Private Declare PtrSafe Function GetParent Lib "user32" (ByVal hwnd As LongPtr) As LongPtr
+  
+
+Declare PtrSafe Function GetSaveFileName Lib "comdlg32.dll" Alias _
+    "GetSaveFileNameA" (pOpenfilename As OPENFILENAME) As Long
+Declare PtrSafe Function GetShortPathName Lib "Kernel32.dll" Alias _
+    "GetShortPathNameA" (ByVal lpszLongPath As String, _
+                         ByVal lpszShortPath As String, _
+                         ByVal cchBuffer As Long) As Long
+
+
+Private Declare PtrSafe Sub CoTaskMemFree Lib "ole32.dll" _
+     (ByVal hMem As LongPtr)
+
+Private Declare PtrSafe Function lstrcat Lib "kernel32" Alias "lstrcatA" (ByVal lpString1 As String, ByVal lpString2 As String) As LongPtr
+
+Private Declare PtrSafe Function SHGetPathFromIDList Lib "shell32" _
+   (ByVal pidList As LongPtr, ByVal lpBuffer As String) As Long
+
+
+     Public Type BROWSEINFO
+         lngHWnd As LongPtr
+         pidlRoot As LongPtr
+         pszDisplayName As String
+         lpszTitle As String
+         ulFlags As Long
+         lpfn As LongPtr
+         lParam As LongPtr
+         iImage As Long
+     End Type
+                         
+     Private Declare PtrSafe Function SHBrowseForFolder Lib "shell32.dll" Alias "SHBrowseForFolderA" _
+         (lpBrowseInfo As BROWSEINFO) As Long
+
+#Else
+
+    Public Declare Function GetOpenFileName Lib "comdlg32.dll" Alias _
+             "GetOpenFileNameA" (pOpenfilename As OPENFILENAME) As Long
+        
+     Public Type OPENFILENAME
+         lStructSize As Long
+         hwndOwner As Long
+         hInstance As Long
+         lpstrFilter As String
+         lpstrCustomFilter As String
+         nMaxCustFilter As Long
+         nFilterIndex  As Long
+         lpstrFile As String
+         nMaxFile As Long
+         lpstrFileTitle As String
+         nMaxFileTitle  As Long
+         lpstrInitialDir As String
+         lpstrTitle As String
+         flags As Long
+         nFileOffset As Integer
+         nFileExtension As Integer
+         lpstrDefExt As String
+         lCustData As Long
+         lpfnHook As Long
+         lpTemplateName As String
+     End Type
+
+Private Declare Function GetParent Lib "user32" (ByVal hwnd As Long) As Long
+' Private Declare Function SetWindowText Lib "user32" Alias "SetWindowTextA" (ByVal hwnd As Long, ByVal lpString As String) As Long
+' Private Declare Function MoveWindow Lib "user32" (ByVal hwnd As Long, ByVal x As Long, ByVal y As Long, ByVal nWidth As Long, ByVal nHeight As Long, ByVal bRepaint As Long) As Long
+   
+  
+Declare Function GetSaveFileName Lib "comdlg32.dll" Alias _
+    "GetSaveFileNameA" (pOpenfilename As OPENFILENAME) As Long
+Declare Function GetShortPathName Lib "Kernel32.dll" Alias _
+    "GetShortPathNameA" (ByVal lpszLongPath As String, _
+                         ByVal lpszShortPath As String, _
+                         ByVal cchBuffer As Long) As Long
+
+
+Private Declare Sub CoTaskMemFree Lib "ole32.dll" _
+     (ByVal hMem As Long)
+
+Private Declare Function lstrcat Lib "kernel32" _
+    Alias "lstrcatA" (ByVal lpString1 As String, _
+    ByVal lpString2 As String) As Long
+
+Private Declare Function SHGetPathFromIDList Lib "shell32" _
+   (ByVal pidList As Long, ByVal lpBuffer As String) As Long
+
+
+     Public Type BROWSEINFO
+         lngHWnd As Long
+         pidlRoot As Long
+         pszDisplayName As String
+         lpszTitle As String
+         ulFlags As Long
+         lpfn As Long
+         lParam As Long
+         iImage As Long
+     End Type
+                         
+     Private Declare Function SHBrowseForFolder Lib "shell32.dll" Alias "SHBrowseForFolderA" _
+         (lpBrowseInfo As BROWSEINFO) As Long
+
+#End If
+
+Public Function BrowseForFolder(ByVal lngHWnd As Long, ByVal strPrompt As String) As String
+    On Error GoTo ehBrowseForFolder 'Trap for errors
+    BrowseForFolder = ""
+    Dim intNull As Integer
+#If VBA7 And Win64 Then
+    Dim lngIDList As LongPtr
+#Else
+    Dim lngIDList As Long
+#End If
+    Dim lngResult As Long
+    Dim strPath As String
+    Dim udtBI As BROWSEINFO
+
+    'Set API properties (housed in a UDT)
+
+    With udtBI
+        .lngHWnd = lngHWnd
+        .lpszTitle = lstrcat(strPrompt, "")
+        .ulFlags = BIF_RETURNONLYFSDIRS
+    End With
+
+    'Display the browse folder...
+    lngIDList = SHBrowseForFolder(udtBI)
+    If lngIDList <> 0 Then
+        'Create string of nulls so it will fill in with the path
+        strPath = String(MAX_PATH, 0)
+
+       'Retrieves the path selected, places in the null
+       'character filled string
+        lngResult = SHGetPathFromIDList(lngIDList, strPath)
+
+       'Frees memory
+       Call CoTaskMemFree(lngIDList)
+
+       'Find the first instance of a null character,
+         'so we can get just the path
+        intNull = InStr(strPath, vbNullChar)
+        'Greater than 0 means the path exists...
+        If intNull > 0 Then
+            'Set the value
+            strPath = Left(strPath, intNull - 1)
+        End If
+    End If
+
+   'Return the path name
+   If Len(strPath) > 0 Then
+     If Right(strPath, 1) = "\" Then
+       strPath = Left(strPath, Len(strPath) - 1)
+     End If
+   End If
+   BrowseForFolder = strPath
+   Exit Function 'Abort
+
+ehBrowseForFolder:
+
+End Function
+
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "TestRead, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "AbortRead, 16, 1, MSForms, CommandButton"
+Attribute VB_Control = "ComboBox1, 8, 2, MSForms, ComboBox"
+Attribute VB_Control = "ComboBox2, 9, 3, MSForms, ComboBox"
+Attribute VB_Control = "Label1, 10, 4, MSForms, Label"
+Attribute VB_Control = "Label2, 11, 5, MSForms, Label"
+Attribute VB_Control = "TestConnection, 13, 6, MSForms, CommandButton"
+Attribute VB_Control = "Label3, 17, 7, MSForms, Label"
+Attribute VB_Control = "Label4, 18, 8, MSForms, Label"
+Option Explicit
+
+Public Function LongFileName(ByVal short_name As String) As _
+    String
+Dim pos As Integer
+Dim Result As String
+Dim long_name As String
+
+    ' Start after the drive letter if any.
+    If Mid$(short_name, 2, 1) = ":" Then
+        Result = Left$(short_name, 2)
+        pos = 3
+    Else
+        Result = ""
+        pos = 1
+    End If
+
+    ' Consider each section in the file name.
+    Do While pos > 0
+        ' Find the next \.
+        pos = InStr(pos + 1, short_name, "\")
+
+        ' Get the next piece of the path.
+        If pos = 0 Then
+            long_name = Dir$(short_name, vbNormal + _
+                vbHidden + vbSystem + vbDirectory)
+            If long_name = "" Then
+              pos = InStrRev(short_name, "\")
+              If pos > 0 Then
+                long_name = Mid(short_name, pos + 1)
+                pos = 0
+              End If
+            End If
+        Else
+            long_name = Dir$(Left$(short_name, pos - 1), _
+                vbNormal + vbHidden + vbSystem + _
+                vbDirectory)
+        End If
+        Result = Result & "\" & long_name
+    Loop
+
+    LongFileName = Result
+End Function
+
+
+Private Sub AbortRead_Click()
+  G_Abbruch = True
+End Sub
+
+Private Sub ComboBox2_Change()
+  Cells(4, 3) = LongFileName(GetDriverDLL(ComboBox2))
+End Sub
+
+Private Sub TestConnection_Click()
+  Dim o As Object
+  Dim errstr As String
+  Set o = GetConnection(errstr)
+  If Not o Is Nothing Then
+    Cells(11, 2).Value = "Verbindung erfolgreich! (" & Now & ")"
+    o.Close
+    Set o = Nothing
+  Else
+    Cells(11, 2).Value = "Verbindung nicht erfolgreich! (" & Now & ")" & vbCrLf & "Fehler: " & errstr
+  End If
+End Sub
+
+Private Sub TestRead_Click()
+  
+  G_Abbruch = False
+  
+  Dim srcFile As String
+  
+  If FileExists(ThisWorkbook.Path & "\..\..\IDV-Suite-App\suite.net\IDV-TrackerDataOri.mdb") Then
+    srcFile = ThisWorkbook.Path & "\..\..\IDV-Suite-App\suite.net\IDV-TrackerDataOri.mdb"
+  ElseIf FileExists(ThisWorkbook.Path & "\IDV-TrackerDataOri.mdb") Then
+    srcFile = ThisWorkbook.Path & "\IDV-TrackerDataOri.mdb"
+  Else
+    Dim pth As String
+    MsgBox "Bitte w|fffd|hlen Sie den IDV-Suite-Programmordner 'IDV-Suite-App' aus."
+    pth = BrowseForFolder(0, "Ordner 'IDV-Suite-App' ausw|fffd|hlen.")
+    If pth <> "" Then
+'      If UCase(Right(pth, 13)) <> "IDV-SUITE-APP" Then
+'        MsgBox "Sie haben nicht den Ordner 'IDV-Suite-App' ausgew|fffd|hlt."
+'        Exit Sub
+'      End If
+        
+      If FileExists(pth & "\IDV-TrackerDataOri.mdb") Then
+        srcFile = pth & "\IDV-TrackerDataOri.mdb"
+      ElseIf FileExists(pth & "\suite.net\IDV-TrackerDataOri.mdb") Then
+        srcFile = pth & "\suite.net\IDV-TrackerDataOri.mdb"
+      Else
+        MsgBox "Im Programmordner 'IDV-Suite-App\suite.net' fehlt die Datei 'IDV-TrackerDataOri.mdb', der Download kann nicht ausgef|fffd|hrt werden."
+        Exit Sub
+      End If
+    Else
+      MsgBox "Kein Pfad gew|fffd|hlt."
+      Exit Sub
+    End If
+  End If
+  
+  MyKill ThisWorkbook.Path & "\idv-suite.mdb"
+  
+  If FileExists(ThisWorkbook.Path & "\idv-suite.mdb") Then
+    MsgBox "Die Datei '" & ThisWorkbook.Path & "\idv-suite.mdb' konnte nicht gel|fffd|scht werden."
+    Exit Sub
+  End If
+  
+  FileCopy srcFile, ThisWorkbook.Path & "\idv-suite.mdb"
+
+  If Not FileExists(ThisWorkbook.Path & "\idv-suite.mdb") Then
+    MsgBox "Die Datei '" & ThisWorkbook.Path & "\idv-suite.mdb' konnte nicht geschrieben werden."
+    Exit Sub
+  End If
+  
+  RunCopy
+
+End Sub
+
+
+Function FileExists(ByVal Dateiname$) As Boolean
+    'Die Funktion pr|fffd|ft, ob eine Datei vorhanden ist
+On Error GoTo fehler:
+    Dim res As Boolean
+    res = Dir$(Dateiname) <> ""
+    If res = False Then
+      res = Dir$(Dateiname) <> ""
+    End If
+    FileExists = res
+    Exit Function
+fehler:
+    FileExists = False
+    Resume Next
+End Function
+
+Sub MyKill(fname As String)
+  On Error Resume Next
+  Kill fname
+End Sub
+
+
+
+INQUEST-PP=macro

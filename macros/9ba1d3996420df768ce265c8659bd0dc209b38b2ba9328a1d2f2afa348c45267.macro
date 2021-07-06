@@ -1,0 +1,4155 @@
+Attribute VB_Name = "CFormResizer"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+'
+' Description:  Makes a userform resizeable and handles the sizing and positioning
+'               of all controls, using resizing information specified in each
+'               control's Tag property.
+'
+' Authors:      Stephen Bullen, www.oaltd.co.uk
+'               Rob Bovey, www.appspro.com
+'
+
+Option Explicit
+
+' **************************************************************
+' Windows API Declarations and Constants Follow
+' **************************************************************
+
+#If VBA7 Then
+    Dim mhwndForm As LongPtr                                 'The userform's window handle
+    'Find the userform's window handle
+    Private Declare PtrSafe Function FindWindow Lib "USER32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As LongPtr
+    'Get the userform's window style
+    Private Declare PtrSafe Function GetWindowLong Lib "USER32" Alias "GetWindowLongA" (ByVal hWnd As LongPtr, ByVal nIndex As Long) As LongPtr
+    'Set the userform's window style
+    Private Declare PtrSafe Function SetWindowLong Lib "USER32" Alias "SetWindowLongA" (ByVal hWnd As LongPtr, ByVal nIndex As Long, ByVal dwNewLong As LongPtr) As LongPtr
+#Else
+    Dim mhwndForm As Long                                 'The userform's window handle
+    'Find the userform's window handle
+    Private Declare Function FindWindow Lib "USER32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+    'Get the userform's window style
+    Private Declare Function GetWindowLong Lib "USER32" Alias "GetWindowLongA" (ByVal hWnd As Long, ByVal nIndex As Long) As Long
+    'Set the userform's window style
+    Private Declare Function SetWindowLong Lib "USER32" Alias "SetWindowLongA" (ByVal hWnd As Long, ByVal nIndex As Long, ByVal dwNewLong As Long) As Long
+#End If
+
+
+'The offset of a window's style
+Private Const GWL_STYLE As Long = (-16)
+
+'Style to add a sizable frame
+Private Const WS_THICKFRAME As Long = &H40000
+
+''''''''''''''''''''''''''''''''''''''''''''''''''
+' Module-level Declarations Follow
+''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim moForm As Object    'The userform we're handling
+
+Dim mdWidth As Double   'The previous width of the form
+Dim mdHeight As Double  'The previous height of the form
+Dim msRegKey As String  'The registry key for storing the form's size and position
+
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Default for the registry key to store the dimensions
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 05 Jun 04     Stephen Bullen  Created
+'
+Private Sub Class_Initialize()
+    msRegKey = "JKP-ADS"
+End Sub
+
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Properties to identify where in the registry to store
+'           the userform position information
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 05 Jun 04     Stephen Bullen  Created
+'
+Public Property Let RegistryKey(sNew As String)
+    msRegKey = sNew
+End Property
+
+Public Property Get RegistryKey() As String
+    RegistryKey = msRegKey
+End Property
+
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: We're told which form to handle the resizing for,
+'           set in the UserForm_Initialize event. Make the form
+'           resizable and set its size and position
+'
+' Arguments:    oForm       The userform to handle
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 05 Jun 04     Stephen Bullen  Created
+'
+Public Property Set Form(oNew As Object)
+
+    Dim sSizes As String, vaSizes As Variant
+    #If VBA7 Then
+        Dim iStyle As LongPtr
+    #Else
+        Dim iStyle As Long
+    #End If
+
+    'Remember the form for later
+    Set moForm = oNew
+
+    'Get the userform's window handle
+    mhwndForm = FindWindow("ThunderDFrame", moForm.Caption)
+
+    'Make the form resizable
+    iStyle = GetWindowLong(mhwndForm, GWL_STYLE)
+    iStyle = iStyle Or WS_THICKFRAME
+    SetWindowLong mhwndForm, GWL_STYLE, iStyle
+
+    'Read its dimensions from the registry (if there)
+    'The string has the form of "<Top>;<Left>;<Height>;<Width>"
+    sSizes = GetSetting(msRegKey, "Forms", moForm.Name, "")
+
+    'Remember the current size for use in the Resize routine
+    mdWidth = moForm.Width
+    mdHeight = moForm.Height
+
+    If sSizes <> "" Then
+        'If we got a dimension string, split it into its parts
+        vaSizes = mySplit(sSizes, ";")
+
+        'Make sure we got 4 elements!
+        ReDim Preserve vaSizes(0 To 3)
+
+        'Set the form's size and position
+        moForm.Top = Val(vaSizes(0))
+        moForm.Left = Val(vaSizes(1))
+        moForm.Height = Val(vaSizes(2))
+        moForm.Width = Val(vaSizes(3))
+
+        'Set to manual startup position
+        moForm.StartUpPosition = 0
+    End If
+
+End Property
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Called from the User_Form resize event. Also triggered
+'           when we change the size ourself
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 05 Jun 04     Stephen Bullen  Created
+'
+Public Sub FormResize()
+    Dim dHeightAdj As Double
+    Dim dWidthAdj As Double
+    Dim bSomeWidthChange As Boolean
+    Dim bSomeHeightChange As Boolean
+    Dim sTag As String
+    Dim oCtl As MSForms.control
+    Static bResizing As Boolean
+    dWidthAdj = 0
+    'Resizing can be triggered from within this routine,
+    'so use a flag to prevent recursion
+    If bResizing Then Exit Sub
+    bResizing = True
+
+    'Calculate the change in height and width
+    dHeightAdj = moForm.Height - mdHeight
+    dWidthAdj = moForm.Width - mdWidth
+
+    'Check if we can perform the adjustment
+    '(i.e. widths and heights can't be negative)
+    For Each oCtl In moForm.Controls
+        If oCtl.Visible Then
+            'Read the control's Tag property, which contains the resizing info
+            sTag = UCase(oCtl.Tag)
+
+            'If we're changing the Top, check that it won't move off the top
+            'of the form
+            If InStr(1, sTag, "T", vbBinaryCompare) Then
+                If oCtl.Top + dHeightAdj * ResizeFactor(sTag, "T") <= 0 Then
+                    moForm.Height = mdHeight
+                End If
+
+                bSomeHeightChange = True
+            End If
+
+            'If we're changing the Left, check that it won't move off the
+            'left of the form
+            If InStr(1, sTag, "L", vbBinaryCompare) Then
+                If oCtl.Left + dWidthAdj * ResizeFactor(sTag, "L") <= 0 Then
+                    moForm.Width = mdWidth
+                End If
+
+                bSomeWidthChange = True
+
+            End If
+
+            'If we're changing the Height, check that it won't go negative
+            If InStr(1, sTag, "H", vbBinaryCompare) Then
+                If oCtl.Height + dHeightAdj * ResizeFactor(sTag, "H") <= 15 Then
+                    moForm.Height = mdHeight
+                End If
+
+                bSomeHeightChange = True
+            End If
+
+            'If we're changing the Width, check that it won't go negative
+            If InStr(1, sTag, "W", vbBinaryCompare) Then
+                If oCtl.Width + dWidthAdj * ResizeFactor(sTag, "W") <= 5 Then
+                    moForm.Width = mdWidth
+                End If
+
+                bSomeWidthChange = True
+            End If
+        End If
+    Next        'Control
+
+    'If none of the controls move or size,
+    'don't allow the form to resize in that direction
+    If Not bSomeHeightChange Then moForm.Height = mdHeight
+    If Not bSomeWidthChange Then moForm.Width = mdWidth
+
+    'Recalculate the height and width changes,
+    'in case the previous checks reset them
+    dHeightAdj = moForm.Height - mdHeight
+    dWidthAdj = moForm.Width - mdWidth
+
+    'Loop through all the controls on the form,
+    'adjusting their position and size
+    For Each oCtl In moForm.Controls
+        With oCtl
+            If .Visible Then
+                sTag = UCase(.Tag)
+
+                'Changing the Top
+                If InStr(1, sTag, "T", vbBinaryCompare) Then
+                    .Top = .Top + dHeightAdj * ResizeFactor(sTag, "T")
+                End If
+
+                'Changing the Left
+                If InStr(1, sTag, "L", vbBinaryCompare) Then
+                    .Left = .Left + dWidthAdj * ResizeFactor(sTag, "L")
+                End If
+
+                'Changing the Height
+                If InStr(1, sTag, "H", vbBinaryCompare) Then
+                    .Height = .Height + dHeightAdj * ResizeFactor(sTag, "H")
+                End If
+
+                'Changing the Width
+                If InStr(1, sTag, "W", vbBinaryCompare) Then
+                    .Width = .Width + dWidthAdj * ResizeFactor(sTag, "W")
+                End If
+
+            End If
+        End With
+    Next        'Control
+
+    'Remember the new dimensions of the form for next time
+    mdWidth = moForm.Width
+    mdHeight = moForm.Height
+
+    'Store the size and position in the registry
+    With moForm
+        SaveSetting msRegKey, "Forms", .Name, Str(.Top) & ";" & _
+                                              Str(.Left) & ";" & _
+                                              Str(.Height) & ";" & Str(.Width)
+    End With
+
+    'Reset the recursion flag, now that we're done
+    bResizing = False
+
+End Sub
+
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Function to locate a property letter (T, L, H or W)
+'           in the Tag string and return the resizing factor for it
+'
+' Arguments:    sTag        The full text of the control's Tag string
+'               sChange     The resize letter to look for (T, L, H or W)
+'
+' Returns:      The percentage change factor
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 05 Jun 04     Stephen Bullen  Created
+'
+Public Function ResizeFactor(sTag As String, sChange As String)
+
+    Dim iPos As Integer, dfactor As Double
+
+    'Locate the property letter in the tag string
+    iPos = InStr(1, sTag, sChange, vbBinaryCompare)
+
+    'If we found it...
+    If iPos > 0 Then
+
+        '... read the number following it
+        dfactor = Val(Mid$(sTag, iPos + 1))
+
+        'If there was no number, use a factor of 100%
+        If dfactor = 0 Then dfactor = 1
+    End If
+
+    'Return the factor
+    ResizeFactor = dfactor
+End Function
+
+Public Sub ResetFormSizes()
+    Dim sSizes As String, vaSizes As Variant
+    Dim iStyle As Long
+    With moForm
+        SaveSetting msRegKey, "Forms", .Name, Str(.Top) & ";" & _
+                                              Str(.Left) & ";" & _
+                                              Str(.Height) & ";" & Str(.Width)
+        sSizes = GetSetting(msRegKey, "Forms", .Name, "")
+
+        'Remember the current size for use in the Resize routine
+        mdWidth = .Width
+        mdHeight = .Height
+    End With
+End Sub
+Attribute VB_Name = "MScreen"
+'
+' Description:  Contains API constants, variables, declarations and procedures
+'               to demonstrate API routines related to the screen
+'
+' Author:       Stephen Bullen, www.oaltd.co.uk
+'
+
+Option Explicit
+Option Private Module
+
+' **************************************************************
+' Declarations for the SystemMetrics, ScreenWidth and ScreenHeight example functions
+' **************************************************************
+''''''''''''''''''''''''''''''''''''''''''''''''''
+' Constants used in the GetSystemMetrics call
+''''''''''''''''''''''''''''''''''''''''''''''''''
+Private Const SM_CXSCREEN = 0                         'Screen width
+Private Const SM_CYSCREEN = 1                         'Screen height
+
+''''''''''''''''''''''''''''''''''''''''''''''''''
+' Public enum to expose the constants with
+' friendly names in the intellisense dropdown
+''''''''''''''''''''''''''''''''''''''''''''''''''
+
+'Public Enum SystemMetricsConstants
+'    smScreenWidth = SM_CXSCREEN
+'    smScreenHeight = SM_CYSCREEN
+'End Enum
+
+''''''''''''''''''''''''''''''''''''''''''''''''''
+' Function Declarations
+''''''''''''''''''''''''''''''''''''''''''''''''''
+'Get a specific system-related metric
+#If VBA7 Then
+
+    Private Declare PtrSafe Function GetSystemMetrics Lib "USER32" (ByVal nIndex As Long) As Long
+
+    ' **************************************************************
+    ' Declarations for the PointsPerPixel example function
+    ' **************************************************************
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Constants used in the GetDeviceCaps call
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    Private Const LOGPIXELSX = 88                         '  Pixels/inch in X
+
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Module constants used in the example function
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    'A point is defined as 1/72 inches
+    Private Const POINTS_PER_INCH As Long = 72
+
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Function Declarations
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    'Get a handle to the Device Context (a drawing layer) for a window
+
+    Private Declare PtrSafe Function GetDC Lib "USER32" (ByVal hWnd As LongPtr) As LongPtr
+
+    'Get the capabilities of a device, from its Decive Context
+
+    Private Declare PtrSafe Function GetDeviceCaps Lib "gdi32" (ByVal hDC As LongPtr, ByVal nIndex As Long) As Long
+
+    'Release the handle to the Device Context, to tidy up
+
+    Private Declare PtrSafe Function ReleaseDC Lib "USER32" (ByVal hWnd As LongPtr, ByVal hDC As LongPtr) As Long
+#Else
+
+    Private Declare Function GetSystemMetrics Lib "USER32" (ByVal nIndex As Long) As Long
+
+    ' **************************************************************
+    ' Declarations for the PointsPerPixel example function
+    ' **************************************************************
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Constants used in the GetDeviceCaps call
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    Private Const LOGPIXELSX = 88                         '  Pixels/inch in X
+
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Module constants used in the example function
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    'A point is defined as 1/72 inches
+    Private Const POINTS_PER_INCH As Long = 72
+
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    ' Function Declarations
+    ''''''''''''''''''''''''''''''''''''''''''''''''''
+    'Get a handle to the Device Context (a drawing layer) for a window
+
+    Private Declare Function GetDC Lib "USER32" (ByVal hWnd As Long) As Long
+
+    'Get the capabilities of a device, from its Decive Context
+
+    Private Declare Function GetDeviceCaps Lib "gdi32" (ByVal hDC As Long, ByVal nIndex As Long) As Long
+
+    'Release the handle to the Device Context, to tidy up
+
+    Private Declare Function ReleaseDC Lib "USER32" (ByVal hWnd As Long, ByVal hDC As Long) As Long
+#End If
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Wrapper for the GetSystemMetrics API function,
+'           using the SystemMetricsConstants Enum
+'
+' Arguments:    uIndex      One of the SystemMetricsConstants values,
+'                           specifying which metric to retrieve
+'
+' Returns:      Long        The value of the required metric
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 02 Jun 04     Stephen Bullen  Created
+'
+Public Function SystemMetrics(ByVal uIndex As Long) As Long
+10  SystemMetrics = GetSystemMetrics(uIndex)
+End Function
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Retrieve the width of the screen, in pixels
+'
+' Arguments:    None
+'
+' Returns:      Long        The width of the screen, in pixels
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 02 Jun 04     Stephen Bullen  Created
+'
+Public Function ScreenWidth() As Long
+10  ScreenWidth = GetSystemMetrics(SM_CXSCREEN)
+End Function
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Retrieve the height of the screen, in pixels
+'
+' Arguments:    None
+'
+' Returns:      Long        The height of the screen, in pixels
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 02 Jun 04     Stephen Bullen  Created
+'
+Public Function ScreenHeight() As Long
+10  ScreenHeight = GetSystemMetrics(SM_CYSCREEN)
+End Function
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: Calculates the size of a pixel, in points.
+'           This depends on the user's DPI setting, from
+'           Control Panel > Display > Settings > Advanced > General
+'           The 'Normal' setting is 96dpi, in which 1 pixel = 0.75 points
+'           The 'Large' setting is 120dpi, in which 1 pixel = 0.8 points
+'
+' Arguments:    None
+'
+' Returns:      Double      The size of a pixel, in points.
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 02 Jun 04     Stephen Bullen  Created
+'
+Public Function PointsPerPixel() As Double
+    #If VBA7 Then
+        Dim hDC As LongPtr
+    #Else
+        Dim hDC As Long
+    #End If
+
+    Dim lDotsPerInch As Long
+
+    'Get the Device Context of the desktop window (i.e. the screen)
+10  hDC = GetDC(0)
+
+    'Get the user's DPI setting
+20  lDotsPerInch = GetDeviceCaps(hDC, LOGPIXELSX)
+
+    'Divide the 72 points-per-inch by the dpi to give the width of a pixel
+30  PointsPerPixel = POINTS_PER_INCH / lDotsPerInch
+
+    'Release the Device Context, to tidy up
+40  ReleaseDC 0, hDC
+
+End Function
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+Option Explicit
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Option Explicit
+
+Private Sub Workbook_AddinInstall()
+    CreateBar
+End Sub
+
+Private Sub Workbook_AddinUninstall()
+    RemoveBar
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    RemoveMenu
+End Sub
+
+Private Sub Workbook_Open()
+    Dim oBar As CommandBar
+    MakeMenu
+    On Error Resume Next
+    Set oBar = Application.CommandBars("FlexFind")
+    If oBar Is Nothing Then CreateBar
+    Application.OnKey "+^f", "flexifinder"
+    Application.OnKey "+^h", "StartInReplaceMode"
+End Sub
+Attribute VB_Name = "modError_Handler"
+Option Explicit
+
+Function ReportError(Description As String, Number As Long, ModuleName As String, _
+                     ProcName As String)
+' central error handler
+' reports that something has gone wrong
+    Dim stMsg As String
+    Dim L As Long
+    Dim lAnswer As Long
+    On Error Resume Next    ' in case of errors in here, continue
+    stMsg = "Error " & Number & ": " & Description & " in " & ModuleName & "." & ProcName
+
+    ' put details in Immediate window
+    Debug.Print stMsg
+
+    'output to a text file
+    L = FreeFile()  ' get free file number
+    Open ThisWorkbook.Path & "\" & gsAppName & " Errors.Log" For Append As #L
+    Print #L, Now, ThisWorkbook.Name, stMsg
+    Close #L
+    If gbErrorIgnore <> True Then
+
+        ' message for the user
+        lAnswer = MsgBox("Sorry, a problem has occurred that I could not deal with." & vbNewLine & _
+                         "Please contact the support team, quoting the following information:" & vbNewLine & _
+                         stMsg & vbNewLine & vbNewLine & _
+                         "Choose Retry to retry searching this object (error is likely to reappear)" _
+                         & vbNewLine & "choose Ignore to continue the search with the next object" _
+                         & vbNewLine & "Choose Cancel to stop searching entirely.", vbAbortRetryIgnore + vbExclamation, "WHOOPS! Error in " & gsAppName)
+        ' return vbRetry if debugging - causes Resume
+    Else
+        lAnswer = vbIgnore
+    End If
+    If lAnswer = vbRetry Then
+        ReportError = vbRetry
+        Stop              ' press F8 3 times to see the statement that caused the error
+    ElseIf lAnswer = vbAbort Then
+        ReportError = vbAbort
+        gbCancel = True
+        gbStop = True
+    Else
+        gbErrorIgnore = True
+        ReportError = vbIgnore
+    End If
+End Function
+Attribute VB_Name = "modMain"
+Option Explicit
+
+'*****************************************************************
+'*                                                               *
+'*  All Subs in This Module (C) Jan Karel Pieterse, 2003-2007    *
+'*                                                               *
+'*  You are allowed to:                                          *
+'*                                                               *
+'*  - Use this application                                       *
+'*  - Give it to anyone                                          *
+'*                                                               *
+'* Provided that you leave it's content intact and unchanged     *
+'* Mail me if you have any comment!!!                            *
+'* jkpieterse@jkp-ads.com                                        *
+'*****************************************************************
+
+Public Const gsAppName = "Flexible Finder version 5.3"
+Public Const gsMenuCaption As String = "&FlexFind..."
+Public Const gsValidChars = ".?\_0123456789a|fffd||fffd||fffd||fffd||fffd||fffd||fffd|bc|fffd|d|fffd|e|fffd||fffd||fffd||fffd|f|fffd|ghi|fffd||fffd||fffd||fffd|jklmn|fffd|o|fffd||fffd||fffd||fffd||fffd||fffd||fffd|pqrs|fffd||fffd|t|fffd|u|fffd||fffd||fffd||fffd|vwxy|fffd||fffd|z|fffd|"     'JKP Feb 6 2003 Valid characters for names
+Public Const gsBuild As String = "574"
+Public Const gglMaxCount As Long = 20000
+
+Public gbAcknowledge As Boolean
+Public gbAllowChartTypeChangeAll As Boolean
+Public gbAllowChartTypeChange As Boolean
+Public gbDisAllowChartTypeChangeAll As Boolean
+
+Public gbAutoColWidth As Boolean
+Public gbCancel As Boolean
+Public gbCase As Boolean
+Public gbChanged As Boolean
+Public gbDisableEvents As Boolean
+Public gbGoOn As Boolean
+Public gbHyper As Boolean
+Public gbIndividual As Boolean
+Public gbResizeDone As Boolean
+Public gbStop As Boolean
+Public gbShowlblStopped As Boolean
+Public gbWarned As Boolean
+Public gbInObjects As Boolean
+Public gbReplace As Boolean
+Public gbReturn As Boolean
+Public gbRunBefore As Boolean
+Public gbYes As Boolean
+Public gbErrorIgnore As Boolean
+
+Public frmFlexifind As ufFlexiFind
+Public frmFormula As ufFormula
+Public frmAllowChartTypeChange As ufAllowChartTypeChange
+Public giMaximised As Integer
+Public giScope As Integer
+
+Public glCountFound As Long
+Public glCurrent As Long
+
+#If VBA7 Then
+    Public glXLHwnd As LongPtr
+#Else
+    Public glXLHwnd As Long
+#End If
+
+Public glMax As Long
+Public glMaxAddress As Long
+Public glMaxSheetname As Long
+Public glSearchOrder As Long
+Public glType As Long
+Public glWhole As Long
+Public glMsgCount As Long
+Public glTopIndex As Long
+Public glListIndex As Long
+
+
+Public goCurrentStartRange As Object
+Public goCurrentStartSheet As Object
+Public goCurrentStartBook As Object
+Public goFoundObjects() As Object
+Public goBooks() As Workbook
+Public goSearchBook As Workbook
+Public goStartRange As Object
+Public goStartSheet As Object
+
+Public gsCurrentBookName As String
+Public gsStartString As String
+Public gsWhatToFind As String
+Public gsWhatToReplace As String
+Public gsMsgs() As String
+
+'Macstuff
+Public gbMacOS As Boolean
+Public gbMacX As Boolean
+
+Public giMaxFormHeight As Integer
+Public giMinFormHeight As Integer
+Public giNormalFormHeight As Integer
+
+Public goLocalControl As control
+Public gsWidth As Single
+
+Dim mbObj As Boolean
+Dim mcControl As CommandBarControl
+#If VBA7 Then
+    Public Declare PtrSafe Function SetActiveWindow Lib "user32.dll" (ByVal hWnd As LongPtr) As LongPtr
+    Public Declare PtrSafe Function FindWindow32 Lib "USER32" Alias "FindWindowA" _
+           (ByVal lpClassName As String, ByVal lpWindowName As String) As LongPtr
+#Else
+    Public Declare Function SetActiveWindow Lib "user32.dll" (ByVal hWnd As Long) As Long
+    Public Declare Function FindWindow32 Lib "USER32" Alias "FindWindowA" (ByVal lpClassName As String, ByVal lpWindowName As String) As Long
+#End If
+
+Sub StartInReplaceMode()
+    giMaximised = 1
+    FlexiFinder
+End Sub
+
+Sub FlexiFinder()
+    On Error GoTo LocErr
+    glXLHwnd = FindWindow32("XLMAIN", Application.Caption)
+    gsWidth = 5.25
+    giMaximised = 1
+    giMaxFormHeight = 326
+    giMinFormHeight = 56
+    giNormalFormHeight = 192
+    gbMacX = False
+    If Application.OperatingSystem Like "*Mac*" Then
+        gbMacOS = True
+        gsWidth = 6.5
+        If Val(Application.Version) >= 10 Then
+            gbMacX = True
+            giMaxFormHeight = 307
+            giNormalFormHeight = 175
+            giMinFormHeight = 60
+        Else
+            giMaxFormHeight = 303
+            giNormalFormHeight = 171
+            giMinFormHeight = 65
+        End If
+    Else
+        gbMacOS = False
+    End If
+    gbCancel = False
+    gbAllowChartTypeChangeAll = False
+    gbDisAllowChartTypeChangeAll = False
+    If Not gbRunBefore Then
+        gbAutoColWidth = True
+        gbAcknowledge = True
+        gbIndividual = True
+        gbReturn = False
+        glWhole = xlPart
+        glSearchOrder = xlByColumns
+        gbCase = False
+        giScope = 1
+        glType = xlFormulas
+    End If
+    Set goStartSheet = ActiveSheet
+    Set goStartRange = Selection
+    If frmFlexifind Is Nothing Then
+        Set frmFlexifind = New ufFlexiFind
+    End If
+    GetSelection
+    frmFlexifind.FormInitialize
+    frmFlexifind.HideProgress
+    If Val(Left(Application.Version, 2)) = 8 Or gbMacOS Then
+        frmFlexifind.Show
+    Else
+        ShowModeless
+    End If
+    gbRunBefore = True
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "modMain", "FlexiFinder")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub FindItAll()
+    Dim bDoSearch As Boolean
+    Dim bFirst As Boolean
+    Dim bFound As Boolean
+    Dim vWhatToFind As Variant
+    Dim iBook As Integer
+    Dim iBooks As Integer
+    Dim iCount As Integer
+    Dim iLookSheet As Integer
+    Dim iSheets As Integer
+    Dim iStartSheet As Integer
+
+    Dim lCursor As Long
+
+    Dim oBook As Object
+    Dim oLookRange As Object    'Used when looking in a range of cells only
+    Dim oName As Name
+    Dim oSheet As Object
+
+    Dim oArea As Range
+    Dim oCell As Range
+    Dim oDone As Range    'holds cells already done
+    Dim oFirstcell As Range    'First cell found
+    Dim oFoundRange As Range    'Collects the areas the string is found in
+    Dim oNextCell As Range   'Current cell found
+    Dim oSameFormula As Range    'collects areas with identical formula
+    Dim oToDo As Range    'Holds all cells that have to be reported
+    Dim sFormula As String
+    Dim oActiveSheet As Object
+    lCursor = Application.Cursor
+    Application.Cursor = xlWait
+    On Error GoTo LocErr
+    ReDim goFoundObjects(1)
+    ReDim goBooks(1)
+    glMaxSheetname = 0
+    glMaxAddress = 0
+    glMsgCount = 0
+    ReDim gsMsgs(1)
+    gbStop = False
+    gbCancel = False
+    On Error GoTo HandleCancel
+    Set goCurrentStartBook = ActiveWorkbook
+    Set goCurrentStartSheet = ActiveSheet
+    Set goCurrentStartRange = Selection
+    gsWhatToFind = MakeSearchString(gsWhatToFind)
+    gsCurrentBookName = ActiveWorkbook.FullName
+    gbChanged = False
+    bFirst = True
+    glCountFound = 0
+    iBooks = CountVisiblebooks
+    With frmFlexifind
+        .lbxFound.Clear
+        gbShowlblStopped = False
+        .lblStopped.Visible = False
+    End With
+    Application.ScreenUpdating = False
+    gbGoOn = True
+    If gsWhatToFind <> "" Then
+        If IsDate(gsWhatToFind) Then
+            vWhatToFind = CDate(gsWhatToFind)
+        Else
+            vWhatToFind = gsWhatToFind
+        End If
+        iBook = 0
+        For Each oBook In Workbooks
+            iSheets = oBook.Sheets.Count
+            iBook = iBook + 1
+            Set goSearchBook = oBook
+            If giScope > 1 Then
+                bDoSearch = oBook Is goCurrentStartBook
+            Else
+                If goSearchBook.Windows(1).Visible = True Then
+                    bDoSearch = True
+                Else
+                    bDoSearch = False
+                End If
+            End If
+            goSearchBook.Activate
+            Set oActiveSheet = ActiveSheet
+            If bDoSearch Then
+                If giScope <= 2 Then
+                    iLookSheet = goSearchBook.Sheets.Count
+                    iStartSheet = 1
+                Else
+                    iLookSheet = ActiveSheet.Index
+                    iStartSheet = iLookSheet
+                End If
+                For iCount = iStartSheet To iLookSheet
+                    Set oSheet = goSearchBook.Sheets(iCount)
+                    With frmFlexifind
+                        .UpdateProgressBars iBook / iBooks, oSheet.Index / iSheets
+                    End With
+                    If TypeName(oSheet) = "Worksheet" Then
+                        If HasHiddenCells(oSheet) Then
+                            frmFlexifind.lblStopped.Caption = "Hidden cell(s) detected, possibly not all entries found"
+                            gbShowlblStopped = True
+                            frmFlexifind.lblStopped.Visible = True
+                        End If
+                    End If
+                    If gbInObjects Then
+                        If gbCancel Then Exit Sub
+                        ScanSheet goSearchBook, oSheet, oSheet.Name
+                        If gbCancel Then Exit Sub
+                        If TypeName(oSheet) = "Worksheet" Then
+                            ScanFormatConditions oSheet
+                            If gbCancel Then Exit Sub
+                            ScanValidations oSheet
+                            If gbCancel Then Exit Sub
+                            If gbHyper Then ScanHyperlinks oSheet
+                            If gbCancel Then Exit Sub
+                        End If
+                    End If
+                    bFirst = True
+                    If Not gbGoOn Then Exit For
+                    If TypeName(oSheet) = "Worksheet" Then
+                        oSheet.Activate
+                        If giScope = 4 Then
+                            Set oLookRange = Selection
+                        Else
+                            oSheet.[a1].Activate
+                            Set oLookRange = oSheet.UsedRange.Cells
+                        End If
+                        If gbCancel Then Exit Sub
+                        On Error Resume Next
+
+                        Set oFirstcell = oLookRange.Find(What:=vWhatToFind, LookIn:=glType, LookAt _
+                                                                                            :=glWhole, SearchOrder:=glSearchOrder, SearchDirection:=xlNext, MatchCase:=gbCase)
+
+                        On Error GoTo HandleCancel
+                        If Not oFirstcell Is Nothing Then
+                            On Error Resume Next
+                            ' First collect all ranges containing the string
+                            Do While (Not oNextCell Is Nothing) And (Not oNextCell.Address = oFirstcell.Address)
+                                If gbStop Then Exit For
+                                If bFirst Then
+                                    Set oNextCell = oFirstcell
+                                    bFirst = False
+                                    Set oFoundRange = oFirstcell
+                                End If
+                                Set oNextCell = oLookRange.FindNext(After:=oNextCell)
+                                On Error GoTo HandleCancel
+                                If oNextCell Is Nothing Then Exit Do
+
+                                If Not oNextCell.Address = oFirstcell.Address Then
+                                    Set oFoundRange = Union(oFoundRange, oNextCell)
+                                End If
+                            Loop
+
+                            If Not oFoundRange Is Nothing Then
+                                Set oDone = Nothing
+                                'Now collect ranges with same formula (or with a value)
+                                'and report those
+                                For Each oArea In oFoundRange.Areas
+                                    Set oDone = oArea.Cells(1, 1)
+                                    ' rDone will contain the set of cells already
+                                    ' dealt with
+                                    Set oToDo = oArea.Cells(1, 1)
+                                    ' oToDo builds up to a range that has all
+                                    ' the cells in oArea with the same formula
+                                    Do
+                                        ' look at each cell in this Area
+                                        For Each oCell In oArea.Cells
+                                            If Intersect(oDone, oCell) Is Nothing Then
+                                                ' we haven't reported this cell already
+                                                If oToDo Is Nothing Then
+                                                    If oCell.HasArray Then
+                                                        Set oToDo = oCell.CurrentArray
+                                                    Else
+                                                        Set oToDo = oCell
+                                                    End If
+                                                ElseIf oToDo.Cells(1, 1).HasFormula And oCell.HasFormula Then
+                                                    'Only if formula in cell (otherwise fails on too long strings)
+                                                    If oCell.FormulaR1C1 = oToDo.Cells(1, 1).FormulaR1C1 Then
+                                                        ' same formula in ocell as in otodo's first cell
+                                                        ' add ocell to otodo
+                                                        Set oToDo = Union(oToDo, oCell)
+                                                    End If
+                                                Else
+                                                    If oCell.Value = oToDo.Cells(1, 1).Value Then
+                                                        ' same value in ocell as in otodo's first cell
+                                                        ' add ocell to otodo
+                                                        Set oToDo = Union(oToDo, oCell)
+                                                    End If
+                                                End If
+                                            End If
+                                            'End If
+                                        Next oCell
+                                        If Not oToDo Is Nothing Then
+                                            On Error Resume Next
+                                            ' this may fail if the formula is too long
+                                            If glType = xlFormulas Then
+                                                sFormula = oToDo.Cells(1, 1).FormulaLocal
+                                                If Err Then
+                                                    sFormula = "=[Formula too long to report]"
+                                                End If
+                                            Else
+                                                sFormula = ConvertString2Error(oToDo.Range("A1").Value2)
+                                                
+                                                If sFormula Like "Error*" Then
+                                                    sFormula = oToDo.Range("A1").Text
+                                                End If
+                                            End If
+                                            On Error GoTo HandleCancel
+                                            If oToDo.Cells(1, 1).HasFormula And glType = xlFormulas Then
+                                                AddItems oToDo, oToDo.Parent.Name, oToDo.Address, sFormula, 1, True
+                                            Else
+                                                AddItems oToDo, oSheet.Name, oToDo.Address, sFormula, _
+                                                         1, (Not oToDo.Cells(1, 1).HasFormula)
+                                            End If
+                                            Set oDone = Union(oDone, oToDo)
+                                            ' ready for the next lot of cells in the area
+                                            Set oToDo = Nothing
+                                        End If
+                                    Loop Until oDone.Cells.Count = oArea.Cells.Count
+                                Next
+                            End If
+                            On Error GoTo HandleCancel
+                            Set oNextCell = Nothing
+                            Set oFirstcell = Nothing
+                        End If
+                    End If
+                    If gbStop Then Exit For
+                Next
+            End If
+            If gbInObjects And bDoSearch Then
+                For Each oName In goSearchBook.Names
+
+                    bFound = False
+                    If gbCase Then
+                        bFound = InStr(oName.RefersToLocal, gsWhatToFind) > 0
+                    Else
+                        bFound = InStr(UCase(oName.RefersToLocal), UCase(gsWhatToFind)) > 0
+                    End If
+                    If bFound Then
+                        AddItems oName, "Name: ", oName.Name, oName.RefersToLocal, 2, glType = xlFormulas
+                    End If
+                Next
+            End If
+            oActiveSheet.Activate
+        Next
+    End If
+    'Exit here in case of error or escape.
+ErrorExit:
+    Application.Cursor = xlDefault
+    With frmFlexifind
+        If glMsgCount > 0 Then
+            .lblStopped.Caption = "Errors encountered, click to see them."
+            gbShowlblStopped = True
+            .lblStopped.Visible = True
+        ElseIf gbStop Or Not gbGoOn Then
+            .lblStopped.Caption = "Search interrupted by user, possibly not all hits are shown."
+            gbShowlblStopped = True
+            .lblStopped.Visible = True
+        End If
+        .lblCounter = .lbxFound.ListIndex + 1 & " / " & .lbxFound.ListCount
+        If .lbxFound.ListCount > 0 Then
+            .lbxFound.AddItem " "
+        End If
+    End With
+
+    frmFlexifind.HideProgress
+    goCurrentStartBook.Activate
+    goCurrentStartSheet.Activate
+    If TypeName(goCurrentStartRange) = "Range" Then
+        goCurrentStartRange.Activate
+    End If
+    Application.ScreenUpdating = True
+    Application.StatusBar = False
+    Application.Cursor = lCursor
+    Exit Sub
+HandleCancel:
+    If Err.Number = 18 Then
+        gbStop = True
+        Resume ErrorExit
+    End If
+LocErr:
+    Application.Cursor = xlDefault
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "FindItAll")
+    Case vbAbort
+        Resume ErrorExit
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub Auto_Close()
+    On Error Resume Next
+    Unload frmFormula
+    Set frmFormula = Nothing
+    Unload frmFlexifind
+    Set frmFlexifind = Nothing
+    Set goCurrentStartSheet = Nothing
+    Set goCurrentStartRange = Nothing
+    Set goStartSheet = Nothing
+    Set goStartRange = Nothing
+    Set mcControl = Nothing
+End Sub
+
+Sub HideAndSave()
+    ThisWorkbook.Windows(1).Visible = False
+    ThisWorkbook.Save
+End Sub
+
+Sub Replace()
+    Dim lCount As Long
+    Dim sRef As String
+    Dim lTot As Long
+    Dim sMsg As String
+    Dim vAnswer As Variant
+    Dim iObjType As Integer
+    Dim lItem As Long
+    Dim sSheetname As String
+    Dim oRangeToReplaceIn As Range
+    On Error GoTo LocErr
+    If frmFlexifind.lbxFound.ListCount < 1 Then
+        MsgBox "No found Items, Nothing to replace.", , gsAppName
+        Exit Sub
+    End If
+    lTot = 0
+    For lCount = 1 To frmFlexifind.lbxFound.ListCount
+        lTot = lTot + frmFlexifind.lbxFound.Selected(lCount - 1)
+        If lTot > 0 Then Exit For
+    Next
+    If lTot = 0 Then
+        MsgBox "Select item(s) to replace first.", , gsAppName
+        Exit Sub
+    End If
+    For lCount = 0 To frmFlexifind.lbxFound.ListCount - 2
+        If gbCancel Then Exit For
+        If frmFlexifind.lbxFound.Selected(lCount) Then
+            With frmFlexifind.lbxFound
+                lItem = .List(lCount, 4)
+                iObjType = .List(lCount, 3)
+                Select Case iObjType
+                    '1: WorksheetCells
+                Case 1
+                    sRef = .List(lCount, 0) & "!" & .List(lCount, 1)
+                    sSheetname = Left(sRef, InStr(sRef, "!") - 1)
+                    sSheetname = Right(sSheetname, Len(sSheetname) - InStr(sSheetname, ":"))
+                    Application.ScreenUpdating = gbAcknowledge
+                    With goBooks(lItem).Worksheets(sSheetname)
+                        Set oRangeToReplaceIn = .Range(Right(sRef, Len(sRef) - InStr(sRef, "!")))
+                        If glType = xlFormulas Then
+                            If oRangeToReplaceIn.Cells(1, 1).HasFormula Then
+                                sMsg = "Replace all occurences of" & Chr(10) _
+                                       & "'" & gsWhatToFind & "'" & Chr(10) & "with" & Chr(10) & "'" & _
+                                       gsWhatToReplace & "'" & Chr(10) & "in" & Chr(10) & "'" & _
+                                       sRef & "'" & Chr(10) & "Containing" & Chr(10) & "'" & oRangeToReplaceIn.Cells(1, 1).FormulaLocal & "'"
+                            Else
+                                sMsg = "Replace all occurences of" & Chr(10) & "'" _
+                                       & gsWhatToFind & "'" & Chr(10) & "with" & Chr(10) & "'" & _
+                                       gsWhatToReplace & "'" & Chr(10) & "in" & Chr(10) & "'" & _
+                                       sRef & "'" & Chr(10) & "Containing" & Chr(10) & "'" & oRangeToReplaceIn.Cells(1, 1).Value & "'"
+                            End If
+                        Else
+                            sMsg = "Replace all occurences of" & Chr(10) _
+                                   & "'" & gsWhatToFind & "'" & Chr(10) & "with" & Chr(10) & "'" & _
+                                   gsWhatToReplace & "'" & Chr(10) & "in" & Chr(10) & "'" & _
+                                   sRef & "'" & Chr(10) & "Containing" & Chr(10) & "'" & oRangeToReplaceIn.Value & "'"
+                        End If
+                        If gbAcknowledge Then
+                            If gbIndividual Then
+                                ReplaceItem goBooks(lItem), sRef
+                            Else
+                                GoToRef sRef
+                                vAnswer = MsgBox(sMsg, vbYesNoCancel, gsAppName)
+                                If vAnswer = vbYes Or gbAcknowledge = False Then
+                                    ReplaceItem goBooks(lItem), sRef
+                                ElseIf vAnswer = vbCancel Then
+                                    gbCancel = True
+                                End If
+                            End If
+                        Else
+                            ReplaceItem goBooks(lItem), sRef
+                        End If
+                    End With
+                    ' 2=names
+                Case 2
+                    ReplaceInName .List(lCount, 1)
+                    ' 3=(drawing)objects
+                Case 3
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                    ' 4=ChartObjects
+                Case 4
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                    ' 5=Comment
+                Case 5
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                    ' 6=FormatCondition
+                Case 6
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                    ' 7=Validation
+                Case 7
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                    ' 8=Hyperlinks
+                Case 8
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                    '9=Pivottables
+                Case 9
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                    '10=QueryTables
+                Case 10
+                    ReplaceInObj goFoundObjects(lItem), .List(lCount, 1) & " on " & .List(lCount, 0), .List(lCount, 2)
+                Case 11 To 16
+                    ReplaceInHeaderFooter goFoundObjects(lItem), iObjType
+                End Select
+            End With
+        End If
+    Next
+    FindItAll
+    Application.ScreenUpdating = True
+    gbCancel = False
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "Replace")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub ReplaceItem(oBook As Workbook, sRef As String)
+    Dim lPos As Long
+    Dim sStr As String
+    Dim vAnswer As Variant
+    Dim sSheetname As String
+    Dim oRangeToReplaceIn As Range
+    sSheetname = Left(sRef, InStr(sRef, "!") - 1)
+    sSheetname = Right(sSheetname, Len(sSheetname) - InStr(sSheetname, ":"))
+    On Error GoTo LocErr
+    lPos = 1
+    If gbAcknowledge Then
+        GoToRef sRef
+    End If
+    With oBook.Worksheets(sSheetname)
+        Set oRangeToReplaceIn = .Range(Right(sRef, Len(sRef) - InStr(sRef, "!")))
+        If gbAcknowledge And gbIndividual Then
+            If oRangeToReplaceIn.HasArray Then
+                vAnswer = MsgBox("The cell " & sRef & " contains (or is part of) an array formula." _
+                                 & Chr(10) & "Proceed with replacement of all occurances of" & Chr(10) & "'" & gsWhatToFind & "'" & Chr(10) & "with" & Chr(10) & "'" & gsWhatToReplace & "' ?", vbYesNoCancel, "Flexible Find & replace utility")
+                If vAnswer = vbYes Then
+                    oRangeToReplaceIn.CurrentArray.Replace _
+                            What:=gsWhatToFind, replacement:=gsWhatToReplace, LookAt _
+                                                                              :=xlPart, SearchOrder:=xlByRows, MatchCase:=False
+                ElseIf vAnswer = vbCancel Then
+                    gbCancel = True
+                End If
+            Else
+                If glType = xlFormulas And oRangeToReplaceIn.HasFormula Then
+                    sStr = oRangeToReplaceIn.Cells(1, 1).FormulaLocal
+                Else
+                    sStr = oRangeToReplaceIn.Cells(1, 1).Value
+                End If
+                ReplaceIndividual sStr, sRef, False
+                If glType = xlFormulas Then
+                    oRangeToReplaceIn.FormulaLocal = sStr
+                Else
+                    oRangeToReplaceIn.Value = sStr
+                End If
+            End If
+        Else
+            If glType = xlFormulas And oRangeToReplaceIn.HasFormula Then
+                If oRangeToReplaceIn.HasArray Then
+                    oRangeToReplaceIn.CurrentArray.Replace _
+                            What:=gsWhatToFind, replacement:=gsWhatToReplace, LookAt _
+                                                                              :=xlPart, SearchOrder:=xlByRows, MatchCase:=False
+                Else
+                    If Len(MyReplace(oRangeToReplaceIn.Cells(1, 1).FormulaLocal, gsWhatToFind, gsWhatToReplace, gbCase)) > 1000 Then
+                        'Formula too long...
+                        glMsgCount = glMsgCount + 1
+                        ReDim Preserve gsMsgs(glMsgCount)
+                        gsMsgs(glMsgCount) = "Formula in cell " & oRangeToReplaceIn.Address _
+                                             & " on sheet " & .Name & " becomes too long after replacing, replace cancelled"
+                    Else
+                        sStr = MyReplace(oRangeToReplaceIn.Cells(1, 1).FormulaLocal _
+                                         , gsWhatToFind, gsWhatToReplace, gbCase)
+                        oRangeToReplaceIn.FormulaLocal = sStr
+                    End If
+                End If
+            Else
+                sStr = MyReplace(oRangeToReplaceIn.Value _
+                                 , gsWhatToFind, gsWhatToReplace, gbCase)
+                oRangeToReplaceIn.Value = sStr
+            End If
+        End If
+    End With
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "ReplaceItem")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub GoToRef(ByVal sRef As String)
+    Dim sSheetname As String
+    Dim sBookname As String
+    sSheetname = Left(sRef, InStr(sRef, "!") - 1)
+    sSheetname = Right(sSheetname, Len(sSheetname) - InStr(sSheetname, ":"))
+    sBookname = Left(sRef, InStr(sRef, ":") - 1)
+    Workbooks(sBookname).Activate
+    With Worksheets(sSheetname)
+        .Select
+        .[iv16384].Activate
+        .Range(Right(sRef, Len(sRef) - InStr(sRef, "!"))).Select
+    End With
+End Sub
+
+Sub AddItemToddFind()
+'Adds and Sorts search strings in ddFind
+    Dim sTemp As String
+    Dim lCount As Long
+    Dim bInThere As Boolean
+    On Error GoTo LocErr
+    With frmFlexifind.cbbFind
+        sTemp = .Text
+        If .ListCount > 1 Then
+            For lCount = .ListCount To 2 Step -1
+                If .List(lCount - 1) = sTemp Then
+                    bInThere = True
+                    Exit For
+                End If
+            Next
+        End If
+        If Not bInThere Then
+            .AddItem " "
+            If .ListCount > 1 Then
+                For lCount = .ListCount To 2 Step -1
+                    .List(lCount - 1) = .List(lCount - 2)
+                Next
+            End If
+            .ListIndex = 0
+            .List(0) = sTemp
+        End If
+    End With
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "AddItemToddFind " & gsWhatToFind)
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub ShowModeless()
+    frmFlexifind.Show vbModeless
+End Sub
+
+Sub MakeMenu()
+    On Error Resume Next
+    RemoveMenu    'Prevent duplicate menu's
+    Set mcControl = Application.CommandBars(1).FindControl(ID:=30003).Controls.Add(temporary:=True)
+    With mcControl
+        .Caption = gsMenuCaption
+        .OnAction = "Flexifinder"
+        .Tag = gsMenuCaption
+    End With
+    On Error GoTo 0
+End Sub
+
+Sub RemoveMenu()
+    On Error Resume Next
+    'JKP Jan 09 2003: Menu not removed after reset of project.
+    If mcControl Is Nothing Then
+        Application.CommandBars(1).FindControl(Tag:=gsMenuCaption, Recursive:=True).Delete
+    Else
+        mcControl.Delete
+        Set mcControl = Nothing
+    End If
+    On Error GoTo 0
+End Sub
+
+Sub CreateBar()
+    Dim oBar As CommandBar
+    Dim oControl As CommandBarControl
+    RemoveBar
+    Set oBar = Application.CommandBars.Add
+    Set oControl = oBar.Controls.Add(ID:=23, Before:=1)
+    oBar.Name = "FlexFind"
+    oBar.Visible = True
+    oBar.Position = msoBarTop
+    oControl.OnAction = "flexifinder"
+    ThisWorkbook.Worksheets(1).Shapes("ButtonImage").Copy
+    oControl.PasteFace
+    oControl.Caption = "Flexible find + replace utility"
+End Sub
+
+Sub RemoveBar()
+    On Error Resume Next
+    Application.CommandBars("FlexFind").Delete
+End Sub
+
+Sub AddItems(oObj As Object, sObjName As String, sObjAdr As String, sFormula As String, iObjType As Integer, bAdd As Boolean)
+    Dim sTemp As String
+    Dim bAddToRepl As Boolean
+    Dim oBook As Object
+    Dim lMaxLoop As Long
+    ' iObjType :
+
+    ' 1=Range
+    ' 2=Name
+    ' 3=DrawingObject
+    ' 4=ChartObject
+    ' 5=Comment
+    ' 6=FormatCondition
+    ' 7=Validation
+    ' 8=Hyperlink
+    ' 9=PivotTable
+    ' 10=Querytable
+    ' 11=LeftHeader
+    ' 12=CenterHeader
+    ' 13=RightHeader
+    ' 14=LeftFooter
+    ' 15=CenterFooter
+    ' 16=RightFooter
+
+    glCountFound = glCountFound + 1
+    If glCountFound Mod 100 = 0 Then
+        Application.StatusBar = "Found " & glCountFound & " entries. Press ESC to stop searching."
+    End If
+    bAddToRepl = bAdd
+    ReDim Preserve goFoundObjects(glCountFound)
+    ReDim Preserve goBooks(glCountFound)
+    Set goFoundObjects(glCountFound) = oObj
+    Set oBook = oObj
+    
+    lMaxLoop = 0
+    
+    'Encoutnered a problem with the axistitle of my own
+    'flexfind demo, parent returns axis, parent of parent returns
+    'axistitle again, an endless loop results.
+    While TypeName(oBook) <> "Workbook" And lMaxLoop < 30
+        Set oBook = oBook.Parent
+        lMaxLoop = lMaxLoop + 1
+    Wend
+    If TypeName(oBook) = "Workbook" Then
+        Set goBooks(glCountFound) = oBook
+    Else
+        Set oBook = ActiveWorkbook
+        Set goBooks(glCountFound) = ActiveWorkbook
+    End If
+    Application.EnableCancelKey = xlErrorHandler
+    On Error GoTo HandleCancel
+    glMaxSheetname = Application.Max(glMaxSheetname, Len(oBook.Name & ":" & sObjName))
+    glMaxAddress = Application.Max(glMaxAddress, Len(sObjAdr))
+    With frmFlexifind
+        If TypeName(oBook) = "Workbook" Then
+            .lbxFound.AddItem oBook.Name & ":" & sObjName
+        Else
+            .lbxFound.AddItem "Error; could not find parent workbook from object:" & sObjName
+        End If
+        .lbxFound.List(.lbxFound.ListCount - 1, 1) = sObjAdr
+        .lbxFound.List(.lbxFound.ListCount - 1, 2) = Left(sFormula, 500)
+        .lbxFound.List(.lbxFound.ListCount - 1, 3) = iObjType
+        .lbxFound.List(.lbxFound.ListCount - 1, 4) = glCountFound
+        If glType = xlFormulas Then
+            If iObjType = 1 Then
+                Err = 0
+                On Error Resume Next
+                sTemp = Worksheets(sObjName).Range(sObjAdr).PivotTable.Name
+                If Err.Number = 0 Then
+                    bAddToRepl = False
+                End If
+                On Error GoTo HandleCancel
+            End If
+        End If
+        '        If bAddToRepl Then
+        '            .lbxReplace.AddItem oBook.Name & ":" & sObjName
+        '            .lbxReplace.List(.lbxReplace.ListCount - 1, 1) = sObjAdr
+        '            .lbxReplace.List(.lbxReplace.ListCount - 1, 2) = Left(sFormula, 500)
+        '            .lbxReplace.List(.lbxReplace.ListCount - 1, 3) = iObjType
+        '            .lbxReplace.List(.lbxReplace.ListCount - 1, 4) = glCountFound
+        '        End If
+    End With
+    Exit Sub
+HandleCancel:
+    If Err.Number = 18 Then
+        gbStop = True
+        Resume Next
+    Else
+        Select Case ReportError(Err.Number, Err.Number, "modMain", "AddItems " & gsWhatToFind)
+        Case vbAbort
+            Exit Sub
+        Case vbRetry
+            Resume
+        Case vbIgnore
+            Resume Next
+        End Select
+    End If
+End Sub
+
+Sub GotoOtherSheet(bDown As Boolean)
+    Dim lCount As Long
+    Dim sCursheet As String
+    Dim lStep As Long
+    Dim lStart As Long
+    Dim lEnd As Long
+    Dim bFound As Boolean
+    On Error GoTo LocErr
+    With frmFlexifind.lbxFound
+        If .ListIndex = -1 Then .ListIndex = 0
+        If bDown Then
+            lStep = 1
+            lEnd = .ListCount - 1
+            lStart = .ListIndex + 1
+        Else
+            lStep = -1
+            lEnd = 1
+            lStart = .ListIndex + 1
+        End If
+        sCursheet = .List(.ListIndex, 0)
+        For lCount = lStart To lEnd Step lStep
+            If sCursheet <> .List(lCount - 1, 0) Then
+                .ListIndex = lCount - 1
+                bFound = True
+                Exit For
+            End If
+        Next
+        If Not bFound Then
+            If bDown Then
+                .ListIndex = .ListCount - 2
+            Else
+                .ListIndex = 0
+            End If
+        End If
+        .Selected(.ListIndex) = True
+        frmFlexifind.lblCounter = .ListIndex + 1 & " / " & .ListCount - 1
+    End With
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "GotoOtherSheet " & gsWhatToFind)
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+
+
+Sub ReplaceInName(sName As String)
+    Dim sRefLocal As String
+    Dim sMsg As String
+    Dim lAnswer As Long
+    On Error GoTo LocErr
+    If IsNameValid(sName, True) Then
+        sRefLocal = ActiveWorkbook.Names(sName).RefersToLocal
+        If gbAcknowledge Then
+            If gbIndividual Then
+                ReplaceIndividual sRefLocal, "Name: " & sName, False
+            Else
+                sMsg = "Replace all entries of '" & gsWhatToFind & "' in" _
+                       & vbNewLine & "The name '" & sName & "' in it's refersto property:" _
+                       & vbNewLine & sRefLocal & vbNewLine & vbNewLine & "?"
+                lAnswer = MsgBox(sMsg, vbYesNoCancel + vbQuestion, gsAppName)
+                If lAnswer = vbCancel Then
+                    gbCancel = True
+                ElseIf lAnswer = vbYes Then
+                    sRefLocal = MyReplace(sRefLocal, gsWhatToFind, gsWhatToReplace, gbCase)
+                End If
+            End If
+        Else
+            sRefLocal = MyReplace(sRefLocal, gsWhatToFind, gsWhatToReplace, gbCase)
+        End If
+        RedefineAName sName, sRefLocal
+    End If
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "ReplaceInName " & gsWhatToFind)
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Function MyReplace(sSource As String, sToFind As String, sToReplaceWith As String, gbCase As Boolean)
+    Dim lPos As Long
+    Dim sTemp As String
+    Dim lLen As Long
+    sTemp = sSource
+    lPos = 0
+    lPos = GetPos(sTemp, sToFind, lPos + 1)
+    Do
+        lLen = GetLength(sTemp, sToFind, lPos)
+        If lLen > 0 Then
+            sTemp = Left(sTemp, lPos - 1) & sToReplaceWith & Right(sTemp, Len(sTemp) - lLen - lPos + 1)
+        End If
+        lPos = GetPos(sTemp, sToFind, lPos + Len(sToReplaceWith))
+    Loop Until lPos = 0
+    MyReplace = sTemp
+End Function
+
+Sub ReplaceIndividual(ByRef sStr As String, ByVal sDescription As String, bVBE As Boolean)
+    Dim sTemp As String
+    Dim lPos As Long
+    Dim iNewlines As Integer
+    Dim lLen As Long
+    On Error GoTo LocErr
+    sTemp = sStr
+    lPos = 1
+    lPos = GetPos(sTemp, gsWhatToFind, lPos)
+    Do
+        If lPos = 0 Then Exit Do
+        If frmFormula Is Nothing Then
+            Set frmFormula = New ufFormula
+        End If
+        lLen = GetLength(sTemp, gsWhatToFind, lPos)
+
+        With frmFormula
+            .lbAddress = "Location:" & vbNewLine & sDescription
+            iNewlines = (lPos - Len(Application.Substitute(Left(sTemp, lPos), vbNewLine, ""))) / 2
+            .tbxFormula = sTemp
+            .tbxFormula.SelStart = lPos - 1 - iNewlines
+            .tbxFormula.SelLength = lLen
+            If gbMacOS Then
+                For Each goLocalControl In .Controls
+                    goLocalControl.Font.Name = "Geneva"
+                    goLocalControl.Font.Size = 10
+                Next goLocalControl
+            End If
+            .Show
+        End With
+        Set frmFormula = Nothing
+        If gbYes Then
+            If gbAcknowledge = False Then
+                'Yes To All!!!
+                sTemp = MyReplace(sTemp, gsWhatToFind, gsWhatToReplace, gbCase)
+                lPos = 0
+            Else
+                sTemp = Left(sTemp, lPos - 1) & gsWhatToReplace & Right(sTemp, Len(sTemp) - lLen - lPos + 1)
+                lPos = GetPos(sTemp, gsWhatToFind, lPos + lLen)
+            End If
+        Else
+            lPos = GetPos(sTemp, gsWhatToFind, lPos + lLen)
+        End If
+    Loop Until lPos = 0 Or gbCancel = True
+    sStr = sTemp
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "ReplaceIndividual " & gsWhatToFind)
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+
+End Sub
+' Copied from Name Manager 396
+Sub RedefineAName(sName As String, sNewRefersTo As String)
+    Dim oDataObject As DataObject
+    Dim bSwitchSheet As Boolean
+    Dim oSheet As Worksheet
+    Dim bNew As Boolean
+    On Error GoTo LocErr
+    bNew = FindName(sName) Is Nothing
+    If Not IsNameRefersToLegal(sName, sNewRefersTo) Then
+        IllegalNames sName
+    Else
+        Set oDataObject = New DataObject
+        With oDataObject
+            .SetText sNewRefersTo
+            .PutInClipboard
+        End With
+        If IsNameLocal(sName, bNew) Or InStr(sName, "'!") > 0 Then
+            bSwitchSheet = True
+            Set oSheet = ActiveSheet
+            If FindName(sName) Is Nothing Then
+                Worksheets(Left$(sName, FindExclamationRev(sName))).Select
+            Else
+                FindName(sName).Parent.Select
+            End If
+        End If
+        SendKeys MakeSendKey(sName) & "{TAB 2}" & "^v~"
+        If Err.Number = 0 Then
+            Application.Dialogs(xlDialogDefineName).Show
+        Else
+            MsgBox "Sorry, could not redefine this name.", vbOKOnly + vbCritical, gsAppName
+            Err.Clear
+        End If
+        DoEvents
+        If bSwitchSheet Then
+            oSheet.Select
+        End If
+    End If
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "RedefineAName " & gsWhatToFind)
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+' Copied from Name Manager 396
+Function FindName(sName As String) As Name
+    Dim oName As Name
+    On Error Resume Next
+    Set FindName = ActiveWorkbook.Names(sName)
+    If Err <> 0 Or FindName.Name <> sName Then
+        On Error GoTo 0
+        For Each oName In ActiveWorkbook.Names
+            If oName.Name = sName Then
+                Set FindName = oName
+                GoTo GoExit
+            End If
+        Next
+        Set FindName = Nothing
+    End If
+GoExit:
+End Function
+
+' Copied from Name Manager 396
+Function IsNameRefersToLegal(sName As String, sRefersTo As String) As Boolean
+    Dim oSheet As Worksheet
+    Dim sSheetname As String
+    On Error GoTo LocErr
+    IsNameRefersToLegal = True
+    If InStr(sName, "]") > 0 Or InStr(sName, "[") > 0 _
+       Or InStr(sName, Chr(3)) > 0 Then
+        IsNameRefersToLegal = False
+    Else
+        For Each oSheet In ActiveWorkbook.Worksheets
+            sSheetname = oSheet.Name
+            If InStr(sRefersTo, sSheetname) > 0 Then
+                If InStr(sSheetname, "]") > 0 Or InStr(sSheetname, "[") > 0 _
+                   Or InStr(sSheetname, Chr(3)) > 0 Then
+                    IsNameRefersToLegal = False
+                End If
+            End If
+        Next
+    End If
+    Exit Function
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "IsNameRefersToLegal " & gsWhatToFind)
+    Case vbAbort
+        Exit Function
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Function
+
+' Copied from Name Manager 396
+Function IllegalNames(ByVal sName As String) As Boolean
+    Dim sMsg As String
+    sMsg = "Deleting or changing the RefersTo property of " & vbNewLine & vbNewLine _
+           & "'" & sName & "'" & vbNewLine _
+           & vbNewLine & "is impossible, because either the sheet's name " _
+           & vbNewLine & " or the refersto property contains one or more of these characters:" _
+           & vbNewLine & " '[' or ']' or char(3)." & vbNewLine & vbNewLine _
+           & "To be able to process these names, please rename the offending sheet." & vbNewLine & vbNewLine _
+           & "Operation cancelled."
+    IllegalNames = Not MsgBox(sMsg, vbCritical + vbOKCancel, gsAppName)
+End Function
+
+' Copied from Name Manager 400
+Function MakeSendKey(sKeysToSend As String) As String
+    Dim strTest As String
+    sKeysToSend = Application.Substitute(sKeysToSend, "[", "{[}")
+    sKeysToSend = Application.Substitute(sKeysToSend, "]", "{]}")
+    sKeysToSend = Application.Substitute(sKeysToSend, "+", "{+}")
+    sKeysToSend = Application.Substitute(sKeysToSend, "^", "{^}")
+    sKeysToSend = Application.Substitute(sKeysToSend, "%", "{%}")
+    sKeysToSend = Application.Substitute(sKeysToSend, "~", "{~}")
+    sKeysToSend = Application.Substitute(sKeysToSend, "(", "{(}")
+    sKeysToSend = Application.Substitute(sKeysToSend, ")", "{)}")
+    SendKeys "'c~"
+    strTest = InputBox("")
+    If strTest = "|fffd|" Then
+        sKeysToSend = Application.Substitute(sKeysToSend, "'", "' ", 1)
+    End If
+    MakeSendKey = sKeysToSend
+End Function
+
+' Copied from Name Manager 396
+Function IsNameLocal(sName As String, bNew As Boolean) As Boolean
+    IsNameLocal = False
+    If bNew Then
+        If InStr(sName, "!") + InStr(sName, "'!") > 0 Then
+            IsNameLocal = True
+        End If
+    Else
+        If TypeName(FindName(sName).Parent) = "Workbook" Then
+            ' global
+            IsNameLocal = False
+        Else
+            ' local
+            IsNameLocal = True
+        End If
+    End If
+GoExit:
+End Function
+
+' Copied from Name Manager 396
+Function FindExclamationRev(sString As String) As Long
+' gofaster version crw 30/1/2003
+    Dim jPos As Long
+    FindExclamationRev = 0
+    jPos = 0
+    Do
+        jPos = InStr(jPos + 1, sString, "!", vbBinaryCompare)
+        If jPos > 0 Then
+            FindExclamationRev = jPos
+        Else
+            Exit Do
+        End If
+    Loop
+GoExit:
+End Function
+
+Function SelectObj(ByRef oObj As Object, Optional sParent As String = "")
+    On Error Resume Next
+    If TypeName(oObj.Parent) <> sParent Then
+        If TypeName(oObj.Parent) = "Application" Then
+            oObj.Select
+            mbObj = True
+        Else
+        SelectObj oObj.Parent, TypeName(oObj)
+            If mbObj Then
+                oObj.Activate
+                oObj.Select
+            End If
+        End If
+        SelectObj = True
+        If Err > 0 Then SelectObj = False    'Not selected, Unable to ? (e.g. Name obj)
+    Else
+        mbObj = True
+        SelectObj = False
+    End If
+End Function
+
+Sub ReplaceInObj(oObj As Object, sDescription As String, sFormula As String)
+    Dim sStr As String
+    Dim sMsg As String
+    Dim bFormula As Boolean
+    Dim vAnswer As Variant
+    Dim lSourcedataPos As Long
+    Dim lPrevSourcedataPos As Long
+    Dim oPivot As PivotTable
+    Dim i As Integer
+    Dim lChtType As Long
+    Dim bChangedChartType As Boolean
+    ReDim sSourcedata(20) As String
+    On Error GoTo LocErr
+    sStr = ""
+    bFormula = Left(sFormula, 1) = "="
+    If bFormula And glType = xlValues Then
+        sMsg = "This object has a formula," & vbNewLine & _
+               "Changing its Value will remove the formula!" & vbNewLine & vbNewLine & _
+               "Continue ?"
+        vAnswer = MsgBox(sMsg, vbCritical + vbYesNoCancel, gsAppName)
+        If vAnswer = vbNo Then
+            Exit Sub
+        ElseIf vAnswer = vbCancel Then
+            gbCancel = True
+            Exit Sub
+        End If
+    End If
+    Select Case TypeName(oObj)
+    Case "TextBox", "Picture", "Button", "Arc", "Drawing", _
+         "Oval", "Rectangle", "Series"
+        If glType = xlFormulas Then
+            On Error Resume Next
+            sStr = oObj.Formula
+            On Error GoTo LocErr
+            If TypeName(oObj) = "Series" Then
+                lChtType = oObj.ChartType
+            End If
+            If sStr = "" And TypeName(oObj) = "Series" Then
+                If gbAllowChartTypeChange Or gbAllowChartTypeChangeAll Then
+                    If oObj.ChartType <> -4111 Then
+                        oObj.ChartType = xlArea
+                        sStr = oObj.Formula
+                        bChangedChartType = True
+                    Else
+                        'Special kind of line chart (example: just markers, no line), cannot be restored
+                    End If
+                Else
+                    glMsgCount = glMsgCount + 1
+                    ReDim Preserve gsMsgs(glMsgCount)
+                    gsMsgs(glMsgCount) = "Sorry, I cannot access the formula of " & sDescription & Chr(13) & _
+                                         "you will need to look into it yourself"
+                End If
+            End If
+
+            If sStr <> "" Then
+                ConfirmReplace "Formula", sDescription, sStr
+                On Error Resume Next
+                oObj.Formula = sStr
+                If Err And TypeName(oObj) = "Series" Then
+                    If gbAllowChartTypeChange Or gbAllowChartTypeChangeAll Then
+                        If oObj.ChartType <> -4111 Then
+                            oObj.ChartType = xlArea
+                            oObj.Formula = sStr
+                            bChangedChartType = True
+                        Else
+                            'Special kind of line chart (example: just markers, no line), cannot be restored
+                        End If
+                    End If
+                End If
+                If bChangedChartType Then
+                    oObj.ChartType = lChtType
+                End If
+            End If
+        Else
+            If TypeName(oObj) = "TextBox" Then
+                sStr = GetTextFromTextbox(oObj)
+            Else
+                sStr = oObj.Caption
+            End If
+            If sStr <> "" Then
+                If TypeName(oObj) = "TextBox" Then
+                    ConfirmReplace "Caption", sDescription, sStr
+                    SetTextOfTextbox oObj, sStr
+                Else
+                    ConfirmReplace "Text", sDescription, sStr
+                    oObj.Caption = sStr
+                End If
+            End If
+        End If
+    Case "DropDown", "ListBox", "Spinner", "ScrollBar", "CheckBox", "OptionButton"
+        If InStr(sDescription, "LinkedCell") > 0 Then
+            sStr = oObj.LinkedCell
+            If sStr <> "" Then
+                ConfirmReplace "LinkedCell", sDescription, sStr
+                oObj.LinkedCell = sStr
+            End If
+        Else
+            sStr = oObj.ListFillRange
+            If sStr <> "" Then
+                ConfirmReplace "Listfillrange", sDescription, sStr
+                oObj.ListFillRange = sStr
+            End If
+        End If
+    Case "ChartTitle"
+        If glType = xlFormulas Then
+            sStr = sFormula
+            If sStr <> "" Then
+                ConfirmReplace "Chart Title's Formula", sDescription, sStr
+                sStr = Application.ConvertFormula(sStr, xlA1, xlR1C1)
+                oObj.Caption = sStr
+            End If
+        Else
+            sStr = oObj.Text
+            If sStr <> "" Then
+                ConfirmReplace "Chart Title Text", sDescription, sStr
+                oObj.Text = sStr
+            End If
+        End If
+    Case "AxisTitle"
+        If glType = xlFormulas Then
+            sStr = sFormula
+            If sStr <> "" Then
+                ConfirmReplace "Axis Title's Formula", sDescription, sStr
+                sStr = Application.ConvertFormula(sStr, xlA1, xlR1C1)
+                oObj.Caption = sStr
+            End If
+        Else
+            sStr = oObj.Text
+            If sStr <> "" Then
+                ConfirmReplace "Axis Title Text", sDescription, sStr
+                oObj.Text = sStr
+            End If
+        End If
+    Case "Comment"
+        sStr = oObj.Text
+        If sStr <> "" Then
+            ConfirmReplace "Text", sDescription, sStr
+            oObj.Text sStr
+        End If
+    Case "DataLabel"
+        If glType = xlFormulas Then
+            sStr = sFormula
+            If sStr <> "" Then
+                ConfirmReplace "Formula", sDescription, sStr
+                sStr = Application.ConvertFormula(sStr, xlA1, xlR1C1)
+                oObj.Caption = sStr
+            End If
+        Else
+            sStr = oObj.Text
+            If sStr <> "" Then
+                ConfirmReplace "Caption", sDescription, sStr
+                oObj.Text = sStr
+            End If
+        End If
+    Case "FormatCondition"
+        If InStr(1, sDescription, "Formula1", 1) > 0 Then
+            ReplaceInFormatCondition oObj, 1
+        Else
+            ReplaceInFormatCondition oObj, 2
+        End If
+    Case "Validation"
+        If InStr(1, sDescription, "Formula1", 1) > 0 Then
+            ReplaceInValidation oObj, 1
+        Else
+            ReplaceInValidation oObj, 2
+        End If
+    Case "Hyperlink"
+        If glType = xlFormulas Then
+            If InStr(1, sDescription, "SubAddr", 1) = 0 Then
+                sStr = oObj.Address
+                If sStr <> "" Then
+                    ConfirmReplace "Address", sDescription, sStr
+                    oObj.Address = sStr
+                End If
+            Else
+                sStr = oObj.SubAddress
+                If sStr <> "" Then
+                    ConfirmReplace "subAddress", sDescription, sStr
+                    oObj.SubAddress = sStr
+                End If
+            End If
+        Else
+            sStr = oObj.TextToDisplay
+            If sStr <> "" Then
+                ConfirmReplace "TextToDisplay", sDescription, sStr
+                oObj.TextToDisplay = sStr
+            End If
+        End If
+    Case "PivotTable"
+
+        sStr = sFormula
+        If sStr <> "" Then
+            ConfirmReplace "Sourcedata", sDescription, sStr
+            If TypeName(oObj.SourceData) = "String" Then
+                sStr = Application.ConvertFormula(sStr, xlA1, xlR1C1)
+                oObj.SourceData = sStr
+            Else
+                Set oPivot = ActiveWorkbook.Worksheets(oObj.Parent.Name).PivotTables(oObj.Name)
+                If InStr(sDescription, "PivotTableDNS:") > 0 Then
+                    oPivot.PivotCache.Connection = sStr
+                ElseIf InStr(sDescription, "PivotTableSQL:") > 0 Then
+                    oPivot.PivotCache.CommandText = sStr
+                End If
+            End If
+        End If
+    Case "QueryTable"
+        sStr = sFormula
+        If sStr <> "" Then
+            If oObj.QueryType <> xlWebQuery Then
+                If oObj.CommandText = sStr Then
+                    ConfirmReplace "CommandText", sDescription, sStr
+                    oObj.CommandText = sStr
+                Else
+                    ConfirmReplace "Connection", sDescription, sStr
+                    oObj.Connection = sStr
+                End If
+            Else
+                ConfirmReplace "Connection", sDescription, sStr
+                oObj.Connection = sStr
+            End If
+        End If
+    Case "OLEObject"
+        If oObj.OLEType <> xlOLELink Then
+            'Control box control!
+            If InStr(sDescription, "LinkedCell") > 0 Then
+                sStr = oObj.LinkedCell
+                If sStr <> "" Then
+                    ConfirmReplace "LinkedCell", sDescription, sStr
+                    oObj.LinkedCell = sStr
+                End If
+            Else
+                sStr = oObj.ListFillRange
+                If sStr <> "" Then
+                    ConfirmReplace "Listfillrange", sDescription, sStr
+                    oObj.ListFillRange = sStr
+                End If
+            End If
+
+        End If
+
+    Case Else
+        If glType = xlFormulas Then
+            sStr = oObj.OnAction
+            If sStr <> "" Then
+                ConfirmReplace "OnAction", sDescription, sStr
+                oObj.OnAction = sStr
+            End If
+
+        Else
+            sStr = oObj.Caption
+            If sStr <> "" Then
+                ConfirmReplace "Caption", sDescription, sStr
+                oObj.Caption = sStr
+            End If
+        End If
+    End Select
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "ReplaceInObj " & gsWhatToFind)
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub ConfirmReplace(sIn As String, sObjName As String, ByRef sStr As String)
+    Dim sMsg As String
+    Dim lAnswer As Long
+    If gbAcknowledge Then
+        If gbIndividual Then
+            ReplaceIndividual sStr, sObjName & vbNewLine & "Property: " & sIn, giScope = 5
+        Else
+            sMsg = "Replace all entries of '" & gsWhatToFind & "' in" _
+                   & vbNewLine & "'" & sObjName & "' in it's " & sIn & " property:" _
+                   & vbNewLine & sStr & vbNewLine & vbNewLine & "?"
+            lAnswer = MsgBox(sMsg, vbYesNoCancel + vbQuestion, gsAppName)
+            If lAnswer = vbCancel Then
+                gbCancel = True
+            ElseIf lAnswer = vbYes Then
+                sStr = MyReplace(sStr, gsWhatToFind, gsWhatToReplace, gbCase)
+            End If
+        End If
+    Else
+        sStr = MyReplace(sStr, gsWhatToFind, gsWhatToReplace, gbCase)
+    End If
+End Sub
+
+Function IsNameValid(ByVal sName As String, bPrompt As Boolean) As Boolean
+    Dim lCount As Long
+    Dim bIllegal As Boolean
+    Dim sWorkName As String
+    On Error GoTo LocErr
+    bIllegal = False
+    If InStr(sName, "!") > 0 Then
+        sWorkName = Right(sName, Len(sName) - FindExclamationRev(sName))
+    Else
+        sWorkName = sName
+    End If
+    For lCount = 1 To Len(sWorkName)
+        If InStr(gsValidChars, LCase(Mid(sWorkName, lCount, 1))) = 0 Then
+            bIllegal = True
+            If bPrompt Then
+                If MsgBox("This name: '" & sName & "'" & vbNewLine & _
+                          "is unuseable." & vbNewLine & vbNewLine & _
+                          "Change all unuseable names in the open workbooks?", vbQuestion + vbYesNo, gsAppName) = vbYes Then
+                    gbCancel = True
+                    FixAllNames
+                End If
+            End If
+            Exit For
+        End If
+    Next
+    IsNameValid = Not bIllegal
+    Exit Function
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modMain", "IsNameValid " & gsWhatToFind)
+    Case vbAbort
+        Exit Function
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Function
+
+Sub ReplaceInFormatCondition(oObj As Object, iFormula As Integer)
+    Dim sStr As String
+    On Error Resume Next
+    Err.Clear
+    If iFormula = 1 Then
+        If GetPos(oObj.Formula1, gsWhatToFind, 1) > 0 Then
+            sStr = oObj.Formula1
+            ConfirmReplace "Formula1", "Formatcondition1, in cell " & oObj.Parent.Parent.Name & "!" & oObj.Parent.Address, sStr
+            If oObj.Type = xlExpression Then
+                oObj.Modify Type:=oObj.Type, Formula1:=sStr
+            Else
+                oObj.Modify Type:=oObj.Type, Operator:=oObj.Operator, Formula1:=sStr, Formula2:=oObj.Formula2
+            End If
+        End If
+    Else
+        If GetPos(oObj.Formula2, gsWhatToFind, 1) > 0 Then
+            sStr = oObj.Formula2
+            ConfirmReplace "Formula2", "Formatcondition1, in cell " & oObj.Parent.Parent.Name & "!" & oObj.Parent.Address, sStr
+            oObj.Modify Type:=oObj.Type, Operator:=oObj.Operator, Formula1:=oObj.Formula1, Formula2:=sStr
+        End If
+    End If
+End Sub
+
+Sub ReplaceInValidation(oObj As Object, iFormula As Integer)
+    Dim sStr As String
+    On Error Resume Next
+    Err.Clear
+    If iFormula = 1 Then
+        If GetPos(oObj.Formula1, gsWhatToFind, 1) > 0 Then
+            sStr = oObj.Formula1
+            ConfirmReplace "Formula1", "Validation in cell " & oObj.Parent.Parent.Name & "!" & oObj.Parent.Address, sStr
+            oObj.Modify Type:=oObj.Type, Formula1:=sStr
+        End If
+    Else
+        If GetPos(oObj.Formula2, gsWhatToFind, 1) > 0 Then
+            sStr = oObj.Formula2
+            ConfirmReplace "Formula2", "Validation in cell " & oObj.Parent.Parent.Name & "!" & oObj.Parent.Address, sStr
+            oObj.Modify Type:=oObj.Type, Formula1:=oObj.Formula1, Formula2:=sStr
+        End If
+    End If
+End Sub
+
+Sub ReplaceInHeaderFooter(oObj As Object, iKind As Integer)
+    Dim sStr As String
+    On Error Resume Next
+    Err.Clear
+    Select Case iKind
+    Case 11
+        sStr = oObj.LeftHeader
+        ConfirmReplace "Left Header", "Page setup " & oObj.Parent.Name, sStr
+        oObj.LeftHeader = sStr
+    Case 12
+        sStr = oObj.CenterHeader
+        ConfirmReplace "Center Header", "Page setup " & oObj.Parent.Name, sStr
+        oObj.CenterHeader = sStr
+    Case 13
+        sStr = oObj.RightHeader
+        ConfirmReplace "Right Header", "Page setup " & oObj.Parent.Name, sStr
+        oObj.RightHeader = sStr
+    Case 14
+        sStr = oObj.LeftFooter
+        ConfirmReplace "Left Footer", "Page setup " & oObj.Parent.Name, sStr
+        oObj.LeftFooter = sStr
+    Case 15
+        sStr = oObj.CenterFooter
+        ConfirmReplace "Center Footer", "Page setup " & oObj.Parent.Name, sStr
+        oObj.CenterFooter = sStr
+    Case 16
+        sStr = oObj.RightFooter
+        ConfirmReplace "Right Footer", "Page setup " & oObj.Parent.Name, sStr
+        oObj.RightFooter = sStr
+    End Select
+End Sub
+
+Sub FixAllNames()
+    Dim lR1C1 As Long
+    lR1C1 = Application.ReferenceStyle
+    Application.ReferenceStyle = xlR1C1
+    Application.ReferenceStyle = xlA1
+    Application.ReferenceStyle = lR1C1
+End Sub
+
+Sub GetSelection()
+    On Error Resume Next
+    gsStartString = ""
+    If TypeName(goStartRange) = "Range" Then
+        If glType = xlValues Then
+            gsStartString = goStartRange.Value
+        Else
+            gsStartString = goStartRange.FormulaLocal
+        End If
+    End If
+    If gsStartString <> "" Then Exit Sub
+    gsStartString = goStartRange.Caption
+    If gsStartString <> "" Then Exit Sub
+    gsStartString = goStartRange.Text
+    If gsStartString <> "" Then Exit Sub
+    gsStartString = goStartRange.OnAction
+    If gsStartString <> "" Then Exit Sub
+    gsStartString = goStartRange.LinkedCell
+    If gsStartString <> "" Then Exit Sub
+    gsStartString = goStartRange.ListFillRange
+End Sub
+
+Sub ShowMessages()
+    Dim lCount As Long
+    For lCount = 1 To glMsgCount
+        If MsgBox("Message " & lCount & " of " & glMsgCount & vbNewLine & vbNewLine & _
+                  gsMsgs(lCount) & vbNewLine & vbNewLine & _
+                  "Click cancel to stop viewing messages.", vbInformation + vbOKCancel, gsAppName) = vbCancel Then Exit For
+    Next
+End Sub
+
+Sub ChangeColumns(lCol1 As Double, lCol2 As Double)
+    Dim sCols As String
+    Dim vColWidths As Variant
+    With frmFlexifind
+        sCols = .lbxFound.ColumnWidths
+        If sCols = "" Then sCols = .lbxFound.Width / 3 & ";" & .lbxFound.Width / 3 & ";0;0"
+        vColWidths = mySplit(sCols, ";")
+        vColWidths(1) = Val(vColWidths(1)) + lCol1
+        If vColWidths(1) > .lbxFound.Width - 35 Then
+            vColWidths(1) = .lbxFound.Width - 35
+        ElseIf vColWidths(1) <= 10 Then
+            vColWidths(1) = 10
+        End If
+        vColWidths(2) = Val(vColWidths(2)) + lCol2
+        If vColWidths(2) > .lbxFound.Width - vColWidths(1) Then
+            vColWidths(2) = .lbxFound.Width - vColWidths(1)
+        ElseIf vColWidths(2) <= 10 Then
+            vColWidths(2) = 10
+        End If
+        .lbxFound.ColumnWidths = vColWidths(1) & ";" & vColWidths(2) & ";" & 5000 & ";0;0"
+        .cmbSplit1.Left = .lbxFound.Left + vColWidths(1)
+        .cmbSplit2.Left = Application.Min(.lbxFound.Width + .lbxFound.Left - 5, .lbxFound.Left + vColWidths(1) + vColWidths(2))
+    End With
+End Sub
+
+Function mySplit(ByVal sStr As String, ByVal sSep As String) As Variant
+    Dim lPos As Long
+    Dim lCount As Long
+    Dim sTemp As String
+    Dim vTemp() As Variant
+    ReDim vTemp(1)
+    sTemp = sStr
+    While InStr(sStr, sSep) > 0
+        lCount = lCount + 1
+        ReDim Preserve vTemp(lCount)
+        sTemp = Left(sStr, InStr(sStr, sSep) - 1)
+        vTemp(lCount) = sTemp
+        sStr = Mid(sStr, InStr(sStr, sSep) + 1, Len(sStr))
+    Wend
+    lCount = lCount + 1
+    ReDim Preserve vTemp(lCount)
+    vTemp(lCount) = sStr
+    mySplit = vTemp
+End Function
+
+Sub AutoColWidths()
+    With frmFlexifind
+        If .lbxFound.ListCount = 0 Then
+            .lbxFound.ColumnWidths = .lbxFound.Width / 3 & ";" & .lbxFound.Width / 3 & ";" & ";0;0"
+        Else
+            .lbxFound.ColumnWidths = Application.Min(.lbxFound.Left + .lbxFound.Width - 30, gsWidth * glMaxSheetname + 2) _
+                                     & ";" & gsWidth * glMaxAddress + 10 & ";" _
+                                     & 5000 & ";0;0"
+        End If
+        .cmbSplit1.Left = Application.Min(.lbxFound.Left + .lbxFound.Width, gsWidth * glMaxSheetname + 2)
+        .cmbSplit2.Left = Application.Min(.lbxFound.Left + .lbxFound.Width - 5, gsWidth * glMaxSheetname + 2 + gsWidth * glMaxAddress)
+    End With
+End Sub
+
+Sub CreateReport()
+    Dim oCell As Range
+    Dim oReportBook As Workbook
+    Dim lCount As Long
+    Dim vaSplit As Variant
+    Dim bUpdate As Boolean
+    Dim lCalc As Long
+    lCalc = Application.Calculation
+    Application.Calculation = xlCalculationManual
+    bUpdate = Application.ScreenUpdating
+    Application.ScreenUpdating = False
+    Workbooks.Add xlWorksheet
+    Set oReportBook = ActiveWorkbook
+    With oReportBook.Worksheets(1)
+        .Cells.NumberFormat = "@"
+        .Cells(1, 1).Value = "Searched for:"
+        .Cells(1, 2).Value = gsWhatToFind
+        .Cells(2, 1).Value = "Search scope:"
+        Select Case giScope
+        Case 1
+            .Cells(2, 2).Value = "All Open Workbooks"
+        Case 2
+            .Cells(2, 2).Value = "All sheets in : " & goSearchBook.FullName
+        Case 3
+            .Cells(2, 2).Value = "Sheet '" & goStartSheet.Name & "' in : " & goSearchBook.FullName
+        Case 4
+            .Cells(2, 2).Value = "Range " & goStartRange.Address & " in Sheet '" & goStartSheet.Name & "' in : " & goSearchBook.FullName
+        End Select
+        .Cells(3, 1).Value = "Searched inside:"
+        .Cells(3, 2).Value = IIf(glType = xlFormulas, "Formulas", "Values")
+        .Cells(4, 1).Value = "Searched included:"
+        .Cells(4, 2).Value = IIf(gbInObjects, "Cells and Objects", "Cells")
+        .Cells(5, 1).Value = "Match entire:"
+        .Cells(5, 2).Value = glWhole = xlWhole
+        .Cells(6, 1).Value = "Match case:"
+        .Cells(6, 2).Value = gbCase
+        .Cells(8, 1).Value = "Workbook"
+        .Cells(8, 2).Value = "Sheet"
+        .Cells(8, 3).Value = "Object"
+        .Cells(8, 4).Value = "Object type"
+        .Cells(8, 5).Value = "Found in string :"
+        If gsWhatToReplace <> "" Then
+            .Cells(8, 6).Value = "Result after replacing:"
+        End If
+        .Range(.Cells(8, 1), .Cells(8, 6)).Font.Bold = True
+        .Range(.Cells(1, 1), .Cells(6, 1)).Font.Bold = True
+
+        For lCount = 1 To frmFlexifind.lbxFound.ListCount - 1
+            vaSplit = mySplit(frmFlexifind.lbxFound.List(lCount - 1, 0), ":")
+            .Cells(8 + lCount, 1).Value = vaSplit(1)
+            If UBound(vaSplit) > 1 Then
+                .Cells(8 + lCount, 2).Value = vaSplit(2)
+            End If
+            .Cells(8 + lCount, 3).Value = frmFlexifind.lbxFound.List(lCount - 1, 1)
+            Select Case frmFlexifind.lbxFound.List(lCount - 1, 3)
+            Case 1
+                .Cells(8 + lCount, 4).Value = "Range"
+            Case 2
+                .Cells(8 + lCount, 4).Value = "Name"
+            Case 3
+                .Cells(8 + lCount, 4).Value = "DrawingObject"
+            Case 4
+                .Cells(8 + lCount, 4).Value = "ChartObject"
+            Case 5
+                .Cells(8 + lCount, 4).Value = "Comment"
+            Case 6
+                .Cells(8 + lCount, 4).Value = "FormatCondition"
+            Case 7
+                .Cells(8 + lCount, 4).Value = "Validation"
+            Case 8
+                .Cells(8 + lCount, 4).Value = "Hyperlink"
+            Case 9
+                .Cells(8 + lCount, 4).Value = "PivotTable"
+            Case 10
+                .Cells(8 + lCount, 4).Value = "Querytable"
+            Case 11
+                .Cells(8 + lCount, 4).Value = "LeftHeader"
+            Case 12
+                .Cells(8 + lCount, 4).Value = "CenterHeader"
+            Case 13
+                .Cells(8 + lCount, 4).Value = "RightHeader"
+            Case 14
+                .Cells(8 + lCount, 4).Value = "LeftFooter"
+            Case 15
+                .Cells(8 + lCount, 4).Value = "CenterFooter"
+            Case 16
+                .Cells(8 + lCount, 4).Value = "RightFooter"
+            Case Else
+                .Cells(8 + lCount, 4).Value = "Unknown"
+            End Select
+
+            .Cells(8 + lCount, 5).Value = frmFlexifind.lbxFound.List(lCount - 1, 2)
+
+            If gsWhatToReplace <> "" Then
+                .Cells(8 + lCount, 6).Value = MyReplace(frmFlexifind.lbxFound.List(lCount - 1, 2), gsWhatToFind, gsWhatToReplace, False)
+            End If
+        Next
+        .UsedRange.Columns.AutoFit
+        With .Range("E:F")
+            .ColumnWidth = 60
+            .WrapText = True
+        End With
+    End With
+    Application.ScreenUpdating = True
+    Application.Calculation = lCalc
+End Sub
+
+Sub SizeColumns()
+    Dim dColWidth1 As Double
+    Dim dColWidth2 As Double
+    gbResizeDone = False
+    With frmFlexifind
+        dColWidth1 = .cmbSplit1.Left - .lbxFound.Left
+        dColWidth2 = .cmbSplit2.Left - .lbxFound.Left - .cmbSplit1.Left
+        .lbxFound.ColumnWidths = dColWidth1 & ";" & dColWidth2 & ";" & 5000 & ";0;0"
+    End With
+End Sub
+
+Sub GoToSelected()
+    Dim sRef As String
+    Dim lCount As Long
+    Dim lCountSelected As Long
+    Dim lCountRange As Long
+    Dim oRng As Range
+    Dim bSelectedOne As Boolean
+    gbDisableEvents = True
+    With frmFlexifind.lbxFound
+        If .ListCount > 0 Then
+            For lCount = 0 To .ListCount - 2
+                If .Selected(lCount) Then
+                    lCountSelected = lCountSelected + 1
+                    If .List(lCount, 3) = 1 Then
+                        lCountRange = lCountRange + 1
+                    End If
+                End If
+            Next
+            For lCount = 0 To .ListCount - 2
+                If lCountRange = lCountSelected Then
+                    'All entries are range objects, try to make a multiple selection
+                    If .Selected(lCount) Then
+
+                        If oRng Is Nothing Then
+                            Set oRng = goFoundObjects(lCount + 1)
+                        Else
+                            On Error Resume Next
+                            Set oRng = Union(goFoundObjects(lCount + 1), oRng)
+                            On Error GoTo 0
+                        End If
+
+                    End If
+                Else
+                    If .Selected(lCount) Then
+                        sRef = .List(lCount, 0) & "!" & .List(lCount, 1)
+                        Select Case .List(lCount, 3)
+                        Case 2
+                            On Error Resume Next
+                            Application.GoTo ActiveWorkbook.Names(.List(lCount, 1)).RefersToRange
+                            bSelectedOne = True
+                            On Error GoTo 0
+                        Case Else
+                            SelectObj goFoundObjects(lCount + 1)
+                            bSelectedOne = True
+                        End Select
+                        frmFlexifind.cbxReturn = False
+                        Exit For
+                    Else
+                    End If
+                End If
+            Next
+            If Not bSelectedOne Then
+                If .ListIndex >= 0 And .ListIndex < UBound(goFoundObjects) Then
+                    SelectObj goFoundObjects(.ListIndex + 1)
+                End If
+            End If
+        End If
+    frmFlexifind.lblCounter = .ListIndex + 1 & " / " & .ListCount - 1
+    End With
+    If Not oRng Is Nothing Then
+        Application.GoTo oRng
+    End If
+    gbDisableEvents = False
+End Sub
+
+Sub SelectAfterMouse()
+'Workaround because the Mouse_Up event somehow
+'causes the listindex to return to the last one
+    frmFlexifind.lbxFound.ListIndex = glCurrent
+End Sub
+
+Function CountVisiblebooks() As Integer
+    Dim oBook As Workbook
+    Dim oWindow As Window
+    Dim iCount As Integer
+    For Each oBook In Workbooks
+        With oBook
+            For Each oWindow In .Windows
+                If oWindow.Visible Then
+                    iCount = iCount + 1
+                    Exit For
+                End If
+            Next
+        End With
+    Next
+    CountVisiblebooks = iCount
+End Function
+
+Sub SetTopIndex()
+    With frmFlexifind.lbxFound
+        If .ListCount <> 0 Then
+            .ListIndex = glListIndex
+            .TopIndex = Application.Max(0, glListIndex - 1)
+        End If
+    End With
+End Sub
+
+Private Function HasHiddenCells(oSheet As Worksheet) As Boolean
+    Dim oRow As Range
+    Dim oCol As Range
+    Static sReptSheet As String
+    On Error GoTo LocErr
+    For Each oCol In oSheet.Columns
+        If oCol.EntireColumn.Hidden = True Then
+            HasHiddenCells = True
+            Exit Function
+        End If
+    Next
+    For Each oRow In oSheet.UsedRange.Rows
+        If oRow.RowHeight = 0 Then
+            HasHiddenCells = True
+            Exit Function
+        End If
+    Next
+TidyUp:
+    On Error GoTo 0
+    Exit Function
+LocErr:
+    Stop
+    If oSheet.Name <> sReptSheet Then
+        glMsgCount = glMsgCount + 1
+        ReDim Preserve gsMsgs(glMsgCount)
+        gsMsgs(glMsgCount) = "Sorry, I cannot determine if " & oSheet.Name & vbNewLine & _
+                             " has hidden cells because the sheet is protected." & vbNewLine & _
+                             "You will need to look into it yourself."
+        sReptSheet = oSheet.Name
+    End If
+End Function
+
+Public Function MakeSearchString(ByVal sText As String) As String
+    Dim sNewString As String
+    Dim sLeft As String
+    Dim sRight As String
+    Dim lChrFunctionStart As Long
+    Dim lChrFunctionEnd As Long
+    sNewString = sText
+    While sNewString Like "*chr(*)*"
+        lChrFunctionStart = InStr(sNewString, "chr(")
+        lChrFunctionEnd = InStr(lChrFunctionStart + 1, sNewString, ")")
+        If lChrFunctionStart > 1 Then
+            sLeft = Left(sNewString, lChrFunctionStart - 1)
+        Else
+            sLeft = vbNullString
+        End If
+        If lChrFunctionEnd < Len(sNewString) Then
+            sRight = Mid(sNewString, lChrFunctionEnd + 1, Len(sNewString))
+        Else
+            sRight = vbNullString
+        End If
+        sNewString = sLeft & Chr(Mid(sNewString, lChrFunctionStart + 4, lChrFunctionEnd - lChrFunctionStart - 4)) & sRight
+    Wend
+    If sNewString Like "[#]*" Then
+        sNewString = DeLocaliseErrors(sNewString)
+    End If
+    MakeSearchString = sNewString
+End Function
+
+Function DeLocaliseErrors(sNewString As String)
+    Dim oCell As Range
+    'xlErrDiv0, xlErrNA, xlErrName, xlErrNull, xlErrNum, xlErrRef, xlErrValue
+    '"#DIV/0!", "#N/A", "#NAME?", "#NULL!", "#NUM!", "#REF!", "#VALUE!"
+    For Each oCell In ThisWorkbook.Names("ErrorValues").RefersToRange.Cells
+        If LCase(sNewString) = LCase(oCell.Text) Then
+            Select Case oCell.Value
+            Case CVErr(xlErrDiv0)
+                DeLocaliseErrors = "#DIV/0!"
+            Case CVErr(xlErrNA)
+                DeLocaliseErrors = "#N/A"
+            Case CVErr(xlErrName)
+                DeLocaliseErrors = "#NAME?"
+            Case CVErr(xlErrNull)
+                DeLocaliseErrors = "#NULL!"
+            Case CVErr(xlErrNum)
+                DeLocaliseErrors = "#NUM!"
+            Case CVErr(xlErrRef)
+                DeLocaliseErrors = "#REF!"
+            Case CVErr(xlErrValue)
+                DeLocaliseErrors = "#VALUE!"
+            End Select
+            Exit Function
+        End If
+    Next
+    If Len(DeLocaliseErrors) = 0 Then DeLocaliseErrors = sNewString
+End Function
+
+Function ConvertString2Error(vValue As Variant) As String
+    Dim oCell As Range
+    For Each oCell In ThisWorkbook.Names("ErrorValues").RefersToRange.Cells
+        If vValue = oCell.Value Then
+            ConvertString2Error = oCell.Text
+            Exit Function
+        End If
+    Next
+End Function
+
+Function ConVertR1C1FromLocalToUS(sString As String) As String
+    Dim sColumnLetter As String
+    Dim sRowLetter As String
+    Dim sFormula As String
+    sFormula = ThisWorkbook.Names("FormulaCell").RefersToRange.FormulaR1C1Local
+    sColumnLetter = Mid(sFormula, 3, 1)
+    sRowLetter = Mid(sFormula, 2, 1)
+    sString = MyReplace(sString, sColumnLetter, "C", False)
+    sString = MyReplace(sString, sRowLetter, "R", False)
+    ConVertR1C1FromLocalToUS = sString
+End Function
+Attribute VB_Name = "modObjSearch"
+Option Explicit
+
+'*****************************************************************
+'*                                                               *
+'*  All Subs in This Module (C) Jan Karel Pieterse, May 2003     *
+'*                                                               *
+'*  ScanObjects and ScanSheet used with permission of :          *
+'*  Bill Manville  (bill_manville@compuserve.com)                *
+'*  Copied from his FINDLINK Utility                             *
+'*                                                               *
+'*  You are allowed to:                                          *
+'*                                                               *
+'*  - Use this application                                       *
+'*  - Give it to anyone                                          *
+'*                                                               *
+'* Provided that you leave it's content intact and unchanged     *
+'* Mail me if you have any comment!!!                            *
+'* jkpieterse@jkp-ads.com                                  *
+'*****************************************************************
+
+
+Sub ScanObjects(oBook As Workbook, oCollection As Object, sChosenName As String)
+' scan through the drawing objects in oCollection
+    Dim oObj As Object
+    Dim sString As String
+    Dim oGroup As Object
+    Dim stMembers() As String
+    Dim i As Integer
+    Dim lObj As Long
+    Dim bShared As Boolean
+    Dim lPos As String
+    bShared = False
+    On Error GoTo LocErr
+
+    'For Each obj In oCollection '- problem: groupobject components appear (unless they have explicit names!)
+
+    For lObj = oCollection.Count To 1 Step -1
+        Set oObj = oCollection(lObj)
+        ' any drawing object could be linked to a macro
+        ' once had a problem with a malformed object that had no accessible properties
+        On Error Resume Next
+        If Not TypeName(oObj) = "Comment" Then
+            If TypeName(oObj) <> "Shape" Then
+                If glType = xlFormulas Then
+                    sString = oObj.OnAction
+                Else
+                    sString = ""
+                End If
+            End If
+        End If
+        If Err Then
+            sString = "[Name unobtainable]"
+            sString = oObj.Name
+            On Error GoTo LocErr
+            If sString <> "[Name unobtainable]" Then
+                glMsgCount = glMsgCount + 1
+                ReDim Preserve gsMsgs(glMsgCount)
+                gsMsgs(glMsgCount) = "I cannot obtain the properties of " & TypeName(oObj) & " " & sString & " on " & sChosenName & Chr(13) & _
+                                     "Possibly it contains the data you are looking for; you will need to check it yourself"
+            Else
+                glMsgCount = glMsgCount + 1
+                ReDim Preserve gsMsgs(glMsgCount)
+                gsMsgs(glMsgCount) = "I cannot obtain the properties of a " & TypeName(oObj) & " on " & sChosenName
+            End If
+        Else
+            If sString <> "" Then
+                lPos = GetPos(sString, gsWhatToFind, 1)
+                If lPos > 0 Then
+                    AddItems oObj, oObj.Parent.Name, oObj.Name, sString, 3, True
+                End If
+            End If
+
+            ' some drawing objects have formula properties
+            Select Case TypeName(oObj)
+            Case "TextBox"
+                sString = ""
+                On Error Resume Next
+                lPos = 0
+                If glType = xlFormulas Then
+                    sString = oObj.Formula
+                Else
+                    sString = GetTextFromTextbox(oObj)
+                End If
+                On Error GoTo LocErr
+                lPos = GetPos(sString, gsWhatToFind, 1)
+                If lPos > 0 Then
+                    On Error Resume Next
+                    If oObj.Visible And Not bShared Then oObj.Select
+                    On Error GoTo LocErr
+                    'List oobj.Formula or Caption
+                    AddItems oObj, oObj.Parent.Name, oObj.Name, sString, 3, True
+                End If
+            Case "Picture", "Button", "Arc", "Drawing", "Oval", "Rectangle"
+                sString = ""
+                On Error Resume Next
+                lPos = 0
+                If glType = xlFormulas Then
+                    sString = oObj.Formula
+                Else
+                    sString = oObj.Caption
+                End If
+                On Error GoTo LocErr
+                lPos = GetPos(sString, gsWhatToFind, 1)
+                If lPos > 0 Then
+                    On Error Resume Next
+                    If oObj.Visible And Not bShared Then oObj.Select
+                    On Error GoTo LocErr
+                    'List oobj.Formula or Caption
+                    AddItems oObj, oObj.Parent.Name, oObj.Name, sString, 3, True
+                End If
+                'End If
+
+            Case "OLEObject"
+                If oObj.OLEType = xlOLELink Then
+                    'iOLEFound = iOLEFound + 1
+                Else
+                    'Control toolbox control ?
+                    On Error Resume Next
+                    sString = ""
+                    sString = oObj.LinkedCell
+                    On Error GoTo LocErr
+                    If sString <> "" Then
+                        lPos = GetPos(sString, gsWhatToFind, 1)
+                        If lPos > 0 Then
+                            If oObj.Visible And Not bShared Then oObj.Select
+                            If glType = xlFormulas Then
+                                'List LinkedString only if lookin formulas is true?
+                                AddItems oObj, oObj.Parent.Name, oObj.Name & "; LinkedCell", sString, 3, glType = xlFormulas
+                            End If
+                        End If
+                    End If
+                    On Error Resume Next
+                    sString = ""
+                    sString = oObj.ListFillRange
+                    On Error GoTo LocErr
+                    If sString <> "" Then
+                        lPos = GetPos(sString, gsWhatToFind, 1)
+                        If lPos > 0 Then
+                            If oObj.Visible And Not bShared Then oObj.Select
+                            'List Listfillrange only if lookin formulas is true?
+                            If glType = xlFormulas Then
+                                AddItems oObj, oObj.Parent.Name, oObj.Name & "; Listfillrange", sString, 3, glType = xlFormulas
+                            End If
+                        End If
+                    End If
+                End If
+            Case "GroupObject"
+                sString = oObj.Name
+                Set oGroup = oObj.Ungroup
+                If Not oGroup Is Nothing Then
+                    'For some reason, with Excel 2007 a group object may contain no members???
+                    ' there is a problem regrouping a group containing a group object, so get an array of names
+                    ReDim stMembers(1 To oGroup.Count)
+                    For i = 1 To oGroup.Count
+                        stMembers(i) = oGroup(i).Name
+                    Next
+                    ScanObjects oBook, oGroup, "GroupObject " & sString & " in " & sChosenName
+                    ' regroup
+                    ActiveSheet.DrawingObjects(1, stMembers()).Group.Name = sString
+                End If
+            Case "ChartObject"
+                ' check the Chart
+                ScanSheet oBook, oObj.Chart, "Chart " & oObj.Name & "; on " & sChosenName
+
+            Case "CheckBox", "DropDown", "ListBox", "Spinner", "ScrollBar", "OptionButton"
+                sString = oObj.LinkedCell
+                lPos = GetPos(sString, gsWhatToFind, 1)
+                If lPos > 0 Then
+                    If oObj.Visible And Not bShared Then oObj.Select
+                    If glType = xlFormulas Then
+                        'List LinkedString only if lookin formulas is true?
+                        AddItems oObj, oObj.Parent.Name, oObj.Name & "; LinkedCell", sString, 3, glType = xlFormulas
+                    End If
+                End If
+                On Error Resume Next
+                sString = ""
+                sString = oObj.ListFillRange
+                On Error GoTo LocErr
+                If sString <> "" Then
+                    lPos = GetPos(sString, gsWhatToFind, 1)
+                    If lPos > 0 Then
+                        If oObj.Visible And Not bShared Then oObj.Select
+                        'List Listfillrange only if lookin formulas is true?
+                        If glType = xlFormulas Then
+                            AddItems oObj, oObj.Parent.Name, oObj.Name & "; Listfillrange", sString, 3, glType = xlFormulas
+                        End If
+                    End If
+                End If
+            Case "Comment"
+                sString = oObj.Text
+                lPos = GetPos(sString, gsWhatToFind, 1)
+                If lPos > 0 Then
+                    AddItems oObj, oObj.Parent.Parent.Name, "Comment in " & oObj.Parent.Address, sString, 5, True
+                End If
+            End Select
+        End If
+    Next
+    Exit Sub
+LocErr:
+    If Err.Number = 438 Then
+        Resume Next
+    End If
+    Select Case ReportError(Err.Description, Err.Number, "modObjSearch", "ScanObjects ")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub ScanSheet(oBook As Workbook, oChosen As Object, sChosenName As String)
+' scan through the object oChosen looking for the link string gsWhatToFind
+' Note that ScanSheet can call itself recursively if it finds a ChartObject
+' on oChosen, to look for links in the contained Chart
+    Dim oObj As Object, oSeries As Series
+    Dim oPivot As PivotTable
+    Dim oQuery As QueryTable
+    Dim sString As String, iSeries As Integer, lCCT As Long
+    Dim oAxis As Axis, iAxis As Integer, iAxisGroup As Integer
+    Dim stStage As String
+    Dim iPoint As Integer
+    Dim bLabel As Boolean
+    Dim lPos As Long
+    Dim bHasFormula As Boolean
+    Dim iCount As Integer
+    Dim bChangedChartType As Boolean
+    On Error GoTo LocErr
+    gbAllowChartTypeChange = False
+    If oBook.DisplayDrawingObjects <> xlHide Then
+        ScanObjects oBook, oChosen.DrawingObjects, sChosenName
+    End If
+    If TypeName(oChosen) = "Worksheet" Then
+        ScanObjects oBook, oChosen.Comments, sChosenName
+    End If
+
+    ' now for additional checks for particular types of oChosen
+    If TypeName(oChosen) = "Worksheet" Then
+        ' look in cell formulae
+        'cut code from scansheet #1 to dummy
+        For Each oPivot In oChosen.PivotTables
+            If TypeName(oPivot.SourceData) <> "String" Then
+                sString = oPivot.PivotCache.Connection
+                If GetPos(sString, gsWhatToFind, 1) > 0 Then
+                    AddItems oPivot, sChosenName, "PivotTableDNS:" & oPivot.Name, sString, 9, True
+                End If
+                sString = oPivot.PivotCache.CommandText
+                If GetPos(sString, gsWhatToFind, 1) > 0 Then
+                    AddItems oPivot, sChosenName, "PivotTableSQL:" & oPivot.Name, sString, 9, True
+                End If
+            Else
+                sString = oPivot.SourceData
+                sString = ConVertR1C1FromLocalToUS(sString)
+                sString = Application.ConvertFormula(sString, xlR1C1, xlA1)
+                If GetPos(sString, gsWhatToFind, 1) > 0 Then
+                    AddItems oPivot, sChosenName, "PivotTable:" & oPivot.Name, sString, 9, True
+                End If
+            End If
+        Next
+
+        For Each oQuery In oChosen.QueryTables
+            On Error Resume Next
+            sString = oQuery.CommandText
+            On Error GoTo LocErr
+            If GetPos(sString, gsWhatToFind, 1) > 0 Then
+                AddItems oQuery, sChosenName, "SQL of:" & oQuery.Name, sString, 10, True
+            End If
+            sString = oQuery.Connection
+            If GetPos(sString, gsWhatToFind, 1) > 0 Then
+                AddItems oQuery, sChosenName, "Connect $ of:" & oQuery.Name, sString, 10, True
+            End If
+        Next
+
+        sString = oChosen.PageSetup.LeftHeader
+        If GetPos(sString, gsWhatToFind, 1) > 0 Then
+            AddItems oChosen.PageSetup, sChosenName, "Left header:" & oChosen.Name, sString, 11, True
+        End If
+        sString = oChosen.PageSetup.CenterHeader
+        If GetPos(sString, gsWhatToFind, 1) > 0 Then
+            AddItems oChosen.PageSetup, sChosenName, "Center header:" & oChosen.Name, sString, 12, True
+        End If
+        sString = oChosen.PageSetup.RightHeader
+        If GetPos(sString, gsWhatToFind, 1) > 0 Then
+            AddItems oChosen.PageSetup, sChosenName, "Right header:" & oChosen.Name, sString, 13, True
+        End If
+
+        sString = oChosen.PageSetup.LeftFooter
+        If GetPos(sString, gsWhatToFind, 1) > 0 Then
+            AddItems oChosen.PageSetup, sChosenName, "Left Footer:" & oChosen.Name, sString, 14, True
+        End If
+        sString = oChosen.PageSetup.CenterFooter
+        If GetPos(sString, gsWhatToFind, 1) > 0 Then
+            AddItems oChosen.PageSetup, sChosenName, "Center Footer:" & oChosen.Name, sString, 15, True
+        End If
+        sString = oChosen.PageSetup.RightFooter
+        If GetPos(sString, gsWhatToFind, 1) > 0 Then
+            AddItems oChosen.PageSetup, sChosenName, "Right Footer:" & oChosen.Name, sString, 16, True
+        End If
+
+    ElseIf TypeName(oChosen) = "Chart" Then
+        ' for some checks we need the chart (or chart object) activated
+        If TypeName(oChosen.Parent) = "ChartObject" Then
+            If oChosen.Parent.Visible Then
+                On Error Resume Next
+                oChosen.Parent.Activate
+                If Err Then
+                    gsMsgs(glMsgCount) = "I couldn't activate ChartObject " & oChosen.Parent.Name & " on sheet " & oChosen.Parent.Parent.Name & Chr(13) & _
+                                         "Some properties of the chart may not be checkable"
+                End If
+                On Error GoTo LocErr
+            End If
+        End If
+        ' look in chart series
+        For iSeries = oChosen.SeriesCollection.Count To 1 Step -1  ' backwards in case of deletions
+            stStage = "Series " & iSeries
+            ' potential problem with series formula being inaccessible
+            ' seems to go away if series is changed to Area
+            lCCT = -1
+            Set oSeries = oChosen.SeriesCollection(iSeries)
+            sString = ""
+            On Error Resume Next
+            sString = oSeries.Formula
+            If Err Then
+                If Not (gbAllowChartTypeChange Or gbAllowChartTypeChangeAll) _
+                   And gbDisAllowChartTypeChangeAll <> True Then
+                    If frmAllowChartTypeChange Is Nothing Then
+                        Set frmAllowChartTypeChange = New ufAllowChartTypeChange
+                    End If
+                    frmAllowChartTypeChange.tbxMessage = _
+                    "I cannot access the formula of:" & vbNewLine & vbNewLine & _
+                                                         "series " & iSeries & " of " & sChosenName & vbNewLine & vbNewLine & _
+                                                         "Possibly it contains the string you are looking for;" & _
+                                                         vbNewLine & vbNewLine & "Must I temporarily change the chart type" & _
+                                                         " in order to try to access this information?" _
+                                                         & vbNewLine & "(The appearance of the series might be affected!!)"
+                    frmAllowChartTypeChange.Show
+                End If
+                If oSeries.ChartType <> -4111 Then
+                    If gbAllowChartTypeChange Or gbAllowChartTypeChangeAll Then
+                        bChangedChartType = True
+                        lCCT = oSeries.ChartType
+                        Err = 0
+                        ' try changing to Area chart as then it seems possible to access the series properties
+                        oSeries.ChartType = xlArea
+                    End If
+                Else
+                    'Special kind of line chart (example: just markers, no line), cannot be restored
+                End If
+                Err.Clear
+                sString = oSeries.Formula
+
+                If Err Then
+                    On Error GoTo LocErr
+                    glMsgCount = glMsgCount + 1
+                    ReDim Preserve gsMsgs(glMsgCount)
+                    gsMsgs(glMsgCount) = "I cannot access the formula of series " & iSeries & " of " & sChosenName & Chr(13) & _
+                                         "Possibly it contains the string you are looking for; you will need to look into it yourself"
+                End If
+            End If
+            On Error GoTo LocErr
+            If sString <> "" Then
+                lPos = GetPos(sString, gsWhatToFind, 1)
+            End If
+            If lPos > 0 Then
+                ' List St (oseries.formula)
+                AddItems oSeries, sChosenName, "Series(" & iSeries & ")", sString, 4, glType = xlFormulas
+            End If
+            ' try data labels
+            If Not oSeries Is Nothing Then
+                For iPoint = 1 To oSeries.Points.Count
+                    On Error Resume Next
+                    bLabel = oSeries.Points(iPoint).HasDataLabel
+                    If Err <> 0 Then
+                        Err = 0
+                        If lCCT <> xlArea Then
+                            If Not (gbAllowChartTypeChange Or gbAllowChartTypeChangeAll) _
+                               And gbDisAllowChartTypeChangeAll <> True Then
+                                If frmAllowChartTypeChange Is Nothing Then
+                                    Set frmAllowChartTypeChange = New ufAllowChartTypeChange
+                                End If
+                                frmAllowChartTypeChange.tbxMessage = _
+                                "I cannot access the formula of:" & vbNewLine & vbNewLine & _
+                                                                     "series " & iSeries & " of " & sChosenName & vbNewLine & vbNewLine & _
+                                                                     "Possibly it contains the string you are looking for;" & _
+                                                                     vbNewLine & vbNewLine & "Must I temporarily change the chart type" & _
+                                                                     " in order to try to access this information?" _
+                                                                     & vbNewLine & "(The appearance of the series might be affected!!)"
+                                frmAllowChartTypeChange.Show
+                                Set frmAllowChartTypeChange = Nothing
+                                If oSeries.ChartType <> -4111 Then
+                                    If gbAllowChartTypeChange Or gbAllowChartTypeChangeAll Then
+                                        bChangedChartType = True
+                                        lCCT = oSeries.ChartType
+                                        oSeries.ChartType = xlArea
+                                    End If
+                                End If
+                            Else
+                                glMsgCount = glMsgCount + 1
+                                ReDim Preserve gsMsgs(glMsgCount)
+                                gsMsgs(glMsgCount) = "I cannot access the formula of series " & iSeries & " of " & sChosenName & Chr(13) & _
+                                                     "Possibly it contains the string you are looking for; you will need to look into it yourself"
+                                'Special kind of line chart (example: just markers, no line), cannot be restored
+                            End If
+                        End If
+                        bLabel = oSeries.Points(iPoint).HasDataLabel
+                        If Err Then bLabel = True        ' to force the problem out
+                    End If
+                    Err.Clear
+                    If bLabel Then
+                        bHasFormula = False
+                        bHasFormula = Left(ExecuteExcel4Macro("GET.FORMULA(""Text S" & iSeries & "P" & iPoint & """)"), 1) = "="
+                        If glType = xlFormulas And bHasFormula Then
+                            sString = ExecuteExcel4Macro("GET.FORMULA(""Text S" & iSeries & "P" & iPoint & """)")
+                            sString = Application.ConvertFormula(sString, xlR1C1, xlA1)
+                        Else
+                            sString = oSeries.Points(iPoint).DataLabel.Text
+                        End If
+                        If Err Then
+                            glMsgCount = glMsgCount + 1
+                            ReDim Preserve gsMsgs(glMsgCount)
+                            gsMsgs(glMsgCount) = "I cannot access datalabel " & iPoint & " of series " & iSeries & " of " & sChosenName & Chr(13) & _
+                                                 "Possibly it contains the string you are looking for; you will need to check it yourself"
+                            ' don't bother to continue
+                            GoTo NoMorePoints
+                        End If
+                        On Error GoTo LocErr
+                        If sString <> "" Then
+                            lPos = GetPos(sString, gsWhatToFind, 1)
+                        End If
+                        If lPos > 0 Then
+                            With oSeries.Points(iPoint)
+                                Set oObj = .DataLabel
+                                AddItems oObj, sChosenName, "Datalables (" & iSeries & ")", sString, 4, glType = xlFormulas Or bHasFormula = False
+                                'list .datalabel.formula or .datalabel.text
+                            End With
+                        End If
+                    End If
+                    On Error GoTo LocErr
+                Next iPoint
+NoMorePoints:
+                On Error GoTo LocErr
+            End If
+            ' try to restore the chart type if we had to change it
+            If bChangedChartType = True Then
+                On Error Resume Next
+                oSeries.ChartType = lCCT
+                lCCT = -1
+                bChangedChartType = False
+                On Error GoTo LocErr
+            End If
+        Next iSeries
+        ' There may be a link in a chart title or axis title
+        ' but no VBA property gives us access to it - have to use Excel4macro.
+        If oChosen.HasTitle Then
+            stStage = "ChartTitle"
+            On Error Resume Next
+            bHasFormula = Left(ExecuteExcel4Macro("GET.FORMULA(""Title"")"), 1) = "="
+            If Err Then
+                glMsgCount = glMsgCount + 1
+                ReDim Preserve gsMsgs(glMsgCount)
+                gsMsgs(glMsgCount) = "I cannot access the chart title of " & sChosenName & Chr(13) & _
+                                     "Possibly it contains the data you are looking for; You will need to check it yourself"
+            End If
+            On Error GoTo LocErr
+            If glType = xlFormulas And bHasFormula Then
+                sString = CStr(ExecuteExcel4Macro("GET.FORMULA(""Title"")"))
+                sString = Application.ConvertFormula(sString, xlR1C1, xlA1)
+            Else
+                sString = oChosen.ChartTitle.Text
+            End If
+            Set oObj = oChosen.ChartTitle
+            lPos = GetPos(sString, gsWhatToFind, 1)
+            If lPos > 0 Then
+                'List sString (chart title formula) or ChartTitle.text
+                AddItems oObj, sChosenName, "Chart Title", sString, 4, glType = xlFormulas Or bHasFormula = False
+            End If
+        End If
+        For iAxisGroup = xlPrimary To xlSecondary Step (xlSecondary - xlPrimary)
+            For iAxis = xlCategory To xlSeries
+                stStage = "AxisTitle " & iAxisGroup & ":" & iAxis
+                Set oAxis = Nothing
+                On Error Resume Next
+                Set oAxis = oChosen.Axes(iAxis, iAxisGroup)
+                If Err = 0 Then
+                    On Error GoTo LocErr
+                    If oAxis.HasTitle Then
+                        On Error Resume Next
+                        Set oObj = oAxis.AxisTitle        ' may fail on protected sheet
+                        If Err Then
+                            On Error GoTo LocErr
+                            glMsgCount = glMsgCount + 1
+                            ReDim Preserve gsMsgs(glMsgCount)
+                            gsMsgs(glMsgCount) = "I cannot access the axis title of " & sChosenName & Chr(13) & _
+                                                 "Possibly it contains the data you are looking for; You will need to check it yourself"
+                        Else
+                            On Error Resume Next
+                            Err.Clear
+                            bHasFormula = Left(ExecuteExcel4Macro("GET.FORMULA(""" & oObj.Name & """)"), 1) = "="
+                            If Err Then
+                                glMsgCount = glMsgCount + 1
+                                ReDim Preserve gsMsgs(glMsgCount)
+                                gsMsgs(glMsgCount) = "I cannot access the axis title of " & sChosenName & Chr(13) & _
+                                                     "Possibly it contains the data you are looking for; You will need to check it yourself"
+                            End If
+                            On Error GoTo LocErr
+                            If glType = xlFormulas And bHasFormula Then
+                                sString = ExecuteExcel4Macro("GET.FORMULA(""" & oObj.Name & """)")
+                                sString = Application.ConvertFormula(sString, xlR1C1, xlA1)
+                            Else
+                                sString = oObj.Text
+                            End If
+                            lPos = GetPos(sString, gsWhatToFind, 1)
+                            If lPos > 0 Then
+                                'list st or oaxis.axistitle.text
+                                AddItems oObj, sChosenName, "Axis Title", sString, 4, glType = xlFormulas Or bHasFormula = False
+                            ElseIf sString = "" And iAxisGroup = xlSecondary Then
+                                glMsgCount = glMsgCount + 1
+                                ReDim Preserve gsMsgs(glMsgCount)
+                                gsMsgs(glMsgCount) = "Can't get the secondary axis title's formula of chart " & sChosenName
+                            End If
+                        End If
+                    End If
+                End If
+                On Error GoTo LocErr
+            Next iAxis
+        Next iAxisGroup
+    End If
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "modObjSearch", "ScanSheet")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Function GetPos(sString As String, gsWhatToFind As String, lStartPos As Long) As Long
+    Dim lPos As Long
+    lPos = 0
+    On Error Resume Next
+    If gbCase Then
+        If glWhole = xlWhole Then
+            lPos = Abs(CInt(sString = gsWhatToFind))
+        Else
+            lPos = Application.Find(gsWhatToFind, sString, lStartPos)
+        End If
+    Else
+        If glWhole = xlWhole Then
+            lPos = Abs(CInt(UCase(sString) = UCase(gsWhatToFind)))
+        Else
+            lPos = InStr(lStartPos, LCase(sString), LCase(gsWhatToFind))
+        End If
+    End If
+    GetPos = lPos
+End Function
+
+Function GetLength(sString As String, gsWhatToFind As String, lStartPos As Long) As Long
+    Dim lCt As Long
+    lCt = 1
+    If lStartPos = 0 Then Exit Function
+    Do
+        If gbCase Then
+            If Mid(sString, lStartPos, lCt) Like gsWhatToFind Then
+                GetLength = lCt
+                Exit Do
+            End If
+        Else
+            If Mid(LCase(sString), lStartPos, lCt) Like LCase(gsWhatToFind) Then
+                GetLength = lCt
+                Exit Do
+            End If
+        End If
+        lCt = lCt + 1
+    Loop Until lCt > Len(sString) + lStartPos
+End Function
+
+Sub ScanFormatConditions(oSheet As Worksheet)
+    Dim oCell As Range
+    Dim oSet As Range
+    Dim oArea As Range
+    Dim oCond As FormatCondition
+    Dim iCount As Integer
+    Dim bFound As Boolean
+    Set oSet = oSheet.UsedRange
+    Set oSet = Nothing
+    On Error Resume Next
+    Set oSet = oSheet.UsedRange.SpecialCells(xlCellTypeAllFormatConditions)
+    If oSet Is Nothing Then Exit Sub
+    On Error GoTo LocErr
+    For Each oArea In oSet.Areas
+        For Each oCell In oArea.Cells
+            iCount = 0
+            For Each oCond In oCell.FormatConditions
+                iCount = iCount + 1
+                On Error Resume Next
+                bFound = False
+                bFound = GetPos(oCond.Formula1, gsWhatToFind, 1)
+                On Error GoTo LocErr
+                If bFound Then
+                    AddItems oCond, oSheet.Name, "Formatcond" & iCount & " formula1 in " & oCell.Address, oCond.Formula1, 6, True
+                End If
+                On Error Resume Next
+                bFound = False
+                bFound = GetPos(oCond.Formula2, gsWhatToFind, 1)
+                On Error GoTo LocErr
+                If bFound Then
+                    AddItems oCond, oSheet.Name, "Formatcond" & iCount & " formula2 in " & oCell.Address, oCond.Formula2, 6, True
+                End If
+            Next
+        Next
+    Next
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Description, Err.Number, "modObjSearch", "ScanFormatConditions")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub ScanValidations(oSheet As Worksheet)
+    Dim oCell As Range
+    Dim oSet As Range
+    Dim oArea As Range
+    Dim iCount As Integer
+    Dim sFormula As String
+    Set oSet = oSheet.UsedRange
+    Set oSet = Nothing
+    On Error Resume Next
+    Set oSet = oSheet.UsedRange.SpecialCells(xlCellTypeAllValidation)
+    If oSet Is Nothing Then Exit Sub
+    On Error GoTo LocErr
+    For Each oArea In oSet.Areas
+        For Each oCell In oArea.Cells
+            iCount = 0
+            On Error Resume Next
+            sFormula = ""
+            sFormula = oCell.Validation.Formula1
+            On Error GoTo LocErr
+            If sFormula <> "" Then
+                If GetPos(oCell.Validation.Formula1, gsWhatToFind, 1) Then
+                    AddItems oCell.Validation, oSheet.Name, "Validation formula1 in " & oCell.Address, oCell.Validation.Formula1, 7, True
+                End If
+                If GetPos(oCell.Validation.Formula2, gsWhatToFind, 1) Then
+                    AddItems oCell.Validation, oSheet.Name, "Validation formula2 in " & oCell.Address, oCell.Validation.Formula2, 7, True
+                End If
+            End If
+        Next
+    Next
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modObjSearch", "ScanValidations ")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Sub ScanHyperlinks(oSheet As Worksheet)
+    Dim oHyperlink As Hyperlink
+    Dim sText As String
+    On Error GoTo LocErr
+    For Each oHyperlink In oSheet.Hyperlinks
+        If glType = xlFormulas Then
+            If GetPos(oHyperlink.Address, gsWhatToFind, 1) > 0 Then
+                AddItems oHyperlink, oSheet.Name, "Hyperlink in " & oHyperlink.Range.Address, oHyperlink.Address, 8, True
+            End If
+            If GetPos(oHyperlink.SubAddress, gsWhatToFind, 1) > 0 Then
+                AddItems oHyperlink, oSheet.Name, "Hyperlink SubAddr in " & oHyperlink.Range.Address, oHyperlink.SubAddress, 8, True
+            End If
+        Else
+            'Some times texttodisplay leads to an error!
+            On Error Resume Next
+            sText = oHyperlink.TextToDisplay
+            On Error GoTo LocErr
+            If Len(sText) > 0 Then
+                If GetPos(sText, gsWhatToFind, 1) > 0 Then
+                    AddItems oHyperlink, oSheet.Name, "Hyperlink in " & oHyperlink.Range.Address, sText, 8, True
+                End If
+            End If
+        End If
+    Next
+    Exit Sub
+LocErr:
+    Select Case ReportError(Err.Number, Err.Number, "modObjSearch", "ScanHyperlinks ")
+    Case vbAbort
+        Exit Sub
+    Case vbRetry
+        Resume
+    Case vbIgnore
+        Resume Next
+    End Select
+End Sub
+
+Function GetTextFromTextbox(oTb As Object) As String
+    Dim lCt As Long
+    Dim lLen As Long
+    Dim sText As String
+    On Error Resume Next
+    lLen = oTb.Characters.Count
+    If lLen > 255 Then
+        For lCt = 1 To lLen Step 255
+            sText = sText & oTb.Characters(Start:=lCt, Length:=255).Text
+        Next
+    Else
+        sText = oTb.Characters.Text
+    End If
+    GetTextFromTextbox = sText
+End Function
+
+Function SetTextOfTextbox(oObj As Object, sStr As String)
+    Dim lCt As Long
+    Dim lLen As Long
+    lLen = Len(sStr)
+    oObj.Text = ""
+    If lLen > 255 Then
+        For lCt = 1 To lLen Step 255
+            If oObj.Characters.Count = 0 Then
+                oObj.Text = Mid(sStr, lCt, 255)
+            Else
+                oObj.Characters(lCt).Insert Mid(sStr, lCt, 255)
+            End If
+        Next
+    Else
+        oObj.Text = sStr
+    End If
+End Function
+Attribute VB_Name = "modRibbon"
+Option Explicit
+
+Sub FlexFind2007(control As Object)
+    FlexiFinder
+End Sub
+
+Attribute VB_Name = "ufAllowChartTypeChange"
+Attribute VB_Base = "0{37D37A14-915B-4B46-8985-7FF87DD2FF64}{DDA1397D-D316-4738-8034-B72958F100EE}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Sub cmbNoAll_Click()
+    gbDisAllowChartTypeChangeAll = True
+    gbAllowChartTypeChangeAll = False
+    gbAllowChartTypeChange = False
+    Me.Hide
+End Sub
+
+Private Sub cmbYes_Click()
+    gbDisAllowChartTypeChangeAll = False
+    gbAllowChartTypeChangeAll = False
+    gbAllowChartTypeChange = True
+    Me.Hide
+End Sub
+
+Private Sub cmbYesAll_Click()
+    gbAllowChartTypeChangeAll = True
+    gbDisAllowChartTypeChangeAll = False
+    gbAllowChartTypeChange = True
+    Me.Hide
+End Sub
+
+Private Sub cmbNo_Click()
+    gbDisAllowChartTypeChangeAll = False
+    gbAllowChartTypeChangeAll = False
+    gbAllowChartTypeChange = False
+    Me.Hide
+End Sub
+
+
+Attribute VB_Name = "ufFlexiFind"
+Attribute VB_Base = "0{876C2E7B-E15B-4D7A-A7E9-521F1AEF000B}{F8723295-6AC4-4501-A70D-7EC0FA7156FA}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Dim mclsResizer As CFormResizer
+'Module variables to handle the splitter bar
+Dim mbDragging1 As Boolean
+Dim mbDragging2 As Boolean
+Dim mdSplitter1Origin As Double
+Dim mdSplitter2Origin As Double
+
+Private Sub cbbLookin_Click()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    If Me.cbbLookin.ListIndex = 0 Then
+        glType = xlFormulas
+    Else
+        glType = xlValues
+    End If
+    GetSelection
+    cbbFind.Value = gsStartString
+    gbDisableEvents = False
+End Sub
+
+Private Sub cbbScope_Change()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    giScope = Application.Max(1, Me.cbbScope.ListIndex + 1)
+    Me.Repaint
+    gbDisableEvents = False
+End Sub
+
+Private Sub cbxAcknowledge_Click()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    gbAcknowledge = Me.cbxAcknowledge.Value
+    Me.cbxIndividual.Visible = gbAcknowledge
+    gbDisableEvents = False
+End Sub
+
+Private Sub cbxIndividual_Click()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    gbIndividual = Me.cbxIndividual.Value
+    gbDisableEvents = False
+End Sub
+
+Private Sub cbxCase_Click()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    gbCase = Me.cbxCase.Value
+    gbDisableEvents = False
+End Sub
+
+Private Sub cbxObjects_Click()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    gbInObjects = Me.cbxObjects.Value
+    If gbInObjects Then
+        If Left(Application.Version, 1) = "8" Then
+            gbHyper = MsgBox("Scanning Hyperlinks in Excel 97 may crash Excel." & _
+                             vbNewLine & "Scan them anyway ?", vbCritical + vbYesNo, gsAppName) = vbYes
+        Else
+            gbHyper = True
+        End If
+    End If
+    gbDisableEvents = False
+End Sub
+
+Private Sub cbxReturn_Click()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    gbReturn = Me.cbxReturn.Value
+    gbDisableEvents = False
+End Sub
+
+Private Sub cbxWhole_Click()
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    If Me.cbxWhole.Value Then
+        glWhole = xlWhole
+    Else
+        glWhole = xlPart
+    End If
+    gbDisableEvents = False
+End Sub
+
+Private Sub cmbAbout_Click()
+    MsgBox "This utility was programmed by" _
+           & vbNewLine & "Jan Karel Pieterse" _
+           & vbNewLine & "Please send comments and compliments to:" _
+           & vbNewLine & "jkpieterse@jkp-ads.com" _
+           & vbNewLine & vbNewLine & "Some routines to search in objects, courtesy:" _
+           & vbNewLine & "Bill Manville" _
+           & vbNewLine & vbNewLine & "Changes needed to enable for Mac Excel, courtesy:" _
+           & vbNewLine & "Matthew Henson" _
+           & vbNewLine & vbNewLine & "Download the utility from:" _
+           & vbNewLine & vbNewLine & "www.jkp-ads.com" _
+           & vbNewLine & vbNewLine & "Build: " & gsBuild, vbInformation, gsAppName
+End Sub
+
+Private Sub cmbAll_Click()
+    Dim lCount As Long
+    Dim bSelected() As Boolean
+    ReDim bSelected(1 To 3)
+    If gbChanged Then
+        MsgBox "Search string has changed, first press Find!", vbInformation, gsAppName
+        Exit Sub
+    End If
+    With Me
+        If .lbxFound.ListCount < 1 Then
+            MsgBox "No Items To Select.", , gsAppName
+            Exit Sub
+        End If
+        For lCount = 1 To .lbxFound.ListCount
+            ReDim Preserve bSelected(1 To lCount)
+            bSelected(lCount) = True
+            .lbxFound.Selected(lCount - 1) = True
+        Next
+    End With
+End Sub
+
+Private Sub cmbClose_Click()
+    Me.Hide
+    If gbReturn Then
+        On Error Resume Next
+        goStartSheet.Activate
+        goStartRange.Select
+    End If
+    Application.StatusBar = False
+End Sub
+
+Private Sub cmbFind_Click()
+    AddItemToddFind
+    With Me
+        gbReturn = .cbxReturn.Value
+        .lblProgressBooks1.Visible = True
+        .lblProgressBooks2.Width = 1
+        .lblProgressBooks2.Visible = True
+        .lblProgressSheets1.Visible = True
+        .lblProgressSheets2.Width = 1
+        .lblProgressSheets2.Visible = True
+    End With
+
+    FindItAll
+    Application.Cursor = xlDefault
+End Sub
+
+Private Sub cmbMaximise_Click()
+    giMaximised = giMaximised + 1
+    If giMaximised = 3 Then giMaximised = 0
+    gbDisableEvents = True
+    'HandleMaximise
+    gbDisableEvents = False
+End Sub
+
+Private Sub cmbNext_Click()
+    If gbChanged Then
+        MsgBox "Search string has changed, first press Find!", vbInformation, gsAppName
+        Exit Sub
+    End If
+    If Me.lbxFound.ListCount = 0 Then Exit Sub
+    With Me.lbxFound
+        glCurrent = .ListIndex + 1
+        If glCurrent = .ListCount - 1 Then glCurrent = 0
+        UnselectAll
+        .Selected(glCurrent) = True
+        .ListIndex = glCurrent
+        GoToSelected
+    End With
+    Me.lbxFound.TopIndex = Application.Max(0, Me.lbxFound.ListIndex - 1)
+End Sub
+
+Private Sub cmbNextSheet_Click()
+    If gbChanged Then
+        MsgBox "Search string has changed, first press Find!", vbInformation, gsAppName
+        Exit Sub
+    End If
+    If Me.lbxFound.ListCount = 0 Then Exit Sub
+    UnselectAll
+    GotoOtherSheet True
+    GoToSelected
+    Me.lbxFound.TopIndex = Application.Max(0, Me.lbxFound.ListIndex - 1)
+End Sub
+
+Private Sub cmbPrev_Click()
+    If gbChanged Then
+        MsgBox "Search string has changed, first press Find!", vbInformation, gsAppName
+        Exit Sub
+    End If
+    If Me.lbxFound.ListCount = 0 Then Exit Sub
+    With Me.lbxFound
+        glCurrent = .ListIndex - 1
+        If glCurrent < 0 Then
+            glCurrent = .ListCount - 2
+        End If
+        UnselectAll
+        .ListIndex = glCurrent
+        .Selected(glCurrent) = True
+        GoToSelected
+    End With
+    Me.lbxFound.TopIndex = Application.Max(0, Me.lbxFound.ListIndex - 1)
+End Sub
+
+Private Sub cmbPrevSheet_Click()
+    If gbChanged Then
+        MsgBox "Search string has changed, first press Find!", vbInformation, gsAppName
+        Exit Sub
+    End If
+    If Me.lbxFound.ListCount = 0 Then Exit Sub
+    UnselectAll
+    GotoOtherSheet False
+    GoToSelected
+    Me.lbxFound.TopIndex = Application.Max(0, Me.lbxFound.ListIndex - 1)
+End Sub
+
+Private Sub cmbReplaceThem_Click()
+    Dim bAckOld As Boolean
+    If gbChanged Then
+        MsgBox "Search string has changed, first press Find!", vbInformation, gsAppName
+        Exit Sub
+    End If
+    Me.Hide
+    bAckOld = gbAcknowledge
+    Replace
+    gbAcknowledge = bAckOld
+    If Val(Left(Application.Version, 2)) = 8 Or gbMacOS Then
+        Me.Show
+    Else
+        ShowModeless
+    End If
+End Sub
+
+Private Sub cmbReport_Click()
+    CreateReport
+End Sub
+
+Private Sub cmbSplit1_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+'    gbAutoColWidth = True
+    AutoColWidths
+End Sub
+
+Private Sub cmbSplit1_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    If Button = 1 Then
+        mbDragging1 = True
+        mdSplitter1Origin = X
+        RememberTopIndex
+    Else
+        mbDragging1 = False
+    End If
+End Sub
+
+Private Sub cmbSplit1_MouseMove(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    Dim dChange As Double
+    'Are we doing a drag?
+    If mbDragging1 Then
+        'Find where we moved to
+        dChange = (X - mdSplitter1Origin) / PointsPerPixel
+        If Me.cmbSplit1.Left + dChange < Me.lbxFound.Left + 5 Then Exit Sub
+        '        If Me.cmbSplit2.Left + dChange > Me.lbxFound.Left + Me.lbxFound.Width - 5 Then Exit Sub
+        ChangeColumns dChange, 0
+    End If
+End Sub
+
+Private Sub cmbSplit1_MouseUp(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    mbDragging1 = False
+    Application.OnTime Now, "SetTopIndex"
+End Sub
+
+Private Sub cmbSplit2_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    gbAutoColWidth = True
+    AutoColWidths
+    Application.OnTime Now, "SetTopIndex"
+End Sub
+
+Private Sub cmbSplit2_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    If Button = 1 Then
+        mbDragging2 = True
+        mdSplitter2Origin = X
+        RememberTopIndex
+    Else
+        mbDragging2 = False
+    End If
+End Sub
+
+Private Sub cmbSplit2_MouseMove(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    Dim dChange As Double
+    'Are we doing a drag?
+    If mbDragging2 Then
+        'Find where we moved to
+        dChange = (X - mdSplitter2Origin) / PointsPerPixel
+        If Me.cmbSplit1.Left + dChange < Me.lbxFound.Left + 5 Then Exit Sub
+        If Me.cmbSplit2.Left + dChange > Me.lbxFound.Left + Me.lbxFound.Width - 5 Then Exit Sub
+        If Me.cmbSplit2.Left + dChange >= Me.cmbSplit1.Left + Me.cmbSplit1.Width + 5 Then
+            ChangeColumns 0, dChange
+        End If
+    End If
+End Sub
+
+Private Sub cmbSplit2_MouseUp(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    mbDragging2 = False
+    Application.OnTime Now, "SetTopIndex"
+End Sub
+
+Private Sub cbbFind_Change()
+    gsWhatToFind = cbbFind.Text
+    gbChanged = True
+End Sub
+
+Private Sub cmbSwitch2Excel_Click()
+    SetActiveWindow glXLHwnd
+End Sub
+
+Private Sub ebxReplace_Change()
+    If gbChanged Then
+        MsgBox "Search string has changed, first press Find!", vbInformation, gsAppName
+        Exit Sub
+    End If
+    gsWhatToReplace = Me.ebxReplace.Value
+End Sub
+
+Private Sub lblStopped_Click()
+    If glMsgCount > 0 Then
+        ShowMessages
+    End If
+End Sub
+
+Private Sub lbxFound_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    With Me.lbxFound
+        If .ListCount <> 0 Then
+            MsgBox "Your search string" & vbNewLine & vbNewLine _
+                   & gsWhatToFind & vbNewLine & vbNewLine & "was found in : " & vbNewLine & vbNewLine _
+                   & .List(.ListIndex, 0) & ", " & .List(.ListIndex, 1) & vbNewLine & vbNewLine & .List(.ListIndex, 2), vbInformation + vbOKOnly, gsAppName
+        End If
+    End With
+End Sub
+
+'Private Sub lbxFound_KeyUp(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+'    Dim sRef As String
+'    Dim lLine As Long
+'    If gbDisableEvents Then Exit Sub
+'    gbDisableEvents = True
+'    GoToSelected
+'    gbDisableEvents = False
+'End Sub
+'
+'Private Sub lbxFound_MouseUp(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+'    Dim sRef As String
+'    Dim lLine As Long
+'    If gbDisableEvents Then Exit Sub
+'    gbDisableEvents = True
+'    GoToSelected
+'    'Kludge to make sure proper item is selected.
+'    glCurrent = lbxFound.ListIndex
+'    Application.OnTime Now, "SelectAfterMouse"
+'    gbDisableEvents = False
+'End Sub
+
+
+Private Sub lbxFound_KeyUp(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    GoToSelected
+    gbDisableEvents = False
+End Sub
+
+Private Sub lbxFound_MouseUp(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    If gbDisableEvents Then Exit Sub
+    gbDisableEvents = True
+    GoToSelected
+    gbDisableEvents = False
+End Sub
+
+Private Sub obtColumn_Click()
+    glSearchOrder = xlByColumns
+End Sub
+
+Private Sub obtRow_Click()
+    glSearchOrder = xlByRows
+End Sub
+
+Private Sub UserForm_Activate()
+    Me.cbbFind.SetFocus
+    Me.cmbFind.Default = True
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode < 2 Then
+        Me.Hide
+        Cancel = True
+    End If
+End Sub
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: When the form is resized, the UserForm_Resize event
+'           is raised, which we just pass on to the Resizer class
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 07 Oct 04     Stephen Bullen  Initial version
+'
+Private Sub UserForm_Resize()
+    Static bIndexDone As Boolean
+    If gbDisableEvents Then Exit Sub
+    If Not bIndexDone Then
+        RememberTopIndex
+        bIndexDone = True
+    End If
+    With Me
+        .cmbSplit1.Tag = ""    '"L" & .cmbSplit1.Left / .Width
+        .cmbSplit2.Tag = ""    '"L" & .cmbSplit2.Left / .Width
+    End With
+    mclsResizer.FormResize
+    'Build 572: had one case where this caused an unspecified object error 50290 (application defined or object defined error)
+    On Error Resume Next
+    cmbSplit2.Left = Application.Min(lbxFound.Left + lbxFound.Width, cmbSplit2.Left)
+    cmbSplit1.Left = Application.Min(cmbSplit2.Left - 30, cmbSplit1.Left)
+    If Not gbResizeDone Then
+        Application.OnTime Now, "SizeColumns"
+        gbResizeDone = True
+        Application.OnTime Now, "SetTopIndex"
+        bIndexDone = False
+    End If
+End Sub
+
+Sub FormInitialize()
+    gbDisableEvents = True
+    Set mclsResizer = New CFormResizer
+    Set mclsResizer.Form = Me
+    mclsResizer.RegistryKey = "FlexFind"
+    With Me
+        .cbxObjects.Value = gbInObjects
+        .cbbScope.Clear
+        .cbbScope.AddItem "All Books"
+        .cbbScope.AddItem "Book"
+        .cbbScope.AddItem "Sheet"
+        .cbbScope.AddItem "Range"
+        .cbbScope.ListIndex = giScope - 1
+        .cbbLookin.Clear
+        .cbbLookin.AddItem "Formulas"
+        .cbbLookin.AddItem "Values"
+        If glType = xlFormulas Then
+            .cbbLookin.ListIndex = 0
+        Else
+            .cbbLookin.ListIndex = 1
+        End If
+        If glSearchOrder = xlByRows Then
+            .obtRow.Value = True
+        Else
+            .obtColumn.Value = True
+        End If
+        .cbxCase = gbCase
+        If glWhole = xlWhole Then
+            .cbxWhole = True
+        Else
+            .cbxWhole = False
+        End If
+        gbShowlblStopped = False
+        .lblStopped.Visible = False
+        .lblCounter.Caption = ""
+        .lbxFound.Clear
+        If Not gbRunBefore Then
+            .cbbFind.Clear
+            .ebxReplace.Text = ""
+        End If
+        .cbbFind = gsStartString
+        .cbbFind.SelStart = 0
+        .cbbFind.SelLength = Len(gsStartString)
+        .cbxAcknowledge.Value = gbAcknowledge
+        .cbxIndividual.Value = gbIndividual
+        .cbxReturn.Value = gbReturn
+        'HandleMaximise
+        SetControlPositions
+    End With
+    gbDisableEvents = False
+End Sub
+
+Sub SetControlPositions()
+    With Me
+        '        .Width = 343.5
+        '        .cbbFind.Move 6, 12, 129, 18
+        '        .cbbLookin.Move 276, 48, 58, 18
+        '        .cbbScope.Move 276, 66, 58, 18
+        '        .cbxAcknowledge.Move 276, 222, 61.2, 16.5
+        '        .cbxCase.Move 276, 99.75, 60, 13.5
+        '        .cbxIndividual.Move 276, 239, 59.4, 16.5
+        '        .cbxObjects.Move 276, 113.5, 60, 13.5
+        '        .cbxReturn.Move 276, 256.05, 67.2, 16.5
+        '        .cbxWhole.Move 276, 86.25, 60, 13.5
+        '        .cmbAbout.Move 282, 276.05, 52, 18
+        '        .cmbAll.Move 282, 197.95, 52, 18
+        '        .cmbClose.Move 282, 12, 52, 18
+        '        .cmbFind.Move 138, 12, 36, 18
+        '        .cmbMaximise.Move 256, 12, 18, 18
+        '        .cmbNext.Move 216, 12, 18, 18
+        '        .cmbNextSheet.Move 234, 12, 18, 18
+        '        .cmbPrev.Move 198, 12, 18, 18
+        '        .cmbPrevSheet.Move 180, 12, 18, 18
+        '        .cmbReplaceThem.Move 282, 174, 52, 18
+        '        .cmbReport.Move 282, 150, 52, 18
+        '        .ebxReplace.Move 6, 180, 264, 18
+        '        .lblReplace.Move 6, 168, 126, 12.6
+        '        .Label22.Move 6, 204, 120, 12.6
+        '        .labFindRepl.Move 6, 0, 133.8, 12.6
+        '        .lblCounter.Move 198, 1, 66, 11
+        '        .lblStopped.Move 6, 152.25, 264, 12
+        '        .lbWhere.Move 276, 36, 42.6, 12.6
+        '        .lbxFound.Move 6, 48, 265, 97.3
+        '        .lbxReplace.Move 6, 216.55, 265, 75.45
+        '        .obtColumn.Move 306, 126, 28, 15.75
+        '        .obtRow.Move 276, 126, 33, 15.75
+        '        .TextBox1.Move 276, 6, 8, 0
+
+    End With
+    mclsResizer.ResetFormSizes
+End Sub
+
+Sub HandleMaximise()
+    With Me
+        If giMaximised = 2 Then
+            .Height = giMinFormHeight
+            .lblCounter.Top = 0
+            .cmbReplaceThem.Visible = False
+            .cbxReturn.Visible = False
+            .cmbAbout.Visible = False
+            .ebxReplace.Visible = False
+            .lblReplace.Visible = False
+            .cbxIndividual.Visible = False
+            .cbxAcknowledge.Visible = False
+            .cmbSplit1.Visible = False
+            .cmbSplit2.Visible = False
+            .cmbAll.Visible = False
+            .lblStopped.Visible = False
+            .cbxReturn.Visible = False
+            .cbbScope.Visible = False
+            .cbbLookin.Visible = False
+            .cbxCase.Visible = False
+            .cbxObjects.Visible = False
+            .cbxWhole.Visible = False
+            '.labFound.Visible = False
+            .lbxFound.Visible = False
+            .lbWhere.Visible = False
+        ElseIf giMaximised = 1 Then
+            .Height = giMaxFormHeight
+            .lblCounter.Top = 36
+            .cmbReplaceThem.Visible = True
+            .cbxReturn.Visible = True
+            .cmbAbout.Visible = True
+            .ebxReplace.Visible = True
+            .lblReplace.Visible = True
+            .cbxAcknowledge.Visible = True
+            .cmbSplit1.Visible = True
+            .cmbSplit2.Visible = True
+
+            .cbxIndividual.Visible = True
+            .cmbAll.Visible = True
+            .cbxReturn.Visible = True
+            .cbbScope.Visible = True
+            .cbbLookin.Visible = True
+            .cbxCase.Visible = True
+            .cbxObjects.Visible = True
+            .cbxWhole.Visible = True
+            '.labFound.Visible = True
+            .lbxFound.Visible = True
+            .lbxFound.Tag = "WH0.4"
+            .lblStopped.Tag = "T0.4W"
+            .lblStopped.Visible = gbShowlblStopped
+            .lbWhere.Visible = True
+        Else
+            .Height = giNormalFormHeight
+            .lblCounter.Top = 36
+            .cmbReplaceThem.Visible = False
+            .cbxReturn.Visible = False
+            .cmbAbout.Visible = False
+            .ebxReplace.Visible = False
+            .lblReplace.Visible = False
+            .cbxIndividual.Visible = False
+            .cbxAcknowledge.Visible = False
+            .cmbSplit1.Visible = True
+            .cmbSplit2.Visible = True
+
+            .cmbAll.Visible = False
+            .cbxReturn.Visible = False
+            .cbbScope.Visible = True
+            .cbbLookin.Visible = True
+            .cbxCase.Visible = True
+            .cbxObjects.Visible = True
+            .cbxWhole.Visible = True
+            '.labFound.Visible = True
+            .lbxFound.Tag = "WH"
+            .lblStopped.Tag = "TW"
+            .lblStopped.Visible = gbShowlblStopped
+            .lbxFound.Visible = True
+            .lbWhere.Visible = True
+        End If
+    End With
+    SetControlPositions
+End Sub
+
+Public Sub UpdateProgressBars(dFractionComplete1 As Double, dFractionComplete2 As Double)
+    With Me
+        .cmbSplit1.Visible = False
+        .cmbSplit2.Visible = False
+        .lblProgressBooks2.Width = dFractionComplete1 * .lblProgressBooks1.Width
+        .lblProgressSheets2.Width = dFractionComplete2 * .lblProgressSheets1.Width
+        .lblProgressBooks1.Visible = True
+        .lblProgressBooks2.Visible = True
+        .lblProgressSheets1.Visible = True
+        .lblProgressSheets2.Visible = True
+        .Repaint
+    End With
+End Sub
+Public Sub HideProgress()
+    With Me
+        .cmbSplit1.Visible = True
+        .cmbSplit2.Visible = True
+        .lblProgressSheets1.Visible = False
+        .lblProgressSheets2.Width = 1
+        .lblProgressSheets2.Visible = False
+        .lblProgressBooks1.Visible = False
+        .lblProgressBooks2.Width = 1
+        .lblProgressBooks2.Visible = False
+    End With
+End Sub
+
+Sub RememberTopIndex()
+    glTopIndex = Me.lbxFound.TopIndex
+    glListIndex = Me.lbxFound.ListIndex
+End Sub
+
+Private Sub UnselectAll()
+    Dim lCount As Long
+    For lCount = 0 To lbxFound.ListCount - 1
+        lbxFound.Selected(lCount) = False
+    Next
+End Sub
+Attribute VB_Name = "ufFormula"
+Attribute VB_Base = "0{AFA30CD7-DAF4-4C24-9A1F-7020B7F54C1C}{6439BE0E-3F00-4C5D-912C-93C69F9F9D5E}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Dim mclsResizer As CFormResizer
+
+Private Sub btCancel_Click()
+    gbCancel = True
+    gbYes = False
+    Unload Me
+End Sub
+
+Private Sub btYes_Click()
+    gbYes = True
+    Unload Me
+End Sub
+
+Private Sub btNo_Click()
+    gbYes = False
+    Unload Me
+End Sub
+
+Private Sub cbxYesAll_Click()
+    gbYes = True
+    gbAcknowledge = False
+    Unload Me
+End Sub
+
+Private Sub UserForm_Initialize()
+    Set mclsResizer = New CFormResizer
+    Set mclsResizer.Form = Me
+    mclsResizer.RegistryKey = "FlexFind"
+    gbCancel = False
+    gbYes = False
+End Sub
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Comments: When the form is resized, the UserForm_Resize event
+'           is raised, which we just pass on to the Resizer class
+'
+' Date          Developer       Action
+' --------------------------------------------------------------
+' 07 Oct 04     Stephen Bullen  Initial version
+'
+Private Sub UserForm_Resize()
+    If gbDisableEvents Then Exit Sub
+    mclsResizer.FormResize
+End Sub
+
+
+' InQuest injected base64 decoded content
+' K+-zc
+
+INQUEST-PP=macro

@@ -1,0 +1,3016 @@
+Attribute VB_Name = "AddRemoveSections"
+Option Explicit
+
+Sub AddTableSection(direction As String, rngName As String, addBtn As String, mulBtn As String, delBtn As String)
+    If Not Before(True) Then
+        Exit Sub
+    End If
+    
+    Dim clicked As String
+    clicked = Application.Caller
+    
+    Call FindAndAddToRange(direction, rngName, 1, addBtn, mulBtn, delBtn)
+    
+    Call After
+End Sub
+
+Sub DeleteTableSection(direction As String, rngName As String, addBtn As String, mulBtn As String, delBtn As String)
+    If Not Before(True) Then
+        Exit Sub
+    End If
+    
+    Dim clicked As String
+    clicked = Application.Caller
+    Call FindAndDeleteFromRange(direction, rngName, addBtn, mulBtn, delBtn)
+    
+    Call After
+End Sub
+
+Private Sub FindAndDeleteFromRange(direction As String, buttonRangeName As String, addBtn As String, mulBtn As String, delBtn As String)
+    Dim simpleRowAdding As Boolean
+    simpleRowAdding = CheckSimpleRowAdding(direction, buttonRangeName)
+    
+    Dim repeatRange As NamedRangeName
+    Set repeatRange = FindRepeatRange(direction, buttonRangeName, simpleRowAdding)
+    
+    Dim multiSelect As Boolean
+    multiSelect = False
+    If Not (Selection Is Nothing) Then
+        multiSelect = Selection.Areas.Count > 1
+    End If
+    
+    If (multiSelect Or repeatRange Is Nothing) Then
+        If direction = "Row" Then
+            MsgBox GetMacroText("tnfc.delete.message.row"), Title:=GetMacroText("tnfc.messagebox.title")
+        Else
+            MsgBox GetMacroText("tnfc.delete.message.col"), Title:=GetMacroText("tnfc.messagebox.title")
+        End If
+    Else
+        Call RemoveFromRange(direction, repeatRange, simpleRowAdding, addBtn, mulBtn, delBtn)
+    End If
+End Sub
+
+Private Function FindInnermostColumn(allNamesForTable As Collection) As NamedRangeName
+    ' We simply want the innermost column in all cases
+    Dim nmdRangeName As NamedRangeName, repeatNamedRangeName As NamedRangeNameRepeats, rng As Range, latestCol As Long
+    latestCol = 0
+    For Each nmdRangeName In allNamesForTable
+        If (nmdRangeName.prefix = "repeat_") Then
+            Set repeatNamedRangeName = nmdRangeName
+            If (repeatNamedRangeName.RepeatDirection = "row") Then
+                Set rng = Range(nmdRangeName.Name)
+                If (latestCol < rng.Column) Then
+                    latestCol = rng.Column
+                    Set FindInnermostColumn = nmdRangeName
+                End If
+            End If
+        End If
+    Next nmdRangeName
+End Function
+
+Private Function FindRepeatRange(direction As String, buttonRangeName As String, simpleRowAdding As Boolean) As NamedRangeName
+    Dim allNamesForTable As Collection
+    Set allNamesForTable = GetAllNamesMatchingThisNamesTable(ActiveSheet, Parse(buttonRangeName))
+    
+    If simpleRowAdding Then
+        Set FindRepeatRange = FindInnermostColumn(allNamesForTable)
+        Exit Function
+    End If
+    
+    ' Allow clicking anywhere if there's only one open node
+    Dim onlyRepeatRangeForAxis As NamedRangeName, onlyOneRepeat As Boolean
+    onlyOneRepeat = False
+    
+    Dim nmdRangeName As NamedRangeName, repeatNamedRangeName As NamedRangeNameRepeats, rng As Range, intersection As Range, smallestSize As Long
+    smallestSize = getMaxSlices(direction)
+    For Each nmdRangeName In allNamesForTable
+        If (nmdRangeName.prefix = "repeat_") Then
+            Set repeatNamedRangeName = nmdRangeName
+            If (repeatNamedRangeName.RepeatDirection = LCase(direction)) Then
+                Set rng = Range(nmdRangeName.Name)
+                
+                If (onlyOneRepeat) Then
+                    onlyOneRepeat = False
+                End If
+                
+                If (onlyRepeatRangeForAxis Is Nothing) Then
+                    Set onlyRepeatRangeForAxis = nmdRangeName
+                    onlyOneRepeat = True
+                End If
+                
+                Set intersection = Intersect(Selection, rng)
+                If (Not intersection Is Nothing) Then
+                    If (intersection.Address = Selection.Address) Then
+                        If (direction = "Row") Then
+                            If (smallestSize > rng.Rows.Count) Then
+                                smallestSize = rng.Rows.Count
+                                Set FindRepeatRange = nmdRangeName
+                            End If
+                        Else
+                            If (smallestSize > rng.Columns.Count) Then
+                                smallestSize = rng.Columns.Count
+                                Set FindRepeatRange = nmdRangeName
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+        End If
+    Next nmdRangeName
+    
+    If (FindRepeatRange Is Nothing And Not onlyRepeatRangeForAxis Is Nothing And onlyOneRepeat) Then
+        Set FindRepeatRange = onlyRepeatRangeForAxis
+    End If
+End Function
+
+Sub AddMultipleSections(direction As String, buttonRangeName As String, addBtn As String, mulBtn As String, delBtn As String)
+    If Not Before(True) Then
+        Exit Sub
+    End If
+
+    Dim clicked As String
+    clicked = Application.Caller
+    
+    Dim simpleRowAdding As Boolean
+    simpleRowAdding = CheckSimpleRowAdding(direction, buttonRangeName)
+    
+    ' Find the area up-front, so the error about not having anything selected appears before the prompt about number of rows/columns.
+    Dim repeatRange As NamedRangeName
+    Set repeatRange = FindRange(direction, buttonRangeName, simpleRowAdding)
+    If (Not repeatRange Is Nothing) Then
+        Dim numSlicesToAdd As Long, inputResult As String, sectionType As String
+        numSlicesToAdd = 0
+        If direction = "Row" Then
+            sectionType = "rows"
+        Else
+            sectionType = "columns"
+        End If
+         
+        On Error GoTo ErrHandler
+        
+        Dim msgBoxMsg As String
+        msgBoxMsg = GetMacroText("tnfc.multiple.invalid")
+        Do
+            If (direction = "Row") Then
+                inputResult = InputBox(GetMacroText("tnfc.multiple.number.row"), GetMacroText("tnfc.messagebox.title"), 1)
+            Else
+                inputResult = InputBox(GetMacroText("tnfc.multiple.number.col"), GetMacroText("tnfc.messagebox.title"), 1)
+            End If
+            If IsNumeric(inputResult) Then
+                numSlicesToAdd = CLng(inputResult)
+                'If a number has been changed by the above cast it was not whole, so complain
+                If numSlicesToAdd < 0 Or Trim(str(numSlicesToAdd)) <> Trim(inputResult) Then
+                    MsgBox msgBoxMsg, Title:=GetMacroText("tnfc.messagebox.title")
+                    numSlicesToAdd = 0
+                Else
+                    Exit Do
+                End If
+            ElseIf inputResult = "" Then
+                Exit Do
+            Else
+                MsgBox msgBoxMsg, Title:=GetMacroText("tnfc.messagebox.title")
+            End If
+        Loop While Not inputResult = ""
+        
+        Call AddToRange(direction, repeatRange, numSlicesToAdd, addBtn, mulBtn, delBtn, simpleRowAdding)
+    End If
+
+    Call After
+    Exit Sub
+    
+ErrHandler:
+    Select Case Err
+        Case 6: ' number too large/invalid
+            ComplainAboutInvalidInput (direction)
+        Case Else:
+            ' important to re-throw any other errors
+            Call Err.Raise(Err.number, Err.Source, Err.Description, Err.HelpFile, Err.HelpContext)
+    End Select
+End Sub
+
+Private Sub ComplainAboutInvalidInput(direction As String)
+    If (direction = "Row") Then
+        MsgBox GetMacroText("tnfc.multiple.error.row"), Title:=GetMacroText("tnfc.messagebox.title")
+    Else
+        MsgBox GetMacroText("tnfc.multiple.error.col"), Title:=GetMacroText("tnfc.messagebox.title")
+    End If
+End Sub
+
+Private Function CheckSimpleRowAdding(direction As String, buttonRangeName As String) As Boolean
+    If direction = "Row" Then
+        Dim tableName As Name
+        Set tableName = GetNameForNamedRange(ActiveSheet, buttonRangeName, "table_")
+        CheckSimpleRowAdding = hasFlag(tableName.RefersToRange.Cells(1, 1).value, "simple-row-adding")
+    Else
+        CheckSimpleRowAdding = False
+    End If
+End Function
+
+Private Sub FindAndAddToRange(direction As String, buttonRangeName As String, numSlicesToAdd As Long, addBtn As String, mulBtn As String, delBtn As String)
+    Dim simpleRowAdding As Boolean
+    simpleRowAdding = CheckSimpleRowAdding(direction, buttonRangeName)
+    
+    Dim repeatRange As NamedRangeName
+    Set repeatRange = FindRange(direction, buttonRangeName, simpleRowAdding)
+    If (Not repeatRange Is Nothing) Then
+        Call AddToRange(direction, repeatRange, numSlicesToAdd, addBtn, mulBtn, delBtn, simpleRowAdding)
+    End If
+End Sub
+
+Private Function FindRange(direction As String, buttonRangeName As String, simpleRowAdding As Boolean) As NamedRangeName
+    Dim repeatRange As NamedRangeName
+    Set repeatRange = FindRepeatRange(direction, buttonRangeName, simpleRowAdding)
+    If (repeatRange Is Nothing) Then
+        MsgBox GetMacroText("tnfc.add.multipleopen"), Title:=GetMacroText("tnfc.messagebox.title")
+    End If
+    Set FindRange = repeatRange
+End Function
+
+Private Sub AddToRange(direction As String, repeatsRangeName As NamedRangeName, number As Long, addBtn As String, mulBtn As String, delBtn As String, simpleRowAdding As Boolean)
+    If (number < 1) Then
+        Exit Sub
+    End If
+
+    ' work out what to repeat - the metadata shifting will assume we are copying from the last block
+    Dim blockToCopy As Range, rng As Range, numberOfSlicesToAdd As Long
+    Set blockToCopy = FindBlockToCopy(direction, repeatsRangeName)
+    If (direction = "Row") Then
+        numberOfSlicesToAdd = blockToCopy.Rows.CountLarge * number
+    Else
+        numberOfSlicesToAdd = blockToCopy.Columns.CountLarge * number
+    End If
+
+    If Not canAddSlices(numberOfSlicesToAdd, direction, repeatsRangeName) Then
+        ' Message box already shown
+        Exit Sub
+    End If
+
+    ' Do 1 first because the first add is slow, and do in chunks of 10000
+    ' because performance is non-linear beyond that.
+    ' https://bugs.corefiling.com/show_bug.cgi?id=43365
+    Dim toClear As Range
+    Set toClear = AddToRangeInternal(direction, repeatsRangeName, blockToCopy, 1, addBtn, mulBtn, delBtn, simpleRowAdding)
+    toClear.ClearContents
+    Call ClearEEButtons(toClear)
+    If (number > 1) Then
+        Dim i As Integer
+        For i = 1 To ((number - 1) \ 10000)
+            ' Update block to copy, as must be copying the last block
+            Call AddToRangeInternal(direction, repeatsRangeName, FindBlockToCopy(direction, repeatsRangeName), 10000, addBtn, mulBtn, delBtn, simpleRowAdding)
+        Next i
+        If ((number - 1) Mod 10000 > 0) Then
+            ' Update block to copy, as must be copying the last block
+            Call AddToRangeInternal(direction, repeatsRangeName, FindBlockToCopy(direction, repeatsRangeName), (number - 1) Mod 10000, addBtn, mulBtn, delBtn, simpleRowAdding)
+        End If
+    End If
+End Sub
+
+Private Function FindBlockToCopy(direction As String, repeatRangeName As NamedRangeName) As Range
+    ' work out what to repeat - the metadata shifting will assume we are copying from the last block
+    Dim rng As Range
+    Set rng = Range(repeatRangeName.Name)
+    If (direction = "Row") Then
+        Set FindBlockToCopy = FindBlock(rng.Cells(rng.CountLarge).EntireRow, repeatRangeName, direction)
+    Else
+        Set FindBlockToCopy = FindBlock(rng.Cells(rng.CountLarge).EntireColumn, repeatRangeName, direction)
+    End If
+End Function
+
+Private Sub DeleteMetadataForRange(direction As String, tableMetadataRange As String, deleteRange As Range)
+    Dim toDelete As Range
+    Set toDelete = FindMetadataForBlock(direction, tableMetadataRange, deleteRange, True)
+
+    If (toDelete Is Nothing) Then
+        Exit Sub
+    End If
+    
+    Dim state As Long
+    state = Unhide("Cell Metadata TNFC Internal")
+    Dim currentSheet As String
+    currentSheet = ActiveSheet.Name
+    ThisWorkbook.Sheets("Cell Metadata TNFC Internal").Select
+    
+    toDelete.Delete
+    
+    ThisWorkbook.Sheets(currentSheet).Select
+    Call RestoreState("Cell Metadata TNFC Internal", state)
+End Sub
+Private Sub DuplicateMetadataForInsertedRows(direction As String, metadataRange As String, copyFrom As Range, numberOfSlicesToAdd As Long)
+    Dim rowsToDuplicate As Range
+    Set rowsToDuplicate = FindMetadataForBlock(direction, metadataRange, copyFrom, True)
+
+    If (rowsToDuplicate Is Nothing) Then
+        Exit Sub
+    End If
+
+    ' replicate those entries at the bottom of the metadata, with their row co-ordinates bumped down by the appropriate number
+    Dim lastOccupiedRow As Long, firstColumn As Range, nonHeadingCellsInFirstCol As Range, metadataSheet As Worksheet, cell As Range
+    Set metadataSheet = ThisWorkbook.Sheets("Cell Metadata TNFC Internal")
+    Set firstColumn = metadataSheet.Range("A1").EntireColumn
+    Set nonHeadingCellsInFirstCol = firstColumn.Resize(RowSize:=firstColumn.Rows.CountLarge - 1).Offset(RowOffset:=1).Cells
+    lastOccupiedRow = FirstCellWithContents(nonHeadingCellsInFirstCol, "", False).Row
+    
+    ' Store the metadata range before messing with it, as inserting rows in the middle
+    ' (e.g. if there are multiple tables in this metadata) will mutate it automatically.
+    Dim originalMetadataRangeString As String
+    originalMetadataRangeString = metadataSheet.Names(metadataRange).RefersToRange.Address
+    
+    Dim state As Long
+    state = Unhide("Cell Metadata TNFC Internal")
+    Dim currentSheet As String
+    currentSheet = ActiveSheet.Name
+    metadataSheet.Select
+    Dim i As Long, countMultiplier As Long
+    If direction = "Row" Then
+      countMultiplier = copyFrom.Rows.CountLarge
+    Else
+      countMultiplier = copyFrom.Columns.CountLarge
+    End If
+
+    Dim rowsToDuplicateCount As Long
+    rowsToDuplicateCount = CountRows(rowsToDuplicate)
+    DuplicateWithShiftedFormulae countMultiplier, rowsToDuplicate, direction, numberOfSlicesToAdd
+
+    ' delete any empty metadata rows (the rowsToDuplicate may not have been a contiguous block)
+    Dim potentiallyOccupiedRows As Range
+    Set potentiallyOccupiedRows = nonHeadingCellsInFirstCol.Resize(lastOccupiedRow + rowsToDuplicate.Rows.CountLarge).Cells
+    DeleteEmptyRows potentiallyOccupiedRows
+
+    ' grow original table metadata range downwards to cover the rows we just inserted.
+    Dim originalRange As Range, expandedRange As Range
+    Set originalRange = Range(originalMetadataRangeString)
+    Set expandedRange = originalRange.Resize(originalRange.Rows.CountLarge + (rowsToDuplicateCount * numberOfSlicesToAdd))
+    Call metadataSheet.Names.Add(metadataRange, expandedRange)
+
+    ThisWorkbook.Sheets(currentSheet).Select
+    Call RestoreState("Cell Metadata TNFC Internal", state)
+End Sub
+
+Private Function CountRows(rng As Range) As Long
+    Dim area As Range
+    For Each area In rng.Areas
+        CountRows = CountRows + area.Rows.CountLarge
+    Next area
+End Function
+
+Public Sub DeleteEmptyRows(targetArea As Range) ' empty rows are those with nothing in column A
+    Dim r As Long, cell As Range
+    For r = targetArea.Rows.CountLarge To 1 Step -1 ' iterate backwards to avoid deletions affecting what we loop over
+      Set cell = targetArea.Rows(r).Cells(1)
+      If (cell.Formula = "") Then
+        cell.EntireRow.Delete
+      End If
+    Next r
+End Sub
+
+Private Function AddToRangeInternal(direction As String, repeatsRangeName As NamedRangeName, rangeToCopy As Range, numberOfRepeats As Long, addBtn As String, mulBtn As String, delBtn As String, simpleRowAdding As Boolean) As Range
+    LockButtons True, addBtn, mulBtn, delBtn
+    
+    ' Identify the data range
+    Dim dataArea As String, metadataRange As String, buttonRange As String
+    dataArea = Convert(repeatsRangeName, "data_").Name
+    metadataRange = Convert(repeatsRangeName, "metadata_table_").Name
+    buttonRange = Convert(repeatsRangeName, "button_", LCase(direction)).Name
+    
+    Dim data As Range, rng As Range, buttonCells As Range
+    Set data = ActiveSheet.Range(dataArea)
+    Set rng = ActiveSheet.Range(repeatsRangeName.Name)
+    Set buttonCells = ActiveSheet.Range(buttonRange)
+    
+    Dim buttonAddress As String
+    buttonAddress = buttonCells.Address
+        
+    Dim dataStart As Range, dataEnd As Range, rngStart As Range, rngEnd As Range
+    Set dataStart = data.Cells(1)
+    Set dataEnd = data.Cells(data.CountLarge)
+    Set rngStart = rng.Cells(1)
+    Set rngEnd = rng.Cells(rng.CountLarge)
+
+    Dim tableName As Name
+    Set tableName = getTableName(repeatsRangeName)
+
+    Dim copyFrom As Range, copyTo As Range, toClear As Range
+    ' Number of physical rows/columns we are inserting
+    Dim slicesToInsert As Long
+    
+    If direction = "Row" Then
+        slicesToInsert = numberOfRepeats * rangeToCopy.Rows.CountLarge
+        rng.Rows(rng.Rows.CountLarge).Offset(1).EntireRow.Resize(slicesToInsert).Insert
+        
+        Set copyFrom = ActiveSheet.Range(Cells(rangeToCopy.Cells(1).Row, buttonCells.Columns(1).Column), _
+                                         Cells(rangeToCopy.Rows(rangeToCopy.Rows.CountLarge).Row, dataEnd.Column))
+        
+        
+        Set copyTo = ActiveSheet.Range(Cells(rng.Cells(rng.CountLarge).Row, buttonCells.Column), _
+                                         Cells(rng.Cells(rng.CountLarge).Row, dataEnd.Column)).Offset(1).Resize(slicesToInsert)
+        
+        ' duplicate & update the row-scoped metadata covering the block we just replicated
+        Call DuplicateMetadataForInsertedRows(direction, metadataRange, copyFrom, numberOfRepeats)
+        
+        Set toClear = ActiveSheet.Range(Cells(rngEnd.Row, dataStart.Column), Cells(rngEnd.Row, dataEnd.Column)).Offset(1).Resize(slicesToInsert)
+
+    Else
+        Dim rngAddress As String
+        rngAddress = rng.Address
+    
+        slicesToInsert = numberOfRepeats * rangeToCopy.Columns.CountLarge
+        Dim oldNamedRangeAddress As String, newNamedRange As Range, oldActiveCellAddress As String
+        oldNamedRangeAddress = Range(tableName).Address
+        oldActiveCellAddress = ActiveCell.Address
+        Set copyFrom = ActiveSheet.Range(Cells(buttonCells.Rows(1).Row, rangeToCopy.Cells(1).Column), _
+                                         Cells(dataEnd.Row, rangeToCopy.Columns(rangeToCopy.Columns.CountLarge).Column))
+        ' + 1 for rows as ranges are extended past the cell & must ensure we select it all for it to grow automatically
+        Set copyFrom = copyFrom.Resize(RowSize:=copyFrom.Rows.CountLarge + 1)
+                
+        'Insert whole column
+        Dim insertedRange As Range, insertedAddress As String
+        Set insertedRange = copyFrom.Offset(columnOffset:=copyFrom.Columns.CountLarge).Resize(ColumnSize:=slicesToInsert)
+        insertedAddress = insertedRange.Address
+        insertedRange.EntireColumn.Insert
+        ' Inserting will have shifted the range to the right, so reset it
+        Set insertedRange = Range(insertedAddress)
+        
+        ' duplicate & update the column-scoped metadata covering the block we just replicated
+        Call DuplicateMetadataForInsertedRows(direction, metadataRange, copyFrom, numberOfRepeats)
+        
+        Dim metadataForTable As Range
+        Set metadataForTable = ThisWorkbook.Sheets("Cell Metadata TNFC Internal").Range(metadataRange)
+        WithMetadataUnlocked False, "LockReferences", metadataForTable
+        
+        ' Delete added column
+        insertedRange.EntireColumn.Delete
+        
+        ' Insert area to be copied to
+        Range(insertedAddress).Insert xlShiftToRight
+        
+        ' Paste correct metadata back in
+        WithMetadataUnlocked False, "UnlockReferences", metadataForTable
+        
+        Set copyTo = Range(insertedAddress)
+        
+        ' Correct the changes to the repeat_ range this has made
+        Set rng = Range(rngAddress)
+        Names.Add repeatsRangeName.Name, rng
+        
+        ' start with the last column in the block we're copying, offset by 1 to get the new column(s), resize x cols to insert
+        Set toClear = _
+            ActiveSheet.Range(Cells(dataStart.Row, rng.Cells(rng.CountLarge).Column), _
+                              Cells(dataEnd.Row, rng.Cells(rng.CountLarge).Column)) _
+                             .Offset(columnOffset:=1) _
+                             .Resize(ColumnSize:=slicesToInsert)
+        
+        Set newNamedRange = Range(oldNamedRangeAddress)
+        Set newNamedRange = newNamedRange.Resize(ColumnSize:=newNamedRange.Columns.CountLarge + slicesToInsert)
+        Names.Add tableName.Name, newNamedRange
+        ' workaround for drop-down rendering glitch if the active cell has one
+        Range("A1").Activate
+        Range(oldActiveCellAddress).Activate
+    End If
+    
+    ' Remove end markers that should be moved down & start markers that shouldn't be copied
+    Dim enclosingRanges As Collection
+    Set enclosingRanges = FindEnclosingRepeatRanges(direction, repeatsRangeName)
+    Dim lastCell As Range, lastCellValue As String
+    Set lastCell = GetLastCell(direction, copyFrom)
+    lastCellValue = lastCell.value
+    lastCell.value = RemoveMarkers(lastCellValue, enclosingRanges, EndMarker)
+    lastCellValue = RemoveMarkers(lastCellValue, enclosingRanges, StartMarker) ' If start = end, don't want to keep start markers for the last cell
+    ' Remove 's' markers for enclosing blocks contained in this block
+    Dim firstCell As Range, firstCellValue As String
+    Set firstCell = copyFrom.Cells(1, 1) ' can only be in the first cell, as they must enclose this range
+    firstCellValue = firstCell.value
+    firstCell.value = RemoveMarkers(firstCell.value, enclosingRanges, StartMarker)
+    firstCellValue = RemoveMarkers(firstCellValue, enclosingRanges, EndMarker) ' If start = end, don't want to keep end markers for the first cell
+    
+    ' Unmerge cells - Excel can't copy part of a merged region
+    Dim unmergedCells As Collection
+    Set unmergedCells = UnmergeBeforeCopy(copyFrom)
+    
+    ' Do the copy
+    copyFrom.Copy Destination:=copyTo
+    Set AddToRangeInternal = toClear
+    
+    ' Move down the end-markers
+    GetLastCell(direction, copyTo).value = lastCellValue
+    
+    ' Replace the 's' markers for the first cell
+    firstCell.value = firstCellValue
+    
+    ' Ensure button range doesn't grow, as deleting doesn't shrink it
+    Names.Add buttonRange, Range(buttonAddress)
+    
+    AddRepeatsForEnclosedRegions direction, repeatsRangeName, copyFrom, numberOfRepeats
+    
+    WithMetadataUnlocked False, "UpdateEnclosingRepeatRanges", enclosingRanges, repeatsRangeName, direction, copyFrom, metadataRange, slicesToInsert
+    
+    ResizeRange repeatsRangeName.Name, direction, slicesToInsert
+    ResizeRange dataArea, direction, slicesToInsert
+    Call ExpandPrintArea
+    
+    MergeRegionsForAdd copyFrom, unmergedCells, repeatsRangeName, direction, numberOfRepeats, simpleRowAdding
+    
+    LockButtons False, addBtn, mulBtn, delBtn
+End Function
+
+Private Sub UpdateEnclosingRepeatRanges(enclosingRanges As Collection, repeatsRangeName As NamedRangeName, direction As String, copyFrom As Range, metadataRange As String, slicesToInsert As Long)
+    ' Update all repeat_ ranges that covered us
+    Dim nextInCollection As Variant, marker As String, otherRepeatRange As String, otherRng As Range
+    For Each nextInCollection In enclosingRanges
+        marker = nextInCollection
+        otherRepeatRange = Convert(repeatsRangeName, "repeat_", LCase(direction), marker).Name
+        ' If this repeat range extends further than copyFrom, then it will have been automatically updated by Excel
+        Set otherRng = Range(otherRepeatRange)
+        If (direction = "Row" And Not otherRng.Rows(otherRng.Rows.CountLarge).Row > copyFrom.Rows(copyFrom.Rows.CountLarge).Row) Or _
+           (direction = "Col" And Not otherRng.Columns(otherRng.Columns.CountLarge).Column > copyFrom.Columns(copyFrom.Columns.CountLarge).Column) Then
+            ResizeRange otherRepeatRange, direction, slicesToInsert
+        End If
+    Next nextInCollection
+    
+    ' If there's some metadata we intersect with, but that isn't contained entirely within copyFrom, also expand that
+    Dim metadataToUpdate As Range
+    Set metadataToUpdate = FindMetadataForBlock(direction, metadataRange, copyFrom, True, entirelyContained:=False)
+    If Not (metadataToUpdate Is Nothing) Then
+        Dim metadataKeyCell As Range, targetRange As Range, currentArea As Range
+        For Each currentArea In metadataToUpdate.Areas
+            For Each metadataKeyCell In currentArea.Columns(1).Cells
+                Set targetRange = GetResizedRange(Range(metadataKeyCell.Formula), direction, slicesToInsert)
+                Dim formulaToUse As String
+                formulaToUse = "='" & ActiveSheet.Name & "'!" & Application.ConvertFormula(targetRange.Address, FromReferenceStyle:=Application.ReferenceStyle, ToReferenceStyle:=Application.ReferenceStyle, ToAbsolute:=xlRelative)
+                Dim metadataCell As Range
+                For Each metadataCell In Intersect(ThisWorkbook.Sheets("Cell Metadata TNFC Internal").Range(metadataRange), metadataKeyCell.EntireRow).Cells.Offset(columnOffset:=1)
+                    If (metadataCell.Formula = metadataKeyCell.Formula) Then
+                        metadataCell.Formula = formulaToUse
+                        ' Excel sometimes sets these to text even when they are formulae (which isn't what we want)
+                        ' Force back to general if it's not already Text ie "@" (which we set explicitly ourselves in some cases)
+                        ' OR it is a formula (ie starts with '=')
+                        If metadataCell.NumberFormat <> "@" Or Left(metadataCell.text, 1) = "=" Then
+                            metadataCell.NumberFormat = "General"
+                        End If
+                    End If
+                Next metadataCell
+                metadataKeyCell.Formula = formulaToUse
+                ' Excel sometimes sets these to text even when they are formulae (which isn't what we want)
+                ' Force back to general if it's not already Text ie "@" (which we set explicitly ourselves in some cases)
+                ' OR it is a formula (ie starts with '=')
+                If metadataKeyCell.NumberFormat <> "@" Or Left(metadataKeyCell.text, 1) = "=" Then
+                    metadataKeyCell.NumberFormat = "General"
+                End If
+            Next metadataKeyCell
+        Next currentArea
+    End If
+End Sub
+
+Private Sub AddRepeatsForEnclosedRegions(direction As String, repeatsRangeName As NamedRangeName, copyFrom As Range, numberOfRepeats As Long)
+    ' WARNING: some cells may be merged, so don't use offset!
+    
+    Dim unusedOpenNodeNumber As Long
+    unusedOpenNodeNumber = 0
+    
+    Dim buttonRowColRng As Range
+    Set buttonRowColRng = GetRepeatMarkersSlice(direction, repeatsRangeName)
+    
+    ' Add new ranges for the new children & change their markers
+    Dim enclosedNamedRange As NamedRangeNameRepeats, enclosedRanges As Collection, collectionMember As Variant, repeatRng As Range
+    Dim copyRepeatRng As Range, copyRepeatName As NamedRangeName, copyEntireRowCol As Range
+    Set enclosedRanges = FindEnclosedRepeatRanges(direction, repeatsRangeName, copyFrom)
+    For Each collectionMember In enclosedRanges
+        Set enclosedNamedRange = MakeCopyWithNewOpenNodeNumber(repeatsRangeName, Trim(str(collectionMember)))
+        Set repeatRng = Range(enclosedNamedRange.NamedRangeName_Name)
+        Dim i As Long
+        For i = 1 To numberOfRepeats
+            ' Find next unused number
+            unusedOpenNodeNumber = FindNextUnusedOpenNodeNumber(repeatsRangeName, unusedOpenNodeNumber)
+            Set copyRepeatName = MakeCopyWithNewOpenNodeNumber(enclosedNamedRange, unusedOpenNodeNumber)
+            
+            ' Add new named ranges for the new open children
+            If (direction = "Row") Then
+                Set copyRepeatRng = repeatRng.Cells(RowIndex:=1 + i * copyFrom.Rows.CountLarge).Resize(RowSize:=repeatRng.Rows.CountLarge)
+                Set copyEntireRowCol = copyRepeatRng.EntireRow
+            Else
+                Set copyRepeatRng = repeatRng.Cells(ColumnIndex:=1 + i * copyFrom.Columns.CountLarge).Resize(ColumnSize:=repeatRng.Columns.CountLarge)
+                Set copyEntireRowCol = copyRepeatRng.EntireColumn
+            End If
+            ActiveSheet.Names.Add copyRepeatName.Name, copyRepeatRng
+            
+            ' Renumber the start/end markers within the range
+            Dim cell As Range
+            For Each cell In Intersect(buttonRowColRng, copyEntireRowCol)
+                cell.value = ReplaceMarker(cell.value, StartMarker & enclosedNamedRange.RepeatNumber, StartMarker & unusedOpenNodeNumber)
+                cell.value = ReplaceMarker(cell.value, EndMarker & enclosedNamedRange.RepeatNumber, EndMarker & unusedOpenNodeNumber)
+            Next cell
+        Next i
+    Next collectionMember
+End Sub
+
+Private Function FindNextUnusedOpenNodeNumber(repeatsRangeName As NamedRangeNameRepeats, ByVal indexToStartAt As Long) As Long
+    Dim currentRange As Range, index As Long
+    index = indexToStartAt
+    FindNextUnusedOpenNodeNumber = -1
+    While (FindNextUnusedOpenNodeNumber = -1)
+        On Error Resume Next
+        Set currentRange = Range(MakeCopyWithNewOpenNodeNumber(repeatsRangeName, index).NamedRangeName_Name)
+        On Error GoTo 0
+        If (currentRange Is Nothing) Then
+            FindNextUnusedOpenNodeNumber = index
+        Else
+            Set currentRange = Nothing
+        End If
+        index = index + 1
+    Wend
+End Function
+
+Private Sub MergeRegionsForAdd(copyFrom As Range, unmergedCells As Collection, repeatsRangeName As NamedRangeName, direction As String, numberOfRepeats As Long, simpleRowAdding As Boolean)
+    ' Merge the newly inserted open cell - do this in reverse to avoid the merged regions interfering with the offset
+    Dim sizeOfBlock As Long
+    If (direction = "Row") Then
+        sizeOfBlock = copyFrom.Rows.CountLarge
+    Else
+        sizeOfBlock = copyFrom.Columns.CountLarge
+    End If
+    Dim unmergedRange As Range
+    For Each unmergedRange In unmergedCells
+        Dim timesToRepeatMerging As Long
+        ' If this merged region is entirely contained in the section we have copied, repeat the merging for each new copy
+        If (Intersect(copyFrom, unmergedRange).Address = unmergedRange.Address) Then
+            timesToRepeatMerging = numberOfRepeats
+        ' Otherwise there have been no further copies made, so only remerge the original copy
+        Else
+            timesToRepeatMerging = 0
+        End If
+        Application.DisplayAlerts = False ' suppress warning about loss of data (irrelevant as we know all cells are identical)
+        Dim i As Long
+        For i = timesToRepeatMerging To 0 Step -1
+            If (direction = "Row") Then
+                unmergedRange.Offset(RowOffset:=i * sizeOfBlock).Resize(RowSize:=unmergedRange.Rows.CountLarge).Merge
+            Else
+                unmergedRange.Offset(columnOffset:=i * sizeOfBlock).Resize(ColumnSize:=unmergedRange.Columns.CountLarge).Merge
+            End If
+        Next i
+        Application.DisplayAlerts = True
+    Next unmergedRange
+    
+    ' Update parent merged regions to include the new rows
+    If (Not simpleRowAdding) Then
+        Call UpdateMergedHeadings(repeatsRangeName, direction)
+    End If
+End Sub
+
+Private Function UnmergeBeforeCopy(rngToUnmerge As Range) As Collection
+    Set UnmergeBeforeCopy = New Collection
+    Dim area As Range, cell As Range
+    For Each area In rngToUnmerge.Areas
+        For Each cell In area.Cells
+            If (cell.MergeArea.Address <> cell.Address) Then
+                ' we only need to un-merge if the merge area runs outside the range to be copied
+                If Intersect(cell.MergeArea, rngToUnmerge).Address <> cell.MergeArea.Address Then
+                    UnmergeBeforeCopy.Add cell.MergeArea
+                    cell.UnMerge
+                End If
+            End If
+        Next cell
+    Next area
+End Function
+
+Private Sub LockReferences(rng As Range)
+    If rng Is Nothing Then
+        Exit Sub
+    End If
+    Dim cell As Range, cellFormula As String
+    For Each cell In rng.Cells
+        If (cell.Row <> 1) Then ' avoid locking the column headings on the metadata sheet
+            cellFormula = cell.Formula
+            If (cellFormula <> "") Then
+                cell.value = "<" & cellFormula & ">"
+            End If
+        End If
+    Next cell
+End Sub
+
+Private Sub UnlockReferences(rng As Range)
+    If rng Is Nothing Then
+        Exit Sub
+    End If
+    Dim cell As Range
+    For Each cell In rng.Cells
+        If (Left(cell.value, 1) = "<" And Right(cell.value, 1) = ">") Then
+            cell.Formula = Mid(cell.value, 2, Len(cell.value) - 2)
+            ' Excel sometimes sets these to text even when they are formulae (which isn't what we want)
+            ' Force back to general if it's not already Text ie "@" (which we set explicitly ourselves in some cases)
+            ' OR it is a formula (ie starts with '=')
+            If cell.NumberFormat <> "@" Or Left(cell.text, 1) = "=" Then
+                cell.NumberFormat = "General"
+            End If
+        End If
+    Next cell
+End Sub
+
+Private Sub UpdateMergedHeadings(repeatRangeName As NamedRangeNameRepeats, direction As String)
+    ' for everything closed to the left of / above the drop-down, merge identical closed cells down/across
+    Dim repeatRange As Range, buttonRange As Range, headingsSlice As Range
+    Set repeatRange = Range(repeatRangeName.NamedRangeName_Name)
+    Set buttonRange = Range(Convert(repeatRangeName, "button_", repeatRangeName.RepeatDirection).Name)
+      
+    If direction = "Row" Then
+      ' walk right across row headings
+      Set headingsSlice = repeatRange.Columns(repeatRange.Columns.CountLarge)
+    Else
+      ' walk up across column headings
+      Set headingsSlice = repeatRange.Rows(repeatRange.Rows.CountLarge)
+    End If
+      
+    Do
+      If direction = "Row" Then
+        Set headingsSlice = headingsSlice.Offset(columnOffset:=-1).Resize(RowSize:=repeatRange.Rows.CountLarge)
+        If (headingsSlice.Column = buttonRange.Column) Then
+            Exit Sub
+        End If
+      Else
+        Set headingsSlice = headingsSlice.Offset(RowOffset:=-1).Resize(ColumnSize:=repeatRange.Columns.CountLarge)
+        If (headingsSlice.Row = buttonRange.Row) Then
+            Exit Sub
+        End If
+      End If
+
+      Application.DisplayAlerts = False ' suppress warning about loss of data (irrelevant as we know all cells are identical)
+      headingsSlice.Merge
+      Application.DisplayAlerts = True
+
+    Loop
+End Sub
+
+Public Function ContainsDropdown(cell As Range) As Boolean
+    Dim dropDowns As Integer
+    dropDowns = 0
+    On Error Resume Next
+    dropDowns = cell.SpecialCells(xlCellTypeSameValidation).CountLarge
+    On Error GoTo 0
+    If dropDowns = 0 Then
+        ContainsDropdown = False
+    Else
+        ContainsDropdown = True
+    End If
+End Function
+
+' Find the range covering only whole blocks which is the smallest containing the selected area
+Private Function FindBlock(intersectWith As Range, repeatRangeName As NamedRangeNameRepeats, direction As String) As Range
+    Dim openNodeNumber As String
+    openNodeNumber = repeatRangeName.RepeatNumber
+    ' The selection must be contained within the repeat range
+    Dim intersectionWithRepeatRange As Range, repeatRange As Range
+    Set repeatRange = Range(repeatRangeName.NamedRangeName_Name)
+    If (direction = "Row") Then
+        Set intersectionWithRepeatRange = Intersect(repeatRange.EntireRow.Resize(repeatRange.Rows.CountLarge), intersectWith)
+    Else
+        Set intersectionWithRepeatRange = Intersect(repeatRange.EntireColumn.Resize(ColumnSize:=repeatRange.Columns.CountLarge), intersectWith)
+    End If
+    If (intersectionWithRepeatRange Is Nothing) Then
+        Exit Function
+    ElseIf (intersectionWithRepeatRange.Address <> intersectWith.Address) Then
+        Exit Function
+    End If
+    Dim area As Range
+    For Each area In intersectWith.Areas
+        Dim startCell As Range, endCell As Range
+        Dim buttonRange As Range
+        Set buttonRange = Range(Convert(repeatRangeName, "button_", LCase(direction)).Name)
+        If (direction = "Row") Then
+            Set startCell = Intersect(area.Rows(1), buttonRange.Columns(1).EntireColumn)
+            Set endCell = Intersect(area.Rows(area.Rows.CountLarge), buttonRange.Columns(1).EntireColumn)
+        Else
+            Set startCell = Intersect(area.Columns(1), buttonRange.Rows(1).EntireRow)
+            Set endCell = Intersect(area.Columns(area.Columns.CountLarge), buttonRange.Rows(1).EntireRow)
+        End If
+        While Not ContainsMarker(startCell.value, openNodeNumber, StartMarker)
+            If (direction = "Row") Then
+                Set startCell = startCell.Offset(RowOffset:=-1)
+            Else
+                Set startCell = startCell.Offset(columnOffset:=-1)
+            End If
+        Wend
+        While Not ContainsMarker(endCell.value, openNodeNumber, EndMarker)
+            If (direction = "Row") Then
+                Set endCell = endCell.Offset(RowOffset:=1)
+            Else
+                Set endCell = endCell.Offset(columnOffset:=1)
+            End If
+        Wend
+        Dim blockForThisArea As Range
+        If (direction = "Row") Then
+            Set blockForThisArea = startCell.EntireRow.Resize(RowSize:=endCell.Row - startCell.Row + 1)
+        Else
+            Set blockForThisArea = startCell.EntireColumn.Resize(ColumnSize:=endCell.Column - startCell.Column + 1)
+        End If
+        If (FindBlock Is Nothing) Then
+            Set FindBlock = blockForThisArea
+        Else
+            Set FindBlock = Union(FindBlock, blockForThisArea)
+        End If
+    Next area
+End Function
+
+Private Sub RemoveFromRange(direction As String, repeatRangeName As NamedRangeName, simpleRowAdding As Boolean, addBtn As String, mulBtn As String, delBtn As String)
+    LockButtons True, addBtn, mulBtn, delBtn
+    
+    Dim areaToDelete As Range
+    If direction = "Row" Then
+        Set areaToDelete = FindBlock(Selection.EntireRow, repeatRangeName, direction)
+    Else
+        Set areaToDelete = FindBlock(Selection.EntireColumn, repeatRangeName, direction)
+    End If
+    
+    Dim buttonAddress As String, buttonName As String
+    buttonName = Convert(repeatRangeName, "button_", LCase(direction)).Name
+    buttonAddress = Range(buttonName).Address
+    
+    'If the selection is outside the range, flash up a dialog informing the user how Delete works.
+    If areaToDelete Is Nothing Then
+        If direction = "Row" Then
+            MsgBox GetMacroText("tnfc.delete.message.row"), Title:=GetMacroText("tnfc.messagebox.title")
+        Else
+            MsgBox GetMacroText("tnfc.delete.message.col"), Title:=GetMacroText("tnfc.messagebox.title")
+        End If
+    Else
+        Call RemoveFromRangeInternal(direction, repeatRangeName, areaToDelete, buttonName, simpleRowAdding)
+    End If
+
+    ' These rows/cols may have been deleted, so put the range back
+    Names.Add buttonName, Range(buttonAddress)
+    
+    If direction = "Col" Then
+      ' fix any wonky buttons
+      Call FixXAxisButtonPositions(ActiveSheet)
+    End If
+
+    Selection.Cells(1, 1).Select
+    LockButtons False, addBtn, mulBtn, delBtn
+End Sub
+
+Private Sub RemoveFromRangeInternal(direction As String, repeatRangeName As NamedRangeName, areaToDelete As Range, buttonName As String, simpleRowAdding As Boolean)
+    'Range covering metadata area for this table
+    Dim tableMetadataRange As String
+    tableMetadataRange = Convert(repeatRangeName, "metadata_table_").Name
+
+    Dim tableName As Name
+    Set tableName = getTableName(repeatRangeName)
+
+    Dim sizeOfFirstBlock As Long, sizeOfLastBlock As Long, area As Range, toDelete As Long, rng As Range
+    Set rng = ActiveSheet.Range(repeatRangeName.Name)
+
+    If direction = "Row" Then
+        sizeOfFirstBlock = FindBlock(rng.Cells(1, 1).EntireRow, repeatRangeName, direction).CountLarge
+        If rng.Rows.CountLarge > sizeOfFirstBlock Then
+            toDelete = 0
+            For Each area In areaToDelete.Areas
+                toDelete = toDelete + area.Rows.CountLarge
+            Next area
+            If toDelete = rng.Rows.CountLarge Then
+                ' This case can't consist of noncontiguous sections, as it is the whole area
+                ' leave the last block intact
+                sizeOfLastBlock = FindBlock(rng.Cells(RowIndex:=rng.Rows.CountLarge, ColumnIndex:=1).EntireRow, repeatRangeName, direction).CountLarge
+                toDelete = toDelete - sizeOfLastBlock
+                Set areaToDelete = areaToDelete.Resize(toDelete)
+            End If
+            If Not simpleRowAdding Then
+                FindAndRemoveEntirelyContainedRepeatRanges areaToDelete, repeatRangeName, direction, toDelete
+                ResizeContainingBlocks areaToDelete, repeatRangeName, direction, toDelete
+                DeleteMetadataForRange direction, tableMetadataRange, areaToDelete.EntireRow
+            End If
+            DeleteRetainingMergeValue xlShiftUp, areaToDelete.EntireRow, tableName, rng.Columns(1).Column, direction
+        Else
+            ' Can't delete the last row(s) in the block
+            MsgBox GetMacroText("tnfc.delete.error.row"), Title:=GetMacroText("tnfc.messagebox.title")
+        End If
+    ElseIf direction = "Col" Then
+        sizeOfFirstBlock = FindBlock(rng.Cells(1, 1).EntireColumn, repeatRangeName, direction).CountLarge
+        Dim tableRange As Range, tableRangeAddress As String, rngRange As Range, rngAddress As String
+        Set tableRange = Range(tableName)
+        tableRangeAddress = tableRange.Address
+        toDelete = 0
+        For Each area In areaToDelete.Areas
+            toDelete = toDelete + area.Columns.CountLarge
+        Next area
+        rngAddress = rng.Address
+
+        If rng.Columns.CountLarge > sizeOfFirstBlock Then
+            If toDelete = rng.Columns.CountLarge Then
+                ' This case can't consist of noncontiguous sections, as it is the whole area
+                ' leave the last block intact
+                sizeOfLastBlock = FindBlock(rng.Cells(RowIndex:=1, ColumnIndex:=rng.Columns.CountLarge).EntireColumn, repeatRangeName, direction).CountLarge
+                toDelete = toDelete - sizeOfLastBlock
+                Set areaToDelete = areaToDelete.Resize(RowSize:=areaToDelete.Rows.CountLarge, ColumnSize:=toDelete)
+            End If
+            Set areaToDelete = Intersect(areaToDelete.EntireColumn, tableRange)
+            
+            ' Need to delete no higher than rng, so don't delete the z-axis
+            Dim offsetRows As Long
+            offsetRows = Range(buttonName).Row - areaToDelete.Row
+            Set areaToDelete = ResizeRows(areaToDelete, offsetRows)
+     
+            ' Find the metadata for these areas
+            Dim metadataForOtherTables As Range, tableScopedMetadata As Range
+            Set metadataForOtherTables = FunctionWithMetadataUnlocked(False, "FindMetadataForAreasAboveAndBelowRange", tableMetadataRange)
+            
+            ' Ensure the z-axis location (if any) is unaffected by deletions
+            Set tableScopedMetadata = FindMetadataForBlock("table", tableMetadataRange, tableRange, okToFindNothing:=True)
+
+            ' Lock metadata for these areas
+            WithMetadataUnlocked False, "LockReferences", metadataForOtherTables
+            WithMetadataUnlocked False, "LockReferences", tableScopedMetadata
+     
+            FindAndRemoveEntirelyContainedRepeatRanges areaToDelete, repeatRangeName, direction, toDelete
+            ResizeContainingBlocks areaToDelete, repeatRangeName, direction, toDelete
+            DeleteMetadataForRange direction, tableMetadataRange, areaToDelete
+            
+            ' avoid changing the table named range of other tables on the sheet
+            Dim nameNames As Collection, nameAddresses As Collection
+            Set nameNames = New Collection
+            Set nameAddresses = New Collection
+            Dim nm As Name
+            For Each nm In Names
+                nameNames.Add nm.Name
+                nameAddresses.Add nm.RefersTo
+            Next nm
+            
+            For Each area In areaToDelete.Areas
+                ' Shift section of column above & below to the right
+                Dim firstRowIndex As Integer, lastRowIndex As Integer, lastOccupiedRow As Integer
+                firstRowIndex = area.Cells(RowIndex:=1).Row
+                lastRowIndex = firstRowIndex + area.Rows.CountLarge - 1
+                area.EntireColumn.Resize(RowSize:=firstRowIndex - 1).Insert xlShiftToRight
+                lastOccupiedRow = ActiveSheet.UsedRange.SpecialCells(xlCellTypeLastCell).Row
+                If (lastOccupiedRow > lastRowIndex) Then
+                    area.EntireColumn.Resize(RowSize:=lastOccupiedRow - lastRowIndex).Offset(lastRowIndex).Insert xlShiftToRight
+                End If
+
+                ' Delete entire column
+                DeleteRetainingMergeValue xlShiftToLeft, area.EntireColumn, tableName, rng.Rows(1).Row, direction
+            Next area
+            
+            ' Unlock locked metadata
+            WithMetadataUnlocked False, "UnlockReferences", metadataForOtherTables
+            WithMetadataUnlocked False, "UnlockReferences", tableScopedMetadata
+            
+            ' Correct named ranges affected by the deletion
+            Dim i As Integer
+            For i = 1 To nameNames.Count
+                Names.Add nameNames.Item(i), nameAddresses.Item(i)
+            Next i
+            
+            ' Update named ranges:
+            ' table_
+            Set tableRange = Range(tableRangeAddress)
+            Set tableRange = tableRange.Resize(ColumnSize:=tableRange.Columns.CountLarge - toDelete)
+            Names.Add tableName.Name, tableRange
+            ' repeat_
+            Set rngRange = Range(rngAddress)
+            Set rngRange = rngRange.Resize(ColumnSize:=rngRange.Columns.CountLarge - toDelete)
+            Names.Add repeatRangeName.Name, rngRange
+        Else
+             ' can't delete the last column(s) in the block
+            MsgBox GetMacroText("tnfc.delete.error.col"), Title:=GetMacroText("tnfc.messagebox.title")
+        End If
+    End If
+End Sub
+
+Private Sub ResizeContainingBlocks(areaToDelete As Range, repeatRangeName As NamedRangeName, direction As String, slicesToDelete As Long)
+    Dim enclosingRanges As Collection
+    Set enclosingRanges = FindEnclosingRepeatRanges(direction, repeatRangeName)
+
+    Dim seMarkerRange As Range
+    Set seMarkerRange = Intersect(areaToDelete, GetRepeatMarkersSlice(direction, repeatRangeName))
+
+    Dim cell As Range, rangeNumber As Variant, startsToMove As Collection, endsToMove As Collection
+    Set startsToMove = New Collection
+    Set endsToMove = New Collection
+    For Each rangeNumber In enclosingRanges
+        For Each cell In seMarkerRange
+            If ContainsMarker(cell.value, CLng(rangeNumber), StartMarker) Then
+                startsToMove.Add (rangeNumber)
+            End If
+            If ContainsMarker(cell.value, CLng(rangeNumber), EndMarker) Then
+                endsToMove.Add (rangeNumber)
+            End If
+        Next cell
+    Next rangeNumber
+    
+    Dim moveStartsTo As Range, moveEndsTo As Range
+    If direction = "Row" Then
+        Set moveStartsTo = seMarkerRange.Offset(seMarkerRange.Rows.CountLarge).Resize(1)
+        Set moveEndsTo = seMarkerRange.Offset(-1).Resize(1)
+    Else
+        Set moveStartsTo = seMarkerRange.Offset(columnOffset:=seMarkerRange.Columns.CountLarge).Resize(ColumnSize:=1)
+        Set moveEndsTo = seMarkerRange.Offset(columnOffset:=-1).Resize(ColumnSize:=1)
+    End If
+    
+    MoveMarkerAndFixBorders startsToMove, direction, moveStartsTo, StartMarker, repeatRangeName
+    MoveMarkerAndFixBorders endsToMove, direction, moveEndsTo, EndMarker, repeatRangeName
+    
+    If direction = "Col" Then
+        ' columns only: all enclosing ranges need their named range making shorter by the number of columns being deleted
+        For Each rangeNumber In enclosingRanges
+            Dim rangeToAdjust As Range, rangeName As String
+            rangeName = MakeCopyWithNewOpenNodeNumber(repeatRangeName, CLng(rangeNumber)).NamedRangeName_Name
+            Set rangeToAdjust = ThisWorkbook.ActiveSheet.Names(rangeName).RefersToRange
+            Set rangeToAdjust = rangeToAdjust.Resize(ColumnSize:=rangeToAdjust.Columns.CountLarge - slicesToDelete)
+            ThisWorkbook.ActiveSheet.Names(rangeName).Delete
+            ThisWorkbook.ActiveSheet.Names.Add rangeName, rangeToAdjust
+        Next rangeNumber
+    End If
+End Sub
+
+Private Sub MoveMarkerAndFixBorders(rangeNumbers As Collection, direction As String, moveToCell As Range, marker As String, repeatRangeName As NamedRangeName)
+    Dim rangeNumberL As Variant, rangeNumber As Long, rangeName As String
+    For Each rangeNumberL In rangeNumbers
+        rangeNumber = CLng(rangeNumberL)
+        moveToCell.value = moveToCell.value & marker & Trim(str(rangeNumber))
+        
+         ' make sure the header cell for this end marker has the correct border
+        rangeName = MakeCopyWithNewOpenNodeNumber(repeatRangeName, CLng(rangeNumber)).NamedRangeName_Name
+        Dim headerCell As Range, fixBordersEdge As Variant, sourceBordersEdge As Variant
+        If direction = "Row" Then
+            Set headerCell = Intersect(ThisWorkbook.ActiveSheet.Range(rangeName), moveToCell.EntireRow)
+            sourceBordersEdge = xlEdgeRight ' saves us hard-coding the correct borders here
+            If marker = StartMarker Then
+                fixBordersEdge = xlEdgeTop
+            Else
+                fixBordersEdge = xlEdgeBottom
+            End If
+        Else
+            Set headerCell = Intersect(ThisWorkbook.ActiveSheet.Range(rangeName), moveToCell.EntireColumn)
+            sourceBordersEdge = xlEdgeTop
+            If marker = StartMarker Then
+                fixBordersEdge = xlEdgeLeft
+            Else
+                fixBordersEdge = xlEdgeRight
+            End If
+        End If
+                    
+        With headerCell.Borders(fixBordersEdge)
+            .LineStyle = headerCell.Borders(sourceBordersEdge).LineStyle
+            .Color = headerCell.Borders(sourceBordersEdge).Color
+        End With
+    Next rangeNumberL
+End Sub
+
+Private Sub FindAndRemoveEntirelyContainedRepeatRanges(areaToDelete As Range, repeatRangeName As NamedRangeName, direction As String, slicesToDelete As Long)
+    Dim rangeNum As Variant, currentRangeName As NamedRangeNameRepeats, enclosed As Collection
+    
+    Set enclosed = FindEnclosedRepeatRanges(direction, repeatRangeName, areaToDelete)
+    For Each rangeNum In enclosed
+        Set currentRangeName = MakeCopyWithNewOpenNodeNumber(repeatRangeName, CLng(rangeNum))
+        ThisWorkbook.ActiveSheet.Names(currentRangeName.NamedRangeName_Name).Delete
+    Next rangeNum
+
+    ' cols only: all repeat ranges to the right of the target area need to move left by the number of cols to be deleted
+    If direction <> "Col" Then
+        Exit Sub
+    End If
+    Dim currentRange As Range, currentRangeName2 As NamedRangeName
+    For Each currentRangeName2 In GetAllNamesMatchingThisNamesTable(ThisWorkbook.ActiveSheet, repeatRangeName)
+        If currentRangeName2.prefix = "repeat_" Then
+            Set currentRange = ThisWorkbook.ActiveSheet.Names(currentRangeName2.Name).RefersToRange
+            If areaToDelete.Columns(areaToDelete.Columns.CountLarge).Column < currentRange.Columns(1).Column Then
+                Dim transformedRange As Range
+                Set transformedRange = currentRange.Offset(columnOffset:=-slicesToDelete)
+                ThisWorkbook.ActiveSheet.Names(currentRangeName2.Name).Delete
+                ThisWorkbook.ActiveSheet.Names.Add currentRangeName2.Name, transformedRange
+            End If
+        End If
+    Next currentRangeName2
+End Sub
+
+Private Function ResizeRows(areaToDelete As Range, offsetRows As Long) As Range
+    Dim area As Range
+    For Each area In areaToDelete.Areas
+        Set area = area.Resize(RowSize:=area.Rows.CountLarge - offsetRows).Offset(RowOffset:=offsetRows)
+        If (ResizeRows Is Nothing) Then
+            Set ResizeRows = area
+        Else
+            Set ResizeRows = Union(area, ResizeRows)
+        End If
+    Next area
+End Function
+
+Private Function FindMetadataForAreasAboveAndBelowRange(tableMetadataRange As String) As Range
+    Dim metadataForThisTable As Range, metadataSheet As Worksheet
+    Set metadataSheet = ThisWorkbook.Sheets("Cell Metadata TNFC Internal")
+    Set metadataForThisTable = metadataSheet.Range(tableMetadataRange)
+    Dim firstMetadataRowIndex As Integer, lastMetadataRowIndex As Integer, lastMetadataOccupiedRow As Integer
+    firstMetadataRowIndex = metadataForThisTable.Rows(RowIndex:=1).Row
+    lastMetadataRowIndex = firstMetadataRowIndex + metadataForThisTable.Rows.CountLarge - 1
+    Set FindMetadataForAreasAboveAndBelowRange = metadataForThisTable.EntireColumn.Resize(RowSize:=firstMetadataRowIndex - 1) ' -1 as want to exclude first row of this table's metadata
+    lastMetadataOccupiedRow = metadataSheet.UsedRange.SpecialCells(xlCellTypeLastCell).Row
+    If (lastMetadataOccupiedRow > lastMetadataRowIndex) Then
+        Set FindMetadataForAreasAboveAndBelowRange = Union(FindMetadataForAreasAboveAndBelowRange, metadataForThisTable.EntireColumn.Resize(RowSize:=lastMetadataOccupiedRow - lastMetadataRowIndex).Offset(lastMetadataRowIndex))
+    End If
+End Function
+
+Private Sub DeleteRetainingMergeValue(directionToShift As Variant, rng As Range, tableName As Name, currentRowOrCol As Long, direction As String)
+    Dim cell As Range, cellCells As Range, keys As Collection, values As Collection, i As Integer
+    Set keys = New Collection
+    Set values = New Collection
+    For Each cell In Intersect(Range(tableName), rng).Cells
+        If ((direction = "Row" And currentRowOrCol > cell.Column) Or (direction = "Col" And currentRowOrCol > cell.Row)) Then
+            Set cellCells = cell.MergeArea.Cells
+            If cellCells.CountLarge > 1 And cellCells(1).Address = cell.Address Then
+                keys.Add cell.Address
+                values.Add cell.value
+            End If
+        End If
+    Next cell
+    rng.Delete directionToShift
+    For i = 1 To keys.Count
+        Range(keys(i)).value = values(i)
+    Next i
+End Sub
+
+Private Sub LockButtons(Before As Boolean, addBtn As String, mulBtn As String, delBtn As String)
+    Dim behaviour As Variant
+    
+    If Before Then
+        behaviour = xlFreeFloating
+    Else
+        behaviour = xlMove
+    End If
+    
+    Dim btn As Button
+    For Each btn In ActiveSheet.Buttons
+        If btn.Name = addBtn Or btn.Name = mulBtn Or btn.Name = delBtn Then
+            btn.placement = behaviour
+        End If
+    Next btn
+End Sub
+
+Private Sub ResizeRange(rngName As String, direction As String, adjustment As Long)
+    GetResizedRange(ActiveSheet.Range(rngName), direction, adjustment).Name = rngName
+End Sub
+
+Private Function GetResizedRange(toResize As Range, direction As String, adjustment As Long) As Range
+    With toResize
+        If direction = "Row" Then
+            Set GetResizedRange = .Resize(.Rows.CountLarge + adjustment, .Columns.CountLarge)
+        Else
+            Set GetResizedRange = .Resize(.Rows.CountLarge, .Columns.CountLarge + adjustment)
+        End If
+    End With
+End Function
+
+Attribute VB_Name = "AddTableCopy"
+Option Explicit
+
+Private namedRangeNumberLocation As Range
+Private namedRangeNumber As Long
+
+Private Sub IncrementNamedRangeNumber()
+    Dim macroTextState As Long
+    macroTextState = Unhide("Macro Text TNFC Internal")
+    namedRangeNumberLocation.value = namedRangeNumber + 1
+    Call RestoreState("Macro Text TNFC Internal", macroTextState)
+End Sub
+
+Sub AddTable(rangeName As String)
+    If Not Before(True) Then
+        Exit Sub
+    End If
+    
+    Dim tableRangeName As NamedRangeName
+    Set tableRangeName = Parse(rangeName)
+    Call AddTableInternal(tableRangeName)
+
+    Call After
+End Sub
+
+Private Sub AddTableInternal(tableRangeName As NamedRangeName)
+    Dim origValueRange As Range, size As Long
+    Set origValueRange = ActiveSheet.Range(tableRangeName.Name)
+    size = origValueRange.Rows.CountLarge
+
+    If Not canAddSlices(size, "Row", tableRangeName) Then
+        ' Message box already shown
+        Exit Sub
+    End If
+
+    'Read in current suffix index
+    If (namedRangeNumberLocation Is Nothing) Then
+        Set namedRangeNumberLocation = ThisWorkbook.Sheets("Macro Text TNFC Internal").Range("I1")
+    End If
+    If (namedRangeNumberLocation.value = Empty) Then
+        'Set to default if missing
+        namedRangeNumber = 1
+    Else
+        namedRangeNumber = namedRangeNumberLocation.value
+    End If
+    Call IncrementNamedRangeNumber
+    
+    Dim state As Long
+    state = Unhide("Cell Metadata TNFC Internal")
+    Dim newValueRange As Range, newTableRangeName As NamedRangeName, newName As Name
+    Set newTableRangeName = MakeCopy(tableRangeName, LTrim$(str(namedRangeNumber)))
+    
+    'Copy range to below
+    Set newValueRange = CopyRange(origValueRange)
+    DeleteButtonsInRange newValueRange
+    Set newName = ActiveSheet.Names.Add(newTableRangeName.Name, newValueRange)
+    'Copy associated metadata
+    Call CopyMetadataForTable(tableRangeName, newTableRangeName, size)
+    'Add associated named ranges
+    AddNamedRanges tableRangeName, newTableRangeName.CopyNumber, size
+    'Create new table buttons
+    CreateButtonForName ActiveSheet, newName
+    Call RestoreState("Cell Metadata TNFC Internal", state)
+    ExpandPrintArea
+End Sub
+
+Private Sub CopyMetadataForTable(oldTableRangeName As NamedRangeName, newTableRangeName As NamedRangeName, size As Long)
+    Dim currentSheet As String
+    currentSheet = ActiveSheet.Name
+    ThisWorkbook.Sheets("Cell Metadata TNFC Internal").Select
+    
+    Dim oldMetadataRangeName As NamedRangeName, newMetadataRangeName As NamedRangeName, origRange As Range, finalRange As Range
+    Set oldMetadataRangeName = Convert(oldTableRangeName, "metadata_table_")
+    Set newMetadataRangeName = Convert(newTableRangeName, "metadata_table_")
+    
+    'Copy metadata range by same amount
+    Set origRange = ActiveSheet.Range(oldMetadataRangeName.Name)
+    Set finalRange = DuplicateWithShiftedFormulae(size, origRange, "Down")
+
+    ActiveSheet.Names.Add newMetadataRangeName.Name, finalRange
+    MakeTableIDUnique newMetadataRangeName.Name
+    
+    ThisWorkbook.Sheets(currentSheet).Select
+End Sub
+
+Private Sub MakeTableIDUnique(metadataRangeToChange As String)
+    Dim tableIDColumn As Range, cell As Range
+    Set tableIDColumn = GetMetadataColumnByName("table", metadataRangeToChange)
+    For Each cell In tableIDColumn
+        cell.value = AddSuffix(cell.value)
+    Next cell
+End Sub
+
+Function DuplicateWithShiftedFormulae(initialShift As Long, origRange As Range, direction As String, Optional numberOfDuplications As Long = 1) As Range
+    Dim area As Range, i As Long, result As Range
+    'origRange might be non-continuous, so loop overs its areas
+    For i = origRange.Areas.Count To 1 Step -1 ' process bottom to top to avoid indicies changing owing to insertions above
+        Set area = origRange.Areas(i)
+        Set result = DuplicateWithShiftedFormulaeInternal(initialShift, area, direction, numberOfDuplications)
+        If (DuplicateWithShiftedFormulae Is Nothing) Then
+          Set DuplicateWithShiftedFormulae = result
+        Else
+          Set DuplicateWithShiftedFormulae = Union(DuplicateWithShiftedFormulae, result)
+        End If
+    Next i
+End Function
+
+Private Function DuplicateWithShiftedFormulaeInternal(initialShift As Long, origRange As Range, direction As String, Optional numberOfDuplications As Long = 1) As Range
+    If (direction = "Row" Or direction = "Down") And False Then ' disabled for now as return value doesn't behave right for Z copying
+        ' fast algorithm where Excel does all the shifting of ranges for us (rows only)
+        Dim currentRow As Range, unitToCopy As Range, insertionArea As Range, i As Long
+        For i = origRange.Rows.CountLarge To 1 Step -1 ' bottom-up, otherwise ops above will shift indicies below
+            Set currentRow = origRange.Rows(i)
+            Set unitToCopy = currentRow.Resize(initialShift)
+            If initialShift > 1 Then
+                unitToCopy.Resize(initialShift - 1).Offset(1).EntireRow.Insert
+            End If
+            Set insertionArea = unitToCopy.Offset(unitToCopy.Rows.CountLarge).Resize(unitToCopy.Rows.CountLarge * numberOfDuplications)
+            insertionArea.EntireRow.Insert
+            Set insertionArea = insertionArea.Offset(-insertionArea.Rows.CountLarge)  ' move it back to cover the blank space we just inserted
+            unitToCopy.Copy Destination:=insertionArea
+            ' now zap the considerable number of empties we just introduced
+            DeleteEmptyRows insertionArea
+        Next i
+    Else
+      ' original slow algorithm
+        ' assumes origRange is continuous
+        For i = 1 To numberOfDuplications
+            Dim shiftBy As Long
+            shiftBy = i * initialShift
+            Dim rangeToUse As Range
+            'Copy below, so inserting rows won't split data
+            Set rangeToUse = CopyRange(origRange)
+            'Change formula in place
+            If (direction = "Row" Or direction = "Down") Then
+              Dim shiftByValue As Long
+              shiftByValue = shiftBy - origRange.Rows.CountLarge
+              Set rangeToUse = ShiftRangeDown(rangeToUse, shiftByValue)
+            Else
+              Set rangeToUse = ShiftRangeAcross(rangeToUse, shiftBy)
+              Set rangeToUse = ShiftRangeDown(rangeToUse, -origRange.Rows.CountLarge)
+            End If
+            If (DuplicateWithShiftedFormulaeInternal Is Nothing) Then
+              Set DuplicateWithShiftedFormulaeInternal = rangeToUse
+            Else
+              Set DuplicateWithShiftedFormulaeInternal = Union(DuplicateWithShiftedFormulaeInternal, rangeToUse)
+            End If
+        Next i
+    End If
+End Function
+
+Private Function ShiftRangeDown(toMove As Range, offsetValue As Long) As Range
+    Dim moveTo As Range, tblRange As String
+    tblRange = toMove.Address
+    If (offsetValue < 0) Then
+        toMove.Rows(1).EntireRow.Resize(Abs(offsetValue)).Insert
+        Set toMove = Range(tblRange).Offset(Abs(offsetValue))
+        Set moveTo = toMove.Offset(offsetValue)
+        toMove.Copy Destination:=moveTo
+        moveTo.Rows(toMove.Rows.CountLarge + 1).EntireRow.Resize(Abs(offsetValue)).Delete
+    ElseIf (offsetValue > 0) Then
+        toMove.Rows(toMove.Rows.CountLarge + 1).EntireRow.Resize(Abs(offsetValue)).Insert
+        Set toMove = Range(tblRange)
+        Set moveTo = toMove.Offset(offsetValue)
+        toMove.Copy Destination:=moveTo
+        moveTo.Rows(1).Offset(-offsetValue).EntireRow.Resize(Abs(offsetValue)).Delete
+    Else
+        Set moveTo = toMove
+    End If
+    Set ShiftRangeDown = moveTo
+End Function
+
+Private Function ShiftRangeAcross(toMove As Range, offsetValue As Long) As Range
+    Dim moveTo As Range, tblRange As String
+    ' resize toMove to be no larger than the maximum number of occupied columns
+    Set toMove = toMove.Resize(ColumnSize:=ActiveSheet.UsedRange.SpecialCells(xlCellTypeLastCell).Column)
+    
+    tblRange = toMove.Address
+    If (offsetValue < 0) Then
+        toMove.Columns(1).EntireColumn.Resize(ColumnSize:=Abs(offsetValue)).Insert
+        Set toMove = Range(tblRange).Offset(columnOffset:=Abs(offsetValue))
+        Set moveTo = toMove.Offset(columnOffset:=offsetValue)
+        toMove.Copy Destination:=moveTo
+        Intersect(moveTo.EntireRow, moveTo.Columns(toMove.Columns.CountLarge + 1).EntireColumn.Resize(ColumnSize:=Abs(offsetValue))).Delete
+    ElseIf (offsetValue > 0) Then
+        toMove.Columns(toMove.Columns.CountLarge + 1).EntireColumn.Resize(ColumnSize:=Abs(offsetValue)).Insert
+        Set toMove = Range(tblRange)
+        Set moveTo = toMove.Offset(columnOffset:=offsetValue)
+        toMove.Copy Destination:=moveTo
+        ' Can't just delete the whole column - there might be other things on it
+        Intersect(moveTo.EntireRow, moveTo.Columns(1).Offset(columnOffset:=-offsetValue).EntireColumn.Resize(ColumnSize:=Abs(offsetValue))).Delete xlShiftToLeft
+    Else
+        Set moveTo = toMove
+    End If
+    Set ShiftRangeAcross = moveTo
+End Function
+
+Private Function CopyRange(toCopy As Range) As Range
+    Dim copyTo As Range, tblRange As String
+    tblRange = toCopy.Address
+    toCopy.Rows(toCopy.Rows.CountLarge).Offset(1).EntireRow.Resize(toCopy.Rows.CountLarge).Insert
+    Set toCopy = Range(tblRange)
+    Set copyTo = toCopy.Offset(toCopy.Rows.CountLarge)
+    toCopy.Copy Destination:=copyTo
+    Set CopyRange = copyTo
+End Function
+
+Private Sub AddNamedRanges(oldTableRangeName As NamedRangeName, CopyNumber As String, size As Long)
+    Dim allMatchesForThisTable As Collection, rangeName As NamedRangeName
+    Set allMatchesForThisTable = GetAllNamesMatchingThisNamesTable(ActiveSheet, oldTableRangeName)
+    Dim nameToUse As String, rangeToUse As Range
+    For Each rangeName In allMatchesForThisTable
+        nameToUse = MakeCopy(rangeName, CopyNumber).Name
+        Set rangeToUse = ActiveSheet.Range(rangeName.Name).Offset(size)
+        CreateButtonForName ActiveSheet, ActiveSheet.Names.Add(nameToUse, rangeToUse)
+    Next rangeName
+End Sub
+
+Private Function AddSuffix(text As String) As String
+    Dim result As String, regex As Object
+    Set regex = CreateObject("vbscript.regexp")
+    regex.Pattern = ".*(_\d+)"
+    result = GetFirstMatch(regex, text)
+    AddSuffix = Left(text, Len(text) - Len(result)) & "_" & namedRangeNumber
+End Function
+
+Sub ExpandPrintArea()
+    ' Expands the print area up to the rightmost, bottommost populated cell
+    Dim lastCell As Range
+    Set lastCell = Cells.SpecialCells(xlCellTypeLastCell)
+    ActiveSheet.PageSetup.PrintArea = Range(Cells(1, 1), lastCell).Address
+End Sub
+
+Attribute VB_Name = "ClearTableCopy"
+Option Explicit
+
+Sub ClearTable(dataRangeName As String, lockedRangePrefix As String)
+    Dim response As Long
+    Dim lockedRanges As Collection
+    Dim lockedRangeName As Variant
+    Dim lockedRange As Range
+    Dim dataRange As Range
+    Dim cell As Range
+    Dim isNoLockedRange As Boolean
+    Dim clearThis As Boolean
+    response = MsgBox(GetMacroText("tnfc.cleartable.confirm.text"), vbYesNo Or vbDefaultButton2, Title:=GetMacroText("tnfc.messagebox.title"))
+    If (response = vbYes) Then
+        Set dataRange = ActiveSheet.Range(dataRangeName)
+        Set lockedRanges = ActiveSheetRangesWithPrefix(lockedRangePrefix)
+        isNoLockedRange = True
+        For Each lockedRangeName In lockedRanges
+            Set lockedRange = ActiveSheet.Range(lockedRangeName)
+            If Not (Application.Intersect(dataRange, lockedRange) Is Nothing) Then
+                isNoLockedRange = False
+                Exit For
+            End If
+        Next lockedRangeName
+        If isNoLockedRange Then
+            ' probably faster
+            dataRange.ClearContents
+        Else
+            For Each cell In dataRange
+                clearThis = True
+                For Each lockedRangeName In lockedRanges
+                    Set lockedRange = ActiveSheet.Range(lockedRangeName)
+                    If Not (Application.Intersect(cell, lockedRange) Is Nothing) Then
+                        clearThis = False
+                        Exit For
+                    End If
+                Next lockedRangeName
+                If clearThis Then
+                    cell.ClearContents
+                End If
+            Next cell
+        End If
+        Call ClearEEButtons(dataRange)
+    End If
+End Sub
+
+Function ActiveSheetRangesWithPrefix(prefix As String) As Collection
+    Set ActiveSheetRangesWithPrefix = New Collection
+    Dim nm As Name, i As Long, trimmed As String
+    For i = 1 To ActiveSheet.Names.Count
+        Set nm = ActiveSheet.Names(i)
+        trimmed = TrimSheetReference(nm.Name)
+        If Left(trimmed, Len(prefix)) = prefix And (Len(trimmed) = Len(prefix) Or Mid(trimmed, Len(prefix) + 1, 1) = "_") Then
+            ' nm.RefersToRange gives error 1004 on large ranges; we must use ActiveSheet.Range(nm.Name) instead
+            ActiveSheetRangesWithPrefix.Add nm.Name
+        End If
+    Next i
+End Function
+
+
+Attribute VB_Name = "CreateButtons"
+Option Explicit
+
+Sub ResetButtons(sht As Worksheet)
+    Dim btn As Button
+    For Each btn In sht.Buttons
+        If Not IsEEButton(btn) Then
+            btn.Delete
+        End If
+    Next btn
+    
+    CreateButtons sht
+End Sub
+
+Private Sub CreateButtons(sht As Worksheet)
+    Dim nm As Name, i As Long, toDelete() As Name, toDeleteCount As Long
+    ReDim toDelete(sht.Names.Count)
+    toDeleteCount = 0
+    For i = 1 To sht.Names.Count
+        Set nm = sht.Names(i)
+        If CreateButtonForName(sht, nm) Then
+            Set toDelete(toDeleteCount) = nm
+            toDeleteCount = toDeleteCount + 1
+        End If
+    Next i
+    For i = 0 To toDeleteCount - 1
+        toDelete(i).Delete
+    Next i
+End Sub
+
+' returns whether to delete
+Function CreateButtonForName(sht As Worksheet, nm As Name) As Boolean
+    Dim str As String
+    str = TrimSheetReference(nm.Name)
+    CreateButtonForName = False
+    If Left(str, 7) = "button_" Then
+        Call CreateRowColButtons(sht, nm, str)
+    ElseIf Left(str, 6) = "table_" Then
+        Call CreateTableButton(sht, nm, str)
+    ElseIf Left(str, 3) = "ee_" Then
+        Call CreateEEButton(sht, nm)
+        CreateButtonForName = True
+    End If
+End Function
+
+Private Sub CreateEEButton(sht As Worksheet, nm As Name)
+    Dim domain As String, cell As Range, btn As Button
+    domain = Convert(Parse(nm.Name), "dropdown_").Name
+    For Each cell In nm.RefersToRange.Cells
+        Set btn = sht.Buttons.Add(cell.Left, cell.Top, cell.Width, cell.Height)
+        With btn
+            .placement = xlMoveAndSize
+            .HorizontalAlignment = xlLeft
+            .Caption = EELabel(cell, cell.Worksheet.Names(domain).RefersToRange)  ' Range(domain) mysteriously fails here
+            .OnAction = "'ShowEE Range(" & DoubleQuote(domain) & ")'"  ' if changing this, update IsEEButton and ClearEEButtons!
+            .Locked = True
+            .LockedText = True
+        End With
+    Next cell
+End Sub
+
+Function IsEEButton(btn As Button) As Boolean
+    IsEEButton = Left(btn.OnAction, 8) = "'ShowEE "
+End Function
+
+Private Sub CreateRowColButtons(sht As Worksheet, nm As Name, str As String)
+    Dim addBtn As Button, mulBtn As Button, delBtn As Button, cell As Range, direction As String
+    Set cell = nm.RefersToRange.Cells(1, 1)
+    direction = ExtractDirection(str)
+    
+    Dim l As Long, w As Long, t As Long, h As Long
+    Dim placement As Variant
+    l = cell.Left
+    h = 25
+    placement = xlMove ' because of Z-repetition, buttons must move with their cell
+    If direction = "Row" Then
+        w = cell.Width
+        t = cell.Offset(-1).Top
+    Else
+        'Same width as column B because that's right for fitting the text in, regardless of font size
+        w = sht.Columns("B").Width
+        t = cell.Offset(1).Top - h
+    End If
+    
+    'Create the 'add' button
+    Set addBtn = sht.Buttons.Add(l, t, w, h)
+    If direction = "Row" Then
+        t = t + h
+    Else
+        l = l + w
+    End If
+    
+    'Create the 'add multiple' button
+    Set mulBtn = sht.Buttons.Add(l, t, w, h)
+    
+    If direction = "Row" Then
+        t = t + h
+    Else
+        l = l + w
+    End If
+    
+    'Create the 'delete' button
+    Set delBtn = sht.Buttons.Add(l, t, w, h)
+    
+    With addBtn
+        .placement = placement
+        If direction = "Col" Then
+            .Caption = GetMacroText("tnfc.addcol")
+        Else
+            .Caption = GetMacroText("tnfc.addrow")
+        End If
+        .OnAction = OnActionString("AddTableSection", direction, str, addBtn.Name, mulBtn.Name, delBtn.Name)
+    End With
+              
+    With mulBtn
+        .placement = placement
+        .Caption = GetMacroText("tnfc.multiple")
+        .OnAction = OnActionString("AddMultipleSections", direction, str, addBtn.Name, mulBtn.Name, delBtn.Name)
+    End With
+                
+    With delBtn
+        .placement = placement
+        .Caption = GetMacroText("tnfc.delete")
+        .OnAction = OnActionString("DeleteTableSection", direction, str, addBtn.Name, mulBtn.Name, delBtn.Name)
+    End With
+End Sub
+
+Private Function OnActionString(method As String, direction As String, rngName As String, addBtn As String, mulBtn As String, delBtn As String) As String
+    OnActionString = _
+    "'" & method & " " & _
+    DoubleQuote(direction) & "," & _
+    DoubleQuote(rngName) & "," & _
+    DoubleQuote(addBtn) & "," & _
+    DoubleQuote(mulBtn) & "," & _
+    DoubleQuote(delBtn) & _
+    "'"
+End Function
+
+Private Function DoubleQuote(arg As String) As String
+  DoubleQuote = """" & arg & """"
+End Function
+
+Private Sub CreateTableButton(sht As Worksheet, nm As Name, str As String)
+    Dim addBtn As Button, delBtn As Button, clrBtn As Button, cell As Range, dataName As Name
+    Set cell = nm.RefersToRange.Cells(1, 1)
+    Dim l As Long, w As Long, t As Long, h As Long
+    l = cell.Left
+    h = 25
+    w = cell.Width
+    t = cell.Top
+      
+    Set dataName = GetNameForNamedRange(sht, nm.Name, "data_")
+    If dataName Is Nothing Then
+        Exit Sub
+    End If
+    
+    Set clrBtn = sht.Buttons.Add(l, t, w, h)
+    t = t + h
+    
+    Dim parsedDataName As NamedRangeName
+    Set parsedDataName = NamedRangeNameUtils.Parse(dataName.Name)
+    With clrBtn
+        .placement = xlMove
+        .Caption = GetMacroText("tnfc.cleartable")
+        .OnAction = "'ClearTable """ & TrimSheetReference(dataName.Name) & """, ""locked_user_" & parsedDataName.SheetId & """'"
+    End With
+
+    ' Only add repeat buttons if the top-left cell of the table range is 'open-on-z'
+    If (Not hasFlag(cell.value, "open-on-z")) Then
+        Exit Sub
+    End If
+    
+    'Create the 'add table' button
+    Set addBtn = sht.Buttons.Add(l, t, w, h)
+    t = t + h
+    
+    'Create the 'delete table' button
+    Set delBtn = sht.Buttons.Add(l, t, w, h)
+    
+    With addBtn
+        .placement = xlMove
+        .Caption = GetMacroText("tnfc.addtable")
+        .OnAction = "'AddTable """ & str & """'"
+    End With
+    
+    With delBtn
+        .placement = xlMove
+        .Caption = GetMacroText("tnfc.deltable")
+        .OnAction = "'DeleteTable """ & str & """'"
+    End With
+
+End Sub
+
+Sub FixXAxisButtonPositions(sht As Worksheet)
+    ' this is predicated on the assumption that the buttons immediately after "add column" are "add..." and "delete"
+    Dim btn As Button, i As Integer
+    i = 1
+    For Each btn In sht.Buttons
+        If btn.text = GetMacroText("tnfc.addcol") Then
+            Dim addMultiBtn As Button, delBtn As Button
+            Set addMultiBtn = ActiveSheet.Buttons(i + 1)
+            Set delBtn = ActiveSheet.Buttons(i + 2)
+            addMultiBtn.Left = btn.Left + btn.Width
+            delBtn.Left = addMultiBtn.Left + addMultiBtn.Width
+        End If
+        i = i + 1
+    Next btn
+End Sub
+Attribute VB_Name = "DeleteTableCopy"
+Option Explicit
+
+Sub DeleteTable(rngName As String)
+    If Not Before(True) Then
+        Exit Sub
+    End If
+    If (IsLastCopyOfTable(rngName)) Then
+        MsgBox GetMacroText("tnfc.deltable.error"), Title:=GetMacroText("tnfc.messagebox.title")
+    Else
+        Dim response As Long
+        response = MsgBox(GetMacroText("tnfc.deltable.confirm.text"), vbYesNo Or vbDefaultButton2, Title:=GetMacroText("tnfc.messagebox.title"))
+        If response = vbYes Then
+            Dim state As Long
+            state = Unhide("Cell Metadata TNFC Internal")
+            Dim currentSheet As String
+            currentSheet = ActiveSheet.Name
+            
+            Dim tableNamedRangeName As NamedRangeName
+            Set tableNamedRangeName = Parse(rngName)
+            deleteRange tableNamedRangeName.Name
+            
+            ThisWorkbook.Sheets("Cell Metadata TNFC Internal").Select
+            deleteRange Convert(tableNamedRangeName, "metadata_table_").Name
+            
+            ThisWorkbook.Sheets(currentSheet).Select
+            Call RemoveRowColNamedRanges(tableNamedRangeName)
+            
+            Call RestoreState("Cell Metadata TNFC Internal", state)
+        End If
+    End If
+    Call After
+End Sub
+
+Private Function IsLastCopyOfTable(rngName As String) As Boolean
+    Dim toMatch As String, regex As Object
+    Set regex = CreateObject("vbscript.regexp")
+    regex.Pattern = "(table_Sheet\d+_Table\d+_).*"
+    
+    toMatch = GetFirstMatch(regex, rngName)
+
+    Dim nm As Name, i As Long
+    For i = 1 To ActiveSheet.Names.Count
+        Set nm = ActiveSheet.Names(i)
+        Dim trimmed As String
+        trimmed = TrimSheetReference(nm.Name)
+        'if toMatch is substring but not the same one.
+        If trimmed <> rngName And toMatch = Left(trimmed, Len(toMatch)) Then
+            IsLastCopyOfTable = False
+            Exit Function
+        End If
+    Next i
+    IsLastCopyOfTable = True
+End Function
+
+Private Sub deleteRange(rngName As String)
+    Dim rng As Range
+    Set rng = ActiveSheet.Range(rngName)
+    DeleteButtonsInRange rng
+    rng.EntireRow.Delete xlShiftUp
+    ActiveSheet.Names.Item(rngName).Delete
+End Sub
+
+Private Sub RemoveRowColNamedRanges(tableRangeName As NamedRangeName)
+    Dim nrn As NamedRangeName, allNamesForTable As Collection
+    Set allNamesForTable = GetAllNamesMatchingThisNamesTable(ActiveSheet, tableRangeName)
+    For Each nrn In allNamesForTable
+        ActiveSheet.Names.Item(nrn.Name).Delete
+    Next nrn
+End Sub
+
+
+Attribute VB_Name = "EE"
+Option Explicit
+Private Const EE_SET_PREFIX As String = "##EE2## "  ' keep in sync with MultiDropdownValidationConstraintType.java
+
+Function EELabel(cell As Range, domain As Range) As String
+    EELabel = ""
+    If cell.value = "" Then
+        EELabel = GetMacroText("tnfc.dropdowns.none")
+        Exit Function
+    End If
+    If Left(cell.value, Len(EE_SET_PREFIX)) <> EE_SET_PREFIX Then
+        EELabel = ""
+        Exit Function
+    End If
+    Dim haystack As String, needle As String, separator As String, member As Range
+    separator = GetMacroText("tnfc.multilistform.separator")
+    haystack = " " & Right(cell.value, Len(cell.value) - Len(EE_SET_PREFIX)) & " "
+    For Each member In domain.Cells
+        needle = " " & member.Offset(1, 0).value & " "
+        If InStr(haystack, needle) > 0 Then
+            If EELabel <> "" Then
+                EELabel = EELabel & separator
+            End If
+            EELabel = EELabel & member.value
+        End If
+    Next member
+    If Len(EELabel) > 31 Then
+        EELabel = Left(EELabel, 28) & "..."
+    End If
+    If EELabel = "" Then
+        ' Under https://jira.int.corefiling.com/browse/TNC-3177 this should get its own label, matching whatever we put in the listbox: "<empty>"?
+        EELabel = GetMacroText("tnfc.dropdowns.none")
+    End If
+End Function
+
+Sub ShowEE(domain As Range)
+    If Not Before(False) Then
+        Exit Sub
+    End If
+
+    ' Populate form
+    Dim cell As Range, btn As Button, form As MultiListForm, i As Integer, newValue As String
+    Set btn = ActiveSheet.Buttons(Application.Caller)
+    Set cell = btn.TopLeftCell
+    Set form = New MultiListForm
+    form.Caption = GetMacroText("tnfc.multilistform.title")
+    Dim haystack As String, needle As String, member As Range
+    If Left(cell.value, Len(EE_SET_PREFIX)) = EE_SET_PREFIX Then
+        haystack = " " & Right(cell.value, Len(cell.value) - Len(EE_SET_PREFIX)) & " "
+    Else
+        haystack = ""
+    End If
+    i = 0
+    For Each member In domain.Cells
+        form.DataList.AddItem member.value
+        needle = " " & member.Offset(1, 0).value & " "
+        form.DataList.Selected(i) = InStr(haystack, needle) > 0
+        i = i + 1
+    Next member
+
+    form.Show
+    If Not form.WasOK Then
+        Exit Sub
+    End If
+
+    ' Retrieve results back into cell
+    newValue = ""
+    i = 0
+    For Each member In domain.Cells
+        If form.DataList.Selected(i) Then
+            If newValue = "" Then
+                newValue = EE_SET_PREFIX
+            Else
+                newValue = newValue & " "
+            End If
+            newValue = newValue & member.Offset(1, 0).value
+        End If
+        i = i + 1
+    Next member
+    Unload form
+    cell.value = newValue
+    Call EERelabel(btn, cell, domain)
+
+    Call After
+End Sub
+
+Sub EERelabel(btn As Button, cell As Range, domain As Range)
+    btn.LockedText = False
+    btn.Locked = False
+    btn.Caption = EELabel(cell, domain)
+    btn.Locked = True
+    btn.LockedText = True
+End Sub
+
+Sub ClearEEButtons(clearingRange As Range)
+    Dim btn As Button, cell As Range, domain As Range, s As String
+    For Each btn In ActiveSheet.Buttons
+        If IsEEButton(btn) Then
+            Set cell = btn.TopLeftCell
+            If Not (Application.Intersect(cell, clearingRange) Is Nothing) Then
+                cell.ClearContents
+                s = Mid(btn.OnAction, 16, Len(btn.OnAction) - 18)
+                Set domain = Range(s)
+                Call EERelabel(btn, cell, domain)
+            End If
+        End If
+    Next btn
+End Sub
+
+Attribute VB_Name = "General"
+Option Explicit
+Private wasProtectedStructure As Boolean
+Private wasProtectedWindows As Boolean
+
+Function Before(needsUnprotecting As Boolean) As Boolean
+    If ThisWorkbook.MultiUserEditing Then
+        MsgBox GetMacroText("tnfc.sharedworkbookwarning"), vbOKOnly Or vbExclamation, Title:=GetMacroText("tnfc.messagebox.title")
+        Before = False
+    Else
+        Application.ScreenUpdating = False
+        Application.Calculation = xlCalculationManual
+        Before = True
+        
+        If (needsUnprotecting) Then
+            ' Store current workbook protection
+            wasProtectedWindows = ThisWorkbook.ProtectWindows
+            wasProtectedStructure = ThisWorkbook.ProtectStructure
+            On Error Resume Next
+            ' Attempt to unprotect without password
+            ThisWorkbook.Unprotect
+            On Error GoTo 0
+            ' Only structure needs to be unprotected for the macros to work
+            If (ThisWorkbook.ProtectStructure) Then
+                ' If still locked then we can't perform this action
+                MsgBox GetMacroText("tnfc.passwordprotectedworkbookwarning"), vbOKOnly Or vbExclamation, Title:=GetMacroText("tnfc.messagebox.title")
+                Before = False
+            End If
+        End If
+    End If
+End Function
+
+Sub After()
+    If (wasProtectedStructure Or wasProtectedWindows) Then
+        ThisWorkbook.Protect Structure:=wasProtectedStructure, Windows:=wasProtectedWindows
+    End If
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+End Sub
+
+Sub RestoreState(shtName As String, state As Long)
+    Dim currentSheetName As String, sht As Worksheet
+    currentSheetName = ActiveSheet.Name
+    Set sht = ThisWorkbook.Sheets(shtName)
+    sht.Visible = state
+    sht.Protect
+    ThisWorkbook.Sheets(currentSheetName).Select
+End Sub
+
+Function Unhide(shtName As String) As Long
+    Dim currentSheetName As String, sht As Worksheet
+    currentSheetName = ActiveSheet.Name
+    Set sht = ThisWorkbook.Sheets(shtName)
+    'Return original visibility
+    Unhide = sht.Visible
+    sht.Unprotect
+    sht.Visible = xlSheetVisible
+    ThisWorkbook.Sheets(currentSheetName).Select
+End Function
+
+Public Function ExtractDirection(btnName As String) As String
+    ExtractDirection = Capitalise(Right(btnName, 3))
+End Function
+
+Public Function TrimSheetReference(str As String) As String
+    Dim index As Long
+    index = InStr(str, "!")
+    TrimSheetReference = Mid(str, index + 1)
+End Function
+
+Public Function ExtractAction(str As String) As String
+    ExtractAction = Left(str, 3)
+End Function
+
+Public Function Capitalise(str As String) As String
+    Capitalise = UCase(Left(str, 1)) + LCase(Mid(str, 2))
+End Function
+
+' WARNING: this doesn't protect against copied sheets - take care before use!
+Public Function IsMarkedTNFCSheet(sht As Worksheet) As Boolean
+    IsMarkedTNFCSheet = sht.Range("B1").value = "TNFC_SHEET"
+End Function
+
+Function GetFirstMatch(regex As Object, str As String) As String
+    Dim Match As Object
+    Set Match = regex.Execute(str)
+    If Match.Count <> 0 Then
+        GetFirstMatch = Match.Item(0).submatches.Item(0)
+    Else
+        GetFirstMatch = ""
+    End If
+End Function
+
+Sub DeleteButtonsInRange(rng As Range)
+    Dim btn As Button
+    For Each btn In ActiveSheet.Buttons
+    If Not Application.Intersect(btn.TopLeftCell, rng) Is Nothing And Not IsEEButton(btn) Then
+        btn.Delete
+    End If
+    Next
+End Sub
+
+Function FirstCellWithContents(searchArea As Range, contents As String, examineValues As Boolean) As Range
+    Dim cell As Range
+    For Each cell In searchArea
+        If examineValues Then
+            If (cell.value = contents) Then
+                Set FirstCellWithContents = cell
+                Exit Function
+            End If
+        Else
+            If (cell.Formula = contents) Then
+                Set FirstCellWithContents = cell
+                Exit Function
+            End If
+        End If
+      Next cell
+End Function
+
+Function canAddSlices(numberOfSlicesToAdd As Long, direction As String, rngName As NamedRangeName) As Boolean
+    ' Work out if we will add more than the maximum number of rows/columns
+    If (numberOfSlicesToAdd + getExistingSlices(direction, rngName) > getMaxSlices(direction)) Then
+        If (direction = "Row") Then
+            MsgBox GetMacroText("tnfc.maxrow"), Title:=GetMacroText("tnfc.messagebox.title")
+        Else
+            MsgBox GetMacroText("tnfc.maxcol"), Title:=GetMacroText("tnfc.messagebox.title")
+        End If
+        canAddSlices = False
+    Else
+        canAddSlices = True
+    End If
+End Function
+
+Private Function getExistingSlices(direction As String, rngName As NamedRangeName) As Long
+    ' Table range contains 4 rows and up to ~10 columns (depending on header width) beyond UsedRange, and must not hit the limit or it will get stuck there
+    ' https://bugs.corefiling.com/show_bug.cgi?id=44022
+    If direction = "Row" Then
+        getExistingSlices = ActiveSheet.UsedRange.Rows.CountLarge + 5
+    ElseIf direction = "Col" Then
+        getExistingSlices = Range(getTableName(rngName)).Columns.CountLarge + 1
+    End If
+End Function
+
+Function getMaxSlices(direction As String) As Long
+    If direction = "Row" Then
+        getMaxSlices = 1048576
+    ElseIf direction = "Col" Then
+        getMaxSlices = 16384
+    End If
+End Function
+
+Function getTableName(rngName As NamedRangeName) As Name
+    Set getTableName = GetNameForNamedRangeName(ActiveSheet, rngName, "table_")
+End Function
+
+Sub DeleteSheetPopUp(shName As String, wbName As String)
+    Dim prevSheet As Object
+    On Error Resume Next
+    Set prevSheet = Workbooks(wbName).Sheets(shName)
+    If prevSheet Is Nothing Then
+        Dim errorMsg As String
+        errorMsg = GetMacroText("tnfc.deletedsheet")
+        errorMsg = Replace$(errorMsg, "{0}", shName)
+        MsgBox Prompt:=errorMsg, Buttons:=vbCritical, Title:=GetMacroText("tnfc.messagebox.title")
+    End If
+End Sub
+
+Function hasFlag(flags As String, flag As String) As Boolean
+    hasFlag = InStr("," & flags & ",", "," & flag & ",") > 0
+End Function
+
+Attribute VB_Name = "MacroTextUtils"
+Option Explicit
+
+Private Function GetMacroSheet() As Worksheet
+    Set GetMacroSheet = ThisWorkbook.Sheets("Macro Text TNFC Internal")
+End Function
+
+Public Function GetMacroText(key As String) As String
+    Dim macroSheet As Worksheet, index As Long, cell As Range
+    Set macroSheet = GetMacroSheet
+    For index = 1 To macroSheet.Rows.CountLarge
+        Set cell = macroSheet.Cells(RowIndex:=index, ColumnIndex:=1)
+        If (cell.value = "") Then
+            Call Err.Raise(vbError, Description:="Expected message key " & key & " not found.")
+        End If
+        If (cell.value = key) Then
+            GetMacroText = cell.Offset(columnOffset:=1)
+            Exit Function
+        End If
+    Next index
+End Function
+
+Attribute VB_Name = "Metadata"
+Option Explicit
+
+Private Function GetScopeNameFromDirection(direction As String) As String
+    If (direction = "Row") Then
+        GetScopeNameFromDirection = "row"
+    ElseIf (direction = "Col") Then
+        GetScopeNameFromDirection = "column"
+    Else
+        GetScopeNameFromDirection = direction
+    End If
+End Function
+
+Private Function GetScopeNameFromScopeCell(value As String) As String
+    If (value = "table_global") Then
+        GetScopeNameFromScopeCell = "table"
+    Else
+        GetScopeNameFromScopeCell = value
+    End If
+End Function
+
+Function GetMetadataColumnByName(columnName As String, tableMetadataRange As String) As Range
+    Dim allMetadataForTable As Range, targetColIndex As Long, metadataSheet As Worksheet
+    Set metadataSheet = ThisWorkbook.Sheets("Cell Metadata TNFC Internal")
+    Set allMetadataForTable = metadataSheet.Range(tableMetadataRange)
+    targetColIndex = FirstCellWithContents(metadataSheet.Range("A1").EntireRow.Cells, columnName, True).Column
+    Set GetMetadataColumnByName = allMetadataForTable.Resize(ColumnSize:=1).Offset(columnOffset:=targetColIndex - 1)
+End Function
+
+Function FindMetadataForBlock(direction As String, tableMetadataRange As String, block As Range, Optional discardNonVBAMaintainedRows As Boolean = False, Optional okToFindNothing As Boolean = False, Optional entirelyContained As Boolean = True) As Range
+    ' note: this will only find rows of metadata pointing at individual cells within block
+    Dim scopeColumn As Range, vbaMaintainedColumn As Long
+    Set scopeColumn = GetMetadataColumnByName("scope", tableMetadataRange)
+    vbaMaintainedColumn = GetMetadataColumnByName("replicate_per_block", tableMetadataRange).Column
+
+    ' identify row/col-scoped metadata entries covering the block we copied from
+    Dim cell As Range, rowsToDuplicate As Range, foundSomething As Boolean
+    foundSomething = False
+    For Each cell In scopeColumn.Cells
+      If (GetScopeNameFromScopeCell(cell.value) = GetScopeNameFromDirection(direction)) Then
+        ' work out if the range in column 1 of this row has a non-empty intersection with the range we are copying from
+        Dim metadataTarget As Range, intersection As Range, vbaMaintained As Boolean
+        Set metadataTarget = Range(cell.EntireRow.Cells(1).Formula)
+        Set intersection = Intersect(metadataTarget, block)
+        If (Not intersection Is Nothing) Then
+          foundSomething = True
+          If ((entirelyContained And intersection.Address = metadataTarget.Address) Or (Not entirelyContained And intersection.Address <> metadataTarget.Address)) Then
+            vbaMaintained = ("TRUE" = UCase(cell.EntireRow.Cells(ColumnIndex:=vbaMaintainedColumn).value))
+            If vbaMaintained Or Not discardNonVBAMaintainedRows Then
+                If rowsToDuplicate Is Nothing Then
+                  Set rowsToDuplicate = cell.EntireRow
+                Else
+                  Set rowsToDuplicate = Union(rowsToDuplicate, cell.EntireRow)
+                End If
+            End If
+          End If
+        End If
+      End If
+    Next cell
+
+    ' having this silently return Nothing just makes for confusing knock-on errors later.
+    If Not foundSomething And Not okToFindNothing Then
+        Err.Raise vbObjectError + 513, "FindMetadataForBlock", "Unable to locate metadata in range " & tableMetadataRange & " attached to any cells in " & block.Address
+    End If
+    
+    Set FindMetadataForBlock = rowsToDuplicate
+End Function
+
+Sub WithMetadataUnlocked(Activate As Boolean, SubName As String, Arg1 As Variant, Optional Arg2 As Variant, Optional Arg3 As Variant, Optional Arg4 As Variant, Optional Arg5 As Variant, Optional Arg6 As Variant, Optional Arg7 As Variant, Optional Arg8 As Variant, Optional Arg9 As Variant)
+    Dim state As Long
+    state = Unhide("Cell Metadata TNFC Internal")
+    If Activate Then
+        Dim currentSheet As String
+        currentSheet = ActiveSheet.Name
+        ThisWorkbook.Sheets("Cell Metadata TNFC Internal").Select
+    End If
+
+    Call Application.Run(SubName, Arg1, Arg2, Arg3, Arg4, Arg5, Arg6, Arg7, Arg8, Arg9)
+
+    If Activate Then
+        ThisWorkbook.Sheets(currentSheet).Select
+    End If
+    Call RestoreState("Cell Metadata TNFC Internal", state)
+End Sub
+
+Function FunctionWithMetadataUnlocked(Activate As Boolean, SubName As String, Arg1 As Variant) As Variant
+    Dim state As Long
+    state = Unhide("Cell Metadata TNFC Internal")
+    If Activate Then
+        Dim currentSheet As String
+        currentSheet = ActiveSheet.Name
+        ThisWorkbook.Sheets("Cell Metadata TNFC Internal").Select
+    End If
+
+    Set FunctionWithMetadataUnlocked = Application.Run(SubName, Arg1)
+
+    If Activate Then
+        ThisWorkbook.Sheets(currentSheet).Select
+    End If
+    Call RestoreState("Cell Metadata TNFC Internal", state)
+End Function
+
+
+
+
+
+
+
+Attribute VB_Name = "MultiListForm"
+Attribute VB_Base = "0{2D7F737E-776B-450E-B850-F8648D76A6B5}{E1A98081-3DE4-4816-BF45-5E6E5FDCF8BF}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+Public WasOK As Boolean
+
+Private Sub CancelButton_Click()
+    Me.Hide
+End Sub
+
+Private Sub OKButton_Click()
+    WasOK = True  ' distinguish from Cancel and from closing the window
+    Me.Hide
+End Sub
+
+Attribute VB_Name = "NamedRangeName"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Public Property Get prefix() As String
+End Property
+
+Public Property Let prefix(ByVal newPrefix As String)
+End Property
+
+Public Property Get SheetAndTableId() As String
+End Property
+
+Public Property Let SheetAndTableId(ByVal newSheetAndTableID As String)
+End Property
+
+Public Property Get SheetId() As String
+End Property
+
+Public Property Let SheetId(ByVal newSheetID As String)
+End Property
+
+Public Property Get CopyNumber() As String
+End Property
+
+Public Property Let CopyNumber(ByVal newCopyNumber As String)
+End Property
+
+Public Property Get Name() As String
+End Property
+
+Public Property Get MatchesTable(other As NamedRangeName) As Boolean
+End Property
+
+Attribute VB_Name = "NamedRangeNameButton"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Implements NamedRangeName
+
+' Supports named ranges with the following prefixes:
+'   button_
+
+Private namedRange As NamedRangeNameImpl
+
+'Properties for button only
+Private direction As String
+
+Public Property Get RepeatDirection() As String
+    RepeatDirection = direction
+End Property
+
+Public Property Let RepeatDirection(ByVal newRepeatDirection As String)
+    direction = newRepeatDirection
+End Property
+
+' Shared properties
+Public Property Get NamedRangeName_Prefix() As String
+    NamedRangeName_Prefix = namedRange.NamedRangeName_Prefix()
+End Property
+
+Public Property Let NamedRangeName_Prefix(ByVal newPrefix As String)
+    namedRange.NamedRangeName_Prefix = newPrefix
+End Property
+
+Public Property Get NamedRangeName_SheetAndTableID() As String
+    NamedRangeName_SheetAndTableID = namedRange.NamedRangeName_SheetAndTableID
+End Property
+
+Public Property Let NamedRangeName_SheetAndTableID(ByVal newSheetAndTableID As String)
+    namedRange.NamedRangeName_SheetAndTableID = newSheetAndTableID
+End Property
+
+Public Property Get NamedRangeName_SheetID() As String
+    NamedRangeName_SheetID = namedRange.NamedRangeName_SheetID
+End Property
+
+Public Property Let NamedRangeName_SheetID(ByVal newSheetID As String)
+    namedRange.NamedRangeName_SheetID = newSheetID
+End Property
+
+Public Property Get NamedRangeName_CopyNumber() As String
+    NamedRangeName_CopyNumber = namedRange.NamedRangeName_CopyNumber
+End Property
+
+Public Property Let NamedRangeName_CopyNumber(ByVal newCopyNumber As String)
+    namedRange.NamedRangeName_CopyNumber = newCopyNumber
+End Property
+
+Public Property Get NamedRangeName_MatchesTable(other As NamedRangeName) As Boolean
+    NamedRangeName_MatchesTable = namedRange.NamedRangeName_MatchesTable(other)
+End Property
+
+' Name
+Public Property Get NamedRangeName_Name() As String
+    NamedRangeName_Name = namedRange.NamedRangeName_Name & "_" & direction
+End Property
+
+'Constructor/destructor
+Private Sub Class_Initialize()
+    Set namedRange = New NamedRangeNameImpl
+End Sub
+
+Private Sub Class_Terminate()
+    Set namedRange = Nothing
+End Sub
+
+
+Attribute VB_Name = "NamedRangeNameImpl"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Implements NamedRangeName
+
+' Supports named ranges with the following prefixes:
+'   data_
+'   repeat_
+'   table_
+'   metadata_table_
+'   dropdown_
+
+Private prefix As String
+Private SheetAndTableId As String
+Private SheetId As String
+Private CopyNumber As String
+
+Public Property Get NamedRangeName_Prefix() As String
+    NamedRangeName_Prefix = prefix
+End Property
+
+Public Property Let NamedRangeName_Prefix(ByVal newPrefix As String)
+    prefix = newPrefix
+End Property
+
+Public Property Get NamedRangeName_SheetAndTableID() As String
+    NamedRangeName_SheetAndTableID = SheetAndTableId
+End Property
+
+Public Property Let NamedRangeName_SheetAndTableID(ByVal newSheetAndTableID As String)
+    SheetAndTableId = newSheetAndTableID
+End Property
+
+Public Property Get NamedRangeName_SheetID() As String
+    NamedRangeName_SheetID = SheetId
+End Property
+
+Public Property Let NamedRangeName_SheetID(ByVal newSheetID As String)
+    SheetId = newSheetID
+End Property
+
+Public Property Get NamedRangeName_CopyNumber() As String
+    NamedRangeName_CopyNumber = CopyNumber
+End Property
+
+Public Property Let NamedRangeName_CopyNumber(ByVal newCopyNumber As String)
+    CopyNumber = newCopyNumber
+End Property
+
+Public Property Get NamedRangeName_Name() As String
+    NamedRangeName_Name = prefix + SheetAndTableId + "_" + CopyNumber
+End Property
+
+Public Property Get NamedRangeName_MatchesTable(other As NamedRangeName) As Boolean
+    NamedRangeName_MatchesTable = CopyNumber = other.CopyNumber And _
+                                  SheetAndTableId = other.SheetAndTableId
+End Property
+
+
+Attribute VB_Name = "NamedRangeNameRepeats"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Implements NamedRangeName
+
+' Supports named ranges with the following prefixes:
+'   repeat_
+
+Private namedRange As NamedRangeNameImpl
+
+'Properties for repeats only
+Private classRepeatDirection As String
+Private classRepeatNumber As String
+
+Public Property Get RepeatDirection() As String
+    RepeatDirection = classRepeatDirection
+End Property
+
+Public Property Let RepeatDirection(ByVal newRepeatDirection As String)
+    classRepeatDirection = newRepeatDirection
+End Property
+
+Public Property Get RepeatNumber() As String
+    RepeatNumber = classRepeatNumber
+End Property
+
+Public Property Let RepeatNumber(ByVal newRepeatNumber As String)
+    classRepeatNumber = newRepeatNumber
+End Property
+
+' Shared properties
+Public Property Get NamedRangeName_Prefix() As String
+    NamedRangeName_Prefix = namedRange.NamedRangeName_Prefix()
+End Property
+
+Public Property Let NamedRangeName_Prefix(ByVal newPrefix As String)
+    namedRange.NamedRangeName_Prefix = newPrefix
+End Property
+
+Public Property Get NamedRangeName_SheetAndTableID() As String
+    NamedRangeName_SheetAndTableID = namedRange.NamedRangeName_SheetAndTableID
+End Property
+
+Public Property Let NamedRangeName_SheetAndTableID(ByVal newSheetAndTableID As String)
+    namedRange.NamedRangeName_SheetAndTableID = newSheetAndTableID
+End Property
+
+Public Property Get NamedRangeName_SheetID() As String
+    NamedRangeName_SheetID = namedRange.NamedRangeName_SheetID
+End Property
+
+Public Property Let NamedRangeName_SheetID(ByVal newSheetID As String)
+    namedRange.NamedRangeName_SheetID = newSheetID
+End Property
+
+Public Property Get NamedRangeName_CopyNumber() As String
+    NamedRangeName_CopyNumber = namedRange.NamedRangeName_CopyNumber
+End Property
+
+Public Property Let NamedRangeName_CopyNumber(ByVal newCopyNumber As String)
+    namedRange.NamedRangeName_CopyNumber = newCopyNumber
+End Property
+
+Public Property Get NamedRangeName_MatchesTable(other As NamedRangeName) As Boolean
+    NamedRangeName_MatchesTable = namedRange.NamedRangeName_MatchesTable(other)
+End Property
+
+' Name
+Public Property Get NamedRangeName_Name() As String
+    NamedRangeName_Name = namedRange.NamedRangeName_Name & "_" & classRepeatNumber & "_" & classRepeatDirection
+End Property
+
+'Constructor/destructor
+Private Sub Class_Initialize()
+    Set namedRange = New NamedRangeNameImpl
+End Sub
+
+Private Sub Class_Terminate()
+    Set namedRange = Nothing
+End Sub
+
+Attribute VB_Name = "NamedRangeNameUtils"
+Option Explicit
+
+Function Match(toMatch As String) As Object
+    Dim regex As Object
+    Set regex = CreateObject("vbscript.regexp")
+    regex.Pattern = "(.+_)((Sheet\d+)_Table\d+)_(\d+)((_(\d+))?_(.*))?"
+    Set Match = regex.Execute(toMatch)
+End Function
+
+Function Parse(nameName As String) As NamedRangeName
+    Dim regexMatch As Object
+    Set regexMatch = Match(nameName)
+    If regexMatch.Count = 0 Then
+        Call Err.Raise(vbError, Description:="Could not match " & nameName & " to expected named range pattern.")
+        Exit Function
+    End If
+    
+    Dim namePrefix As String, nameSheetId As String, nameSheetAndTableId As String, nameCopyNumber As String
+    namePrefix = regexMatch.Item(0).submatches.Item(0)
+    nameSheetId = regexMatch.Item(0).submatches.Item(2)
+    nameSheetAndTableId = regexMatch.Item(0).submatches.Item(1)
+    nameCopyNumber = regexMatch.Item(0).submatches.Item(3)
+
+    If namePrefix = "repeat_" Then
+        Dim repeatRange As NamedRangeNameRepeats
+        Set repeatRange = New NamedRangeNameRepeats
+        repeatRange.RepeatNumber = regexMatch.Item(0).submatches.Item(6)
+        repeatRange.RepeatDirection = regexMatch.Item(0).submatches.Item(7)
+        Set Parse = repeatRange
+    ElseIf namePrefix = "button_" Then
+        Dim buttonRange As NamedRangeNameButton
+        Set buttonRange = New NamedRangeNameButton
+        buttonRange.RepeatDirection = regexMatch.Item(0).submatches.Item(7)
+        Set Parse = buttonRange
+    Else
+        Set Parse = New NamedRangeNameImpl
+    End If
+    
+    Parse.prefix = namePrefix
+    Parse.SheetId = nameSheetId
+    Parse.SheetAndTableId = nameSheetAndTableId
+    Parse.CopyNumber = nameCopyNumber
+End Function
+
+Function Convert(toConvert As NamedRangeName, newPrefix As String, Optional direction As String = "", Optional number As String = 0) As NamedRangeName
+    If newPrefix = "repeat_" Then
+        Dim repeatRange As NamedRangeNameRepeats
+        Set repeatRange = New NamedRangeNameRepeats
+        repeatRange.RepeatDirection = direction
+        repeatRange.RepeatNumber = number
+        Set Convert = repeatRange
+    ElseIf newPrefix = "button_" Then
+        Dim buttonRange As NamedRangeNameButton
+        Set buttonRange = New NamedRangeNameButton
+        buttonRange.RepeatDirection = direction
+        Set Convert = buttonRange
+    Else
+        Set Convert = New NamedRangeNameImpl
+    End If
+    Convert.prefix = newPrefix
+    Convert.SheetAndTableId = toConvert.SheetAndTableId
+    Convert.CopyNumber = toConvert.CopyNumber
+End Function
+
+Function GetNameForNamedRange(sht As Worksheet, nameName As String, requiredPrefix As String, Optional RepeatDirection As String = "", Optional RepeatNumber As String = 0) As Name
+    Dim parsedName As NamedRangeName
+    Set parsedName = Parse(nameName)
+    Set GetNameForNamedRange = GetNameForNamedRangeName(sht, parsedName, requiredPrefix, RepeatDirection, RepeatNumber)
+End Function
+
+Function GetNameForNamedRangeName(sht As Worksheet, ByVal nameRangeName As NamedRangeName, requiredPrefix As String, Optional RepeatDirection As String = "", Optional RepeatNumber As String = 0) As Name
+    Dim requiredName As NamedRangeName
+    Set requiredName = Convert(nameRangeName, requiredPrefix, RepeatDirection, RepeatNumber)
+    Set GetNameForNamedRangeName = GetNameForThisNamedRangeName(sht, requiredName)
+End Function
+
+Function GetNameForThisNamedRangeName(sht As Worksheet, ByVal nameRangeName As NamedRangeName) As Name
+    Set GetNameForThisNamedRangeName = Nothing
+    On Error Resume Next
+    If Not sht.Names.Item(nameRangeName.Name) Is Nothing Then
+        Set GetNameForThisNamedRangeName = sht.Names.Item(nameRangeName.Name)
+    End If
+    On Error GoTo 0
+End Function
+
+Function GetAllNamesMatchingThisNamesTable(sht As Worksheet, ByVal matchAgainst As NamedRangeName) As Collection
+    Set GetAllNamesMatchingThisNamesTable = New Collection
+    Dim nm As Name, parsedName As NamedRangeName, i As Long
+    On Error GoTo ResumeHandler
+    For i = 1 To sht.Names.Count
+        Set nm = sht.Names(i)
+        Set parsedName = Parse(TrimSheetReference(nm.Name))
+        If (Not parsedName Is Nothing) Then
+            ' dropdown named ranges refer to another sheet, despite being scoped to the table sheet
+            If (parsedName.prefix <> "dropdown_") Then
+                If (matchAgainst.MatchesTable(parsedName)) Then
+                    GetAllNamesMatchingThisNamesTable.Add parsedName
+                End If
+            End If
+        End If
+LoopLine:
+    Next i
+    On Error GoTo 0
+    Exit Function
+ResumeHandler:
+    ' Resume is required (rather than On Error GoTo LoopLine) in order to catch more than one instance of the error
+    Resume LoopLine
+End Function
+
+Function MakeCopy(toCopy As NamedRangeName, copyNumberToUse As String) As NamedRangeName
+    Set MakeCopy = Parse(toCopy.Name)
+    MakeCopy.CopyNumber = copyNumberToUse
+End Function
+
+Function MakeCopyWithNewOpenNodeNumber(toCopy As NamedRangeNameRepeats, openNodeNumberToUse As Long) As NamedRangeNameRepeats
+    Set MakeCopyWithNewOpenNodeNumber = Convert(toCopy, "repeat_", toCopy.RepeatDirection, Trim(str(openNodeNumberToUse)))
+End Function
+
+Function FindEnclosingRepeatRanges(direction As String, toBeEnclosed As NamedRangeName) As Collection
+    Set FindEnclosingRepeatRanges = New Collection
+    
+    Dim enclosedProjected As Range, enclosedRng As Range
+    Set enclosedRng = Range(toBeEnclosed.Name)
+    Set enclosedProjected = ProjectRange(direction, enclosedRng)
+    
+    Dim currentNamedRangeName As NamedRangeName, currentNamedRangeNameRepeats As NamedRangeNameRepeats, intersection As Range, currentRng As Range
+    For Each currentNamedRangeName In GetAllNamesMatchingThisNamesTable(ActiveSheet, toBeEnclosed)
+        If (currentNamedRangeName.Name <> toBeEnclosed.Name) Then
+            If (currentNamedRangeName.prefix = "repeat_") Then
+                Set currentRng = Range(currentNamedRangeName.Name)
+                Set intersection = Intersect(ProjectRange(direction, currentRng), enclosedProjected)
+                If (Not intersection Is Nothing) Then
+                    If _
+                    intersection.Address = enclosedProjected.Address And _
+                    HigherOrEqualThan(direction, currentRng, enclosedRng) Then
+                        Set currentNamedRangeNameRepeats = currentNamedRangeName
+                        FindEnclosingRepeatRanges.Add currentNamedRangeNameRepeats.RepeatNumber
+                    End If
+                End If
+            End If
+        End If
+    Next currentNamedRangeName
+End Function
+
+' Whether the first column/row of the LHS is higher/lefter than the first column/row of the RHS
+' Note: in row direction, "higher" means the leftest (i.e. comparing columns) and v.v.
+Private Function HigherOrEqualThan(direction As String, leftHandSide As Range, rightHandSide As Range) As Boolean
+    If (direction = "Row") Then
+        HigherOrEqualThan = leftHandSide.Columns(1).Column <= rightHandSide.Columns(1).Column
+    Else
+        HigherOrEqualThan = leftHandSide.Rows(1).Row <= rightHandSide.Rows(1).Row
+    End If
+End Function
+
+Function FindEnclosedRepeatRanges(direction As String, repeatRangeName As NamedRangeName, rangeToEnclose As Range) As Collection
+    Set FindEnclosedRepeatRanges = New Collection
+    
+    Dim projectedRngToEnclose As Range, repeatingOpenRange As Range
+    Set projectedRngToEnclose = ProjectRange(direction, rangeToEnclose)
+    Set repeatingOpenRange = Range(repeatRangeName.Name)
+    
+    Dim currentNamedRangeName As NamedRangeName, currentNamedRangeNameRepeats As NamedRangeNameRepeats, intersection As Range, projectedRange As Range, currentRng As Range
+    For Each currentNamedRangeName In GetAllNamesMatchingThisNamesTable(ActiveSheet, repeatRangeName)
+        If (currentNamedRangeName.Name <> repeatRangeName.Name) Then
+            If (currentNamedRangeName.prefix = "repeat_") Then
+                Set currentRng = Range(currentNamedRangeName.Name)
+                Set projectedRange = ProjectRange(direction, currentRng)
+                Set intersection = Intersect(projectedRange, projectedRngToEnclose)
+                If (Not intersection Is Nothing) Then
+                    If _
+                    intersection.Address = projectedRange.Address And _
+                    HigherOrEqualThan(direction, repeatingOpenRange, currentRng) Then
+                        Set currentNamedRangeNameRepeats = currentNamedRangeName
+                        FindEnclosedRepeatRanges.Add currentNamedRangeNameRepeats.RepeatNumber
+                    End If
+                End If
+            End If
+        End If
+    Next currentNamedRangeName
+End Function
+
+Private Function ProjectRange(direction As String, toProject As Range) As Range
+    If direction = "Row" Then
+        Set ProjectRange = toProject.Offset(columnOffset:=1 - toProject.Columns(1).Column).Resize(RowSize:=toProject.Rows.CountLarge, ColumnSize:=1)
+    Else
+        Set ProjectRange = toProject.Offset(RowOffset:=1 - toProject.Rows(1).Row).Resize(ColumnSize:=toProject.Columns.CountLarge, RowSize:=1)
+    End If
+End Function
+
+
+
+
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "StartEndMarkers"
+Option Explicit
+
+Public Const StartMarker As String = "s"
+Public Const EndMarker As String = "e"
+
+Function GetLastCell(direction As String, inRange As Range) As Range
+    If (direction = "Row") Then
+        Set GetLastCell = inRange.Cells(RowIndex:=inRange.Rows.Count, ColumnIndex:=1)
+    Else
+        Set GetLastCell = inRange.Cells(RowIndex:=1, ColumnIndex:=inRange.Columns.Count)
+    End If
+End Function
+
+Function RemoveMarkers(ByVal lastCellValue As String, endMarkersToMoveDown As Collection, which As String) As String
+    Dim markerNumber As Variant, index As Long
+    RemoveMarkers = lastCellValue
+    For Each markerNumber In endMarkersToMoveDown
+        RemoveMarkers = ReplaceMarker(RemoveMarkers, which & markerNumber, "")
+    Next markerNumber
+End Function
+
+Function ContainsMarker(str As String, openNodeNumber As String, markerToFind As String) As Boolean
+    Dim expressionToFind As String
+    expressionToFind = markerToFind & openNodeNumber
+    If (InStr(str, expressionToFind & EndMarker) > 0) Then
+        ContainsMarker = True
+    ElseIf (InStr(str, expressionToFind & StartMarker) > 0) Then
+        ContainsMarker = True
+    ElseIf EndsWith(str, expressionToFind) Then
+        ContainsMarker = True
+    Else
+        ContainsMarker = False
+    End If
+End Function
+
+' Required to cope with double/triple digits
+' Note: s10 contains s1; so can't just blindly replace all 's1' in a string.
+Function ReplaceMarker(ByVal str As String, expressionToReplace As String, replaceWith As String) As String
+    ReplaceMarker = str
+    ReplaceMarker = Replace(ReplaceMarker, expressionToReplace + EndMarker, replaceWith + EndMarker)
+    ReplaceMarker = Replace(ReplaceMarker, expressionToReplace + StartMarker, replaceWith + StartMarker)
+    If (EndsWith(ReplaceMarker, expressionToReplace)) Then
+        ReplaceMarker = Left(ReplaceMarker, Len(ReplaceMarker) - Len(expressionToReplace)) & replaceWith
+    End If
+End Function
+
+Function EndsWith(str As String, toFind As String) As Boolean
+    EndsWith = Right(str, Len(toFind)) = toFind
+End Function
+
+Function GetRepeatMarkersSlice(direction As String, repeatsRangeName As NamedRangeName) As Range
+    ' returns the entire row/column containing the repeat markers (and the X/Y buttons)
+    Dim buttonRowColRng As Range
+    Set buttonRowColRng = Range(Convert(repeatsRangeName, "button_", LCase(direction)).Name)
+    If (direction = "Row") Then
+        Set buttonRowColRng = buttonRowColRng.EntireColumn
+    Else
+        Set buttonRowColRng = buttonRowColRng.EntireRow
+    End If
+    Set GetRepeatMarkersSlice = buttonRowColRng
+End Function
+
+
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Private noWarning As Boolean
+
+Private Sub Workbook_Open()
+    Dim excWkbk As Boolean
+    excWkbk = Before(False)
+
+    Dim originalSheet As Worksheet
+    Dim sht As Worksheet
+        
+    If excWkbk Then
+        noWarning = True
+        For Each sht In ThisWorkbook.Worksheets
+            ReapplyProtection sht
+            Dim nm As Name, i As Long
+            For i = 1 To sht.Names.Count
+                Set nm = sht.Names(i)
+                If Left(TrimSheetReference(nm.Name), 7) = "repeat_" Then
+                    ProdRange sht, nm.Name
+                ElseIf Left(TrimSheetReference(nm.Name), 5) = "data_" Then
+                    ProdRange sht, nm.Name
+                ElseIf Left(TrimSheetReference(nm.Name), 6) = "table_" Then
+                    ProdRange sht, nm.Name
+                End If
+            Next i
+            ResetButtons sht
+        Next sht
+        noWarning = False
+    End If
+    
+    'Stops the macro falling over if it can't find the sheetname etc.
+    On Error Resume Next
+    'Remove the macro warning
+    Dim Name As Range
+    For Each Name In GetSheetNames().Cells
+        Dim value As String
+        value = Name.Formula
+        If (value = "") Then
+            Exit For
+        End If
+        value = StripA1FromSheetName(value)
+        Dim MainSheet As Worksheet
+        Set MainSheet = ThisWorkbook.Sheets(value)
+        Call RemoveWarning(MainSheet)
+    Next Name
+    
+    After
+End Sub
+
+Public Sub ReapplyProtection(sht As Worksheet)
+    If sht.Visible = xlSheetVisible Then
+        If (IsTNFCSheet(sht)) Then
+            sht.Protect UserInterfaceOnly:=True, AllowFormattingColumns:=True, AllowFormattingRows:=True
+        End If
+    End If
+End Sub
+
+Private Function GetSheetNames() As Range
+    With ThisWorkbook.Sheets("Macro Text TNFC Internal")
+        Set GetSheetNames = .Range(.Range("F1"), .Range("F" & .Rows.CountLarge))
+    End With
+End Function
+
+Private Sub RemoveWarning(sheet As Worksheet)
+    Dim MergeRange As Range
+    Set MergeRange = sheet.Range("C1")
+    MergeRange.MergeCells = False
+    MergeRange.Interior.ColorIndex = -4142
+    MergeRange.value = ""
+End Sub
+
+Private Sub ProdRange(sht As Worksheet, rngName As String)
+    ' According to esm, without this step, named ranges would be interpreted
+    ' as relative to the selected cell(s), but we can't reproduce that in Excel 2013.
+    With sht.Range(rngName)
+        .Resize().Name = rngName
+    End With
+End Sub
+
+Public Function WorksheetExists(ByVal WorksheetName As String) As Boolean
+    On Error Resume Next
+    WorksheetExists = (ThisWorkbook.Sheets(WorksheetName).Name <> "")
+    On Error GoTo 0
+End Function
+
+Sub Workbook_SheetActivate(ByVal sh As Object)
+    If (noWarning) Then
+        Exit Sub
+    End If
+    If (IsMarkedTNFCSheet(ActiveSheet)) Then
+        If (IsTNFCSheet(ActiveSheet)) Then
+            Exit Sub
+        End If
+        MsgBox GetMacroText("tnfc.unknownsheetname"), vbExclamation, Title:=GetMacroText("tnfc.messagebox.title")
+        Dim btn As Button
+        For Each btn In ActiveSheet.Buttons
+            btn.Delete
+        Next btn
+    End If
+End Sub
+
+Private Function IsTNFCSheet(sheet As Worksheet) As Boolean
+    IsTNFCSheet = False
+    Dim cell As Range
+    For Each cell In GetSheetNames.Cells
+        If (cell.Formula = "") Then
+            Exit For
+        End If
+        If (StripA1FromSheetName(cell.Formula) = sheet.Name) Then
+            IsTNFCSheet = True
+            Exit Function
+        End If
+    Next cell
+End Function
+
+Private Function StripA1FromSheetName(value As String) As String
+    Dim newValue As String
+    If (Right(value, Len("!$A$1")) = "!$A$1") Then
+        newValue = Left(value, Len(value) - Len("!$A$1"))
+    'If A1 has been deleted
+    ElseIf (Right(value, Len("!#REF!")) = "!#REF!") Then
+        newValue = Left(value, Len(value) - Len("!#REF!"))
+    Else
+        StripA1FromSheetName = value
+        Exit Function
+    End If
+    newValue = Right(newValue, Len(newValue) - Len("="))
+    If (Left(newValue, 1) = "'" And Right(newValue, 1) = "'") Then
+        newValue = Mid(newValue, 2, Len(newValue) - 2)
+    End If
+    newValue = Replace(newValue, "''", "'")
+    StripA1FromSheetName = newValue
+End Function
+
+Private Sub Workbook_SheetChange(ByVal sh As Object, ByVal target As Range)
+    If target.Cells.CountLarge > 1 Then
+        Exit Sub
+    End If
+    If Not ContainsDropdown(target) Then
+        Exit Sub
+    End If
+    Dim nm As Name, i As Long
+    For i = 1 To sh.Names.Count
+        Set nm = sh.Names(i)
+        If InStr(nm.Name, "!z") > 0 Then
+            If Not (Intersect(nm.RefersToRange, target) Is Nothing) Then
+                If Not Before(True) Then
+                    Exit Sub
+                End If
+                Call UpdateZEnablement(nm)
+                Call After
+                Exit Sub
+            End If
+        End If
+    Next i
+End Sub
+
+Private Sub Workbook_SheetDeactivate(ByVal sh As Object)
+    If (IsTNFCSheet(sh)) Then
+        Dim shName As String
+        shName = Replace(sh.Name, """", """""") ' need to escape quotes
+        shName = Replace(shName, "'", "''")
+        Application.OnTime Now + TimeSerial(0, 0, 1), "'General.DeleteSheetPopUp """ & shName & """, """ & ThisWorkbook.Name & """'"
+    End If
+End Sub
+
+Attribute VB_Name = "ZAxis"
+Option Explicit
+
+Public Sub UpdateZEnablement(nm As Name)
+    Call WithMetadataUnlocked(False, "UpdateZEnablementInternal", nm)
+End Sub
+
+Private Sub UpdateZEnablementInternal(nm As Name)
+    Dim rng As Range, dropdownCell As Range, dropdownValues As Range, enablements As String
+    Dim valRange As String, matchingCell As Range, targetCellCount As Long
+    Set rng = nm.RefersToRange
+    Set dropdownCell = rng.Cells(1)
+    
+    If (dropdownCell.value = "") Then
+        Exit Sub ' user blanked the drop-down with the del key; nothing more we can do until they pick a value again
+    End If
+
+    ' assume the drop-down pulls its values from a named range
+    valRange = Mid(dropdownCell.Validation.Formula1, 2)
+    Set dropdownValues = ActiveSheet.Names(valRange).RefersToRange
+    Set matchingCell = FirstCellWithContents(dropdownValues, dropdownCell.value, True)
+    
+    If matchingCell Is Nothing Then
+        Exit Sub ' user copy-pasted a non-allowed value over the drop-down
+    End If
+    
+    enablements = matchingCell.Offset(2).value
+    targetCellCount = (Len(enablements) + 1) / 2
+
+    Dim i As Long, valueCell As Range, enabled As Boolean, metadataRowForCell As Range, tableMetadataRange As String
+    Dim parsedRangeName As NamedRangeName, editRange As String
+    Set parsedRangeName = NamedRangeNameUtils.Parse(nm.Name)
+    tableMetadataRange = "metadata_table_" + parsedRangeName.SheetAndTableId + "_" + parsedRangeName.CopyNumber
+    editRange = "unlocked_" & parsedRangeName.SheetAndTableId ' one unlocked range per table, not per z-repeat of table
+
+    For i = 0 To targetCellCount - 1
+        Set valueCell = rng.Cells(i * 2 + 3)
+        enabled = (Mid(enablements, i * 2 + 1, 1) = "1")
+        Call SetCellEnablement(enabled, valueCell, editRange)
+        Set metadataRowForCell = FindMetadataForBlock("table", tableMetadataRange, valueCell)
+        Call SetMetadataEnablement(enabled, metadataRowForCell, tableMetadataRange)
+    Next i
+End Sub
+
+Private Sub SetCellEnablement(enabled As Boolean, target As Range, editRangeName As String)
+  Call UpdateEditRange(target, enabled, editRangeName)
+ 
+    Dim bgColour As Long, borderColour As Long
+    If enabled Then
+        bgColour = RGB(GetMacroText("tnfc.data.entry.bg.r"), GetMacroText("tnfc.data.entry.bg.g"), GetMacroText("tnfc.data.entry.bg.b"))
+        borderColour = RGB(GetMacroText("tnfc.data.entry.border.r"), GetMacroText("tnfc.data.entry.border.g"), GetMacroText("tnfc.data.entry.border.b"))
+    Else
+        bgColour = RGB(GetMacroText("tnfc.data.entry.disabled.bg.r"), GetMacroText("tnfc.data.entry.disabled.bg.g"), GetMacroText("tnfc.data.entry.disabled.bg.b"))
+        borderColour = RGB(GetMacroText("tnfc.data.entry.disabled.border.r"), GetMacroText("tnfc.data.entry.disabled.border.g"), GetMacroText("tnfc.data.entry.disabled.border.b"))
+    End If
+        
+ 
+    Call target.BorderAround(Color:=borderColour, Weight:=XlBorderWeight.xlThin)
+    target.Interior.Color = bgColour
+   
+    If Not enabled Then
+      target = ""
+    End If
+ 
+End Sub
+
+Private Sub UpdateEditRange(target As Range, makeEditable As Boolean, editRangeName As String)
+  Dim originalEditRange As AllowEditRange, currentlyEditable As Boolean, newRange As Range
+  Set originalEditRange = target.Worksheet.Protection.AllowEditRanges(editRangeName)
+  currentlyEditable = Not (Intersect(target, originalEditRange.Range) Is Nothing)
+  If (currentlyEditable = makeEditable) Then
+    Exit Sub
+  End If
+  
+  If makeEditable Then
+    Set newRange = Union(originalEditRange.Range, target)
+  Else
+    Dim area As Range
+    For Each area In originalEditRange.Range.Areas
+      If Intersect(area, target) Is Nothing Then
+        If newRange Is Nothing Then
+            Set newRange = area
+        Else
+            Set newRange = Union(newRange, area)
+        End If
+      End If
+    Next area
+  End If
+  
+  target.Worksheet.Unprotect
+  originalEditRange.Delete
+  Call target.Worksheet.Protection.AllowEditRanges.Add(editRangeName, newRange)
+  target.Worksheet.Protect
+End Sub
+
+Private Sub SetMetadataEnablement(enabled As Boolean, metadataRowForCell As Range, tableMetadataRange As String)
+    Dim enabledCol As Range, enabledCell As Range
+    Set enabledCol = GetMetadataColumnByName("enabled", tableMetadataRange)
+    Set enabledCell = Intersect(enabledCol, metadataRowForCell).Cells(1)
+    If enabled Then
+        enabledCell.Formula = "=true()"
+    Else
+        enabledCell.Formula = "=false()"
+    End If
+End Sub
+
+' InQuest injected base64 decoded content
+' wCzW
+' hZ+"{
+' 'rZ,
+' zshu
+' *'Z+aE
+' wQzj/xI
+' *'Z+a1
+' ZRyhrG
+' jYLj
+' z{Mjg
+
+INQUEST-PP=macro

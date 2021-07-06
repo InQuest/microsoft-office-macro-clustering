@@ -1,0 +1,493 @@
+Attribute VB_Name = "AveryAssistantMacros"
+'// =================================================================================================
+'// Avery Wizard 3.1 for MS Office                                                                  $
+'// Copyright (c) 1998-2007  Envel Informationssysteme GmbH. All rights reserved.                   $
+'// ----------------------------------------------------------------------------------------------- $
+'// $Project:: N608-511                                                                             $
+'// $Manager:: -                                         $  -  $Created::  00.00.00                 $
+'// ----------------------------------------------------------------------------------------------- $
+'// $Workfile::                                          $  -  $Revision:: 1                        $
+'//                                                      $  -  $JustDate:: 8.11.06                  $
+'// =================================================================================================
+
+Option Explicit
+
+' Variablen
+Public Type ShortItemId
+   cb As Long
+   abID As Byte
+End Type
+
+Public Type ITEMIDLIST
+   mkid As ShortItemId
+End Type
+   
+' API-Funktionen
+Public Declare Function SHGetPathFromIDList Lib "shell32.dll" (ByVal pidl As Long, ByVal pszPath As String) As Long
+Public Declare Function SHGetSpecialFolderLocation Lib "shell32.dll" (ByVal hwndOwner As Long, ByVal nFolder As Long, pidl As ITEMIDLIST) As Long
+
+' ---------------------------------------------------------------------
+' Lokalisierung
+Const c_nRegistry = 10000
+Const c_nInternalError = 10100
+Const c_nErrorBarcodeSize = 10102
+
+Const c_nToolTipClipArt = 10020
+Const c_nToolTipBarCode = 10021
+Const c_nMergeFieldCaption = 10022
+
+Const c_strErrorLoadingString = "[Unable to locate text. Please reinstall the software.]"
+' ---------------------------------------------------------------------
+
+
+' ---- SHGetSpecialFolderLocation API Deklarationen ----
+
+' ---- Registry Entry Value Deklarationen ----
+Const HKEY_CURRENT_USER = &H80000001
+Const HKEY_LOCAL_MACHINE = &H80000002
+Const ERROR_SUCCESS = 0&
+Const REG_DWORD = 4
+Const REG_BINARY = 3
+Const REG_SZ = 1
+Const REG_EXPAND_SZ = 2 ' Unicode NULL terminated string
+Const ERROR_NONE = 0
+Const ERROR_BADDB = 1
+Const ERROR_BADKEY = 2
+Const ERROR_CANTOPEN = 3
+Const ERROR_CANTREAD = 4
+Const ERROR_CANTWRITE = 5
+Const ERROR_OUTOFMEMORY = 6
+Const ERROR_ARENA_TRASHED = 7
+Const ERROR_ACCESS_DENIED = 8
+Const ERROR_INVALID_PARAMETERS = 87
+Const ERROR_NO_MORE_ITEMS = 259
+Const KEY_ALL_ACCESS = &H3F
+Const KEY_QUERY_VALUE = &H1
+Const KEY_READ = &H1
+Const REG_OPTION_NON_VOLATILE = 0
+
+Declare Function RegOpenKeyEx Lib "advapi32.dll" _
+    Alias "RegOpenKeyExA" (ByVal hKey As Long, _
+    ByVal lpSubKey As String, ByVal ulOptions As Long, _
+    ByVal samDesired As Long, phkResult As Long) As Long
+Declare Function RegCloseKey Lib "advapi32.dll" _
+    (ByVal hKey As Long) As Long
+Declare Function RegQueryValueExString Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, ByVal lpData _
+    As String, lpcbData As Long) As Long
+Declare Function RegQueryValueExLong Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, lpData As _
+    Long, lpcbData As Long) As Long
+Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, ByVal lpData _
+    As Long, lpcbData As Long) As Long
+Declare Function RegQueryValueEx Lib "advapi32.dll" Alias _
+   "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, _
+   ByVal lpReserved As Long, lpType As Long, lpData As Any, lpcbData _
+   As Long) As Long
+
+' Diese Funktion liefert mit QueryValueEx den Inhalt der Registry
+' Es wird zuerst versucht unter HKEY_CURRENT_USER zu lesen, und dann unter HKEY_LOCAL_MACHINE
+Public Function QueryValue(sKeyName As String, sValueName As String)
+   Dim lRetVal As Long      ' API Rueckgabewert
+   Dim hKey As Long         ' Handle fuer Registry
+   Dim vValue As Variant    ' Wert eines Registry-Keys
+
+   
+   lRetVal = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, KEY_QUERY_VALUE, hKey)
+   lRetVal = QueryValueEx(hKey, sValueName, vValue)
+   
+   If (lRetVal <> 0) Then   ' in LocalMachine nachsehen, falls in CurrentUser kein Eintrag ist
+       lRetVal = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sKeyName, 0, KEY_QUERY_VALUE, hKey)
+       lRetVal = QueryValueEx(hKey, sValueName, vValue)
+   End If
+   
+   QueryValue = vValue
+   RegCloseKey (hKey)
+End Function
+
+
+Function QueryValueEx(ByVal lhKey As Long, ByVal szValueName As _
+   String, vValue As Variant) As Long
+   
+
+   Dim cch As Long
+   Dim lrc As Long
+   Dim lType As Long
+   Dim lValue As Long
+   Dim sValue As String
+
+   On Error GoTo QueryValueExError
+
+   ' Determine the size and type of data to be read
+   lrc = RegQueryValueExNULL(lhKey, szValueName, 0&, lType, 0&, cch)
+   If lrc <> ERROR_NONE Then Error 5
+   Select Case lType
+       ' Strings
+      Case REG_SZ:
+         sValue = VBA.String(cch, 0)
+           lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, _
+              sValue, cch)
+           If lrc = ERROR_NONE Then
+               vValue = VBA.Mid(sValue, 1, cch - 1)
+           Else
+               vValue = Empty
+           End If
+      Case REG_EXPAND_SZ:
+         sValue = VBA.String(cch, 0)
+         lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, _
+            sValue, cch)
+         If lrc = ERROR_NONE Then
+             vValue = VBA.Mid(sValue, 1, cch - 1)
+         Else
+             vValue = Empty
+         End If
+      ' DWORD
+      Case REG_DWORD:
+         lrc = RegQueryValueExLong(lhKey, szValueName, 0&, lType, _
+            lValue, cch)
+         If lrc = ERROR_NONE Then vValue = lValue
+       Case Else
+         ' andere Datentypen unterstuetzen wir nicht
+         lrc = -1
+   End Select
+
+QueryValueExExit:
+   QueryValueEx = lrc
+   Exit Function
+QueryValueExError:
+   Resume QueryValueExExit
+End Function
+
+
+
+Function GetSpecialFolder() As String
+   Dim idlstr As Long
+   Dim sPath As String
+   Dim IDL As ITEMIDLIST
+   Const NOERROR = 0
+   Const MAX_LENGTH = 260
+   Const CSIDL_APPDATA = &H1A
+    
+   On Error GoTo Err_GetFolder
+
+   idlstr = SHGetSpecialFolderLocation(0, CSIDL_APPDATA, IDL)
+
+   If idlstr = NOERROR Then
+       sPath = VBA.Space$(MAX_LENGTH)
+       idlstr = SHGetPathFromIDList(ByVal IDL.mkid.cb, ByVal sPath)
+       If idlstr Then
+           GetSpecialFolder = VBA.Mid(sPath, 1, VBA.InStr(sPath, VBA.Chr$(0)) - 1) & "\"
+       End If
+   End If
+
+Exit_GetFolder:
+    Exit Function
+
+Err_GetFolder:
+   VBA.MsgBox StringResourceGet(c_nInternalError) & VBA.Chr(13) & Err.Description, _
+      vbCritical Or vbOKOnly
+   Resume Exit_GetFolder
+
+End Function
+
+
+Sub ClipArt()
+On Error GoTo ExitClipart
+    ' Aktuelle Selektion, Positionen, etc. ermitteln
+    Dim nHeight As Integer
+    Dim nWidth As Integer
+    Dim strPosX As String
+    Dim strPosY As String
+    Dim nWrapFormatType As Integer
+    Dim dlgFormat As Dialog
+   
+    nHeight = 0
+    nWidth = 0
+    strPosX = ""
+    strPosY = ""
+    nWrapFormatType = wdWrapTopBottom
+    
+    ' Es gibt zwei verschiedene Selektionsarten die wir unterst|fffd|tzen
+    Dim nSelectionType As Integer
+    nSelectionType = Selection.Type
+    If ((nSelectionType = wdSelectionShape) And (Selection.ShapeRange.Count() = 1)) Then                ' 1. Shape
+        
+        'Position merken (funktioniert nur |fffd|ber Dialog)
+        Set dlgFormat = Dialogs(wdDialogFormatDrawingObject)
+        
+        strPosX = dlgFormat.Left
+        strPosY = dlgFormat.Top
+        
+        Set dlgFormat = Nothing
+        
+        nHeight = Selection.ShapeRange.Height
+        nWidth = Selection.ShapeRange.Width
+        
+        nWrapFormatType = Selection.ShapeRange.WrapFormat.Type
+        
+    End If
+    If ((nSelectionType = wdSelectionInlineShape) And (Selection.InlineShapes.Count() = 1)) Then           ' 2. InlineShape
+        nHeight = Selection.InlineShapes(1).Height
+        nWidth = Selection.InlineShapes(1).Width
+        ' Position ist die aktuelle Cursorpostion!!
+    End If
+    
+    ' -------------------------------------------------------------------------------------------------------
+    ' Standard Pfad fuer Cliparts merken
+    Dim strPathOld As String
+    strPathOld = Application.Options.DefaultFilePath(wdPicturesPath)
+    
+    ' Pfad fuer Cliparts aus Registry lesen und in Word setzen
+    Dim strKey As String
+    Dim strVal As String
+    Dim strPathNew As Variant
+    
+    ' Set Key and Value to lookup.
+    strKey = StringResourceGet(c_nRegistry)
+    strVal = "ClipartPath"
+    
+    ' Registry lesen
+    strPathNew = QueryValue(strKey, strVal)
+        
+    ' Pfad setzen
+    If (strPathNew <> "") Then
+        Application.Options.DefaultFilePath(wdPicturesPath) = strPathNew
+    End If
+ 
+    
+    ' -------------------------------------------------------------------------------------------------------
+    ' Auswahldialogbox anzeigen und Grafik einfuegen
+    Dim strFileName As String
+    Dim nReturnDlg As Integer
+    
+    If ((nSelectionType = wdSelectionShape) And (Selection.ShapeRange.Count() = 1)) Then
+        ' Dialogbox anzeigen
+        With Dialogs(wdDialogInsertPicture)
+            nReturnDlg = .Display                ' nur Dialogbox anzeigen, das Bild f|fffd|gen wir sp|fffd|ter selber ein!
+            strFileName = .Name
+        End With
+        If (nReturnDlg = 0) Then
+            GoTo ExitClipart
+        End If
+            
+        Selection.Delete
+        
+        Dim shapeNewPicture As Word.Shape
+        Set shapeNewPicture = ActiveDocument.Shapes.AddPicture(strFileName, False, True, Selection.Range)
+        shapeNewPicture.Select
+    
+        With Selection.ShapeRange
+            .Height = nHeight
+            .Width = nWidth
+            .WrapFormat.Type = nWrapFormatType
+        End With
+        
+        'Position wiederherstellen
+        Set dlgFormat = Dialogs(wdDialogFormatDrawingObject)
+        
+        dlgFormat.Top = strPosY
+        dlgFormat.Left = strPosX
+        
+        dlgFormat.Execute
+        Set dlgFormat = Nothing
+        
+    End If
+    If ((nSelectionType = wdSelectionInlineShape) And (Selection.InlineShapes.Count() = 1)) Then
+        ' Dialogbox anzeigen
+        With Dialogs(wdDialogInsertPicture)
+            nReturnDlg = .Show                  ' hier lassen wir die Dialogbox selber das Bild einfuegen
+            strFileName = .Name
+        End With
+        If (nReturnDlg = 0) Then
+            GoTo ExitClipart
+        End If
+        
+       If (nSelectionType = wdSelectionInlineShape) Then
+            Selection.MoveLeft Unit:=wdCharacter, Count:=1, Extend:=wdExtend        ' neues Bild selektieren
+            Selection.InlineShapes(1).Height = nHeight
+            Selection.InlineShapes(1).Width = nWidth
+        End If
+    End If
+    ' Keine Selektion oder Mehrfachselektion
+    If (((nSelectionType <> wdSelectionShape) And (nSelectionType <> wdSelectionInlineShape)) Or (((nSelectionType = wdSelectionShape) And (Selection.ShapeRange.Count() <> 1)) Or ((nSelectionType = wdSelectionInlineShape) And (Selection.InlineShapes.Count() <> 1)))) Then
+        ' Dialogbox anzeigen
+        With Dialogs(wdDialogInsertPicture)
+            nReturnDlg = .Display                ' nur Dialogbox anzeigen, das Bild f|fffd|gen wir sp|fffd|ter selber ein!
+            strFileName = .Name
+        End With
+        If (nReturnDlg = 0) Then
+            GoTo ExitClipart
+        End If
+            
+        Dim shapeNewPicture2 As Word.Shape
+        Set shapeNewPicture2 = ActiveDocument.Shapes.AddPicture(strFileName, False, True, Selection.Range)
+        shapeNewPicture2.Select
+       
+        ' vertikal nicht an Text verankern
+        Selection.ShapeRange.RelativeVerticalPosition = wdRelativeVerticalPositionPage
+        
+        ' Umbruchart: Passend
+        With Selection.ShapeRange.WrapFormat
+            .Type = wdWrapTight
+            .Side = wdWrapBoth
+        End With
+    End If
+    
+ExitClipart:
+    ' -------------------------------------------------------------------------------------------------------
+    ' Clipart Pfad wieder zuruecksetzen
+    Application.Options.DefaultFilePath(wdPicturesPath) = strPathOld
+End Sub
+' Wenn das Dokument eine gewisse mindest Groesse unterscheide (die Hoehe ist hier wichtig),
+' dann gibt es einen Fehler bei AddOLEObject fuer den Barcode
+Function BarcodeSpaceCheck() As Integer
+    BarcodeSpaceCheck = 1
+    
+    ' Abstand zum Seitenende berechnen
+    Dim nYPosCursor As Integer
+    nYPosCursor = Selection.Information(wdVerticalPositionRelativeToPage)
+    Dim nYDistanceToPageEnd As Integer
+    nYDistanceToPageEnd = ActiveDocument.PageSetup.PageHeight - nYPosCursor
+    
+    ' Innerhalb einer Textbox - Abstand zum unteren Rand berechnen
+    Dim nYDistanceToBoxEnd As Integer
+    nYDistanceToBoxEnd = CentimetersToPoints(29.7)
+    If (Selection.StoryType = wdTextFrameStory) Then           ' falls der Cursor innerhalb einer Textbox ist kann ConvertToShape nicht verwendet werden!
+        If (Selection.Information(wdVerticalPositionRelativeToTextBoundary) >= 0) Then
+            nYDistanceToBoxEnd = Selection.ShapeRange.Height - Selection.Information(wdVerticalPositionRelativeToTextBoundary)
+        Else
+            nYDistanceToBoxEnd = 0
+        End If
+    End If
+    
+    ' Meldung ausgeben falls der Platz nicht reicht!
+    ' ein Minimum von 0.9 cm nach unten wir Platz gebraucht
+    If ((nYDistanceToPageEnd < CentimetersToPoints(0.9)) Or (nYDistanceToBoxEnd < CentimetersToPoints(0.9))) Then
+        VBA.MsgBox StringResourceGet(c_nErrorBarcodeSize)
+        BarcodeSpaceCheck = 0
+    End If
+End Function
+
+
+Sub InsertBarCode()
+    On Error GoTo errordest     ' das hier ist wichtig, falls der User die Macro-Warnung von Word mit Nein best|fffd|tigt. Dann liefert AddOLEObject n|fffd|mlich einen Fehler.
+    
+    ' Pruefen ob genuegend Platz fuer Barcode vorhanden ist, oder nicht
+    If (BarcodeSpaceCheck() < 1) Then
+        Exit Sub
+    End If
+    
+    ' Barcode wird zuerst als InlineShape einf|fffd|gt und anschlie|fffd|end in ein Shape umgewandelt. Andernfalls gibt es Probleme mit Word!!
+'    Dim shapeBarcode As Word.Shape
+    Dim shapeBarcodeInline As Word.InlineShape
+    Set shapeBarcodeInline = Selection.InlineShapes.AddOLEObject(ClassType:="Envel.BarcodeControl.1", FileName:="", LinkToFile:=False, DisplayAsIcon:=False)
+
+'
+' !! Der nachfolgende Code muss auf Grund eines Fehlers in Word 2003 SP1 ausgeschaltet werden !!
+'
+'    If (Selection.StoryType <> wdTextFrameStory) Then           ' falls der Cursor innerhalb einer Textbox ist kann ConvertToShape nicht verwendet werden!
+'        ' InlineShape wird in ein Shape umgewandelt, damit das Objekt frei beweglich wird!
+'        Set shapeBarcode = shapeBarcodeInline.ConvertToShape
+'
+'        ' Auswahlen
+'        shapeBarcode.Select
+'
+'        ' Horizontal zentrieren
+'        With Selection.ShapeRange
+'            .RelativeHorizontalPosition = wdRelativeHorizontalPositionMargin
+'            .Align msoAlignCenters, True
+'            .RelativeVerticalPosition = wdRelativeVerticalPositionPage      ' vertikal nicht an Text verankern
+'        End With
+'
+'        ' Umbruchart: Vor dem Text
+'        With Selection.ShapeRange.WrapFormat
+'            .Type = wdWrapNone
+'            .Side = wdWrapBoth
+'        End With
+'
+'        ' Barcode Dialgbox anzeigen
+'        With shapeBarcode
+'            .Select
+'            .Activate
+'        End With
+'    End If
+errordest:
+End Sub
+
+' Liefert einen String aus der Ressourcen-DLL
+Private Function StringResourceGet(nID) As String
+    Dim wizres As WizardResource
+    Set wizres = New WizardResource
+    
+    Dim strBuffer As String
+    Dim nBufferLength As Long
+    Dim nResultingBufferLength As Long
+    
+    nBufferLength = 1024
+    strBuffer = String(nBufferLength, 0)
+    
+    Dim nBufferAddress As Long
+    nBufferAddress = StrPtr(strBuffer)
+           
+    nResultingBufferLength = wizres.StringResourceGet(nBufferAddress, nBufferLength, nID)
+    
+    If (nResultingBufferLength > 0) Then
+        StringResourceGet = Left(strBuffer, nResultingBufferLength)
+    Else
+        StringResourceGet = c_strErrorLoadingString
+    End If
+    
+    Set wizres = Nothing
+End Function
+
+'Lokalisiert den Tooltip, die Toolbar und den Men|fffd|eintrag
+Private Sub Localize()
+    CommandBars("AZWizard4 Standard 2").Controls(10).TooltipText = StringResourceGet(c_nToolTipBarCode)
+    CommandBars("AZWizard4 Standard 2").Controls(9).TooltipText = StringResourceGet(c_nToolTipClipArt)
+    CommandBars("AZWizard4 Database 2").Controls(10).TooltipText = StringResourceGet(c_nToolTipBarCode)
+    CommandBars("AZWizard4 Database 2").Controls(9).TooltipText = StringResourceGet(c_nToolTipClipArt)
+'    CommandBars("AZWizard4 Database 2").Controls(13).Caption = StringResourceGet(c_nMergeFieldCaption)
+End Sub
+
+Sub DatabaseToggle()
+        ActiveDocument.MailMerge.ViewMailMergeFieldCodes = wdToggle
+End Sub
+
+Sub DatabaseRecordNext()
+    ActiveDocument.MailMerge.DataSource.ActiveRecord = wdNextRecord
+End Sub
+
+Sub DatabaseRecordPrev()
+    If (ActiveDocument.MailMerge.DataSource.ActiveRecord <> 1) Then
+       ActiveDocument.MailMerge.DataSource.ActiveRecord = wdPreviousRecord
+    End If
+End Sub
+
+Sub DatabaseRecordFirst()
+    ActiveDocument.MailMerge.DataSource.ActiveRecord = wdFirstRecord
+End Sub
+
+Sub DatabaseRecordLast()
+    ActiveDocument.MailMerge.DataSource.ActiveRecord = wdLastRecord
+End Sub
+
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' *^r&
+
+INQUEST-PP=macro

@@ -1,0 +1,331 @@
+Attribute VB_Name = "AZWizardEvents"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_Creatable = True
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'// =================================================================================================
+'// Avery Wizard 3.0 for MS Office                                                                  $
+'// Copyright (c) 1998-2006  Envel Informationssysteme GmbH. All rights reserved.                   $
+'// ----------------------------------------------------------------------------------------------- $
+'// $Project:: N608-511                                                                             $
+'// $Manager:: -                                         $  -  $Created::  00.00.00                 $
+'// ----------------------------------------------------------------------------------------------- $
+'// $Workfile::                                          $  -  $Revision:: 1                        $
+'//                                                      $  -  $JustDate:: 8.11.06                  $
+'// =================================================================================================
+
+Public WithEvents App As Word.Application
+
+' Wenn Word beendet wird - muss der Assistent beendet werden
+' Dieser EventHandler wird nur gesetzt, wenn der Wizard gestartet wird (siehe AZWizardModul.AveryWizard())
+Private Sub App_Quit()
+    AZWizardModul.WizardQuit
+End Sub
+
+Attribute VB_Name = "AZWizardModul"
+'// =================================================================================================
+'// Avery Wizard 3.1 for MS Office                                                                  $
+'// Copyright (c) 1998-2007  Envel Informationssysteme GmbH. All rights reserved.                   $
+'// ----------------------------------------------------------------------------------------------- $
+'// $Project:: N608-511                                                                             $
+'// $Manager:: -                                         $  -  $Created::  00.00.00                 $
+'// ----------------------------------------------------------------------------------------------- $
+'// $Workfile::                                          $  -  $Revision:: 1                        $
+'//                                                      $  -  $JustDate:: 8.11.06                  $
+'// =================================================================================================
+
+Option Explicit
+
+Dim WizardEvents As New AZWizardEvents
+
+' Variablen
+Public Type ShortItemId
+   cb As Long
+   abID As Byte
+End Type
+
+Public Type ITEMIDLIST
+   mkid As ShortItemId
+End Type
+   
+' API-Funktionen
+Public Declare Function SHGetPathFromIDList Lib "shell32.dll" _
+   (ByVal pidl As Long, ByVal pszPath As String) As Long
+
+Public Declare Function SHGetSpecialFolderLocation Lib _
+   "shell32.dll" (ByVal hwndOwner As Long, ByVal nFolder _
+   As Long, pidl As ITEMIDLIST) As Long
+
+' --------------------------------------------------------------------------
+' Lokalisierung
+Const c_nRegistry = 10000
+Const c_nRegistryAddIn = 11001
+Const c_nInternalError = 10100
+Const c_nInstallationError = 10101
+
+Const c_nToolbarName = 10010
+Const c_nToolbarButtonToolTipText = 10011
+Const c_nMenuDisplayName = 10012
+
+Const c_strErrorLoadingString = "[Unable to locate text. Please reinstall the software.]"
+' --------------------------------------------------------------------------
+
+
+' ---- SHGetSpecialFolderLocation API Deklarationen ----
+
+' ---- Registry Entry Value Deklarationen ----
+Const HKEY_CURRENT_USER = &H80000001
+Const HKEY_LOCAL_MACHINE = &H80000002
+Const ERROR_SUCCESS = 0&
+Const REG_DWORD = 4
+Const REG_BINARY = 3
+Const REG_SZ = 1
+Const REG_EXPAND_SZ = 2 ' Unicode NULL terminated string
+Const ERROR_NONE = 0
+Const ERROR_BADDB = 1
+Const ERROR_BADKEY = 2
+Const ERROR_CANTOPEN = 3
+Const ERROR_CANTREAD = 4
+Const ERROR_CANTWRITE = 5
+Const ERROR_OUTOFMEMORY = 6
+Const ERROR_ARENA_TRASHED = 7
+Const ERROR_ACCESS_DENIED = 8
+Const ERROR_INVALID_PARAMETERS = 87
+Const ERROR_NO_MORE_ITEMS = 259
+Const KEY_ALL_ACCESS = &H3F
+Const KEY_QUERY_VALUE = &H1
+Const KEY_READ = &H1
+Const REG_OPTION_NON_VOLATILE = 0
+
+Declare Function RegOpenKeyEx Lib "advapi32.dll" _
+    Alias "RegOpenKeyExA" (ByVal hKey As Long, _
+    ByVal lpSubKey As String, ByVal ulOptions As Long, _
+    ByVal samDesired As Long, phkResult As Long) As Long
+Declare Function RegCloseKey Lib "advapi32.dll" _
+    (ByVal hKey As Long) As Long
+Declare Function RegQueryValueExString Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, ByVal lpData _
+    As String, lpcbData As Long) As Long
+Declare Function RegQueryValueExLong Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, lpData As _
+    Long, lpcbData As Long) As Long
+Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias _
+    "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As _
+    String, ByVal lpReserved As Long, lpType As Long, ByVal lpData _
+    As Long, lpcbData As Long) As Long
+Declare Function RegQueryValueEx Lib "advapi32.dll" Alias _
+   "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, _
+   ByVal lpReserved As Long, lpType As Long, lpData As Any, lpcbData _
+   As Long) As Long
+Declare Function SendMessage Lib "user32.dll" Alias _
+   "SendMessageA" (ByVal hWnd As Long, ByVal Msg As Long, wParam As Any, _
+   lParam As Any) As Long
+Declare Function PostMessage Lib "user32" Alias "PostMessageA" (ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
+
+
+' Diese Funktion liefert mit QueryValueEx den Inhalt der Registry
+' Es wird zuerst versucht unter HKEY_CURRENT_USER zu lesen, und dann unter HKEY_LOCAL_MACHINE
+Public Function QueryValue(sKeyName As String, sValueName As String)
+   Dim lRetVal As Long      ' API Rueckgabewert
+   Dim hKey As Long         ' Handle fuer Registry
+   Dim vValue As Variant    ' Wert eines Registry-Keys
+
+   
+   lRetVal = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, KEY_QUERY_VALUE, hKey)
+   lRetVal = QueryValueEx(hKey, sValueName, vValue)
+   
+   If (lRetVal <> 0) Then   ' in LocalMachine nachsehen, falls in CurrentUser kein Eintrag ist
+       lRetVal = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sKeyName, 0, KEY_QUERY_VALUE, hKey)
+       lRetVal = QueryValueEx(hKey, sValueName, vValue)
+   End If
+   
+   QueryValue = vValue
+   RegCloseKey (hKey)
+End Function
+
+
+Function QueryValueEx(ByVal lhKey As Long, ByVal szValueName As _
+   String, vValue As Variant) As Long
+   
+
+   Dim cch As Long
+   Dim lrc As Long
+   Dim lType As Long
+   Dim lValue As Long
+   Dim sValue As String
+
+   On Error GoTo QueryValueExError
+
+   ' Determine the size and type of data to be read
+   lrc = RegQueryValueExNULL(lhKey, szValueName, 0&, lType, 0&, cch)
+   If lrc <> ERROR_NONE Then Error 5
+   Select Case lType
+       ' Strings
+      Case REG_SZ:
+         sValue = VBA.String(cch, 0)
+           lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, _
+              sValue, cch)
+           If lrc = ERROR_NONE Then
+               vValue = VBA.Left$(sValue, cch - 1)
+           Else
+               vValue = Empty
+           End If
+      Case REG_EXPAND_SZ:
+         sValue = VBA.String(cch, 0)
+         lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, _
+            sValue, cch)
+         If lrc = ERROR_NONE Then
+             vValue = VBA.Left$(sValue, cch - 1)
+         Else
+             vValue = Empty
+         End If
+      ' DWORD
+      Case REG_DWORD:
+         lrc = RegQueryValueExLong(lhKey, szValueName, 0&, lType, _
+            lValue, cch)
+         If lrc = ERROR_NONE Then vValue = lValue
+       Case Else
+         ' andere Datentypen unterstuetzen wir nicht
+         lrc = -1
+   End Select
+
+QueryValueExExit:
+   QueryValueEx = lrc
+   Exit Function
+QueryValueExError:
+   Resume QueryValueExExit
+End Function
+
+
+
+Function GetSpecialFolder() As String
+   Dim idlstr As Long
+   Dim sPath As String
+   Dim IDL As ITEMIDLIST
+   Const NOERROR = 0
+   Const MAX_LENGTH = 260
+   Const CSIDL_APPDATA = &H1A
+    
+   On Error GoTo Err_GetFolder
+
+   idlstr = SHGetSpecialFolderLocation(0, CSIDL_APPDATA, IDL)
+
+   If idlstr = NOERROR Then
+       sPath = VBA.Space$(MAX_LENGTH)
+       idlstr = SHGetPathFromIDList(ByVal IDL.mkid.cb, ByVal sPath)
+       If idlstr Then
+           GetSpecialFolder = VBA.Left$(sPath, VBA.InStr(sPath, VBA.Chr$(0)) - 1) & "\"
+       End If
+   End If
+
+Exit_GetFolder:
+    Exit Function
+
+Err_GetFolder:
+   MsgBox StringResourceGet(c_nInternalError) & VBA.Chr(13) & Err.Description, _
+      vbCritical Or vbOKOnly
+   Resume Exit_GetFolder
+
+End Function
+
+' Startet den Assistenten
+Public Sub AveryWizard()
+    'Daten muessen aus der Registratur gelesen werden
+    Dim sKey As String
+    Dim sVal As String
+    Dim sPath As Variant
+    
+    On Error GoTo Err_Assistant
+    
+    ' Set Key and Value to lookup.
+    sKey = StringResourceGet(c_nRegistry)
+    sVal = "AppPath"
+    
+    ' Name und Path des Assistenten
+    sPath = QueryValue(sKey, sVal)
+    
+    ' Assistent starten
+    Shell (sPath)
+    
+    Set WizardEvents.App = Word.Application
+    
+    Exit Sub
+    
+Err_Assistant:
+   MsgBox StringResourceGet(c_nInstallationError), vbCritical Or vbOKOnly
+
+End Sub
+
+' Liefert einen String aus der Ressourcen-DLL
+Private Function StringResourceGet(nID) As String
+    Dim wizres As WizardResource
+    Set wizres = New WizardResource
+    
+    Dim strBuffer As String
+    Dim nBufferLength As Long
+    Dim nResultingBufferLength As Long
+    
+    nBufferLength = 1024
+    strBuffer = String(nBufferLength, 0)
+    
+    Dim nBufferAddress As Long
+    nBufferAddress = StrPtr(strBuffer)
+           
+    nResultingBufferLength = wizres.StringResourceGet(nBufferAddress, nBufferLength, nID)
+    
+    If (nResultingBufferLength > 0) Then
+        StringResourceGet = Left(strBuffer, nResultingBufferLength)
+    Else
+        StringResourceGet = c_strErrorLoadingString
+    End If
+    
+    Set wizres = Nothing
+End Function
+
+'Lokalisiert den Tooltip, die Toolbar und den Menueintrag
+Private Sub Localize()
+    CommandBars("Avery Wizard").Name = StringResourceGet(c_nToolbarName)
+    CommandBars(StringResourceGet(c_nToolbarName)).Controls(1).TooltipText = StringResourceGet(c_nToolbarButtonToolTipText)
+    '"Tools" abgestimmt auf englisches Word (Zugriff |fc|ber Nummer scheint nicht m|f6|glich)
+    CommandBars("Tools").Controls("Avery Wizard...").Caption = StringResourceGet(c_nMenuDisplayName)
+End Sub
+
+' Schickt den Assistenten eine Message - Programm beenden
+Sub WizardQuit()
+    Dim lRetVal As Long      ' API Rueckgabewert
+    Dim hKey As Long         ' Handle fuer Registry
+    Dim vValue As Variant    ' Wert eines Registry-Keys
+    Dim nValue As Long
+    Dim nReturn As Long
+    Dim sKey As String
+    
+    sKey = StringResourceGet(c_nRegistryAddIn)
+   
+    lRetVal = RegOpenKeyEx(HKEY_CURRENT_USER, sKey + "\Word", 0, KEY_QUERY_VALUE, hKey)
+    lRetVal = QueryValueEx(hKey, "Window", vValue)
+    nValue = vValue
+    
+    ' Message an Wizard - Beenden!
+    If (nValue <> 0) Then
+        nReturn = SendMessage(nValue, 1088, 0, 0)
+    End If
+End Sub
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' *^r&
+
+INQUEST-PP=macro

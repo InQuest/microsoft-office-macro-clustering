@@ -1,0 +1,955 @@
+Attribute VB_Name = "ThisOutlookSession"
+Attribute VB_Base = "0{0006F03A-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Application_Startup()
+    Call Application_Startup_Ticketverwaltung
+End Sub
+
+
+Attribute VB_Name = "clsFolderArchiv"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private WithEvents objItems As Outlook.Items
+Attribute objItems.VB_VarHelpID = -1
+Private m_db As DAO.Database
+Private m_Groesse As Long
+Private m_NeuEinlesen As Boolean
+Private m_Verzeichnis As String
+Private m_AnlagenSpeichern As Boolean
+
+Public Property Set Folder(objFolder As Outlook.Folder)
+    Set objItems = objFolder.Items
+    m_Verzeichnis = objFolder.FolderPath
+End Property
+
+Public Property Set Database(db As DAO.Database)
+    Set m_db = db
+End Property
+
+Public Property Let Groesse(lngGroesse As Long)
+    m_Groesse = lngGroesse
+End Property
+
+Public Property Let NeuEinlesen(bolNeuEinlesen As Boolean)
+    m_NeuEinlesen = bolNeuEinlesen
+End Property
+
+Public Property Let AnlagenSpeichern(bolAnlagenSpeichern As Boolean)
+    m_AnlagenSpeichern = bolAnlagenSpeichern
+End Property
+
+Private Sub objItems_ItemAdd(ByVal Item As Object)
+    Dim objMailItem As Outlook.MailItem
+    If TypeName(Item) = "MailItem" Then
+        Set objMailItem = Item
+        MailEinlesen objMailItem, m_Verzeichnis, m_db, m_Groesse, m_AnlagenSpeichern
+    End If
+End Sub
+
+Public Sub MailEinlesen(objMailItem As Outlook.MailItem, strFolderpath As String, db As DAO.Database, lngSize As Long, bolAnlagenSpeichern As Boolean)
+    Dim strAbsender As String
+    Dim strEmpfaenger As String
+    Dim strSQL As String
+    Dim objRecipient As Outlook.Recipient
+    Dim rst As DAO.Recordset
+    Dim i As Integer
+    Dim strPfad As String
+    Dim lngError As Long
+    Dim lngMailItemID As Long
+    strPfad = Left(db.Name, InStrRev(db.Name, "\"))
+    With objMailItem
+        strAbsender = .SenderEmailAddress
+        For i = 1 To .Recipients.count
+            Set objRecipient = .Recipients(i)
+            Select Case objRecipient.Type
+                Case olTo
+                    strEmpfaenger = strEmpfaenger & ";" & objRecipient.Address
+                Case Else
+            End Select
+        Next i
+        strSQL = "INSERT INTO tblMailItems(EntryID, Betreff, Body, HTMLBody, Absender, Empfaenger, Pfad, Erhalten, Groesse) VALUES('" & .EntryID & "', '" & Replace(.Subject, "'", "''") & "', '" & Replace(.Body, "'", "''") & "', '" & Replace(.HTMLBody, "'", "''") & "', '" & Replace(strAbsender, "'", "''") & "', '" & Replace(strEmpfaenger, "'", "''") & "', '" & strFolderpath & "', " & ISODatum(.ReceivedTime) & ", " & .Size & ")"
+        On Error Resume Next
+        db.Execute strSQL, dbFailOnError
+        lngError = Err.Number
+        On Error GoTo 0
+        Select Case lngError
+            Case 3022
+                MsgBox "Die Mail mit dem folgenden Betreff wurde bereits in der Datenbank gespeichert:" & vbCrLf & "'" & .Subject & "'"
+                Exit Sub
+            Case 3035
+                Set rst = db.OpenRecordset("SELECT * FROM tblMailItems WHERE 1 = 2", dbOpenDynaset)
+                rst.AddNew
+                rst!EntryID = .EntryID
+                rst!Betreff = .Subject
+                rst!Body = .Body
+                rst!HTMLBody = .HTMLBody
+                rst!Absender = strAbsender
+                rst!Empfaenger = strEmpfaenger
+                rst!Pfad = strFolderpath
+                rst!Erhalten = .ReceivedTime
+                rst!Groesse = .Size
+                lngMailItemID = rst!MailitemID
+                rst.Update
+            Case Else
+                lngMailItemID = db.OpenRecordset("SELECT @@IDENTITY").Fields(0)
+                .Subject = "[Ticket_" & lngMailItemID & "]" & .Subject
+        End Select
+        If bolAnlagenSpeichern Then
+            MailAnlagenSpeichern objMailItem, db, strAbsender, lngMailItemID, strPfad
+        End If
+        MailItemSpeichern objMailItem, db, lngMailItemID, lngSize, strPfad
+    End With
+End Sub
+
+Public Sub MailItemSpeichern(objMailItem As Outlook.MailItem, db As DAO.Database, lngMailItemID As Long, lngSize As Long, strPfad As String)
+    Dim rst As DAO.Recordset
+    Dim rst2 As DAO.Recordset2
+    Dim fld2 As DAO.Field2
+    With objMailItem
+        If objMailItem.Size <= lngSize Then
+            .SaveAs strPfad & "\temp.msg"
+            Set rst = db.OpenRecordset("SELECT MailItem FROM tblMailitems WHERE MailItemID = " & lngMailItemID, dbOpenDynaset)
+            rst.Edit
+            Set rst2 = rst.Fields("MailItem").Value
+            rst2.AddNew
+            Set fld2 = rst2.Fields("FileData")
+            fld2.LoadFromFile strPfad & "\temp.msg"
+            Kill strPfad & "\temp.msg"
+            rst2.Update
+            rst.Update
+        Else
+            On Error Resume Next
+            MkDir strPfad & "\MSG\"
+            On Error GoTo 0
+            .SaveAs strPfad & "\MSG\" & lngMailItemID & ".msg"
+        End If
+        .BillingInformation = "saved"
+        .Save
+    End With
+End Sub
+
+Public Sub MailAnlagenSpeichern(objMailItem As Outlook.MailItem, db As DAO.Database, strAbsender As String, lngMailItemID As Long, strPfad As String)
+    Dim objAnlage As Outlook.Attachment
+    Dim strDatumUndZeit As String
+    Dim strDateiname As String
+    If objMailItem.Attachments.count > 0 Then
+        strDatumUndZeit = Format(objMailItem.ReceivedTime, "yyyymmdd_hhnnss")
+        strPfad = CurrentProject.Path & "\Anlagen\" & strAbsender & "\" & lngMailItemID
+        On Error Resume Next
+        MkDir strPfad & "\Anlagen"
+        MkDir strPfad & "\Anlagen\" & strAbsender
+        MkDir strPfad & "\Anlagen\" & strAbsender & "\" & lngMailItemID
+        On Error GoTo 0
+        For Each objAnlage In objMailItem.Attachments
+            strDateiname = objAnlage.FileName
+            objAnlage.SaveAsFile strPfad & "\" & strDateiname
+            db.Execute "INSERT INTO tblAnlagen(MailItemID, Anlagepfad, Dateiname) VALUES(" & lngMailItemID & ", '" & strPfad & "\" & Replace(objAnlage.FileName, "'", "''") & "', '" & Replace(strDateiname, "'", "''") & "')", dbFailOnError
+        Next objAnlage
+    End If
+End Sub
+
+
+Attribute VB_Name = "mdlTicketverwaltung"
+Option Explicit
+
+Dim colFolders As Collection
+
+Public Sub Application_Startup_Ticketverwaltung()
+    Dim db As DAO.Database
+    Dim rst As DAO.Recordset
+    Dim objFolder As Outlook.Folder
+    Dim objFolderArchiv As clsFolderArchiv
+    Dim strTicketsystemDatenbank As String
+    strTicketsystemDatenbank = DatenbankpfadHolen("Ticketsystem", "Datenbankpfad")
+    If Len(strTicketsystemDatenbank) = 0 Then
+        MsgBox "Verbindung zur Ticketdatenbank konnte nicht hergestellt werden."
+        Exit Sub
+    End If
+    Set db = DBEngine.OpenDatabase(strTicketsystemDatenbank, , True)
+    Set rst = db.OpenRecordset("SELECT * FROM tblOptionen", dbOpenDynaset)
+    Set colFolders = New Collection
+          
+    If rst.EOF Then
+    
+    End If
+    Do While Not rst.EOF
+        Set objFolderArchiv = New clsFolderArchiv
+        With objFolderArchiv
+            Set objFolder = GetFolderByPath(rst!Verzeichnis)
+            If objFolder Is Nothing Then
+                MsgBox "Der in der Export-Datenbank '" & strTicketsystemDatenbank & "' angegebene Outlook-Ordner '" & rst!Verzeichnis & "' ist nicht in Outlook vorhanden. W|fffd|hlen Sie diesen nun erneut aus."
+                Set objFolder = Outlook.GetNamespace("MAPI").PickFolder
+                db.Execute "UPDATE tblOptionen SET Verzeichnis = '" & objFolder.FolderPath & "'", dbFailOnError
+            End If
+            Set .Folder = objFolder
+            .AnlagenSpeichern = rst!AnlagenSpeichern
+            Set .Database = db
+            .NeuEinlesen = rst!NeuEinlesen
+            .Groesse = Nz(rst!Groesse)
+        End With
+        colFolders.Add objFolderArchiv
+        If rst!Rekursiv Then
+            UnterordnerInstanzieren objFolder, db, Nz(rst!Groesse), rst!NeuEinlesen, rst!AnlagenSpeichern, colFolders
+        End If
+        rst.MoveNext
+    Loop
+End Sub
+
+Public Sub UnterordnerInstanzieren(objParent As Outlook.Folder, db As DAO.Database, lngSize As Long, _
+        bolNeuEinlesen As Boolean, bolAnlagenSpeichern As Boolean, colFolders As Collection)
+    Dim objFolder As Outlook.Folder
+    Dim objFolderArchiv As clsFolderArchiv
+    For Each objFolder In objParent.Folders
+        Set objFolderArchiv = New clsFolderArchiv
+        With objFolderArchiv
+            .AnlagenSpeichern = bolAnlagenSpeichern
+            Set .Database = db
+            Set .Folder = objFolder
+            .Groesse = lngSize
+            .NeuEinlesen = bolNeuEinlesen
+        End With
+        colFolders.Add objFolderArchiv
+        UnterordnerInstanzieren objFolder, db, lngSize, bolNeuEinlesen, bolAnlagenSpeichern, colFolders
+    Next objFolder
+End Sub
+
+Public Function DatenbankpfadHolen(strElement As String, strName As String) As String
+    Dim strDatenbankpfad As String
+    Dim bolVorhanden As Boolean
+    strDatenbankpfad = EigenschaftEinlesen(strElement, strName)
+    If Not Len(strDatenbankpfad) = 0 Then
+        If Not Len(Dir(strDatenbankpfad)) = 0 Then
+            bolVorhanden = True
+        End If
+    End If
+    If Not bolVorhanden Then
+        strDatenbankpfad = OpenFileName("", "Datenbankpfad ausw|fffd|hlen", "Access-DB (*.mdb;*.accdb)")
+        EigenschaftSetzen strElement, strName, strDatenbankpfad
+    End If
+    DatenbankpfadHolen = strDatenbankpfad
+End Function
+
+Public Sub EigenschaftSetzen(strElement As String, strName As String, strWert As String)
+    Dim objMAPI As Outlook.NameSpace
+    Dim objFolder As Outlook.Folder
+    Dim objStorageItem As Outlook.StorageItem
+    Dim objUserProperty As Outlook.UserProperty
+    Set objMAPI = Outlook.GetNamespace("MAPI")
+    Set objFolder = objMAPI.GetDefaultFolder(olFolderInbox)
+    Set objStorageItem = objFolder.GetStorage(strElement, olIdentifyBySubject)
+    Set objUserProperty = objStorageItem.UserProperties.Add(strName, olText)
+    objUserProperty.Value = strWert
+    objStorageItem.Save
+End Sub
+
+Public Function EigenschaftEinlesen(strElement As String, strName As String) As String
+    Dim objMAPI As Outlook.NameSpace
+    Dim objFolder As Outlook.Folder
+    Dim objStorageItem As Outlook.StorageItem
+    Dim objUserProperty As Outlook.UserProperty
+    Set objMAPI = Outlook.GetNamespace("MAPI")
+    Set objFolder = objMAPI.GetDefaultFolder(olFolderInbox)
+    Set objStorageItem = objFolder.GetStorage(strElement, olIdentifyBySubject)
+    Set objUserProperty = objStorageItem.UserProperties.Item(strName)
+    If objUserProperty Is Nothing Then
+        EigenschaftEinlesen = ""
+    Else
+        EigenschaftEinlesen = objUserProperty.Value
+    End If
+End Function
+
+Function OpenFileName(Optional StartDir As String, _
+    Optional sTitle As String = "Datei ausw|fffd|hlen:", _
+    Optional sFilter As String = "Access-DB (*.mdb)|Alle Dateien (*.*)") As String
+    Static sDir As String
+    WizHook.Key = 51488399
+    Const FOLDERID_Documents As Integer = 18
+    If Len(StartDir) = 0 Then
+        If Len(sDir) = 0 Then
+            StartDir = GetSpecialFolder(FOLDERID_Documents)
+        Else
+            StartDir = sDir
+        End If
+    End If
+    Call WizHook.GetFileName(0, _
+        "Microsoft Access", sTitle, _
+        "|fffd|ffnen", OpenFileName, _
+        StartDir, sFilter, _
+        0&, 0&, &H40, False)
+    If Len(OpenFileName) > 0 Then
+        sDir = Left(OpenFileName, InStrRev(OpenFileName, "\", , vbTextCompare))
+    End If
+End Function
+
+Attribute VB_Name = "mdlTicketverwaltung_Folders"
+Option Explicit
+
+Public Enum FolderID
+    FOLDERID_NetworkFolder
+    FOLDERID_ComputerFolder
+    FOLDERID_InternetFolder
+    FOLDERID_ControlPanelFolder
+    FOLDERID_PrintersFolder
+    FOLDERID_SyncManagerFolder
+    FOLDERID_SyncSetupFolder
+    FOLDERID_ConflictFolder
+    FOLDERID_SyncResultsFolder
+    FOLDERID_RecycleBinFolder
+    FOLDERID_ConnectionsFolder
+    FOLDERID_Fonts
+    FOLDERID_Desktop
+    FOLDERID_Startup
+    FOLDERID_Programs
+    FOLDERID_StartMenu
+    FOLDERID_Recent
+    FOLDERID_SendTo
+    FOLDERID_Documents
+    FOLDERID_Favorites
+    FOLDERID_NetHood
+    FOLDERID_PrintHood
+    FOLDERID_Templates
+    FOLDERID_CommonStartup
+    FOLDERID_CommonPrograms
+    FOLDERID_CommonStartMenu
+    FOLDERID_PublicDesktop
+    FOLDERID_ProgramData
+    FOLDERID_CommonTemplates
+    FOLDERID_PublicDocuments
+    FOLDERID_RoamingAppData
+    FOLDERID_LocalAppData
+    FOLDERID_LocalAppDataLow
+    FOLDERID_InternetCache
+    FOLDERID_Cookies
+    FOLDERID_History
+    FOLDERID_System
+    FOLDERID_SystemX86
+    FOLDERID_Windows
+    FOLDERID_Profile
+    FOLDERID_Pictures
+    FOLDERID_ProgramFilesX86
+    FOLDERID_ProgramFilesCommonX86
+    FOLDERID_ProgramFilesX64
+    FOLDERID_ProgramFilesCommonX64
+    FOLDERID_ProgramFiles
+    FOLDERID_ProgramFilesCommon
+    FOLDERID_AdminTools
+    FOLDERID_CommonAdminTools
+    FOLDERID_Music
+    FOLDERID_Videos
+    FOLDERID_PublicPictures
+    FOLDERID_PublicMusic
+    FOLDERID_PublicVideos
+    FOLDERID_ResourceDir
+    FOLDERID_LocalizedResourcesDir
+    FOLDERID_CommonOEMLinks
+    FOLDERID_CDBurning
+    FOLDERID_UserProfiles
+    FOLDERID_Playlists
+    FOLDERID_SamplePlaylists
+    FOLDERID_SampleMusic
+    FOLDERID_SamplePictures
+    FOLDERID_SampleVideos
+    FOLDERID_PhotoAlbums
+    FOLDERID_Public
+    FOLDERID_ChangeRemovePrograms
+    FOLDERID_AppUpdates
+    FOLDERID_AddNewPrograms
+    FOLDERID_Downloads
+    FOLDERID_PublicDownloads
+    FOLDERID_SavedSearches
+    FOLDERID_QuickLaunch
+    FOLDERID_Contacts
+    FOLDERID_SidebarParts
+    FOLDERID_SidebarDefaultParts
+    FOLDERID_TreeProperties
+    FOLDERID_PublicGameTasks
+    FOLDERID_GameTasks
+    FOLDERID_SavedGames
+    FOLDERID_Games
+    FOLDERID_RecordedTV
+    FOLDERID_SEARCH_MAPI
+    FOLDERID_SEARCH_CSC
+    FOLDERID_Links
+    FOLDERID_UsersFiles
+    FOLDERID_SearchHome
+    FOLDERID_OriginalImages
+End Enum
+
+Private Declare Function SHGetKnownFolderPath Lib "shell32" (rfid As Any, ByVal dwFlags As Long, ByVal hToken As Long, ppszPath As Long) As Long
+Private Declare Function CLSIDFromString Lib "ole32" (ByVal lpszGuid As Long, pGuid As Any) As Long
+Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (pDest As Any, pSrc As Any, ByVal ByteLen As Long)
+Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal hMem As Long)
+Private Declare Function lstrlenW Lib "kernel32" (ByVal ptr As Long) As Long
+
+Private Type GUID
+   Data1 As Long
+   Data2 As Integer
+   Data3 As Integer
+   Data4(7) As Byte
+End Type
+   
+Public Sub Test_GetSpecialFolder()
+    Debug.Print GetSpecialFolder(FOLDERID_CommonPrograms)
+End Sub
+   
+Public Function GetFolderType(eFolderID As FolderID) As String
+    Select Case eFolderID
+        Case FOLDERID_NetworkFolder
+            GetFolderType = "{D20BEEC4-5CA8-4905-AE3B-BF251EA09B53}"
+        Case FOLDERID_ComputerFolder
+            GetFolderType = "{0AC0837C-BBF8-452A-850D-79D08E667CA7}"
+        Case FOLDERID_InternetFolder
+            GetFolderType = "{4D9F7874-4E0C-4904-967B-40B0D20C3E4B}"
+        Case FOLDERID_ControlPanelFolder
+            GetFolderType = "{82A74AEB-AEB4-465C-A014-D097EE346D63}"
+        Case FOLDERID_PrintersFolder
+            GetFolderType = "{76FC4E2D-D6AD-4519-A663-37BD56068185}"
+        Case FOLDERID_SyncManagerFolder
+            GetFolderType = "{43668BF8-C14E-49B2-97C9-747784D784B7}"
+        Case FOLDERID_SyncSetupFolder
+            GetFolderType = "{0F214138-B1D3-4a90-BBA9-27CBC0C5389A}"
+        Case FOLDERID_ConflictFolder
+            GetFolderType = "{4bfefb45-347d-4006-a5be-ac0cb0567192}"
+        Case FOLDERID_SyncResultsFolder
+            GetFolderType = "{289a9a43-be44-4057-a41b-587a76d7e7f9}"
+        Case FOLDERID_RecycleBinFolder
+            GetFolderType = "{B7534046-3ECB-4C18-BE4E-64CD4CB7D6AC}"
+        Case FOLDERID_ConnectionsFolder
+            GetFolderType = "{6F0CD92B-2E97-45D1-88FF-B0D186B8DEDD}"
+        Case FOLDERID_Fonts
+            GetFolderType = "{FD228CB7-AE11-4AE3-864C-16F3910AB8FE}"
+        Case FOLDERID_Desktop
+            GetFolderType = "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
+        Case FOLDERID_Startup
+            GetFolderType = "{B97D20BB-F46A-4C97-BA10-5E3608430854}"
+        Case FOLDERID_Programs
+            GetFolderType = "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}"
+        Case FOLDERID_StartMenu
+            GetFolderType = "{625B53C3-AB48-4EC1-BA1F-A1EF4146FC19}"
+        Case FOLDERID_Recent
+            GetFolderType = "{AE50C081-EBD2-438A-8655-8A092E34987A}"
+        Case FOLDERID_SendTo
+            GetFolderType = "{8983036C-27C0-404B-8F08-102D10DCFD74}"
+        Case FOLDERID_Documents
+            GetFolderType = "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}"
+        Case FOLDERID_Favorites
+            GetFolderType = "{1777F761-68AD-4D8A-87BD-30B759FA33DD}"
+        Case FOLDERID_NetHood
+            GetFolderType = "{C5ABBF53-E17F-4121-8900-86626FC2C973}"
+        Case FOLDERID_PrintHood
+            GetFolderType = "{9274BD8D-CFD1-41C3-B35E-B13F55A758F4}"
+        Case FOLDERID_Templates
+            GetFolderType = "{A63293E8-664E-48DB-A079-DF759E0509F7}"
+        Case FOLDERID_CommonStartup
+            GetFolderType = "{82A5EA35-D9CD-47C5-9629-E15D2F714E6E}"
+        Case FOLDERID_CommonPrograms
+            GetFolderType = "{0139D44E-6AFE-49F2-8690-3DAFCAE6FFB8}"
+        Case FOLDERID_CommonStartMenu
+            GetFolderType = "{A4115719-D62E-491D-AA7C-E74B8BE3B067}"
+        Case FOLDERID_PublicDesktop
+            GetFolderType = "{C4AA340D-F20F-4863-AFEF-F87EF2E6BA25}"
+        Case FOLDERID_ProgramData
+            GetFolderType = "{62AB5D82-FDC1-4DC3-A9DD-070D1D495D97}"
+        Case FOLDERID_CommonTemplates
+            GetFolderType = "{B94237E7-57AC-4347-9151-B08C6C32D1F7}"
+        Case FOLDERID_PublicDocuments
+            GetFolderType = "{ED4824AF-DCE4-45A8-81E2-FC7965083634}"
+        Case FOLDERID_RoamingAppData
+            GetFolderType = "{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}"
+        Case FOLDERID_LocalAppData
+            GetFolderType = "{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}"
+        Case FOLDERID_LocalAppDataLow
+            GetFolderType = "{A520A1A4-1780-4FF6-BD18-167343C5AF16}"
+        Case FOLDERID_InternetCache
+            GetFolderType = "{352481E8-33BE-4251-BA85-6007CAEDCF9D}"
+        Case FOLDERID_Cookies
+            GetFolderType = "{2B0F765D-C0E9-4171-908E-08A611B84FF6}"
+        Case FOLDERID_History
+            GetFolderType = "{D9DC8A3B-B784-432E-A781-5A1130A75963}"
+        Case FOLDERID_System
+            GetFolderType = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}"
+        Case FOLDERID_SystemX86
+            GetFolderType = "{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}"
+        Case FOLDERID_Windows
+            GetFolderType = "{F38BF404-1D43-42F2-9305-67DE0B28FC23}"
+        Case FOLDERID_Profile
+            GetFolderType = "{5E6C858F-0E22-4760-9AFE-EA3317B67173}"
+        Case FOLDERID_Pictures
+            GetFolderType = "{33E28130-4E1E-4676-835A-98395C3BC3BB}"
+        Case FOLDERID_ProgramFilesX86
+            GetFolderType = "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}"
+        Case FOLDERID_ProgramFilesCommonX86
+            GetFolderType = "{DE974D24-D9C6-4D3E-BF91-F4455120B917}"
+        Case FOLDERID_ProgramFilesX64
+            GetFolderType = "{6D809377-6AF0-444b-8957-A3773F02200E}"
+        Case FOLDERID_ProgramFilesCommonX64
+            GetFolderType = "{6365D5A7-0F0D-45e5-87F6-0DA56B6A4F7D}"
+        Case FOLDERID_ProgramFiles
+            GetFolderType = "{905e63b6-c1bf-494e-b29c-65b732d3d21a}"
+        Case FOLDERID_ProgramFilesCommon
+            GetFolderType = "{F7F1ED05-9F6D-47A2-AAAE-29D317C6F066}"
+        Case FOLDERID_AdminTools
+            GetFolderType = "{724EF170-A42D-4FEF-9F26-B60E846FBA4F}"
+        Case FOLDERID_CommonAdminTools
+            GetFolderType = "{D0384E7D-BAC3-4797-8F14-CBA229B392B5}"
+        Case FOLDERID_Music
+            GetFolderType = "{4BD8D571-6D19-48D3-BE97-422220080E43}"
+        Case FOLDERID_Videos
+            GetFolderType = "{18989B1D-99B5-455B-841C-AB7C74E4DDFC}"
+        Case FOLDERID_PublicPictures
+            GetFolderType = "{B6EBFB86-6907-413C-9AF7-4FC2ABF07CC5}"
+        Case FOLDERID_PublicMusic
+            GetFolderType = "{3214FAB5-9757-4298-BB61-92A9DEAA44FF}"
+        Case FOLDERID_PublicVideos
+            GetFolderType = "{2400183A-6185-49FB-A2D8-4A392A602BA3}"
+        Case FOLDERID_ResourceDir
+            GetFolderType = "{8AD10C31-2ADB-4296-A8F7-E4701232C972}"
+        Case FOLDERID_LocalizedResourcesDir
+            GetFolderType = "{2A00375E-224C-49DE-B8D1-440DF7EF3DDC}"
+        Case FOLDERID_CommonOEMLinks
+            GetFolderType = "{C1BAE2D0-10DF-4334-BEDD-7AA20B227A9D}"
+        Case FOLDERID_CDBurning
+            GetFolderType = "{9E52AB10-F80D-49DF-ACB8-4330F5687855}"
+        Case FOLDERID_UserProfiles
+            GetFolderType = "{0762D272-C50A-4BB0-A382-697DCD729B80}"
+        Case FOLDERID_Playlists
+            GetFolderType = "{DE92C1C7-837F-4F69-A3BB-86E631204A23}"
+        Case FOLDERID_SamplePlaylists
+            GetFolderType = "{15CA69B3-30EE-49C1-ACE1-6B5EC372AFB5}"
+        Case FOLDERID_SampleMusic
+            GetFolderType = "{B250C668-F57D-4EE1-A63C-290EE7D1AA1F}"
+        Case FOLDERID_SamplePictures
+            GetFolderType = "{C4900540-2379-4C75-844B-64E6FAF8716B}"
+        Case FOLDERID_SampleVideos
+            GetFolderType = "{859EAD94-2E85-48AD-A71A-0969CB56A6CD}"
+        Case FOLDERID_PhotoAlbums
+            GetFolderType = "{69D2CF90-FC33-4FB7-9A0C-EBB0F0FCB43C}"
+        Case FOLDERID_Public
+            GetFolderType = "{DFDF76A2-C82A-4D63-906A-5644AC457385}"
+        Case FOLDERID_ChangeRemovePrograms
+            GetFolderType = "{df7266ac-9274-4867-8d55-3bd661de872d}"
+        Case FOLDERID_AppUpdates
+            GetFolderType = "{a305ce99-f527-492b-8b1a-7e76fa98d6e4}"
+        Case FOLDERID_AddNewPrograms
+            GetFolderType = "{de61d971-5ebc-4f02-a3a9-6c82895e5c04}"
+        Case FOLDERID_Downloads
+            GetFolderType = "{374DE290-123F-4565-9164-39C4925E467B}"
+        Case FOLDERID_PublicDownloads
+            GetFolderType = "{3D644C9B-1FB8-4f30-9B45-F670235F79C0}"
+        Case FOLDERID_SavedSearches
+            GetFolderType = "{7d1d3a04-debb-4115-95cf-2f29da2920da}"
+        Case FOLDERID_QuickLaunch
+            GetFolderType = "{52a4f021-7b75-48a9-9f6b-4b87a210bc8f}"
+        Case FOLDERID_Contacts
+            GetFolderType = "{56784854-C6CB-462b-8169-88E350ACB882}"
+        Case FOLDERID_SidebarParts
+            GetFolderType = "{A75D362E-50FC-4fb7-AC2C-A8BEAA314493}"
+        Case FOLDERID_SidebarDefaultParts
+            GetFolderType = "{7B396E54-9EC5-4300-BE0A-2482EBAE1A26}"
+        Case FOLDERID_TreeProperties
+            GetFolderType = "{5b3749ad-b49f-49c1-83eb-15370fbd4882}"
+        Case FOLDERID_PublicGameTasks
+            GetFolderType = "{DEBF2536-E1A8-4c59-B6A2-414586476AEA}"
+        Case FOLDERID_GameTasks
+            GetFolderType = "{054FAE61-4DD8-4787-80B6-090220C4B700}"
+        Case FOLDERID_SavedGames
+            GetFolderType = "{4C5C32FF-BB9D-43b0-B5B4-2D72E54EAAA4}"
+        Case FOLDERID_Games
+            GetFolderType = "{CAC52C1A-B53D-4edc-92D7-6B2E8AC19434}"
+        Case FOLDERID_RecordedTV
+            GetFolderType = "{bd85e001-112e-431e-983b-7b15ac09fff1}"
+        Case FOLDERID_SEARCH_MAPI
+            GetFolderType = "{98ec0e18-2098-4d44-8644-66979315a281}"
+        Case FOLDERID_SEARCH_CSC
+            GetFolderType = "{ee32e446-31ca-4aba-814f-a5ebd2fd6d5e}"
+        Case FOLDERID_Links
+            GetFolderType = "{bfb9d5e0-c6a9-404c-b2b2-ae6db6af4968}"
+        Case FOLDERID_UsersFiles
+            GetFolderType = "{f3ce0f7c-4901-4acc-8648-d5d44b04ef8f}"
+        Case FOLDERID_SearchHome
+            GetFolderType = "{190337d1-b8ca-4121-a639-6d472d16972a}"
+        Case FOLDERID_OriginalImages
+            GetFolderType = "{2C36C0AA-5812-4b87-BFD0-4CD0DFB19B39}"
+    End Select
+End Function
+   
+Public Function GetSpecialFolder(eFolderID As FolderID) As String
+    Dim lngPointerPath As Long
+    Dim tGuid As GUID
+    Dim strGUID As String
+    Dim bytTmp() As Byte
+    Dim lngTmplen As Long
+    strGUID = GetFolderType(eFolderID)
+    If CLSIDFromString(StrPtr(strGUID), tGuid) = 0 Then
+        If SHGetKnownFolderPath(tGuid, 0, 0, lngPointerPath) = 0 Then
+            If lngPointerPath <> 0 Then
+               lngTmplen = lstrlenW(lngPointerPath) * 2
+               If lngTmplen <> 0 Then
+                  ReDim bytTmp(0 To (lngTmplen - 1)) As Byte
+                  CopyMemory bytTmp(0), ByVal lngPointerPath, lngTmplen
+                  GetSpecialFolder = bytTmp
+              End If
+            End If
+            Call CoTaskMemFree(lngPointerPath)
+        End If
+    End If
+End Function
+
+Public Sub AlleVerzeichnisseAusgeben()
+'    Debug.Print "FOLDERID_NetworkFolder         ", GetSpecialFolder(FOLDERID_NetworkFolder)
+'    Debug.Print "FOLDERID_ComputerFolder        ", GetSpecialFolder(FOLDERID_ComputerFolder)
+'    Debug.Print "FOLDERID_InternetFolder        ", GetSpecialFolder(FOLDERID_InternetFolder)
+'    Debug.Print "FOLDERID_ControlPanelFolder    ", GetSpecialFolder(FOLDERID_ControlPanelFolder)
+'    Debug.Print "FOLDERID_PrintersFolder        ", GetSpecialFolder(FOLDERID_PrintersFolder)
+'    Debug.Print "FOLDERID_SyncManagerFolder     ", GetSpecialFolder(FOLDERID_SyncManagerFolder)
+'    Debug.Print "FOLDERID_SyncSetupFolder       ", GetSpecialFolder(FOLDERID_SyncSetupFolder)
+'    Debug.Print "FOLDERID_ConflictFolder        ", GetSpecialFolder(FOLDERID_ConflictFolder)
+'    Debug.Print "FOLDERID_SyncResultsFolder     ", GetSpecialFolder(FOLDERID_SyncResultsFolder)
+'    Debug.Print "FOLDERID_RecycleBinFolder      ", GetSpecialFolder(FOLDERID_RecycleBinFolder)
+'    Debug.Print "FOLDERID_ConnectionsFolder     ", GetSpecialFolder(FOLDERID_ConnectionsFolder)
+    Debug.Print "FOLDERID_Fonts                 ", GetSpecialFolder(FOLDERID_Fonts)
+    Debug.Print "FOLDERID_Desktop               ", GetSpecialFolder(FOLDERID_Desktop)
+    Debug.Print "FOLDERID_Startup               ", GetSpecialFolder(FOLDERID_Startup)
+    Debug.Print "FOLDERID_Programs              ", GetSpecialFolder(FOLDERID_Programs)
+    Debug.Print "FOLDERID_StartMenu             ", GetSpecialFolder(FOLDERID_StartMenu)
+    Debug.Print "FOLDERID_Recent                ", GetSpecialFolder(FOLDERID_Recent)
+    Debug.Print "FOLDERID_SendTo                ", GetSpecialFolder(FOLDERID_SendTo)
+    Debug.Print "FOLDERID_Documents             ", GetSpecialFolder(FOLDERID_Documents)
+    Debug.Print "FOLDERID_Favorites             ", GetSpecialFolder(FOLDERID_Favorites)
+    Debug.Print "FOLDERID_NetHood               ", GetSpecialFolder(FOLDERID_NetHood)
+    Debug.Print "FOLDERID_PrintHood             ", GetSpecialFolder(FOLDERID_PrintHood)
+    Debug.Print "FOLDERID_Templates             ", GetSpecialFolder(FOLDERID_Templates)
+    Debug.Print "FOLDERID_CommonStartup         ", GetSpecialFolder(FOLDERID_CommonStartup)
+    Debug.Print "FOLDERID_CommonPrograms        ", GetSpecialFolder(FOLDERID_CommonPrograms)
+    Debug.Print "FOLDERID_CommonStartMenu       ", GetSpecialFolder(FOLDERID_CommonStartMenu)
+    Debug.Print "FOLDERID_PublicDesktop         ", GetSpecialFolder(FOLDERID_PublicDesktop)
+    Debug.Print "FOLDERID_ProgramData           ", GetSpecialFolder(FOLDERID_ProgramData)
+    Debug.Print "FOLDERID_CommonTemplates       ", GetSpecialFolder(FOLDERID_CommonTemplates)
+    Debug.Print "FOLDERID_PublicDocuments       ", GetSpecialFolder(FOLDERID_PublicDocuments)
+    Debug.Print "FOLDERID_RoamingAppData        ", GetSpecialFolder(FOLDERID_RoamingAppData)
+    Debug.Print "FOLDERID_LocalAppData          ", GetSpecialFolder(FOLDERID_LocalAppData)
+    Debug.Print "FOLDERID_LocalAppDataLow       ", GetSpecialFolder(FOLDERID_LocalAppDataLow)
+    Debug.Print "FOLDERID_InternetCache         ", GetSpecialFolder(FOLDERID_InternetCache)
+    Debug.Print "FOLDERID_Cookies               ", GetSpecialFolder(FOLDERID_Cookies)
+    Debug.Print "FOLDERID_History               ", GetSpecialFolder(FOLDERID_History)
+    Debug.Print "FOLDERID_System                ", GetSpecialFolder(FOLDERID_System)
+    Debug.Print "FOLDERID_SystemX86             ", GetSpecialFolder(FOLDERID_SystemX86)
+    Debug.Print "FOLDERID_Windows               ", GetSpecialFolder(FOLDERID_Windows)
+    Debug.Print "FOLDERID_Profile               ", GetSpecialFolder(FOLDERID_Profile)
+    Debug.Print "FOLDERID_Pictures              ", GetSpecialFolder(FOLDERID_Pictures)
+    Debug.Print "FOLDERID_ProgramFilesX86       ", GetSpecialFolder(FOLDERID_ProgramFilesX86)
+    Debug.Print "FOLDERID_ProgramFilesCommonX86 ", GetSpecialFolder(FOLDERID_ProgramFilesCommonX86)
+'    Debug.Print "FOLDERID_ProgramFilesX64       ", GetSpecialFolder(FOLDERID_ProgramFilesX64)
+'    Debug.Print "FOLDERID_ProgramFilesCommonX64 ", GetSpecialFolder(FOLDERID_ProgramFilesCommonX64)
+    Debug.Print "FOLDERID_ProgramFiles          ", GetSpecialFolder(FOLDERID_ProgramFiles)
+    Debug.Print "FOLDERID_ProgramFilesCommon    ", GetSpecialFolder(FOLDERID_ProgramFilesCommon)
+    Debug.Print "FOLDERID_AdminTools            ", GetSpecialFolder(FOLDERID_AdminTools)
+    Debug.Print "FOLDERID_CommonAdminTools      ", GetSpecialFolder(FOLDERID_CommonAdminTools)
+    Debug.Print "FOLDERID_Music                 ", GetSpecialFolder(FOLDERID_Music)
+    Debug.Print "FOLDERID_Videos                ", GetSpecialFolder(FOLDERID_Videos)
+    Debug.Print "FOLDERID_PublicPictures        ", GetSpecialFolder(FOLDERID_PublicPictures)
+    Debug.Print "FOLDERID_PublicMusic           ", GetSpecialFolder(FOLDERID_PublicMusic)
+    Debug.Print "FOLDERID_PublicVideos          ", GetSpecialFolder(FOLDERID_PublicVideos)
+    Debug.Print "FOLDERID_ResourceDir           ", GetSpecialFolder(FOLDERID_ResourceDir)
+'    Debug.Print "FOLDERID_LocalizedResourcesDir ", GetSpecialFolder(FOLDERID_LocalizedResourcesDir)
+'    Debug.Print "FOLDERID_CommonOEMLinks        ", GetSpecialFolder(FOLDERID_CommonOEMLinks)
+    Debug.Print "FOLDERID_CDBurning             ", GetSpecialFolder(FOLDERID_CDBurning)
+    Debug.Print "FOLDERID_UserProfiles          ", GetSpecialFolder(FOLDERID_UserProfiles)
+'    Debug.Print "FOLDERID_Playlists             ", GetSpecialFolder(FOLDERID_Playlists)
+'    Debug.Print "FOLDERID_SamplePlaylists       ", GetSpecialFolder(FOLDERID_SamplePlaylists)
+    Debug.Print "FOLDERID_SampleMusic           ", GetSpecialFolder(FOLDERID_SampleMusic)
+    Debug.Print "FOLDERID_SamplePictures        ", GetSpecialFolder(FOLDERID_SamplePictures)
+    Debug.Print "FOLDERID_SampleVideos          ", GetSpecialFolder(FOLDERID_SampleVideos)
+'    Debug.Print "FOLDERID_PhotoAlbums           ", GetSpecialFolder(FOLDERID_PhotoAlbums)
+    Debug.Print "FOLDERID_Public                ", GetSpecialFolder(FOLDERID_Public)
+'    Debug.Print "FOLDERID_ChangeRemovePrograms  ", GetSpecialFolder(FOLDERID_ChangeRemovePrograms)
+'    Debug.Print "FOLDERID_AppUpdates            ", GetSpecialFolder(FOLDERID_AppUpdates)
+'    Debug.Print "FOLDERID_AddNewPrograms        ", GetSpecialFolder(FOLDERID_AddNewPrograms)
+    Debug.Print "FOLDERID_Downloads             ", GetSpecialFolder(FOLDERID_Downloads)
+    Debug.Print "FOLDERID_PublicDownloads       ", GetSpecialFolder(FOLDERID_PublicDownloads)
+    Debug.Print "FOLDERID_SavedSearches         ", GetSpecialFolder(FOLDERID_SavedSearches)
+    Debug.Print "FOLDERID_QuickLaunch           ", GetSpecialFolder(FOLDERID_QuickLaunch)
+    Debug.Print "FOLDERID_Contacts              ", GetSpecialFolder(FOLDERID_Contacts)
+    Debug.Print "FOLDERID_SidebarParts          ", GetSpecialFolder(FOLDERID_SidebarParts)
+    Debug.Print "FOLDERID_SidebarDefaultParts   ", GetSpecialFolder(FOLDERID_SidebarDefaultParts)
+'    Debug.Print "FOLDERID_TreeProperties        ", GetSpecialFolder(FOLDERID_TreeProperties)
+    Debug.Print "FOLDERID_PublicGameTasks       ", GetSpecialFolder(FOLDERID_PublicGameTasks)
+    Debug.Print "FOLDERID_GameTasks             ", GetSpecialFolder(FOLDERID_GameTasks)
+    Debug.Print "FOLDERID_SavedGames            ", GetSpecialFolder(FOLDERID_SavedGames)
+'    Debug.Print "FOLDERID_Games                 ", GetSpecialFolder(FOLDERID_Games)
+'    Debug.Print "FOLDERID_RecordedTV            ", GetSpecialFolder(FOLDERID_RecordedTV)
+'    Debug.Print "FOLDERID_SEARCH_MAPI           ", GetSpecialFolder(FOLDERID_SEARCH_MAPI)
+'    Debug.Print "FOLDERID_SEARCH_CSC            ", GetSpecialFolder(FOLDERID_SEARCH_CSC)
+    Debug.Print "FOLDERID_Links                 ", GetSpecialFolder(FOLDERID_Links)
+'    Debug.Print "FOLDERID_UsersFiles            ", GetSpecialFolder(FOLDERID_UsersFiles)
+'    Debug.Print "FOLDERID_SearchHome            ", GetSpecialFolder(FOLDERID_SearchHome)
+'    Debug.Print "FOLDERID_OriginalImages        ", GetSpecialFolder(FOLDERID_OriginalImages)
+End Sub
+
+Attribute VB_Name = "mdlTicketverwaltung_Global"
+Option Explicit
+
+'Private mCurrentDB As DAO.Database
+'Public Const cStrDB As String = "C:\Users\User\Dropbox\Daten\Accessprojekte\Projektzeiterfassung\Projektzeiterfassung.accdb"
+'Public intCurrentItemType As Outlook.OlItemType
+'Public lngTaskID As Long
+
+'Public Property Get CurrentDBC() As DAO.Database
+'10        On Error GoTo CurrentDBC_Err
+'
+'20        If mCurrentDB Is Nothing Then
+'30            Set mCurrentDB = DBEngine.OpenDatabase(cStrDB, False)
+'40        End If
+'50        Set CurrentDBC = mCurrentDB
+'
+'CurrentDBC_Exit:
+'60        On Error Resume Next
+'70        Exit Property
+'CurrentDBC_Err:
+'80        Call Fehlerbehandlung("Projekt1/mdlGlobal", "CurrentDBC", Erl, "Bemerkungen: ./.")
+'90        GoTo CurrentDBC_Exit
+'End Property
+
+
+Public Function Fehlerbehandlung(strModul As String, strRoutine As String, lngZeile As Long, Optional strBemerkungen As String)
+    Dim strFehler As String
+    strFehler = strFehler & "Datum:              " & Format(Now, "yyyy-mm-dd, hh:nn:ss") & vbCrLf
+    strFehler = strFehler & "Projekt:            Zeiterfassung" & vbCrLf
+    strFehler = strFehler & "Modul:              " & strModul & vbCrLf
+    strFehler = strFehler & "Routine:            " & strRoutine & vbCrLf
+    strFehler = strFehler & "Fehlernummer:       " & Err.Number & vbCrLf
+    strFehler = strFehler & "Fehlerbeschreibung: " & Err.Description & vbCrLf
+    strFehler = strFehler & "Zeile:              " & lngZeile & vbCrLf
+    strFehler = strFehler & "Bemerkungen:        " & strBemerkungen & vbCrLf
+    MsgBox "Es ist ein Fehler aufgetreten. " & vbCrLf & strFehler
+End Function
+
+Public Function SQLDatum(varDate As Variant)
+10        On Error GoTo SQLDatum_Err
+
+20        SQLDatum = Format(varDate, "\#yyyy\-mm\-dd\#")
+
+SQLDatum_Exit:
+30        On Error Resume Next
+40        Exit Function
+SQLDatum_Err:
+50        Call Fehlerbehandlung("Projekt1/mdlGlobal", "SQLDatum", Erl, "Bemerkungen: ./.")
+60        GoTo SQLDatum_Exit
+End Function
+
+Public Function ISODatum(varDate As Variant)
+10        On Error GoTo ISODatum_Err
+
+20        ISODatum = Format(varDate, "\#yyyy\/mm\/dd hh\:nn\:ss\#")
+
+ISODatum_Exit:
+30        On Error Resume Next
+40        Exit Function
+ISODatum_Err:
+50        Call Fehlerbehandlung("Projekt1/mdlGlobal", "ISODatum", Erl, "Bemerkungen: ./.")
+60        GoTo ISODatum_Exit
+End Function
+
+'Public Function GetID(str As String, strItemType As String) As Long
+'    On Error GoTo GetID_Err
+'
+'    Dim intPosStart As Integer
+'    Dim intPosEnde As Integer
+'    Dim lngID As Long
+'    Dim intItemTypeLen As Integer
+'    intItemTypeLen = Len(strItemType)
+'    intPosStart = InStr(1, str, "[" & strItemType & "|")
+'    If intPosStart > 0 Then
+'        intPosEnde = InStr(intPosStart, str, "]")
+'        If intPosEnde > 0 Then
+'            lngID = Mid(str, intPosStart + 2 + intItemTypeLen, intPosEnde - intPosStart - 2 - intItemTypeLen)
+'        End If
+'    End If
+'    GetID = lngID
+'
+'GetID_Exit:
+'    On Error Resume Next
+'    Exit Function
+'GetID_Err:
+'    Call Fehlerbehandlung("Projekt1/ThisOutlookSession", "GetID", Erl, "Bemerkungen: ./.")
+'    GoTo GetID_Exit
+'End Function
+'
+'Public Sub SQLMessage(strMessage As String, bolResult As Boolean)
+'10        On Error GoTo SQLMessage_Err
+'
+'20        If Not bolResult Then
+'30            MsgBox "Die Operation '" & strMessage & "' war nicht erfolgreich.", vbOKOnly Or vbCritical, "Synchronisierungsfehler"
+'40        End If
+'
+'SQLMessage_Exit:
+'50        On Error Resume Next
+'60        Exit Sub
+'SQLMessage_Err:
+'70        Call Fehlerbehandlung("Projekt1/mdlGlobal", "SQLMessage", Erl, "Bemerkungen: ./.")
+'80        GoTo SQLMessage_Exit
+'End Sub
+'
+''Ersatz f|fffd|r die Aggregatfunktion DLookUp() von JET-VBA (Schneller und ressourcenschonender!)
+'Function dbLookup(db As DAO.Database, ByVal sFieldName As String, ByVal sSource As String, _
+'        Optional ByVal sCriteria As String = vbNullString) As Variant
+'    Dim rst As DAO.Recordset
+'    Dim strSQL As String
+'    strSQL = "SELECT " & sFieldName & " FROM " & sSource
+'    If Len(sCriteria) > 0 Then strSQL = strSQL & " WHERE " & sCriteria
+'    Set rst = db.OpenRecordset(strSQL, dbOpenDynaset)
+'    If rst.EOF Then
+'        dbLookup = Null
+'    Else
+'        dbLookup = rst.Fields(0).Value
+'    End If
+'    rst.Close
+'    Set rst = Nothing
+'End Function
+'
+'Public Sub Test_EigenschaftSetzen()
+'    EigenschaftSetzen "Ticketsystem", "Datenbankpfad", "c:\test\test"
+'End Sub
+'
+'Public Sub EigenschaftSetzen(strElement As String, strName As String, strWert As String)
+'    Dim objMAPI As Outlook.NameSpace
+'    Dim objFolder As Outlook.Folder
+'    Dim objStorageItem As Outlook.StorageItem
+'    Dim objUserProperty As Outlook.UserProperty
+'    Set objMAPI = Outlook.GetNamespace("MAPI")
+'    Set objFolder = objMAPI.GetDefaultFolder(olFolderInbox)
+'    Set objStorageItem = objFolder.GetStorage(strElement, olIdentifyBySubject)
+'    Set objUserProperty = objStorageItem.UserProperties.Add(strName, olText)
+'    objUserProperty.Value = strWert
+'    objStorageItem.Save
+'End Sub
+'
+'Public Sub Test_EigenschaftEinlesen()
+'    EigenschaftEinlesen "Ticketsystem", "Datenbankpfad"
+'End Sub
+'
+'Public Function EigenschaftEinlesen(strElement As String, strName As String) As String
+'    Dim objMAPI As Outlook.NameSpace
+'    Dim objFolder As Outlook.Folder
+'    Dim objStorageItem As Outlook.StorageItem
+'    Dim objUserProperty As Outlook.UserProperty
+'    Set objMAPI = Outlook.GetNamespace("MAPI")
+'    Set objFolder = objMAPI.GetDefaultFolder(olFolderInbox)
+'    Set objStorageItem = objFolder.GetStorage(strElement, olIdentifyBySubject)
+'    Set objUserProperty = objStorageItem.UserProperties.Item(strName)
+'    If objUserProperty Is Nothing Then
+'        EigenschaftEinlesen = ""
+'    Else
+'        EigenschaftEinlesen = objUserProperty.Value
+'    End If
+'End Function
+'
+Public Sub Test_StorageItemLoeschen()
+    StorageItemLoeschen "Ticketsystem"
+End Sub
+
+Public Sub StorageItemLoeschen(strElement As String)
+    Dim objMAPI As Outlook.NameSpace
+    Dim objFolder As Outlook.Folder
+    Dim objStorageItem As Outlook.StorageItem
+    Dim objUserProperty As Outlook.UserProperty
+    Set objMAPI = Outlook.GetNamespace("MAPI")
+    Set objFolder = objMAPI.GetDefaultFolder(olFolderInbox)
+    Set objStorageItem = objFolder.GetStorage(strElement, olIdentifyBySubject)
+    objStorageItem.Delete
+End Sub
+'
+'Public Sub Test_DatenbankpfadHolen()
+'    Debug.Print DatenbankpfadHolen("Ticketsystem", "Datenbankpfad")
+'End Sub
+'
+'Public Function DatenbankpfadHolen(strElement As String, strName As String) As String
+'    Dim strDatenbankpfad As String
+'    Dim bolVorhanden As Boolean
+'    strDatenbankpfad = EigenschaftEinlesen(strElement, strName)
+'    If Not Len(strDatenbankpfad) = 0 Then
+'        If Not Len(Dir(strDatenbankpfad)) = 0 Then
+'            bolVorhanden = True
+'        End If
+'    End If
+'    If Not bolVorhanden Then
+'        strDatenbankpfad = OpenFileName("", "Datenbankpfad ausw|fffd|hlen", "Access-DB (*.mdb;*.accdb)")
+'        EigenschaftSetzen strElement, strName, strDatenbankpfad
+'    End If
+'    DatenbankpfadHolen = strDatenbankpfad
+'End Function
+Attribute VB_Name = "mdlTicketverwaltung_Outlook"
+Option Explicit
+
+Private m_Outlook As Outlook.Application
+Private m_MAPI As Outlook.NameSpace
+   
+Public Function GetOutlook() As Outlook.Application
+'    If m_Outlook Is Nothing Then
+'        Set m_Outlook = New Outlook.Application
+'    Else
+'        On Error Resume Next
+'        If Len(m_Outlook) = 0 Then
+'            Set m_Outlook = New Outlook.Application
+'        End If
+'        On Error GoTo 0
+'    End If
+'    Set GetOutlook = m_Outlook
+    Set GetOutlook = Outlook.Application
+End Function
+
+Public Function GetMAPI() As Outlook.NameSpace
+    If m_MAPI Is Nothing Then
+        Set m_MAPI = GetOutlook.GetNamespace("MAPI")
+    End If
+    Set GetMAPI = m_MAPI
+End Function
+
+Public Function GetFolderByPath(strPath As String) As Outlook.Folder
+    Dim objFolder As Outlook.Folder
+    For Each objFolder In GetMAPI.Folders
+        If objFolder.FolderPath = strPath Then
+            Set GetFolderByPath = objFolder
+            Exit Function
+        Else
+            Set GetFolderByPath = GetFolderByPath_Rek(strPath, objFolder)
+            If Not GetFolderByPath Is Nothing Then
+                Exit Function
+            End If
+        End If
+    Next objFolder
+End Function
+
+Public Function GetFolderByPath_Rek(strPath As String, objParent As Outlook.Folder) As Outlook.Folder
+    Dim objFolder As Outlook.Folder
+    For Each objFolder In objParent.Folders
+        If objFolder.FolderPath = strPath Then
+            Set GetFolderByPath_Rek = objFolder
+            Exit Function
+        Else
+            Set GetFolderByPath_Rek = GetFolderByPath_Rek(strPath, objFolder)
+            If Not GetFolderByPath_Rek Is Nothing Then
+                Exit Function
+            End If
+        End If
+    Next objFolder
+End Function
+
+' InQuest injected base64 decoded content
+' #zKu
+
+INQUEST-PP=macro

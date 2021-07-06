@@ -1,0 +1,3509 @@
+Attribute VB_Name = "Foglio1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Foglio2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Foglio5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Foglio6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
+Static blnWorking As Boolean
+Dim blnPWD        As Boolean
+Dim strNome       As String
+
+On Error Resume Next
+blnPWD = ThisWorkbook.CustomDocumentProperties("pwd ver") <> ""
+
+strNome = Target.Name.Name
+
+If LCase(strNome) Like "*pwd*" And blnPWD Then
+   If Not blnWorking Then
+      blnWorking = True
+      'imposta la formattazione personalizzata per la visualizzazione
+      'degli asterischi e cripta il testo contenuto nella cella
+      Target.NumberFormatLocal = ";;;" & Replace(String(Len(Target.Value), "\"), "\", "\*") '  "**;**;**;**"
+      Target.Value = Criptazione(Target.Value, Criptare)
+   Else
+      blnWorking = False
+   End If
+End If
+End Sub
+Attribute VB_Name = "basAggiornaTabelle"
+Option Explicit
+'===========================================================================
+'                         SAEP - AGGIORNA TABELLE
+'===========================================================================
+'IMPORTANTE: la riga di commento sottoindicata, nell'esatto formato riportato,
+'|fffd| indispensabile per le rilevazione di versione della CreaFoglioAutonomo
+'    ||     ||
+'   _||_   _||_
+'   \  /   \  /
+'    \/     \/
+' Release 4.0.0 del 16 gennaio 2017
+'
+' VERSION_TYPE: E' un argomendo di compilazione condizionale e imposta la
+'               versione dell'AddIn. Per modificarlo fare click dx sul
+'               progetto SAEP_TO_EXCEL_Aggiorna_Tabelle uno dei seguenti valori:
+'               0 = Full Version
+'               1 = Light Version
+'
+'===========================================================================
+Global gbAggiornato     As Boolean
+Global gbAutoMacroManuale As Boolean
+
+Public Const Versione   As String = "4.0.0"
+
+Const DelimitatoreLibreriaFile   As String = "/"
+Const strData           As String = "--DATA"
+Const strData1          As String = "/*Aggiornato il"
+Const strChiavePassword As String = "--PASSWORD"
+
+'percorsi dei moduli da importare per la creazione di un foglio autonomo
+Const strCartellaModuli       As String = "SAEP TO EXCEL - Aggiorna Tabelle"
+
+Const DelimitatoreVariabili   As String = "::"
+
+'parole chiavi delle macroistruzioni
+Const SE          As String = "--IF"
+Const ALLORA      As String = "--THEN"
+Const ALTRIMENTI  As String = "--ELSE"
+Const FINE_SE     As String = "--ENDIF;"
+
+'Parole chiave per nomi fissi
+Const SQLLASTUPDATE     As String = "SQLLASTUPDATE"
+Const SQLAUTOMACRO      As String = "SQLAUTOMACRO"
+
+Enum Statement
+   GruppoAllora = 0
+   GruppoAltrimenti = 1
+End Enum
+
+Enum SubMatches
+   SottoGruppoCONDIZIONE = 0
+   SottoGruppoCHIAVE = 1
+   SottoGruppoRISULTATO = 2
+End Enum
+
+'Const adChar            As Long = 129
+'Const adCmdStoredProc   As Long = 4
+'Const adCmdText         As Long = 1
+'Const adParamInput      As Long = 1
+'Const adParamOutput     As Long = 2
+'Const adPromptComplete  As Long = 2
+'Const adUseServer       As Long = 2
+'Const adVarChar         As Long = 200
+
+Const vbext_pk_Proc     As Integer = 0
+
+Public Enum AzioneCriptazione
+   Criptare = 0
+   Decriptare = 1
+End Enum
+
+'enumeratore booleano: eventuali aggiunte devono essere potenze di 2
+Private Enum TipoMacroIstruzione
+   Tutte = 9999 'valore di input per selezione macroistruzioni da eseguire
+   errore = -1
+   Nessuna = 0
+   IfThenElse = 1
+   Trace = 2
+   'nuovotipo1 = 4
+   'nuovotipo2 = 8
+   '...
+End Enum
+
+Public Type MacroIstruzione
+   TipoMacroIstruzione As TipoMacroIstruzione
+   TraceOnError As Boolean
+   Trace As Boolean
+   StringaTrace As String
+End Type
+
+Private Enum ElaborazioneSQL
+   NessunErrore = True
+   ErroreElaborazioneSQL = 0
+   ErroreEsecuzioneSQL = 1
+End Enum
+
+Private Function ApriConnessioneADO(ByRef cnn As ADODB.Connection, _
+                                    ByVal strConnessione As String) As Boolean
+
+Dim strTemp As String
+
+On Error GoTo ApriConnessioneADO_err
+
+If InStr(UCase(strConnessione), "ODBC;") > 0 Then
+   strTemp = Mid(strConnessione, InStr(UCase(strConnessione), "ODBC;") + Len("ODBC;"))
+Else
+   strTemp = strConnessione
+End If
+
+'apre la connessione
+Set cnn = New ADODB.Connection
+
+With cnn
+   .CursorLocation = adUseServer
+   .Properties("Prompt").Value = adPromptComplete
+   .ConnectionString = strTemp
+   .Open
+End With
+
+ApriConnessioneADO = True
+
+Exit Function
+
+ApriConnessioneADO_err:
+If cnn.State <> 0 Then
+   GestioneErrori cnn.ODBCErrors, Err, "ApriConnessioneADO"
+Else
+   GestioneErrori Nothing, Err, "ApriConnessioneADO"
+End If
+
+End Function
+
+Private Sub CambiaSQLQueryPivot(ByRef vntQueryPivot As Variant, ByVal strNuovoSQL As String, _
+                                Optional ByVal blnRimuoviMissingPivotItem As Boolean = True)
+'sostituisce il CommandText di una query o pivot,
+'gestendo automaticamente il problema del refesh automatico delle pivot;
+'il parametro opzionale blnRimuoviMissingPivotItem specifica se eliminare
+'o meno i pivotitems da eventuali pivot passate, al fine di evitare un
+'processo potenzialmente lungo ogni volta che viene modificato l'sql
+'o la connessione della pivot
+Dim strConnessione   As String
+Dim StrSQL           As String
+Dim strTipoOggetto   As String
+Dim pvt              As PivotTable
+Dim vnt              As Variant
+
+If TypeOf vntQueryPivot Is QueryTable Then
+   Set vnt = vntQueryPivot
+   strTipoOggetto = "query."
+Else
+   Set vnt = vntQueryPivot.PivotCache
+   Set pvt = vntQueryPivot
+   strTipoOggetto = "pivot."
+End If
+
+'se la lunghezza dell'sql supera il limite massimo,
+'mostra un messaggio ed esce senza aggiornare
+If Len(strNuovoSQL) > 32767 Then
+   MsgBox "La lunghezza dell'sql supera il limite consentito di 32767 caratteri." & vbCrLf & _
+          "Impossibile aggiornare la " & strTipoOggetto, vbCritical, "Attenzione"
+   Exit Sub
+End If
+
+With vnt
+   strConnessione = .Connection
+   If TypeOf vnt Is PivotCache Then
+      SvuotaPivot pvt, False, blnRimuoviMissingPivotItem
+   End If
+   .CommandText = strNuovoSQL
+   .Connection = strConnessione
+End With
+End Sub
+
+Public Function CercaNome(ByVal obj As Object, _
+                          ByVal strNome As String, _
+                          ByRef strContenuto As String) As Boolean
+'cerca strNome nell'insieme Names di Obj,
+'restituendo il contenuto del nome in strContenuto,
+'comprensivo di apici se stringa o data
+Dim nam     As Name
+Dim strTemp As String
+
+On Error GoTo CercaNome_err
+
+'se l'oggetto specificato |fffd| un foglio, prepara una stringa contenente
+'il nome del foglio da aggiungere al nome da ricercare
+If TypeOf obj Is Excel.Worksheet Then
+   strTemp = obj.Name
+   'se il nome del foglio contiene
+   'degli spazi, lo racchiude fra apici
+   If InStr(strTemp, " ") <> 0 Then
+      strTemp = "'" & strTemp & "'"
+   End If
+   
+   strTemp = strTemp & "!"
+End If
+
+For Each nam In obj.Names
+   If LCase(nam.Name) = LCase(strTemp & strNome) Then
+      'se il nome trovato |fffd| un'area di pi|fffd| di una cella, esce
+      ' *RG 17/03/10
+      On Error GoTo CercaNome_no_controllo
+      If nam.RefersToRange.Cells.Count > 1 Then
+         MsgBox "Il nome di Excel corrispondente alla variabile " & strNome & vbCrLf & _
+                "si riferisce ad un'area con pi|fffd| di una cella." & vbCrLf & _
+                "Impossibile effettuare la sostituzione delle variabili.", vbCritical
+         Exit Function
+      End If
+      
+      ' *RG 17/03/10
+      'strContenuto = nam.RefersToRange.Value
+CercaNome_no_controllo:
+      strContenuto = Evaluate(nam.Value)
+      
+      'VERIFICARE SE DEVE ESSERE RIPRISTINATO
+'      If VarType(nam.RefersToRange.Value) = vbString Or _
+'         VarType(nam.RefersToRange.Value) = vbDate Then
+'         strContenuto = "'" & strContenuto & "'"
+'      End If
+      CercaNome = True
+      Exit For
+   End If
+Next
+
+Exit Function
+
+CercaNome_err:
+End Function
+
+Private Sub Aggiorna_SQLLASTUPDATE(ByRef NomeFoglio As String, _
+                                   Optional ByRef Svuota As Boolean = False)
+
+Dim nam As Name
+Dim strTemp As String
+
+On Error Resume Next
+
+If Not CercaNome(Sheets(NomeFoglio), SQLLASTUPDATE, strTemp) Then
+    Exit Sub
+End If
+
+If Svuota Then
+    Sheets(NomeFoglio).Names(SQLLASTUPDATE).RefersToRange.Value = ""
+Else
+    Sheets(NomeFoglio).Names(SQLLASTUPDATE).RefersToRange.Value = _
+        "Dati importati il " & Date & " alle ore " & Time
+End If
+
+End Sub
+
+Private Sub Aggiorna_SQLHOST(ByRef NomeFoglio As String, _
+                                  ByRef StrSQL As String)
+
+Const SQLHOST       As String = "SQLHOST"
+Dim strSQLHOST      As String
+Dim intPosInizio    As Integer
+Dim intPosFine      As Integer
+
+On Error Resume Next
+
+If CercaNome(Sheets(NomeFoglio), SQLHOST, strSQLHOST) Then
+    strSQLHOST = Trim(strSQLHOST)
+    If strSQLHOST <> "" And Left(strSQLHOST, 2) <> "- " Then
+        intPosInizio = InStr(StrSQL, "--SQLHOST")
+        If intPosInizio <> 0 Then
+            intPosFine = InStr(StrSQL, ")")
+            If intPosFine <> 0 Then
+                StrSQL = Left(StrSQL, intPosInizio + Len("--SQLHOST")) + strSQLHOST + _
+                            Mid(StrSQL, intPosFine + 1)
+            End If
+        Else
+            StrSQL = "--SQLHOST " + strSQLHOST + " keep onerror-go;" + vbCrLf + StrSQL
+        End If
+    End If
+End If
+
+End Sub
+
+'===========================================================================
+' FUNZIONE:    ClearPivots
+' PARAMETRI:   strNomeFoglio - stringa indicante il nome del foglio che
+'                              contiene la/le pivot da ripulire
+' DESCRIZIONE: La funzione svuota le aree dei dati delle pivot contenute
+'              nel foglio selezionato, andando a recuperare la query su cui
+'              si appoggiano e svuotandole con la ClearQueries
+'===========================================================================
+Private Function ClearPivots(ByRef Foglio As Worksheet) As Boolean
+
+Dim pvt           As PivotTable
+                    
+On Error GoTo error_handler
+
+Foglio.Activate
+For Each pvt In Foglio.PivotTables
+
+   gbAggiornato = True
+   
+   Select Case TypeName(pvt.PivotCache.SourceData)
+      Case "String"
+'         strSourceData = pvt.PivotCache.SourceData
+'         If InStr(1, strSourceData, "!") > 1 Then
+'            strQrySheet = Left(strSourceData, InStr(1, strSourceData, "!") - 1)
+'            If Left(strQrySheet, 1) = "'" Then
+'               strQrySheet = Mid(strQrySheet, 2)
+'            End If
+'            If Right(strQrySheet, 1) = "'" Then
+'               strQrySheet = Left(strQrySheet, Len(strQrySheet) - 1)
+'            End If
+'            strQryName = Mid(strSourceData, InStr(1, strSourceData, "!") + 1)
+'            ClearQueries strQrySheet
+            ClearQueries Range(Application.ConvertFormula(pvt.SourceData, xlR1C1, xlA1)).Parent
+'         End If
+         
+      Case "Variant()"
+         If pvt.PivotCache.QueryType <> xlADORecordset Then
+            'lo svuotamento della pivot |fffd| effettuato sempre,
+            'al fine di eliminare gli elementi che altrimenti
+            'resterebbero
+            SvuotaPivot pvt, True
+         End If
+   End Select
+   
+    ' Aggiorna variabile data ultima importazione
+    Aggiorna_SQLLASTUPDATE Foglio.Name, True
+
+Next
+
+ClearPivots = True
+
+Exit Function
+    
+error_handler:
+            
+    With Application
+        If .Cursor <> xlDefault Then .Cursor = xlDefault
+    End With
+    
+    GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.ClearPivots"
+End Function
+
+'===========================================================================
+' FUNZIONE:    ClearQueries
+' PARAMETRI:   strNomeFoglio - stringa indicante il nome del foglio che
+'                              contiene la/le query da ripulire
+' DESCRIZIONE: La funzione svuota le aree dei dati delle query contenute
+'              nel foglio selezionato, mantenendone la struttura per poter
+'              essere riaggiornata
+'===========================================================================
+Private Function ClearQueries(ByRef Foglio As Worksheet) As Boolean
+
+Dim qry As QueryTable
+
+Dim lngRiga As Long
+Dim lngColonna As Long
+Dim lngRiga2 As Long
+Dim lngColonna2 As Long
+
+On Error GoTo error_handler
+    
+For Each qry In Foglio.QueryTables
+
+    gbAggiornato = True
+
+    If qry.FieldNames = True Then
+        lngRiga = qry.ResultRange.Row + 3
+    Else
+        lngRiga = qry.ResultRange.Row + 2
+    End If
+    
+    lngRiga2 = qry.ResultRange.Rows.Count + qry.ResultRange.Row - 1
+    lngColonna = qry.ResultRange.Column
+    lngColonna2 = lngColonna + UBound(qry.ResultRange.Formula, 2) - 1
+    
+    If qry.ResultRange.Rows.Count > 3 Then
+        Foglio.Range(Foglio.Rows(lngRiga), Foglio.Rows(lngRiga2)).Delete
+    End If
+    
+    If qry.FieldNames = True Then
+        lngRiga = qry.ResultRange.Row + 1
+    Else
+        lngRiga = qry.ResultRange.Row
+    End If
+    
+    lngRiga2 = qry.ResultRange.Rows.Count + qry.ResultRange.Row - 1
+    lngColonna = qry.ResultRange.Column
+    lngColonna2 = lngColonna + UBound(qry.ResultRange.Formula, 2) - 1
+    
+    Foglio.Range(Foglio.Cells(lngRiga, lngColonna), Foglio.Cells(lngRiga2, lngColonna2)).ClearContents
+        
+    RefreshLinkedPivot qry
+    
+    ' Aggiorna variabile data ultima importazione
+    Aggiorna_SQLLASTUPDATE Foglio.Name, True
+    
+Next qry
+
+ClearQueries = True
+
+Exit Function
+    
+error_handler:
+
+    With Application
+        If .Cursor <> xlDefault Then .Cursor = xlDefault
+    End With
+    
+    GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.CleanQueries"
+End Function
+
+Private Function ConfrontaQryPivot(ByVal strSourceData As String, _
+                                   ByVal qry As QueryTable) As Boolean
+'verifica se l'area dati di una pivot e di una query si intersecano,
+'nel qual caso le considera basate sulla stessa area dati e d|fffd|
+'esito negativo al fine di impedire un doppio refresh di query e pivot
+Dim strPvtRange      As String
+    
+Dim rngQuery         As Range
+Dim rngSourceData    As Range
+
+'converte il range della pivot dal formato nativo R1C1 a quello standard A1
+strPvtRange = Application.ConvertFormula(strSourceData, xlR1C1, xlA1)
+
+'range di dati della pivot
+Set rngSourceData = Range(strPvtRange)
+    
+'range della query
+Set rngQuery = qry.ResultRange
+
+If rngQuery.Parent.Name = rngSourceData.Parent.Name Then
+   If Not Intersect(rngSourceData, rngQuery) Is Nothing Then
+      ConfrontaQryPivot = True
+   End If
+End If
+
+End Function
+
+Private Function Cripta(ByVal Stringa As String, _
+                        ByVal Azione As AzioneCriptazione) As String
+Dim lngPosPwd  As Long
+
+If Azione = Decriptare Then
+   lngPosPwd = InStr(Stringa, Criptazione(strChiavePassword, _
+                                          Criptare))
+Else
+   lngPosPwd = InStr(Stringa, strChiavePassword)
+End If
+
+If lngPosPwd <> 0 Then
+   Cripta = Left(Stringa, lngPosPwd - 1) & _
+            Criptazione(Mid(Stringa, lngPosPwd), Azione)
+Else
+   Cripta = Stringa
+End If
+
+End Function
+
+Public Function Criptazione(ByVal Stringa As String, _
+                             ByVal Azione As AzioneCriptazione) As String
+'la funzione di criptazione DEVE essere Public in quanto
+'pu|fffd| essere richiamata dalla classe ThisWorkbook quando
+'si imposta un campo a password
+Dim a                As Long
+Dim intChrTemp       As Integer
+Dim intStringaTemp   As Integer
+
+For a = 1 To Len(Stringa)
+   intChrTemp = Asc(Mid(Stringa, a, 1))
+   If Azione = Criptare Then
+      intStringaTemp = intChrTemp * 2
+      intStringaTemp = (intStringaTemp + Int(intStringaTemp / 256)) And 255
+   Else
+      intStringaTemp = Int(intChrTemp / 2)
+      intStringaTemp = intStringaTemp + 128 * (intChrTemp And 1)
+   End If
+   Mid(Stringa, a, 1) = Chr(intStringaTemp)
+Next
+
+Criptazione = Stringa
+
+End Function
+
+' *RG 01/09/15
+'Private Sub RilevaADO()
+'Dim cnnDummy   As ADODB.Connection
+'
+'Set cnnDummy = New ADODB.Connection
+'
+'If cnnDummy.Version < "2.1" Then
+'   Err.Raise 10099, "SAEP To Excel", _
+'             "La versione di Microsoft ADO rilevata nel sistema (" & cnnDummy.Version & ") |fffd| inferiore a" & vbCrLf & _
+'             "quella minima richiesta dai requisiti di sistema dell'applicativo (2.1)." & vbCrLf & _
+'             "Impossibile continuare. Contattare l'assistenza software."
+'End If
+'
+'End Sub
+
+Public Sub DebugSQL(ByVal StrSQL As String, ByVal strNomeQuery As String, Optional ByVal blnMostraDebug As Boolean = False)
+Dim a                As Integer
+Static blnChiamato   As Boolean
+Dim txtDummy         As Object
+Dim wkbAttivo        As Workbook
+Static wkbDebug      As Workbook
+
+On Error GoTo DebugSQL_err
+
+'se |fffd| passato il parametro MostraDebug,
+'attiva la cartella di debug e finisce
+If blnMostraDebug Then
+   If blnChiamato Then
+      On Error Resume Next
+      wkbDebug.Activate
+      blnChiamato = False
+   End If
+   Exit Sub
+Else
+   blnChiamato = True
+End If
+
+'Cripta la stringa SQL
+StrSQL = Cripta(StrSQL, Criptare)
+
+'crea un oggetto Textbox per poter copiare il testo SQL negli appunti
+Set txtDummy = CreateObject("Forms.TextBox.1")
+
+With txtDummy
+   .Text = "Nome foglio\oggetto: " & strNomeQuery & vbCrLf & vbCrLf & StrSQL
+   .SelStart = 0
+   .SelLength = Len(.Text)
+   txtDummy.Cut
+End With
+
+Set wkbAttivo = ActiveWorkbook
+
+If wkbDebug Is Nothing Then
+   Set wkbDebug = Application.Workbooks.Add
+   wkbDebug.Windows(1).Caption = "DEBUG"
+   Application.DisplayAlerts = False
+   'tiene solo un foglio
+   For a = 1 To wkbDebug.Worksheets.Count - 1
+      wkbDebug.Worksheets(a).Delete
+   Next
+   Application.DisplayAlerts = True
+Else
+   On Error Resume Next
+   wkbDebug.Worksheets.Add
+   If Err.Number <> 0 Then
+      'possibile errore di automazione se l'utente chiude la cartella
+      Set wkbDebug = Nothing
+      DebugSQL StrSQL, strNomeQuery
+      Exit Sub
+   End If
+   On Error GoTo 0
+   On Error GoTo DebugSQL_err
+End If
+
+'On Error Resume Next
+'wkbDebug.ActiveSheet.Name = strNomeQuery
+'If Err.Number <> 0 Then
+'   a = 1
+'   Do Until Err.Number = 0
+'      On Error GoTo 0
+'      On Error Resume Next
+'      a = a + 1
+'      'il nome della query passato |fffd| gi|fffd| esistente nei fogli
+'      wkbDebug.ActiveSheet.Name = strNomeQuery & " (" & a & ")"
+'   Loop
+'End If
+'On Error GoTo 0
+'On Error GoTo DebugSQL_err
+
+'incolla il testo copiato dal textbox e dimensiona
+'automaticamente la colonna che lo contiene
+With wkbDebug.ActiveSheet
+   .Columns(1).NumberFormat = "@"
+   .Paste
+   .Columns(1).AutoFit
+End With
+
+DebugSQL_err:
+If Err.Number <> 0 Then
+   GestioneErrori Nothing, Err, "DebugSQL"
+End If
+If Not wkbAttivo Is Nothing Then wkbAttivo.Activate
+End Sub
+
+Private Function ElaboraMacroIstruzioniSQL(ByRef StrSQL As String, _
+                                           Optional ByVal TipoMacroIstruzioneDaVerificare As TipoMacroIstruzione = Tutte) As MacroIstruzione
+'effettua la ricerca delle macroistruzioni (NON comandi host)
+'all'interno della stringa sql, con la possibilit|fffd| di specificare
+'quali macroistruzioni elaborare
+
+Dim app              As Excel.Application
+Dim wkb              As Workbook
+Dim sht              As Worksheet
+Dim rng              As Range
+
+'parole chiavi delle macroistruzioni
+Const TRACCIA        As String = "--DEBUG"
+
+Dim strDEBUG         As String
+Dim strDEBUGONERROR  As String
+Dim strTemp          As String
+
+On Error GoTo ElaboraMacroIstruzioniSQL_err
+
+If (TipoMacroIstruzioneDaVerificare And IfThenElse) = IfThenElse Then
+   If rng Is Nothing Then
+      'crea un foglio all'interno di una nuova cartella nascosta
+      Set app = New Excel.Application
+      Set wkb = app.Workbooks.Add
+      Set sht = wkb.ActiveSheet
+      Set rng = sht.Range("a1")
+   End If
+
+   With ElaboraMacroIstruzioniSQL
+      strTemp = StrSQL
+      If CercaIF(StrSQL, rng) Then
+         .TipoMacroIstruzione = .TipoMacroIstruzione Or IfThenElse
+      Else
+         .TipoMacroIstruzione = errore
+         StrSQL = strTemp
+      End If
+   End With
+End If
+
+If (TipoMacroIstruzioneDaVerificare And Trace) = Trace Then
+   'cerca la macroistruzione --DEBUG
+   If EstraiTesto(StrSQL, TRACCIA, ";", strDEBUGONERROR, strDEBUG) > 0 Then
+      ElaboraMacroIstruzioniSQL.Trace = True
+      If UCase(Trim(strDEBUGONERROR)) = "ONERROR" Then
+         ElaboraMacroIstruzioniSQL.TraceOnError = True
+      End If
+      ElaboraMacroIstruzioniSQL.TipoMacroIstruzione = ElaboraMacroIstruzioniSQL.TipoMacroIstruzione Or _
+                                                      Trace
+      ElaboraMacroIstruzioniSQL.StringaTrace = strDEBUG
+   End If
+End If
+
+ElaboraMacroIstruzioniSQL_err:
+If Not app Is Nothing Then
+   app.DisplayAlerts = False
+   For Each wkb In app.Workbooks
+      wkb.Close SaveChanges:=False
+   Next
+   app.Quit
+End If
+
+If Err.Number <> 0 Then
+   ElaboraMacroIstruzioniSQL.TipoMacroIstruzione = TipoMacroIstruzione.errore
+   GestioneErrori Nothing, Err, "ElaboraMacroIstruzioniSQL"
+End If
+End Function
+
+Private Function ElaboraSQL(ByRef vntQueryPivot As Variant, _
+                            ByVal IstruzioneHost As clsIstruzioneHost, _
+                            ByVal StrSQL As String, _
+                            ByVal blnKeep As Boolean, _
+                            ByVal strSQLRipristino As String, _
+                            ByVal blnSoloConversioneSQL As Boolean, _
+                            Optional ByRef strSQLElaborato As String = "") As ElaborazioneSQL  ', _
+                            intElencoMacro() As TipiIstruzione) As Boolean
+'la funzione esegue la sostituzione variabili
+'ed eventuali macroistruzioni contenute nell'SQL
+Dim blnEsecuzioneSQL    As Boolean
+Dim IstruzioneHost2     As clsIstruzioneHost
+Dim macMacroIstruzione  As MacroIstruzione
+Dim pvt                 As PivotTable
+Dim strConnessione      As String
+Dim strTemp             As String
+Dim vnt                 As Variant
+Dim strNomeFoglio       As String
+
+On Error GoTo ElaboraSQL_err
+
+ElaboraSQL = ErroreElaborazioneSQL
+
+If SostituisciVariabili(StrSQL, DelimitatoreVariabili) >= 0 Then
+   
+   Select Case True
+      Case TypeOf vntQueryPivot Is QueryTable
+         Set vnt = vntQueryPivot
+      Case TypeOf vntQueryPivot Is PivotTable
+         Set vnt = vntQueryPivot.PivotCache
+   End Select
+   ' *RG 17/03/10
+   strNomeFoglio = vntQueryPivot.Name
+   ' *RG 17/03/10
+   Set IstruzioneHost2 = EseguiIstruzioneHost(StrSQL, vnt.Connection, strNomeFoglio)
+   
+   If IstruzioneHost2.InternalError = NoError Or _
+      IstruzioneHost2.InternalError = NessunaIstruzione Then
+      
+      strTemp = IstruzioneHost2.SqlString
+      
+      macMacroIstruzione = ElaboraMacroIstruzioniSQL(strTemp)
+      
+      If blnSoloConversioneSQL And _
+         macMacroIstruzione.TipoMacroIstruzione <> TipoMacroIstruzione.errore Then
+         strSQLElaborato = strTemp
+         ElaboraSQL = NessunErrore
+         Exit Function
+      End If
+      
+      If macMacroIstruzione.TipoMacroIstruzione = TipoMacroIstruzione.errore Then
+         'memorizza l'ultimo sql modificato per eventuali DEBUG
+         IstruzioneHost.SQLEseguito = strTemp
+         If blnKeep Or (IstruzioneHost.OnErrorGo And IstruzioneHost.InternalError <> NoError) Then
+            CambiaSQLQueryPivot vntQueryPivot, strSQLRipristino
+         End If
+         Exit Function
+      End If
+      
+      IstruzioneHost2.SqlString = strTemp
+      
+      CambiaSQLQueryPivot vntQueryPivot, IstruzioneHost2.SqlString, False
+
+      'esegue il refresh della query: restituir|fffd| True
+      'solo se il refresh |fffd| andato a buon fine
+      If Not RefreshQueryPivot(vntQueryPivot, IstruzioneHost) Then ', strConnessione) Then
+         ElaboraSQL = ErroreEsecuzioneSQL
+      Else
+         ElaboraSQL = NessunErrore
+      End If
+   Else
+      MsgBox "L'istruzione " & UCase(IstruzioneHost2.NomeStProc) & _
+             " contenuta nella query " & UCase(vntQueryPivot.Parent.Name) & "/" & UCase(vntQueryPivot.Name) & _
+             " ha restituito il seguente errore:" & vbCrLf & " " & vbCrLf & _
+             IstruzioneHost2.ErrDescription, vbOKOnly + vbExclamation, "Attenzione!"
+   End If
+End If
+
+On Error GoTo ElaboraSQL_err
+
+If blnKeep Or (IstruzioneHost.OnErrorGo And IstruzioneHost.InternalError <> NoError) Then
+   'memorizza l'ultimo sql modificato per eventuali DEBUG
+   IstruzioneHost.SQLEseguito = StrSQL
+   CambiaSQLQueryPivot vntQueryPivot, strSQLRipristino
+ElseIf ElaboraSQL = ErroreEsecuzioneSQL Then
+   'memorizza l'ultimo sql modificato per eventuali DEBUG
+   IstruzioneHost.SQLEseguito = StrSQL
+   CambiaSQLQueryPivot vntQueryPivot, IstruzioneHost.CallString
+Else
+   If TypeOf vntQueryPivot Is PivotTable Then
+      Set pvt = vntQueryPivot
+      SvuotaPivot pvt, True
+   End If
+   ElaboraSQL = NessunErrore
+End If
+
+''imposta l'sql all'ultimo eseguito se |fffd| stata specificata la macroistruzione
+''--DEBUG, soltanto se la query ha dato errore in caso sia presente il parametro --ONERROR
+'With macMacroIstruzione
+'   If .TipoMacroIstruzione And Trace = Trace Then
+'      If (.TraceOnError And Not ElaboraSQL) Or _
+'         Not .TraceOnError Then
+'            vntQueryPivot.CommandText = IstruzioneHost.SQLEseguito
+'      End If
+'   End If
+'End With
+
+Exit Function
+
+ElaboraSQL_err:
+GestioneErrori Application.ODBCErrors, Err, "ElaboraSQL"
+End Function
+
+Private Function ElaboraSQLDaHost(ByRef vntQueryPivot As Variant, _
+                                  ByVal StrSQL As String, _
+                                  ByVal strSqlOriginale As String, _
+                                  ByVal IstruzioneHost As clsIstruzioneHost, _
+                                  ByVal blnKeep As Boolean, _
+                                  ByVal blnEsciSuErroreElaborazione As Boolean, _
+                                  ByVal blnSoloConversioneSQL As Boolean, _
+                                  Optional ByRef strSQLElaborato As String = "") As ElaborazioneSQL
+Dim strTemp          As String
+Dim IstruzioneHost2  As clsIstruzioneHost
+Dim vnt              As Variant
+Dim vntMacro         As Variant
+Dim strNomeFoglio    As String
+
+'On Error GoTo ElaboraSQLDaHost_err
+
+ElaboraSQLDaHost = ErroreElaborazioneSQL
+
+If TypeOf vntQueryPivot Is PivotTable Then
+   Set vnt = vntQueryPivot.PivotCache
+ElseIf TypeOf vntQueryPivot Is QueryTable Then
+   Set vnt = vntQueryPivot
+Else
+   Exit Function
+End If
+' *RG 17/03/10
+strNomeFoglio = vntQueryPivot.Parent.Name
+
+'elabora eventuali IF
+strTemp = StrSQL
+If ElaboraMacroIstruzioniSQL(strTemp).TipoMacroIstruzione = errore And blnEsciSuErroreElaborazione Then
+   Exit Function
+End If
+
+vntMacro = Array(SQLCall)
+' *RG 17/03/10
+Set IstruzioneHost2 = EseguiIstruzioneHost(strTemp, CStr(vnt.Connection), strNomeFoglio, vntMacro)
+
+Do Until IstruzioneHost2.TipoIstruzione = Nessuna Or _
+         IstruzioneHost2.InternalError <> NoError
+   ' *RG 17/03/10
+   Set IstruzioneHost2 = EseguiIstruzioneHost(IstruzioneHost2.SQLDaHost, CStr(vnt.Connection), strNomeFoglio, vntMacro)
+Loop
+
+If IstruzioneHost2.InternalError <> NoError And _
+   IstruzioneHost2.InternalError <> NessunaIstruzione Then
+
+   If blnKeep Or (IstruzioneHost.OnErrorGo And IstruzioneHost.InternalError <> NoError) Then
+      'memorizza l'ultimo sql modificato per eventuali DEBUG
+      CambiaSQLQueryPivot vntQueryPivot, strSqlOriginale
+   End If
+   Err.Raise 10000, "ElaboraSQLDaHost", "Errore durante esecuzione CALL: " & vbCrLf & IstruzioneHost2.ErrDescription
+End If
+
+ElaboraSQLDaHost = ElaboraSQL(vntQueryPivot, IstruzioneHost, _
+                              IstruzioneHost2.SqlString, blnKeep, strSqlOriginale, _
+                              blnSoloConversioneSQL, strSQLElaborato)
+
+If ElaboraSQLDaHost <> NessunErrore Then
+   If TypeOf vntQueryPivot Is PivotTable Then
+      On Error Resume Next
+      If Not vntQueryPivot.SaveData Then
+         vntQueryPivot.SaveData = True
+      End If
+   End If
+   On Error GoTo ElaboraSQLDaHost_err
+   Err.Raise 10000, "ElaboraSQLDaHost"
+End If
+
+ElaboraSQLDaHost = NessunErrore
+
+Exit Function
+
+ElaboraSQLDaHost_err:
+
+End Function
+
+'===========================================================================
+' FUNZIONE:    EseguiIstruzioneHost
+' PARAMETRI:   strSql - stringa contentente l'sql originale della query
+'              strConnection - stringa contentente la stringa di connessione
+'                              originale della query
+'              vntMacroIstruzioni - elenco opzionale delle sole macroistruzioni
+'                                   da elaborare, se omesso le processa tutte
+' DESCRIZIONE: Interpreta il richiamo alla stored procedure contenuto nella
+'              stringa sql, ne estrae nome, libreria, file, ecc.
+'              Richiama la stored proc e recupera la nuova stringa sql su
+'              cui effettuare il refresh.
+'===========================================================================
+' *RG 17/03/10
+Private Function EseguiIstruzioneHost(ByVal StrSQL As String, _
+                                      ByVal strConnection As String, _
+                                      ByVal strNomeFoglio As String, _
+                                      Optional vntMacroIstruzioni As Variant) As clsIstruzioneHost
+Dim a                As Integer
+Dim clsStatusBar     As clsStatusBar
+Dim Cmd              As ADODB.Command
+Dim cnn              As ADODB.Connection
+Dim intLunghezzaParm As Integer
+Dim intPos           As Integer
+Dim intPosChiave     As Integer
+Dim IstruzioneHost   As clsIstruzioneHost
+Dim rds              As ADODB.Recordset
+Dim strChkObj        As String
+Dim strDltOvr        As String
+Dim strOvr           As String
+Dim strTemp          As String
+Dim strWorkSql       As String
+Dim vntMacro         As Variant
+Dim strSQLCALL       As String
+
+On Error GoTo error_handler
+
+'istanzia la classe IstruzioneHost, le passa l'istruzione SQL
+'e verifica se contiene dei comandi host, in caso negativo esce subito
+Set EseguiIstruzioneHost = New clsIstruzioneHost
+
+With EseguiIstruzioneHost
+   .SqlString = StrSQL
+   If Not IsMissing(vntMacroIstruzioni) Then
+      .MacroIstruzioni = vntMacroIstruzioni
+   End If
+   .Validazione
+   
+   'esce se non c'|fffd| alcuna istruzione host oppure c'|fffd|
+   'un errore che non sia di parametro se il tipo istruzione
+   '|fffd| SQLCALL (gestisce il fatto che alla SQLCALL possono arrivare
+   'parametri con variabili, quindi pi|fffd| grandi di 10 caratteri)
+   If (.TipoIstruzione = Nessuna Or _
+      .InternalError <> NoError) And _
+      Not (.InternalError = ParamError And .TipoIstruzione = SQLCall) Then
+      Exit Function
+   ElseIf .InternalError = ParamError And .TipoIstruzione = SQLCall Then
+      .InternalError = NoError
+      .ErrDescription = ""
+   End If
+   
+   SostituisciVariabili strConnection, DelimitatoreVariabili
+   
+   If Not ApriConnessioneADO(cnn, strConnection) Then
+      .InternalError = ConnectionError
+      Exit Function
+   End If
+   
+   Set Cmd = New ADODB.Command
+   Cmd.ActiveConnection = cnn
+   
+   Set clsStatusBar = New clsStatusBar
+   
+   'mostra lo stato d'avanzamento della routine
+   Select Case .TipoIstruzione
+      Case SelectOVR
+         clsStatusBar.Testo = "Acquisizione istruzioni sql da host..."
+         strChkObj = "CHKOBJ OBJ(" & .Library & DelimitatoreLibreriaFile & .File & ") " & _
+                     "OBJTYPE(*FILE) " & _
+                     "MBR(" & .Member & ")"
+                  
+         strOvr = "OVRDBF FILE($$OVRDBF) " & _
+                  "TOFILE(" & .Library & DelimitatoreLibreriaFile & .File & ") " & _
+                  "MBR(" & .Member & ") OVRSCOPE(*JOB) SECURE(*YES)"
+                  
+         strDltOvr = "DLTOVR FILE($$OVRDBF) LVL(*JOB)"
+         Cmd.CommandType = adCmdText
+         Cmd.CommandText = "CALL QSYS/QCMDEXC ('" & strChkObj & "', " & Format(Len(strChkObj), "0000000000") & ".00000" & ")"
+         
+         On Error Resume Next
+         Cmd.Execute
+         
+         If Err.Number = 0 Then
+            On Error GoTo error_handler
+            
+            Cmd.CommandText = "CALL QSYS/QCMDEXC ('" & strOvr & "', " & Format(Len(strOvr), "0000000000") & ".00000" & ")"
+            Cmd.Execute
+            
+            Set rds = New ADODB.Recordset
+            Set rds.ActiveConnection = cnn
+            rds.Source = "SELECT * FROM $$OVRDBF"
+            rds.Open
+            
+            Do Until rds.EOF
+               strWorkSql = strWorkSql & RTrim(rds.Fields("srcdta")) & vbCrLf
+               rds.MoveNext
+            Loop
+            
+            Cmd.CommandText = "CALL QSYS/QCMDEXC ('" & strDltOvr & "', " & Format(Len(strDltOvr), "0000000000") & ".00000" & ")"
+            Cmd.Execute
+         Else
+            .ErrFlag = "1"
+            If Err.Number = &H80004005 Then
+               .ErrDescription = "Script sql non trovato: " & .Library & DelimitatoreLibreriaFile & .File & " (" & .Member & ")"
+            Else
+               .ErrDescription = Err.Description
+            End If
+         End If
+         .SqlString = .CallString & vbCrLf & vbCrLf & strWorkSql
+         .SQLDaHost = strWorkSql
+         
+      Case StoredProcedure
+         clsStatusBar.Testo = "Esecuzione stored procedure in corso..."
+         'prepara i parametri nel caso si tratti di una stored procedure
+         Cmd.Parameters.Append Cmd.CreateParameter("XLIB", adVarChar, _
+                                                   adParamInput, _
+                                                   .LunghezzaMaxLibreria, _
+                                                   .Library)
+         Cmd.Parameters.Append Cmd.CreateParameter("XFILE", adVarChar, _
+                                                   adParamInput, _
+                                                   .LunghezzaMaxFile, _
+                                                   .File)
+         Cmd.Parameters.Append Cmd.CreateParameter("XMBR", adVarChar, _
+                                                   adParamInput, _
+                                                   .LunghezzaMaxMembro, _
+                                                   .Member)
+         Cmd.Parameters.Append Cmd.CreateParameter("XERR", adVarChar, _
+                                                   adParamOutput, 1)
+         Cmd.Parameters.Append Cmd.CreateParameter("XMSGERR", adVarChar, _
+                                                   adParamOutput, _
+                                                   .LunghezzaMaxErrore)
+         Cmd.Parameters.Append Cmd.CreateParameter("XDATI", adVarChar, _
+                                                   adParamOutput, _
+                                                   .LunghezzaMaxDati)
+         Cmd.CommandType = adCmdStoredProc
+         Cmd.CommandText = UCase(.NomeStProc)
+         
+         On Error Resume Next
+         Cmd.Execute
+         
+         If Err.Number = &H80040E37 Then
+            'stored procedure non trovata
+            If .OnErrorGo Then
+               .InternalError = StProcError
+               Exit Function
+            Else
+               GoTo error_handler
+            End If
+         ElseIf Err.Number <> 0 Then
+            GoTo error_handler
+         End If
+         
+         On Error GoTo error_handler
+         
+         .ErrFlag = Cmd.Parameters("XERR").Value
+         .ErrDescription = Trim(Cmd.Parameters("XMSGERR").Value)
+         strWorkSql = Trim(Cmd.Parameters("XDATI").Value)
+         .SqlString = .CallString & vbCrLf & vbCrLf & strWorkSql
+         .SQLDaHost = strWorkSql
+         
+      Case SQLCall
+         ' *RG 17/03/10
+         strSQLCALL = ""
+         If CercaNome(Sheets(strNomeFoglio), "SQLCALL", strSQLCALL) Then
+             strSQLCALL = Trim(strSQLCALL)
+         Else
+             If CercaNome(ActiveWorkbook, "SQLCALL", strSQLCALL) Then
+                 strSQLCALL = Trim(strSQLCALL)
+             End If
+         End If
+         
+         'istanzia una nuova classe istruzione host con l'sql
+         'dopo la sostituzione variabili, e la rivalida
+         Set IstruzioneHost = New clsIstruzioneHost
+         strTemp = .SqlString
+         
+         If SostituisciVariabili(strTemp, DelimitatoreVariabili) >= 0 Then
+            IstruzioneHost.SqlString = strTemp
+            vntMacro = Array(SQLCall)
+            IstruzioneHost.MacroIstruzioni = vntMacro
+            IstruzioneHost.Validazione
+         Else
+            IstruzioneHost.InternalError = SyntaxError
+            IstruzioneHost.ErrDescription = "Errore nella sostituzione variabili"
+         End If
+         
+         If IstruzioneHost.InternalError <> NoError Then
+            .InternalError = IstruzioneHost.InternalError
+            .ErrDescription = IstruzioneHost.ErrDescription
+            Exit Function
+         End If
+         
+         strTemp = ""
+         If Not IsEmpty(IstruzioneHost.Parametri) Then
+            'cicla tutti i parametri per determinarne valore e lunghezza
+            For a = LBound(IstruzioneHost.Parametri) To UBound(IstruzioneHost.Parametri)
+               strTemp = Trim(IstruzioneHost.Parametri(a))
+               'estrae la lunghezza
+               intPos = InStr(strTemp, "'")
+               If intPos = 0 Then
+                  .InternalError = ParamError
+                  .ErrDescription = "Impossibile determinare la lunghezza del parametro " & a + 1
+                  Exit Function
+               Else
+                  intLunghezzaParm = Left(strTemp, intPos - 1)
+                  'estrae il valore del parametro:
+                  'toglie gli apici di delimitazione
+                  strTemp = Trim(Mid(strTemp, intPos + 1, Len(strTemp) - intPos - 1))
+                  If Len(strTemp) > intLunghezzaParm Then
+                     .InternalError = ParamError
+                     .ErrDescription = "Lunghezza valore parametro " & a + 1 & _
+                                       " superiore a quanto specificato (" & _
+                                       intLunghezzaParm & ")"
+                     Exit Function
+                  Else
+                     IstruzioneHost.Parametri(a) = "'" & strTemp & _
+                                                   Space(intLunghezzaParm - _
+                                                         Len(strTemp)) & "'"
+                  End If
+               End If
+            Next
+            
+            'crea una stringa unica contenente tutti i parametri
+            strTemp = Join(IstruzioneHost.Parametri, ",")
+            
+            If Len(strTemp) = 0 Then
+               .InternalError = ParamError
+               .ErrDescription = "Parametri dell'istruzione CALL incongruenti."
+               Exit Function
+            End If
+         End If
+         
+         'forza a True la propriet|fffd| Keep, xch|fffd| la macroistruzione
+         'CALL deve sempre mantenere l'sql che segue
+         .Keep = True
+         
+         ' *RG 17/03/10
+         If LCase(strSQLCALL) <> "no" Then
+            If LCase(strSQLCALL) = "err" Then
+                On Error GoTo EseguiIstruzioneHost_ErrorCall
+            End If
+            strTemp = "CALL " & IstruzioneHost.Library & IIf(IstruzioneHost.Library <> "", DelimitatoreLibreriaFile, "") & IstruzioneHost.File & _
+                      IIf(Len(strTemp) > 0, " (" & strTemp & ")", "")
+            clsStatusBar.Testo = "Esecuzione CALL in corso..."
+            cnn.Execute strTemp
+         ' *RG 17/03/10
+EseguiIstruzioneHost_ErrorCall:
+         End If
+         .SQLDaHost = .OriginalSqlString
+   End Select
+   
+   If .ErrFlag = "1" Then
+      .InternalError = StProcError
+      Exit Function
+   End If
+   .InternalError = NoError
+End With
+
+Exit Function
+
+error_handler:
+With Application
+   
+   EseguiIstruzioneHost.InternalError = FunctionError
+   EseguiIstruzioneHost.ErrDescription = Err.Description
+  
+   If .Cursor <> xlDefault Then .Cursor = xlDefault
+
+   GestioneErrori .ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.EseguiIstruzioneHost"
+End With
+End Function
+
+Private Function CercaIF(ByRef Stringa As String, ByRef rng As Range) As Boolean
+
+Dim strStringaWrk       As String
+Dim intLivello          As Integer
+Dim intPosSE            As Double
+Dim intPosALLORA        As Double
+Dim intPosALTRIMENTI    As Double
+Dim intPosFINE_SE       As Double
+Dim intPosSEWrk         As Double
+Dim intPosALLORAWrk     As Double
+Dim intPosALTRIMENTIWrk As Double
+Dim intPosFINE_SEWrk    As Double
+Dim intInizio           As Double
+Dim strCondizione       As String
+Dim intSosPer           As Double
+Dim intDa               As Double
+Dim intPer              As Double
+Dim strStrDaSost        As String
+Dim strStrSost          As String
+Dim intLoopCount        As Integer
+Dim strChrNonValidi     As String
+
+On Error GoTo CercaIF_err
+
+CercaIF = True
+
+strStringaWrk = UCase(Stringa)
+' Controllo presenza
+If InStr(strStringaWrk, SE) = 0 And _
+   InStr(strStringaWrk, ALLORA) = 0 And _
+   InStr(strStringaWrk, ALTRIMENTI) = 0 And _
+   InStr(strStringaWrk, FINE_SE) = 0 Then
+   Exit Function
+End If
+
+' Analisi stringa
+intLoopCount = 0
+Do
+    strStringaWrk = UCase(Stringa)
+    intLivello = 1
+    intPosSE = InStr(strStringaWrk, SE)
+    If intPosSE = 0 Then
+        Exit Do
+    End If
+    If Not CercaIF_Chk_Caratteri(Stringa, intPosSE, strChrNonValidi) Then
+        Err.Raise 10000, Description:="Presenti caratteri non validi " & _
+                            strChrNonValidi & " prima di " & SE
+    End If
+    
+    intInizio = intPosSE + Len(SE)
+    intPosALLORA = InStr(strStringaWrk, ALLORA)
+    If intPosALLORA = 0 Then
+        Err.Raise 10000, Description:="Manca clausola " & ALLORA
+    End If
+    If Not CercaIF_Chk_Caratteri(Stringa, intPosALLORA, strChrNonValidi) Then
+        Err.Raise 10000, Description:="Presenti caratteri non validi " & _
+                            strChrNonValidi & " prima di " & ALLORA
+    End If
+
+    intPosALTRIMENTI = 0
+    intPosFINE_SE = 0
+    
+    ' Ricerca fine livello 1
+    Do
+        ' Autocontrollo Loop
+        intLoopCount = intLoopCount + 1
+        If intLoopCount > 1000 Then
+            Err.Raise 10000, Description:="Superato limite Loop"
+        End If
+                
+        intPosSEWrk = InStr(intInizio, strStringaWrk, SE)
+        If intPosSEWrk <> 0 Then
+            If Not CercaIF_Chk_Caratteri(Stringa, intPosSEWrk, strChrNonValidi) Then
+                Err.Raise 10000, Description:="Presenti caratteri non validi " & _
+                                    strChrNonValidi & " prima di " & SE
+            End If
+        End If
+
+        intPosALTRIMENTIWrk = InStr(intInizio, strStringaWrk, ALTRIMENTI)
+        If intPosALTRIMENTIWrk <> 0 Then
+            If Not CercaIF_Chk_Caratteri(Stringa, intPosALTRIMENTIWrk, strChrNonValidi) Then
+                Err.Raise 10000, Description:="Presenti caratteri non validi " & _
+                                    strChrNonValidi & " prima di " & ALTRIMENTI
+            End If
+        End If
+
+        intPosFINE_SEWrk = InStr(intInizio, strStringaWrk, FINE_SE)
+        If intPosFINE_SEWrk <> 0 Then
+            If Not CercaIF_Chk_Caratteri(Stringa, intPosFINE_SEWrk, strChrNonValidi) Then
+                Err.Raise 10000, Description:="Presenti caratteri non validi " & _
+                                    strChrNonValidi & " prima di " & FINE_SE
+            End If
+        End If
+        
+        ' Non trovati
+        If intPosSEWrk = 0 And intPosALTRIMENTIWrk = 0 And intPosFINE_SEWrk = 0 Then
+            Exit Do
+        End If
+        
+        If intPosSEWrk = 0 Then intPosSEWrk = 999999
+        If intPosALTRIMENTIWrk = 0 Then intPosALTRIMENTIWrk = 999999
+        If intPosFINE_SEWrk = 0 Then intPosFINE_SEWrk = 999999
+        
+        ' IF successivo
+        If intPosSEWrk < intPosALTRIMENTIWrk And intPosSEWrk < intPosFINE_SEWrk Then
+            If intLivello = 1 And intPosSEWrk < intPosALLORA Then
+                Err.Raise 10000, Description:="Clausola " & SE & " fuori sequenza"
+            End If
+            intLivello = intLivello + 1
+            intInizio = intPosSEWrk + Len(SE)
+        End If
+        
+        ' ELSE
+        If intPosALTRIMENTIWrk < intPosSEWrk And intPosALTRIMENTIWrk < intPosFINE_SEWrk Then
+            If intLivello = 1 And intPosALTRIMENTIWrk < intPosALLORA Then
+                Err.Raise 10000, Description:="Clausola " & ALTRIMENTI & " fuori sequenza"
+            End If
+            If intLivello = 1 Then
+                intPosALTRIMENTI = intPosALTRIMENTIWrk
+            End If
+            intInizio = intPosALTRIMENTIWrk + Len(ALTRIMENTI)
+        End If
+        
+        ' ENDIF
+        If intPosFINE_SEWrk < intPosSEWrk And intPosFINE_SEWrk < intPosALTRIMENTIWrk Then
+            If intLivello = 1 And intPosFINE_SEWrk < intPosALLORA Then
+                Err.Raise 10000, Description:="Clausola " & FINE_SE & " fuori sequenza"
+            End If
+            If intLivello = 1 Then
+                intPosFINE_SE = intPosFINE_SEWrk
+                Exit Do
+            Else
+                intLivello = intLivello - 1
+                intInizio = intPosFINE_SEWrk + Len(FINE_SE)
+            End If
+        End If
+        
+    Loop
+    
+    ' Blocco non chiuso
+    If intPosFINE_SE = 0 Then
+        Err.Raise 10000, Description:="Blocco " & SE & "/" & FINE_SE & " non chiuso"
+    End If
+    
+    ' Valuta condizione e sostituisce
+    strCondizione = Mid(Stringa, intPosSE + Len(SE), (intPosALLORA - (intPosSE + Len(SE))))
+    
+    intSosPer = ((intPosFINE_SE + Len(FINE_SE)) - (intPosSE))
+    strStrDaSost = Mid(Stringa, intPosSE, intSosPer)
+    
+    If ValutaBooleano(strCondizione, rng) Then
+        intDa = intPosALLORA + Len(ALLORA)
+        If intPosALTRIMENTI <> 0 Then
+            intPer = intPosALTRIMENTI - intDa
+        Else
+            intPer = intPosFINE_SE - intDa
+        End If
+        strStrSost = Mid(Stringa, intDa, intPer)
+        Stringa = Left(Stringa, intPosSE - 1) & _
+                    Replace(Stringa, strStrDaSost, strStrSost, intPosSE, 1)
+    Else
+        If intPosALTRIMENTI <> 0 Then
+            intDa = intPosALTRIMENTI + Len(ALTRIMENTI)
+            intPer = intPosFINE_SE - intDa
+            strStrSost = Mid(Stringa, intDa, intPer)
+            Stringa = Left(Stringa, intPosSE - 1) & _
+                        Replace(Stringa, strStrDaSost, strStrSost, intPosSE, 1)
+        Else
+            Stringa = Left(Stringa, intPosSE - 1) & _
+                        Replace(Stringa, strStrDaSost, "", intPosSE, 1)
+        End If
+    End If
+    
+Loop
+
+' Controllo residui
+strStringaWrk = UCase(Stringa)
+If InStr(strStringaWrk, SE) <> 0 Then
+    Err.Raise 10000, Description:="Clausola " & SE & " in eccesso"
+End If
+If InStr(strStringaWrk, ALLORA) <> 0 Then
+    Err.Raise 10000, Description:="Clausola " & ALLORA & " in eccesso"
+End If
+If InStr(strStringaWrk, ALTRIMENTI) <> 0 Then
+    Err.Raise 10000, Description:="Clausola " & ALTRIMENTI & " in eccesso"
+End If
+If InStr(strStringaWrk, FINE_SE) <> 0 Then
+    Err.Raise 10000, Description:="Clausola " & FINE_SE & " in eccesso"
+End If
+
+
+CercaIF_err:
+'errore personalizzato, lo modifica e lo passa al controllo successivo
+If Err.Number = 10000 Then
+   Err.Description = "Struttura " & SE & "/" & FINE_SE & Err.Description & "." & vbCrLf & _
+                     "Impossibile valutare l'espressione."
+End If
+If Err.Number <> 0 Then
+   CercaIF = False
+   GestioneErrori Nothing, Err, "CercaIF"
+End If
+
+End Function
+
+Private Function CercaIF_Chk_Caratteri(ByRef strStringa As String, _
+                                        ByVal intPosEnd As Double, _
+                                        ByRef strChrNonValidi) As Boolean
+
+Dim intPosBeg             As Double
+
+On Error GoTo CercaIF_Chk_Caratteri_err
+
+CercaIF_Chk_Caratteri = True
+
+intPosBeg = InStrRev(strStringa, vbCrLf, intPosEnd)
+intPosBeg = intPosBeg + 2
+If intPosBeg = 0 Or intPosBeg >= intPosEnd Then
+    Exit Function
+End If
+strChrNonValidi = Mid(strStringa, intPosBeg, (intPosEnd - intPosBeg))
+If Trim(strChrNonValidi) <> "" Then
+    If Trim(Replace(strChrNonValidi, "-", "")) <> "" Then
+        CercaIF_Chk_Caratteri = False
+    End If
+    strStringa = Left(strStringa, intPosBeg - 1) + Space(intPosEnd - intPosBeg) + _
+                   Mid(strStringa, intPosEnd)
+End If
+
+Exit Function
+
+CercaIF_Chk_Caratteri_err:
+CercaIF_Chk_Caratteri = False
+
+End Function
+
+Private Function EstraiTesto(ByVal strTesto As String, _
+                            ByVal strDelimitatoreInizio As String, _
+                            ByVal strDelimitatoreFine As String, _
+                            Optional ByRef strTestoIsolato As String = "", _
+                            Optional ByRef strTestoEstratto As String = "") As Long
+'restituisce il testo compreso fra due delimitatori specificati
+'nel parametro strTestoIsolato, tutto il testo delimitatori compresi
+'nel parametro strTestoEstratto e la posizione dove ha trovato
+'o meno i delimitatori (deve restituire due valori perch|fffd| potrebbe
+'trovare i delimitatori ma il testo fra di loro essere vuoto)
+Dim lngPosInizio  As Long
+Dim lngPosFine    As Long
+
+lngPosInizio = InStr(1, strTesto, strDelimitatoreInizio, vbTextCompare)
+
+If lngPosInizio > 0 Then 'delimitatore d'inizio trovato
+   lngPosFine = InStr(lngPosInizio, strTesto, strDelimitatoreFine, vbTextCompare)
+   'se non |fffd| stato specificato un delimitatore di fine,
+   'considera tutto il testo a partire dal delimitatore d'inizio
+   If lngPosFine = lngPosInizio And strDelimitatoreFine = "" Then
+      lngPosFine = Len(strTesto) + 1
+   End If
+   
+   If lngPosFine > 0 Then 'delimitatore di fine trovato
+      strTestoEstratto = Mid(strTesto, lngPosInizio, lngPosFine)
+      lngPosInizio = lngPosInizio + Len(strDelimitatoreInizio)
+      
+      If lngPosInizio > lngPosFine Then
+         lngPosFine = lngPosInizio
+      End If
+      
+      strTestoIsolato = Mid(strTesto, lngPosInizio, _
+                        lngPosFine - lngPosInizio)
+      EstraiTesto = lngPosInizio
+   End If
+End If
+
+End Function
+
+'===========================================================================
+' FUNZIONE:    GestioneErrori
+' PARAMETRI:   objErroreODBC   - oggetto
+'              objErrore       - oggetto
+'              strNomeFunzione - stringa
+'              blnErroreODBC   - se passato (True) segnala
+'                                anche gli errori ODBC
+' DESCRIZIONE: gestisce sia gli errori ODBC (opzionalmente) che quelli VBA
+'===========================================================================
+Public Function GestioneErrori(ByRef objErroreODBC As Object, _
+                               ByVal objErrore As Object, _
+                               strNomeFunzione As String, _
+                               Optional ByVal blnErroreODBC As Boolean = False)
+Dim erODBC           As ODBCError
+    
+If Not objErroreODBC Is Nothing Then
+   'Gestione errori ODBC
+   If objErroreODBC.Count > 0 And blnErroreODBC Then
+      For Each erODBC In objErroreODBC
+          MsgBox "L'applicazione ha rilevato il seguente errore ODBC restituito dal sistema:" & vbCrLf & _
+              "Numero: " & erODBC.SqlState & " - " & erODBC.ErrorString & vbCrLf & _
+              " " & vbCrLf & _
+              "Sistema Operativo: " & Application.OperatingSystem & vbCrLf & _
+              "Applicazione: " & Application.Name & " ver. " & Application.Version & vbCrLf & _
+              "Funzione: " & strNomeFunzione, vbCritical, "Errore"
+      Next
+   End If
+End If
+
+If Not objErrore Is Nothing Then
+   'Gestione errori generici, escluso l'errore di operazione annullata
+   If objErrore.Number <> 0 And _
+      objErrore.Number <> &H80040E4E Then
+      
+      MsgBox "L'applicazione ha rilevato il seguente errore restituito dal sistema:" & vbCrLf & _
+          "Numero: " & objErrore.Number & " - " & objErrore.Description & vbCrLf & _
+          " " & vbCrLf & _
+          "Sistema Operativo: " & Application.OperatingSystem & vbCrLf & _
+          "Applicazione: " & Application.Name & " ver. " & Application.Version & vbCrLf & _
+          "Funzione: " & strNomeFunzione, vbCritical, "Errore"
+   End If
+End If
+End Function
+
+Private Function GestioneSQLQueryPivot(ByRef vntQueryPivot As Variant, _
+                                       ByVal blnSoloConversioneSQL As Boolean, _
+                                       Optional ByRef strSQLElaborato As String = "") As ElaborazioneSQL
+Dim StrSQL           As String
+Dim strSqlOriginale  As String
+Dim strTipoOggetto   As String
+Dim MacroIstruzione  As MacroIstruzione
+Dim IstruzioneHost   As clsIstruzioneHost
+Dim vnt              As Variant
+Dim vntMacro         As Variant
+Dim strNomeFoglio    As String
+Dim strSQLDEBUG      As String
+
+On Error GoTo GestioneSQLQueryPivot_err
+
+'prepara l'elenco delle macroistruzioni da assegnare alla classe
+vntMacro = Array(SelectOVR, StoredProcedure)
+
+If TypeOf vntQueryPivot Is QueryTable Then
+   Set vnt = vntQueryPivot
+   strTipoOggetto = "query"
+Else
+   Set vnt = vntQueryPivot.PivotCache
+   strTipoOggetto = "pivot"
+End If
+
+' *RG 17/03/10
+strNomeFoglio = vntQueryPivot.Parent.Name
+
+CambiaSQLQueryPivot vntQueryPivot, Cripta(vnt.CommandText, Decriptare), False
+
+StrSQL = vnt.CommandText
+
+'crea una variabile MacroIStruzione per successiva
+'verifica dell'istruzione --DEBUG
+' *RG 17/03/10
+strSQLDEBUG = ""
+If CercaNome(Sheets(strNomeFoglio), "SQLDEBUG", strSQLDEBUG) Then
+    strSQLDEBUG = Trim(strSQLDEBUG)
+Else
+    If CercaNome(ActiveWorkbook, "SQLDEBUG", strSQLDEBUG) Then
+        strSQLDEBUG = Trim(strSQLDEBUG)
+    End If
+End If
+
+If strSQLDEBUG <> "" Then
+    If LCase(strSQLDEBUG) = "si" Then
+        MacroIstruzione.StringaTrace = "--DEBUG;"
+        MacroIstruzione.TipoMacroIstruzione = Trace
+        MacroIstruzione.Trace = True
+        MacroIstruzione.TraceOnError = False
+    End If
+    If LCase(strSQLDEBUG) = "err" Then
+        MacroIstruzione.StringaTrace = "--DEBUG;"
+        MacroIstruzione.TipoMacroIstruzione = Trace
+        MacroIstruzione.Trace = True
+        MacroIstruzione.TraceOnError = True
+    End If
+Else
+    MacroIstruzione = ElaboraMacroIstruzioniSQL(StrSQL, Trace)
+End If
+
+' *RG 17/03/10
+'memorizza l'Sql originale che poi
+'rimetter|fffd| nella query dopo il refresh
+strSqlOriginale = vnt.CommandText
+
+Aggiorna_SQLHOST strNomeFoglio, strSqlOriginale
+
+'setta un oggetto IstruzioneHost che conterr|fffd| tutte le informazioni
+'su eventuali macroistruzioni contenute nell'sql
+' *RG 17/03/10
+Set IstruzioneHost = EseguiIstruzioneHost(strSqlOriginale, CStr(vnt.Connection), strNomeFoglio, vntMacro)
+
+
+With IstruzioneHost
+   If .TipoIstruzione <> Nessuna Then
+      Select Case .InternalError
+         Case NoError
+            'se si tratta di una macroistruzione, memorizza l'sql
+            'prima di una eventuale sostituzione delle variabili
+            strSqlOriginale = .SqlString
+            GestioneSQLQueryPivot = ElaboraSQLDaHost(vntQueryPivot, .SQLDaHost, strSqlOriginale, _
+                                                     IstruzioneHost, .Keep, True, blnSoloConversioneSQL, _
+                                                     strSQLElaborato)
+'            GestioneSQLQueryPivot = ElaboraSQLDaHost(vntQueryPivot, .SQLDaHost, .CallString, _
+                                                     IstruzioneHost, .Keep, True, blnSoloConversioneSQL)
+            If .Keep Then
+               CambiaSQLQueryPivot vntQueryPivot, strSqlOriginale, False
+            Else
+               CambiaSQLQueryPivot vntQueryPivot, .CallString, False
+            End If
+         
+         Case FunctionError
+            CambiaSQLQueryPivot vntQueryPivot, Cripta(vnt.CommandText, Criptare)
+            'La funzione |fffd| andata male e ha gi|fffd| restituito il messaggio di errore
+            Exit Function
+         Case ParamError, SyntaxError, StProcError
+            'Reimposta la prop SQL a seconda dei parametri immessi
+            
+            If .InternalError = StProcError And .OnErrorGo Then
+               strSqlOriginale = .OriginalSqlString
+               
+               GestioneSQLQueryPivot = ElaboraSQLDaHost(vntQueryPivot, strSqlOriginale, .CallString & strSqlOriginale, _
+                                                        IstruzioneHost, .Keep, True, blnSoloConversioneSQL, _
+                                                        strSQLElaborato)
+               If .Keep Then
+                  CambiaSQLQueryPivot vntQueryPivot, .CallString & strSqlOriginale, False
+               Else
+                  CambiaSQLQueryPivot vntQueryPivot, .CallString, False
+               End If
+            Else
+               'C'|fffd| un errore nell'immissione dei parametri o
+               'c'|fffd| la chiamata alla SP ma la sintassi |fffd| errata o
+               'la stored procedure ha restituito un errore
+               MsgBox "L'istruzione " & UCase(.NomeStProc) & " contenuta nella " & strTipoOggetto & " " & _
+                      UCase(vntQueryPivot.Parent.Name) & "/" & UCase(vntQueryPivot.Name) & _
+                      " ha restituito il seguente errore:" & vbCrLf & " " & vbCrLf & _
+                      .ErrDescription, vbOKOnly + vbExclamation, "Attenzione!"
+               CambiaSQLQueryPivot vntQueryPivot, Cripta(vnt.CommandText, Criptare)
+               Exit Function
+            End If
+         Case NessunaIstruzione
+            'Nell'SQL della query non c'|fffd| il tag "--SQLHOST"
+            'quindi prosegue come una query normale
+      End Select
+   Else
+      'nessuna istruzione SQLHOST o SQLPROC trovata, verifica le CALL
+      GestioneSQLQueryPivot = ElaboraSQLDaHost(vntQueryPivot, vnt.CommandText, strSqlOriginale, _
+                                               IstruzioneHost, True, True, blnSoloConversioneSQL, _
+                                               strSQLElaborato)
+      
+   End If
+End With
+
+If TypeOf vnt Is QueryTable Then
+   If vnt.FetchedRowOverflow Then
+       MsgBox "La query ha restituito un numero di dati maggiore di quello supportato " & _
+              "dal foglio di lavoro" & vbCrLf & _
+              "Possibile perdita di dati.", vbOKOnly + vbExclamation, _
+              "Saep - Aggiorna Tabelle"
+   End If
+End If
+
+'imposta l'sql all'ultimo eseguito se |fffd| stata specificata la macroistruzione
+'--DEBUG, soltanto se la query ha dato errore in caso sia presente il parametro --ONERROR
+With MacroIstruzione
+   'solo se |fffd| stato impostato il --DEBUG con OnError, e non si sono
+   'verificati errori (caso nel quale si trova qui) e l'sql contiene
+   'un'istruzione host, si comporta come se non esistesse la macroistruzione
+   '(la stringa sql contiene gi|fffd| l'istruzione host e la stringa di DEBUG)
+   If (.TipoMacroIstruzione And Trace) = Trace Then
+      If (Not .TraceOnError And GestioneSQLQueryPivot = NessunErrore) Or _
+         (GestioneSQLQueryPivot = ErroreEsecuzioneSQL) Then
+         DebugSQL IstruzioneHost.SQLEseguito, vntQueryPivot.Parent.Name & "\" & vntQueryPivot.Name
+      End If
+   ElseIf GestioneSQLQueryPivot = ErroreEsecuzioneSQL Then
+      If MsgBox("Visualizzare il contenuto della query andata in errore?", vbQuestion + vbYesNo, _
+                "Errore esecuzione query") = vbYes Then
+         DebugSQL IstruzioneHost.SQLEseguito, vntQueryPivot.Parent.Name & "\" & vntQueryPivot.Name
+      End If
+   End If
+End With
+
+If TypeOf vntQueryPivot Is QueryTable Then
+   CambiaSQLQueryPivot vntQueryPivot, Cripta(vntQueryPivot.CommandText, Criptare)
+Else
+   CambiaSQLQueryPivot vntQueryPivot, Cripta(vntQueryPivot.PivotCache.CommandText, Criptare)
+End If
+
+Exit Function
+
+GestioneSQLQueryPivot_err:
+GestioneErrori Application.ODBCErrors, Err, "GestioneSQLQueryPivot", True
+'imposta l'sql all'ultimo eseguito se |fffd| stata specificata la macroistruzione
+'--DEBUG, soltanto se la query ha dato errore in caso sia presente il parametro --ONERROR
+If Not vntQueryPivot Is Nothing Then
+   With MacroIstruzione
+      If GestioneSQLQueryPivot = ErroreEsecuzioneSQL Then
+         If (.TipoMacroIstruzione And Trace) = Trace Then
+            DebugSQL IstruzioneHost.SQLEseguito, vntQueryPivot.Parent.Name & "\" & vntQueryPivot.Name
+         ElseIf MsgBox("Visualizzare il contenuto della query andata in errore?", vbQuestion + vbYesNo, _
+                "Errore esecuzione query") = vbYes Then
+            DebugSQL IstruzioneHost.SQLEseguito, vntQueryPivot.Parent.Name & "\" & vntQueryPivot.Name
+         End If
+      End If
+   End With
+   
+   If TypeOf vntQueryPivot Is QueryTable Then
+      CambiaSQLQueryPivot vntQueryPivot, Cripta(vntQueryPivot.CommandText, Criptare)
+   Else
+      CambiaSQLQueryPivot vntQueryPivot, Cripta(vntQueryPivot.PivotCache.CommandText, Criptare)
+   End If
+   
+End If
+End Function
+
+
+'Wrapper per ImportaDatiParam
+Public Sub ImportaDati()
+' *RG 10/03/10
+'Public Sub ImportaDati()
+ImportaDatiParam
+End Sub
+
+'Wrapper per ImportaTuttiParam
+Public Sub Importatutti()
+' *RG 10/03/10
+' Public Sub ImportaTutti()
+ImportaTuttiParam
+End Sub
+
+'===========================================================================
+' FUNZIONE:    ImportaDatiParam
+' PARAMETRI:   nome del foglio su cui effettuare l'importazione
+' DESCRIZIONE: La funzione importa i dati nel singolo foglio (foglio attivo)
+'              lanciando la RefreshQueries e la RefreshPivots
+'              E' possibile passare un parametro, opzionale, che indichi
+'              il nome del foglio sul quale effettuare l'importazione
+'===========================================================================
+Public Sub ImportaDatiParam(Optional ByVal strNomeFoglio As String = "")
+' *RG 10/03/10
+' Public Sub ImportaDatiParam(Optional ByVal strNomeFoglio As String = "")
+
+Dim SaveActiveSheet
+    
+On Error GoTo error_handler
+    
+' *RG 01/09/15
+' RilevaADO
+    
+'se non |fffd| stato specificato nessun nome di foglio da importare, usa quello corrente
+If Trim(strNomeFoglio = "") Then
+   strNomeFoglio = ActiveSheet.Name
+Else
+   On Error Resume Next
+   strNomeFoglio = Sheets(strNomeFoglio).Name
+   If Err.Number <> 0 Then
+      On Error GoTo error_handler
+      Err.Raise 10000, "ImportaDati", "Il foglio di nome '" & strNomeFoglio & "' specificato come parametro non |fffd| stato trovato."
+   End If
+End If
+
+gbAggiornato = False
+
+SaveActiveSheet = ActiveSheet.Name
+RefreshQueries Sheets(strNomeFoglio)
+RefreshPivots strNomeFoglio
+    
+If Not gbAggiornato Then
+    MsgBox "Nessuna query o tabella pivot da aggiornare nel foglio selezionato.", _
+            vbInformation + vbOKOnly, "Attenzione!"
+End If
+   
+' Aggiorna variabile data ultima importazione
+Aggiorna_SQLLASTUPDATE Worksheets(SaveActiveSheet).Name
+
+' Esecuzione AutoMacro
+EseguiAutoMacro "import", strNomeFoglio
+    
+Worksheets(SaveActiveSheet).Activate
+    
+'chiama la routine di gestione dei debug
+'col solo parametro MostraDebug al fine di mostrare
+'la cartella debug eventualmente aperta
+DebugSQL "", "", blnMostraDebug:=True
+
+Exit Sub
+    
+error_handler:
+            
+With Application
+    If .Cursor <> xlDefault Then .Cursor = xlDefault
+End With
+
+GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.ImportaDati"
+End Sub
+
+'===========================================================================
+' FUNZIONE:    ImportaTuttiParam
+' PARAMETRI:   nome dell'area, o intervallo Excel
+' DESCRIZIONE: La funzione importa i dati in tutti i fogli lanciando la
+'              RefreshQueries e, direttamente, il refresh delle pivot
+'              dirette su host (con rimozione dei valori non movimentati)
+'              E' possibile passare un parametro, opzionale, che indichi
+'              un'area Excel contenente un elenco di nomi di fogli sui
+'              quali effettuare l'importazione
+'===========================================================================
+Public Sub ImportaTuttiParam(Optional ByVal strNomeArea As String = "", _
+                              Optional ByVal strFogliVisibili As String = "")
+' *RG 10/03/10
+' Public Sub ImportaTuttiParam(Optional ByVal strNomeArea As String = "")
+Dim a                As Integer
+Dim b                As Integer
+' *RG 16/03/10
+' Dim blnAggiornato    As Boolean
+Dim blnAggQuery      As Boolean
+Dim blnAggPivot      As Boolean
+Dim Foglio           As Worksheet
+Dim SaveActiveSheet  As String
+Dim strArrayFogli()  As String
+Dim pvt              As PivotTable
+Dim pvc              As PivotCache
+
+On Error GoTo error_handler
+
+' *RG 01/09/15
+' RilevaADO
+
+SaveActiveSheet = ActiveSheet.Name
+
+If Not PreparaArrayNomiFogli(strNomeArea, strArrayFogli, strFogliVisibili) Then Exit Sub
+
+blnAggQuery = False
+For a = 1 To UBound(strArrayFogli) ' Each foglio In Worksheets
+   On Error Resume Next
+   gbAggiornato = False
+   Set Foglio = Worksheets(strArrayFogli(a))
+   'se non esiste il foglio specificato, accende un errore
+   If Err.Number <> 0 Then
+      On Error GoTo error_handler
+      Err.Raise 10000, "ImportaTutti", "Il foglio '" & strArrayFogli(a) & "' specificato nell'area non esiste."
+   End If
+   On Error GoTo error_handler
+   RefreshQueries Sheets(strArrayFogli(a))
+   Foglio.Activate
+   If gbAggiornato Then blnAggQuery = True
+Next
+
+'memorizza eventuali variazioni della variabile globale
+'d'aggiornamento, che in seguito viene resettata
+' *RG 16/03/10
+' blnAggiornato = gbAggiornato
+
+'scorre tutte le pivotcache, poi scorre tutte le pivottable passando quelle
+'associate alla pivotcache selezionata alla funzione RefreshPivots
+'(una pivotcache pu|fffd| aver associate pi|fffd| pivottable, ed effettuando il refresh
+'della cache viene effettuato anche il refresh di tutte le pivottable associate)
+'NOTA: non usare For Each in quanto la RefreshPivots altera le pivotcache,
+'      per cui l'oggetto referenziato dalla For Each diventerebbe incoerente
+
+' *RG 10/03/10 - Modificato ciclo in quanto saltava delle pivot
+' OLD - Inizio
+'For a = 1 To ActiveWorkbook.PivotCaches.Count
+'   gbAggiornato = False
+'   For b = 1 To UBound(strArrayFogli) ' Each foglio In Worksheets
+'      Set Foglio = Worksheets(strArrayFogli(b))
+'      For Each pvt In Foglio.PivotTables
+'         Set pvc = ActiveWorkbook.PivotCaches(a)
+'         If pvt.PivotCache Is pvc And _
+'            TypeName(pvc.SourceData) = "Variant()" Then
+'            'Pivot direttamente su host
+'            If pvc.QueryType <> xlADORecordset Then
+'               RefreshPivots Foglio.Name, True, True
+'               'al primo refresh esce dal ciclo
+'               Exit For
+'            End If
+'         End If
+'      Next
+'      'se ha effettuato il refresh della pivotcache,
+'      'esce dal ciclo dei fogli e continua quello delle pivotcache
+'      If gbAggiornato Then Exit For
+'   Next
+'Next
+' OLD - Fine
+
+' NEW - Inizio
+blnAggPivot = False
+For b = 1 To UBound(strArrayFogli) ' Each foglio In Worksheets
+   Set Foglio = Worksheets(strArrayFogli(b))
+   For Each pvt In Foglio.PivotTables
+        gbAggiornato = False
+        For a = 1 To ActiveWorkbook.PivotCaches.Count
+            Set pvc = ActiveWorkbook.PivotCaches(a)
+            If pvt.PivotCache Is pvc And _
+                TypeName(pvc.SourceData) = "Variant()" Then
+                'Pivot direttamente su host
+                If pvc.QueryType <> xlADORecordset Then
+                    RefreshPivots Foglio.Name, True, True
+                    'al primo refresh esce dal ciclo
+                    Exit For
+                End If
+            End If
+        Next
+        'se ha effettuato il refresh della pivotcache,
+        'esce dal ciclo dei fogli e continua quello delle pivotcache
+        If gbAggiornato Then
+            blnAggPivot = True
+            Exit For
+        End If
+    Next
+Next
+' NEW - Fine
+
+'reimposta la variabile globale d'aggiornamento
+'con le eventuali variazioni subite
+' *RG 16/03/10
+' gbAggiornato = blnAggiornato Or gbAggiornato
+
+If (Not blnAggQuery) And (Not blnAggPivot) Then
+    MsgBox "Nessuna query o tabella pivot da aggiornare nei fogli della cartella.", _
+            vbInformation + vbOKOnly, "Attenzione!"
+End If
+  
+' Aggiorna variabile data ultima importazione
+Aggiorna_SQLLASTUPDATE Worksheets(SaveActiveSheet).Name
+
+' Esecuzione AutoMacro
+EseguiAutoMacro "import", , strNomeArea, strFogliVisibili
+
+Worksheets(SaveActiveSheet).Activate
+    
+Exit Sub
+    
+error_handler:
+            
+    With Application
+        If .Cursor <> xlDefault Then .Cursor = xlDefault
+    End With
+    
+    GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.ImportaTutti"
+End Sub
+
+'Wrapper per ImportaTuttiParam
+Public Sub ImportaVisibili()
+ImportaTuttiParam "", "1"
+End Sub
+
+'Wrapper per ImportaTuttiParam
+Public Sub ImportaNascosti()
+ImportaTuttiParam "", "2"
+End Sub
+
+Private Function PreparaArrayNomiFogli(ByVal strNomeArea As String, _
+                                       ByRef strArrayFogli() As String, _
+                                       ByVal strFogliVisibili As String) As Boolean
+Dim a       As Integer
+Dim b       As Integer
+Dim celle   As Range
+Dim nome    As Name
+Dim Foglio  As Worksheet
+Dim strNomeFoglio As String
+
+On Error GoTo PreparaArrayNomiFogli_err
+
+'se non |fffd| stato passato alcun nome di area,
+'valorizza l'array dei fogli con i nomi di tutti i fogli
+If strNomeArea = "" Then
+   ' ReDim strArrayFogli(1 To Worksheets.Count)
+   For Each Foglio In Worksheets
+      If (strFogliVisibili <> "1" And strFogliVisibili <> "2") Or _
+         (strFogliVisibili = "1" And Foglio.Visible) Or _
+         (strFogliVisibili = "2" And Not Foglio.Visible) Then
+            b = b + 1
+            ReDim Preserve strArrayFogli(1 To b)
+            strArrayFogli(b) = Foglio.Name
+      End If
+   Next
+   ' b = Worksheets.Count
+Else
+   'rimpiazza eventuali caratteri blank precedentemente assegnati con apici singoli
+   strNomeArea = Replace(strNomeArea, Chr(160), "'")
+   'se |fffd| stato passato il nome di area,
+   'per prima cosa verifica che esista
+   'nel foglio corrente
+   On Error Resume Next
+   Set nome = Names("'" & ActiveSheet.Name & "'!" & strNomeArea)
+   If Err.Number <> 0 Then
+      Err.Clear
+      'se non esiste nel foglio corrente, lo cerca fra i nomi della cartella
+      Set nome = Names(strNomeArea)
+      If Err.Number <> 0 Then
+         Err.Clear
+         'se non l'ha trovato come nome, prova ad attribuirlo ad un'area
+         Set celle = Range(strNomeArea)
+         If Err.Number <> 0 Then
+            On Error GoTo PreparaArrayNomiFogli_err
+            Err.Raise 10000, "ImportaTutti", "Impossibile trovare l'area denominata '" & strNomeArea & "'."
+         End If
+      End If
+   End If
+   On Error GoTo PreparaArrayNomiFogli_err
+   If celle Is Nothing Then
+      Set celle = nome.RefersToRange.Columns(1).Rows
+   End If
+   For a = 1 To celle.Count
+      If celle(a).Hyperlinks.Count <> 1 Then
+         strNomeFoglio = celle(a).Text
+      Else
+         strNomeFoglio = celle(a).Hyperlinks(1).Name
+      End If
+      'aggiunge all'array dei nomi foglio solo le celle non vuote
+      If Trim(strNomeFoglio) <> "" Then
+         'tiene un conteggio dei nomi trovati,
+         'per dopo verificare se ne ha trovato
+         'almeno uno (non |fffd| possibile determinare
+         'se un array |fffd| stato dimensionato)
+         On Error Resume Next
+         Set Foglio = Worksheets(strNomeFoglio)
+         If Err.Number <> 0 Then
+            Err.Clear
+            Err.Raise 10000, "PreparaArrayNomiFogli", "Nome foglio non valido '" & strNomeFoglio & "'."
+            GoTo PreparaArrayNomiFogli_err
+         End If
+         On Error GoTo PreparaArrayNomiFogli_err
+         If (strFogliVisibili <> "1" And strFogliVisibili <> "2") Or _
+            (strFogliVisibili = "1" And Foglio.Visible) Or _
+            (strFogliVisibili = "2" And Not Foglio.Visible) Then
+                b = b + 1
+                ReDim Preserve strArrayFogli(1 To b)
+                strArrayFogli(b) = strNomeFoglio
+         End If
+      End If
+   Next
+End If
+
+'se il contatore dei nomi validi rilevati nell'area
+'non |fffd| valorizzato, esce con errore
+' *RG 15/03/10
+'If b = 0 Then
+'   celle.Parent.Activate
+'   celle.Select
+'   Err.Raise 10000, "ImportaTutti", "L'area '" & strNomeArea & "' specificata non contiene nomi di fogli Excel."
+'End If
+
+'*RG 15/03/10
+If b <> 0 Then
+    PreparaArrayNomiFogli = True
+End If
+
+Exit Function
+
+PreparaArrayNomiFogli_err:
+GestioneErrori Nothing, Err, "PreparaArrayNomiFogli"
+End Function
+
+'===========================================================================
+' FUNZIONE:    RefreshLinkedPivot
+' PARAMETRI:   Qry - oggetto querytable su cui si appoggia la pivot
+' DESCRIZIONE: Per ogni pivot di ogni foglio dell'intera cartella, la
+'              funzione testa il sourcedata confrontandolo con la query
+'              appena aggiornata. In questo modo recupera la pivot
+'              agganciata alla query e ne esegue prima il refresh e poi
+'              la rimozione dei cadaveri.
+'
+'         N.B. ESEGUE IL REFRESH SOLO DI PIVOT DI TIPO STRINGA
+
+'===========================================================================
+Sub RefreshLinkedPivot(qry As QueryTable)
+Dim pvt     As PivotTable
+Dim Wrk     As Worksheet
+                   
+On Error GoTo error_handler
+
+For Each Wrk In Worksheets
+   ' Cerca le pivot collegate alla query 'Qry'
+   For Each pvt In Wrk.PivotTables
+      '           If pvt.PivotCache.QueryType <> xlADORecordset Then
+      Select Case TypeName(pvt.PivotCache.SourceData)
+          'Elenco o database di Microsoft Excel
+          Case "String"
+              If ConfrontaQryPivot(pvt.PivotCache.SourceData, qry) Then
+                 'imposta nel riferimento dell'area dati della pivot
+                 'il nome della query, in modo da evitare riferimenti di cella
+                 'che potrebbero non essere altrettanto dinamici
+                 pvt.SourceData = "'" & Replace(qry.Parent.Name, "'", "''") & "'!" & Replace(qry.Name, " ", "_")
+'              If UCase(RimuoviApici(pvt.PivotCache.SourceData)) = _
+                 UCase(strNomeFoglio & "!" & Replace(qry.Name, " ", "_")) Then
+                  'IMPOSTA PULIZIA VALORI NON MOVIMENTATI PER VERSIONE XP O SUCCESSIVE
+                  If Val(Application.Version) >= 10 Then
+                      SetMissingPivotItem pvt
+                  End If
+                  On Error Resume Next
+                  pvt.PivotCache.Refresh
+                  'IMPOSTA PULIZIA VALORI NON MOVIMENTATI PER VERSIONE INFERIORI A XP
+                  If Val(Application.Version) < 10 Then
+                      RemoveMissingPivotItem pvt
+                  End If
+              End If
+          ' Altro non previsto
+          Case Else
+              'Non esegue il refresh
+      End Select
+'            End If
+   Next
+Next
+    
+Exit Sub
+
+error_handler:
+            
+With Application
+    If .Cursor <> xlDefault Then .Cursor = xlDefault
+End With
+
+GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.RefreshLinkedPivot"
+End Sub
+
+'===========================================================================
+' FUNZIONE:    RefreshPivots
+' DESCRIZIONE: Per ogni pivot del foglio selezionato la funzione testa il
+'              sourcedata. Nel caso di una pivot di tipo stringa (pivot da
+'              query) viene eseguito il refresh della query su cui si basa
+'              la tabella pivot. Nel caso di una pivot di tipo Variant
+'              (pivot diretta su host) viene eseguito il refresh e la
+'              rimozione dei valori non movimentati.
+'              Il parametro opzionale blnSoloConversioneSQL, se passato, informa
+'              la funzione di restituire solo l'sql trattato dopo l'elaborazione
+'              delle macroistruzioni e sostituzioni variabili, senza eseguire
+'              modifiche alla pivot: |fffd| stato aggiunto per rendere la funzione
+'              in grado di restituire l'sql elaborato a macro esterne (Parametri ODBC)
+'===========================================================================
+Public Function RefreshPivots(ByVal strNomeFoglio As String, _
+                              Optional ByVal blnSoloTipoVariant As Boolean = False, _
+                              Optional ByVal blnUnaVolta As Boolean = False, _
+                              Optional ByVal blnSoloConversioneSQL As Boolean = False, _
+                              Optional ByRef strSQLElaborato As String = "") As Variant
+Dim a                As Integer
+Dim RisultatoElaborazione  As ElaborazioneSQL
+Dim blnOk            As Boolean
+Dim blnSQLOK         As Boolean
+Dim pvt              As PivotTable
+Dim IstruzioneHost   As clsIstruzioneHost
+Dim IstruzioneHost2  As clsIstruzioneHost
+Dim MacroIstruzione  As MacroIstruzione
+Dim strConnessione   As String
+Dim strConnessione2  As String
+Dim strQrySheet      As String
+Dim strSourceData    As String
+Dim StrSQL           As String
+Dim strSqlOriginale  As String
+Dim strTemp          As String
+Dim vntSourcedata    As Variant
+
+On Error GoTo error_handler
+
+Sheets(strNomeFoglio).Activate
+
+For Each pvt In Sheets(strNomeFoglio).PivotTables
+    
+   Select Case TypeName(pvt.PivotCache.SourceData)
+      'Pivot legata ad area di excel
+      Case "String"
+         If Not blnSoloTipoVariant Then
+'            strSourceData = pvt.PivotCache.SourceData
+'            If InStr(1, strSourceData, "!") > 1 Then
+'               strQrySheet = Left(strSourceData, InStr(1, strSourceData, "!") - 1)
+'               If Left(strQrySheet, 1) = "'" Then
+'                  strQrySheet = Mid(strQrySheet, 2)
+'               End If
+'               If Right(strQrySheet, 1) = "'" Then
+'                  strQrySheet = Left(strQrySheet, Len(strQrySheet) - 1)
+'               End If
+'               strQryName = Mid(strSourceData, InStr(1, strSourceData, "!") + 1)
+               RefreshQueries Range(Application.ConvertFormula(pvt.SourceData, xlR1C1, xlA1)).Parent ' Sheets(strQrySheet)
+'            End If
+         End If
+      'Pivot direttamente su host
+      Case "Variant()"
+         If pvt.PivotCache.QueryType <> xlADORecordset Then
+'            'IMPOSTA PULIZIA VALORI NON MOVIMENTATI PER VERSIONE XP O SUCCESSIVE
+'            If Val(Application.Version) >= 10 Then
+'               SetMissingPivotItem pvt
+'            End If
+            
+            'se |fffd| stato specificato di effettuare il refresh solo una volta,
+            'ed |fffd| stato fatto, non apporta pi|fffd| modifiche sulla pivotcache:
+            'serve per gestire la possibilit|fffd| che ci sia pi|fffd| di una pivottable
+            'nello stesso foglio, quando la funzione |fffd| chiamata per il refresh
+            'di tutti i fogli, dove vengono passate le pivotcache e non le
+            'pivottable (una pivotcache pu|fffd| aver associate pi|fffd| pivottable,
+            'ed effettuando il refresh della cache viene effettuato anche
+            'il refresh di tutte le pivottable associate)
+            If (Not gbAggiornato And blnUnaVolta) Or Not blnUnaVolta Then
+               gbAggiornato = True
+               
+               RisultatoElaborazione = GestioneSQLQueryPivot(pvt, blnSoloConversioneSQL, _
+                                                             strSQLElaborato)
+               
+               If RisultatoElaborazione <> NessunErrore Then
+                  Exit Function
+               End If
+            End If
+         End If
+   End Select
+   
+    ' Aggiorna variabile data ultima importazione
+    Aggiorna_SQLLASTUPDATE strNomeFoglio
+
+Next
+
+RefreshPivots = True
+
+Exit Function
+    
+error_handler:
+   If Application.Cursor <> xlDefault Then Application.Cursor = xlDefault
+   If Err.Number <> 10000 And Err.Number <> 0 Then
+      GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.RefreshPivots", RisultatoElaborazione = ErroreEsecuzioneSQL 'blnSQLOK
+   End If
+End Function
+
+'===========================================================================
+' FUNZIONE:    RefreshQueries
+' PARAMETRI:   strNomeFoglio - stringa indicante il nome del foglio che
+'              contiene la/le query da aggiornare
+' DESCRIZIONE: Per ogni query del foglio selezionato la funzione testa la
+'              stringa di connessione, nel caso la query contenesse una
+'              chiamata a stored procedure lancia la EseguiIstruzioneHost, ed
+'              esegue il refresh della query.
+'              Dopo aver eseguito il refresh lancia la RefreshLinkedPivot.
+'===========================================================================
+Private Function RefreshQueries(ByRef Foglio As Worksheet) As Boolean
+
+Dim strConnString          As String
+Dim strDEBUG               As String
+Dim strSqlOriginale        As String
+Dim strTemp                As String
+Dim IstruzioneHost         As clsIstruzioneHost
+Dim IstruzioneHost2        As clsIstruzioneHost
+Dim MacroIstruzione        As MacroIstruzione
+Dim qry                    As QueryTable
+Dim RisultatoElaborazione  As ElaborazioneSQL
+Dim vntMacro               As Variant
+
+On Error GoTo error_handler
+
+'prepara l'elenco delle macroistruzioni da considerare
+'per assegnarlo alla classe (solo SQLHOST e SQLPROC)
+vntMacro = Array(SelectOVR, StoredProcedure)
+
+Foglio.Activate
+
+For Each qry In Foglio.QueryTables
+   
+   gbAggiornato = True
+   
+   strConnString = SetConnString(qry.Connection)
+   
+   If strConnString <> "" Then
+      qry.Connection = strConnString
+   End If
+   
+   RisultatoElaborazione = GestioneSQLQueryPivot(qry, False)
+   
+   If RisultatoElaborazione <> NessunErrore Then
+      Exit Function
+   End If
+   
+   'Posizionamento prima cella area database
+   On Error Resume Next
+   qry.Destination(2, 1).Select
+   On Error GoTo error_handler
+            
+   'Aggiorna le pivot presenti nella cartella collegate alla query
+   RefreshLinkedPivot qry
+   
+   ' Aggiorna variabile data ultima importazione
+   Aggiorna_SQLLASTUPDATE Foglio.Name
+
+Next
+
+RefreshQueries = True
+    
+Exit Function
+    
+error_handler:
+If Application.Cursor <> xlDefault Then Application.Cursor = xlDefault
+
+GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.RefreshQueries", RisultatoElaborazione = ErroreEsecuzioneSQL
+End Function
+
+Private Function RefreshQueryPivot(ByRef vntQueryPivot As Variant, _
+                                   ByRef IstruzioneHost As clsIstruzioneHost) As Boolean
+'Esegue la query/pivot passata trappando eventuali
+'errori ODBC in modo da segnalarli se presenti;
+Dim intVariabili     As Integer
+Dim strConnessione   As String
+Dim StrSQL           As String
+Dim strTemp          As String
+Dim pvt              As PivotTable
+Dim vnt              As Variant
+
+On Error Resume Next
+
+'*** BYPASSATO: potrebbe dare problemi quando si crea un foglio autonomo,
+'               oppure con database Access o vecchie versioni di DB2 che
+'               non accettano commenti nelle query
+'aggiorna la data di modifica dell'SQL: |fffd| necessario usare una variabile
+'d'appoggio xch|fffd| passando la propriet|fffd| Sql della query byref non la modifica
+'strSql = vntQueryPivot.CommandText
+'SegnaData strSql
+'vntQueryPivot.CommandText = strSql
+
+Select Case True
+   Case TypeOf vntQueryPivot Is PivotTable
+      Set vnt = vntQueryPivot.PivotCache
+   Case TypeOf vntQueryPivot Is QueryTable
+      Set vnt = vntQueryPivot
+   Case Else
+      Exit Function
+End Select
+
+StrSQL = vnt.CommandText
+strConnessione = vnt.Connection
+strTemp = strConnessione
+
+intVariabili = SostituisciVariabili(strTemp, DelimitatoreVariabili)
+
+If intVariabili >= 0 Then
+   
+   'memorizza nell'oggetto IstruzioneHost passato per riferimento
+   'l'sql effettivamente eseguito, dopo ogni elaborazione: serve
+   'per la macroistruzione --DEBUG
+   IstruzioneHost.SQLEseguito = vnt.CommandText
+   
+   If TypeOf vntQueryPivot Is QueryTable Then
+      vntQueryPivot.Connection = strTemp
+      vntQueryPivot.Refresh BackgroundQuery:=False
+   Else
+      'in caso di pivot, deve eseguire la SvuotaPivot per poter
+      'cambiare connessione e sql senza avere refresh automatici
+      Set pvt = vntQueryPivot
+      SvuotaPivot pvt, False, False
+      vnt.CommandText = StrSQL
+      vnt.Connection = strTemp
+      vntQueryPivot.RefreshTable
+      'ripristina la connessione prima della sostituzione variabili
+      SvuotaPivot pvt, False
+      Set vnt = pvt.PivotCache
+      vnt.CommandText = StrSQL
+   End If
+   
+   vnt.Connection = strConnessione
+End If
+
+If Application.ODBCErrors.Count = 0 Then
+   If (IstruzioneHost.TipoIstruzione = SelectOVR Or _
+      IstruzioneHost.TipoIstruzione = StoredProcedure) And _
+      Not IstruzioneHost.Keep Then
+      'Reimposta la prop SQL a seconda dei parametri immessi
+      If TypeOf vntQueryPivot Is PivotTable Then
+         'in caso di pivot, deve eseguire la SvuotaPivot per poter
+         'cambiare connessione e sql senza avere refresh automatici
+         Set pvt = vntQueryPivot
+         SvuotaPivot pvt, False
+         Set vnt = pvt.PivotCache
+      End If
+      vnt.CommandText = IstruzioneHost.CallString
+      vnt.Connection = strConnessione
+   End If
+   RefreshQueryPivot = intVariabili >= 0
+Else
+   GestioneErrori Application.ODBCErrors, Nothing, "RefreshQueryPivot", True
+End If
+
+End Function
+
+'===========================================================================
+' FUNZIONE:    RemoveMissingPivotItem
+' PARAMETRI:   Pvt - oggetto pivottable su cui agisce la funzione
+' DESCRIZIONE: Rimuove gli elementi mancanti (cadaveri) dalla pivotcache
+'              della tabella pivot specificata.
+'              Sopperisce alla mancanza di una funzione specifica presente
+'              in XP (SetMissingPivotItem) su versioni di excel precedenti
+'===========================================================================
+Sub RemoveMissingPivotItem(pvt As PivotTable)
+Dim blnErrore     As Boolean
+Dim clsStatusBar  As clsStatusBar
+Dim PivotFld      As PivotField
+Dim PivotItm      As PivotItem
+
+Dim lngContatore  As Long
+Dim lngTotale     As Long
+Dim strStatus     As String
+    
+On Error GoTo RemoveMissingPivotItem_err
+
+Set clsStatusBar = New clsStatusBar
+
+clsStatusBar.Testo = "Conteggio pivotitems..."
+
+For Each PivotFld In pvt.PivotFields
+    If LCase(PivotFld.Name) <> "dati" And LCase(PivotFld.Name) <> "data" Then
+        If PivotFld.IsCalculated = False Then
+            On Error Resume Next 'x l'errore in XL 2K
+            lngTotale = lngTotale + PivotFld.PivotItems.Count
+            If Err.Number <> 0 Then blnErrore = True
+            On Error GoTo RemoveMissingPivotItem_err
+        End If
+    End If
+Next
+
+For Each PivotFld In pvt.PivotFields
+    If LCase(PivotFld.Name) <> "dati" And LCase(PivotFld.Name) <> "data" Then
+        If PivotFld.IsCalculated = False Then
+            For Each PivotItm In PivotFld.PivotItems
+                lngContatore = lngContatore + 1
+                If lngContatore Mod 100 = 0 Then
+                    clsStatusBar.Testo = "Ottimizzazione spazio tabelle pivot in corso (" & _
+                                         lngContatore & "/" & lngTotale & _
+                                         IIf(blnErrore, "+", "") & ")"
+                    DoEvents
+                End If
+                If PivotItm.Name <> "(vuoto)" And _
+                   PivotItm.Name <> "(vuote)" Then
+                   On Error Resume Next
+                   If PivotItm.RecordCount = 0 Then
+                     PivotItm.Delete
+                   End If
+                   On Error GoTo RemoveMissingPivotItem_err
+                End If
+            Next
+        End If
+    End If
+Next
+
+Exit Sub
+
+RemoveMissingPivotItem_err:
+GestioneErrori Application.ODBCErrors, Err, "RemoveMissingPivotItem"
+End Sub
+
+'===========================================================================
+' FUNZIONE:    RimuoviApici
+' PARAMETRI:   strSourceData - stringa contenente il sourcedata di una pivot
+' DESCRIZIONE: La funzione rimuove gli apici singoli che potrebbero
+'              contenere il nome del foglio con la pivot e ricompone un
+'              nuovo sourcedata con NomeFoglio!NomePivot
+'===========================================================================
+Private Function RimuoviApici(ByVal strSourceData As String) As String
+    
+    RimuoviApici = strSourceData
+    
+    If InStr(1, RimuoviApici, "!") > 1 Then
+        RimuoviApici = Left(RimuoviApici, InStr(1, RimuoviApici, "!") - 1)
+        If Left(RimuoviApici, 1) = "'" Then
+            RimuoviApici = Mid(RimuoviApici, 2)
+        End If
+        If Right(RimuoviApici, 1) = "'" Then
+            RimuoviApici = Left(RimuoviApici, Len(RimuoviApici) - 1)
+        End If
+        RimuoviApici = RimuoviApici & Mid(strSourceData, InStr(strSourceData, "!"))
+    End If
+
+End Function
+
+'===========================================================================
+' FUNZIONE:    SetConnString
+' PARAMETRI:   strNomeFoglio - stringa indicante il nome del foglio che
+'                              contiene la/le query da aggiornare
+'              Qry - oggetto querytable su cui agisce la funzione
+' DESCRIZIONE: Ripulisce la stringa di connessione mantenendo solo il
+'              riferimento al DSN su file.
+'===========================================================================
+Private Function SetConnString(ByVal strConnessione As String) As String
+        
+Dim intPos As Integer
+    
+SetConnString = Left(strConnessione, 5)
+intPos = InStr(strConnessione, "FILEDSN")
+
+If intPos = 0 Then
+   SetConnString = ""
+   Exit Function
+End If
+
+strConnessione = Mid(strConnessione, intPos)
+intPos = InStr(strConnessione, ";")
+If intPos > 0 Then
+    strConnessione = Left(strConnessione, intPos)
+End If
+
+SetConnString = SetConnString & strConnessione
+
+End Function
+
+'===========================================================================
+' FUNZIONE:    SetMissingPivotItem
+' PARAMETRI:   Pvt - oggetto pivottable su cui agisce la funzione
+' DESCRIZIONE: Imposta a zero il limite degli elementi mancanti (cadaveri)
+'              nella pivotcache della tabella pivot specificata.
+'              Sfrutta una propriet|fffd| di XP che permette di impostare prima
+'              il numero di elementi desiderati
+'===========================================================================
+Sub SetMissingPivotItem(pvt As PivotTable)
+
+    pvt.PivotCache.MissingItemsLimit = 0 'xlMissingItemsNone
+    
+End Sub
+
+Public Function SostituisciVariabili(ByRef StrSQL As String, _
+                                     ByVal strDelimitatore As String) As Integer
+'Sostituisce ogni occorrenza di strDelimitatore in strSql
+'con il valore contenuto nel corrispondente nome di Excel
+'Restituisce: il numero delle variabili sostituite o -1
+'             se non |fffd| riuscita a sostituire qualche variabile
+'NOTA: non |fffd| usata la funzione Replace() per compatibilit|fffd| con Excel 97
+Static app           As Excel.Application
+Static Foglio        As Worksheet
+Dim a                As Integer
+Dim intPosComInizio  As Integer
+Dim intPosComFine    As Integer
+Dim lngInizio        As Long
+Dim lngFine          As Long
+Dim strComandi()     As String
+Dim strContenuto     As String
+Dim strNome          As String
+Dim Wrk              As Workbook
+Dim intVariabili     As Integer
+Dim strSQLAUTODATE   As String
+
+On Error GoTo SostituisciVariabili_err
+
+'Disattivazione determinazione automatica date
+strSQLAUTODATE = "si"
+If CercaNome(ActiveWorkbook, "SQLAUTODATE", strSQLAUTODATE) Then
+    strSQLAUTODATE = Trim(strSQLAUTODATE)
+End If
+
+'si imposta pessimisticamente come se non fosse
+'riuscito a trovare almeno uno dei nomi di variabile
+SostituisciVariabili = -1
+
+'ciclo sviluppo stringa e sostituzione variabili
+intVariabili = 0
+Do
+
+   'cerca la prima occorrenza
+   lngInizio = InStr(StrSQL, strDelimitatore)
+
+   'fine variabili
+   If lngInizio = 0 Then
+      Exit Do
+   End If
+
+   'incremento numero variabili
+   intVariabili = intVariabili + 1
+
+   'cerca la seconda occorrenza, che delimita il nome da cercare
+   lngFine = InStr(lngInizio + Len(strDelimitatore), StrSQL, strDelimitatore) _
+           - lngInizio - Len(strDelimitatore)
+   
+   'se non trova il delimitatore finale, o lo
+   'spazio fra i due delimitatori |fffd| zero, esce
+   If lngFine <= 0 Then
+      Err.Raise 10000, "", "Impossibile sostituire le variabili, delimitatore finale non trovato."
+   End If
+   
+   'ricava il nome compreso fra i delimitatori
+   strNome = Trim(Mid(StrSQL, lngInizio + Len(strDelimitatore), lngFine))
+   
+   'cerca all'interno del contenuto del nome comandi di formattazione testo
+   intPosComInizio = InStr(strNome, "(")
+   intPosComFine = InStr(strNome, ")")
+   Erase strComandi
+   If intPosComInizio > 0 And intPosComFine > intPosComInizio + 1 Then
+      'memorizza i comandi in un array
+      strComandi = Split(Mid(strNome, intPosComInizio + 1, intPosComFine - intPosComInizio - 1))
+      'toglie i comandi dal nome della variabile
+      strNome = Mid(strNome, intPosComFine + 1)
+   End If
+   
+   'tenta un valutazione del contenuto della variabile,
+   'per permettere di specificare fra i delimitatori di variabile
+   'non solamente dei nomi ma anche dei riferimenti diretti e
+   'delle formule: se d|fffd| errore, lo cerca nei nomi
+   
+   'crea un foglio temporaneo, nascosto, da usare per ottenere la versione
+   'inglese di eventuali formule specificate come variabili
+   If Foglio Is Nothing Then
+      Set app = New Excel.Application
+      app.Workbooks.Add
+      Set Foglio = app.ActiveSheet
+   End If
+
+   Foglio.Range("a1").Formula = strNome
+
+   If Not IsError(Evaluate(Foglio.Range("a1").Formula)) Then
+      strContenuto = Evaluate(Foglio.Range("a1").Formula)
+   Else
+      Err.Raise 10000, "", "Variabile '" & strNome & "' non definita come nome di cella."
+   End If
+   
+   '|fffd| necessario verificare la presenza di virgole nel contenuto
+   'della cella in quanto IsDate("2,55") restituisce True
+   If IsDate(strContenuto) And InStr(strContenuto, ",") = 0 And Len(strContenuto) > 3 And _
+   UCase(strSQLAUTODATE) = "SI" Then
+      strContenuto = Format(strContenuto, "yyyy-mm-dd")
+   End If
+   
+   'applica eventuali comandi di formattazione variabile trovati
+   If Join(strComandi) <> "" Then
+      For a = LBound(strComandi) To UBound(strComandi)
+         Select Case UCase((strComandi(a)))
+            Case "U" 'maiuscolo
+               strContenuto = UCase(strContenuto)
+            Case "T" 'senza spazi iniziali e finali
+               strContenuto = Trim(strContenuto)
+            Case "TL" 'senza spazi a sinistra
+               strContenuto = LTrim(strContenuto)
+            Case "TR" 'senza spazi a destra
+               strContenuto = RTrim(strContenuto)
+            Case "D" 'data ISO con default se vuota
+               strContenuto = Format(strContenuto, "yyyy-mm-dd")
+               If Trim(strContenuto) = "" Then strContenuto = "0001-01-01"
+            Case "AA" 'anno con default se vuoto
+               strContenuto = Format(strContenuto, "yy")
+               If Trim(strContenuto) = "" Then strContenuto = "00"
+            Case "CC" 'secolo con default se vuoto
+               strContenuto = Left(Format(strContenuto, "yyyy"), 2)
+               If Trim(strContenuto) = "" Then strContenuto = "00"
+            Case "MM" 'mese con default se vuoto
+               strContenuto = Format(strContenuto, "mm")
+               If Trim(strContenuto) = "" Then strContenuto = "00"
+            Case "GG" 'giorno con default se vuoto
+               strContenuto = Format(strContenuto, "dd")
+               If Trim(strContenuto) = "" Then strContenuto = "00"
+            Case "PWD" 'variabile criptata con password
+               strContenuto = Criptazione(strContenuto, Decriptare)
+         End Select
+      Next
+   End If
+   
+   'sostituzione variabile con valore
+   StrSQL = Left(StrSQL, lngInizio - 1) & _
+            strContenuto & _
+            Mid(StrSQL, lngInizio + lngFine + Len(strDelimitatore) * 2)
+
+'ritorno in ciclo
+Loop
+
+'ritorno numero variabili
+
+SostituisciVariabili = intVariabili
+
+
+SostituisciVariabili_err:
+If Err.Number = 10000 Then
+   'errore pilotato
+   MsgBox Err.Description
+ElseIf Err.Number = 10001 Then
+   'errore finto, non fa nulla
+ElseIf Err.Number <> 0 Then
+   MsgBox "Errore in SostituisciVariabili: " & Err.Description
+End If
+
+'elimina il foglio temporaneo
+If Not app Is Nothing Then
+   app.DisplayAlerts = False
+   For Each Wrk In app.Workbooks
+      Wrk.Close False
+   Next
+   app.Quit
+   Set Foglio = Nothing
+End If
+
+End Function
+
+Private Function SvuotaPivot(ByRef pvt As PivotTable, ByVal blnRipristinaCollegamenti As Boolean, _
+                             Optional ByVal blnRimuoviMissingPivotItem As Boolean = True) As Boolean
+Dim blnGiaDetto   As Boolean
+Dim pvtf          As PivotField
+Dim rds           As ADODB.Recordset
+Dim strCnn        As String
+Dim StrSQL        As String
+
+On Error GoTo SvuotaPivot_err
+
+Set rds = New ADODB.Recordset
+
+'IMPOSTA PULIZIA VALORI NON MOVIMENTATI PER VERSIONE XP O SUCCESSIVE
+If Val(Application.Version) >= 10 Then
+   SetMissingPivotItem pvt
+End If
+
+With pvt.PivotCache
+   'memorizza connessione e query che poi rimetter|fffd|
+   strCnn = .Connection
+   StrSQL = .CommandText
+   
+   'copia tutti i campi della pivottable in un recordset ADO
+   On Error Resume Next
+   For Each pvtf In pvt.PivotFields
+      If LCase(pvtf.Name) <> "dati" And LCase(pvtf.Name) <> "data" Then
+         ' *RG 10/03/10 - In office 2007 svuotando la pivot perdeva i campi calcolati
+         If Not pvtf.IsCalculated Then
+            rds.Fields.Append pvtf.SourceName, adChar, 1
+            'trappa l'errore Campo gi|fffd| presente
+            If Err.Number <> 3367 And Err.Number <> 0 Then
+                GoTo SvuotaPivot_err
+            End If
+         End If
+      End If
+   Next
+   
+   On Error GoTo SvuotaPivot_err
+   
+   rds.Open
+   
+   'aggancia il recordset vuoto alla pivotcache e fa un refresh
+   Set .Recordset = rds
+   
+   'trappa l'eventuale errore dovuto alla
+   'propriet|fffd| SaveData durante il refresh
+   On Error Resume Next
+   If blnRipristinaCollegamenti Then
+      .Refresh
+   End If
+
+   'se la propriet|fffd| SaveData della pivot |fffd| False,
+   'non |fffd| possibile effettuare il refresh da codice
+   If Err.Number <> 0 Then
+      If Not pvt.SaveData Then
+         MsgBox "La tabella pivot |fffd| stata salvata senza i dati." & vbCrLf & _
+                "Utilizzare il comando Aggiorna dati per aggiornare la tabella pivot.", _
+                vbExclamation, _
+                "Attenzione"
+         blnGiaDetto = True
+      End If
+      
+      If blnRipristinaCollegamenti Then
+         pvt.PivotCache.CommandText = StrSQL
+         pvt.PivotCache.Connection = strCnn
+      End If
+      GoTo SvuotaPivot_err
+   End If
+   
+End With
+   
+On Error GoTo SvuotaPivot_err
+
+'IMPOSTA PULIZIA VALORI NON MOVIMENTATI PER VERSIONE 2K
+If Val(Application.Version) < 10 And blnRimuoviMissingPivotItem Then
+   RemoveMissingPivotItem pvt
+End If
+
+'ripristina query e connessione in modo che la pivot torni ad essere standard
+'NB: E' IMPORTANTE CHE SIA ATTRIBUITA PER PRIMA LA QUERY,
+'    POI LA CONNESSIONE ALTRIMENTI SCATTA IL REFRESH;
+'    INOLTRE, NON POSSONO STARE ALL'INTERNO DEL BLOCCO 'WITH' PRECEDENTE
+'    IN QUANTO CAMBIANDO LA FONTE DATI DA ODBC AD ADO LA PIVOTCACHE E' RICREATA
+If blnRipristinaCollegamenti Then
+   pvt.PivotCache.CommandText = StrSQL
+   pvt.PivotCache.Connection = strCnn
+End If
+
+SvuotaPivot = True
+
+Exit Function
+
+SvuotaPivot_err:
+If Not blnGiaDetto Then GestioneErrori Nothing, Err, "SvuotaPivot"
+End Function
+
+'wrapper per SvuotaFoglioParam
+Public Sub SvuotaFoglioCorrente()
+' *RG 10/03/10
+' Public Sub SvuotaFoglioCorrente()
+SvuotaFoglioParam ActiveSheet.Name
+End Sub
+
+'wrapper per SvuotaFogliParam
+Public Sub SvuotaTuttiFogli()
+' *RG 10/03/10
+' Public Sub SvuotaTuttiFogli()
+SvuotaFogliParam
+End Sub
+
+'===========================================================================
+' FUNZIONE:    SvuotaFoglioCorrente
+' PARAMETRI:   nessuno
+' DESCRIZIONE: La funzione svuota le aree dei dati delle query e delle
+'              pivot contenute nel foglio corrente, mantenendone la
+'              struttura per poter essere riaggiornata
+'===========================================================================
+Public Sub SvuotaFoglioParam(ByVal strNomeFoglio As String)
+' *RG 10/03/10
+' Public Sub SvuotaFoglioParam(ByVal strNomeFoglio As String)
+
+Dim SaveActiveSheet As String
+    
+On Error GoTo error_handler
+    
+gbAggiornato = False
+SaveActiveSheet = ActiveSheet.Name
+
+ClearQueries Sheets(strNomeFoglio)
+ClearPivots Sheets(strNomeFoglio)
+
+If Not gbAggiornato Then
+    MsgBox "Nessuna query o tabella pivot da svuotare nel foglio selezionato.", _
+            vbInformation + vbOKOnly, "Attenzione!"
+End If
+
+' Aggiorna variabile data ultima importazione
+Aggiorna_SQLLASTUPDATE Worksheets(SaveActiveSheet).Name, True
+
+' Esecuzione AutoMacro
+EseguiAutoMacro "clear", strNomeFoglio
+
+Worksheets(SaveActiveSheet).Activate
+    
+Exit Sub
+    
+error_handler:
+            
+With Application
+   If .Cursor <> xlDefault Then .Cursor = xlDefault
+End With
+
+GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.SvuotaFoglioCorrente"
+
+End Sub
+'===========================================================================
+' FUNZIONE:    SvuotaTuttiFogli
+' PARAMETRI:   nessuno
+' DESCRIZIONE: La funzione svuota le aree dei dati delle query e delle
+'              pivot contenute in tutti i fogli della cartella, mantenendone
+'              la struttura per poter essere riaggiornata
+'===========================================================================
+Public Sub SvuotaFogliParam(Optional ByVal strNomeArea As String = "", _
+                             Optional ByVal strFogliVisibili As String = "")
+' *RG 10/03/10
+' Public Sub SvuotaFogliParam(Optional ByVal strNomeArea As String = "")
+Dim a                As Integer
+Dim celle            As Range
+Dim Foglio           As Excel.Worksheet
+Dim SaveActiveSheet  As String
+Dim strArrayFogli()  As String
+    
+Dim pvt As PivotTable
+
+On Error GoTo error_handler
+
+SaveActiveSheet = ActiveSheet.Name
+
+If Not PreparaArrayNomiFogli(strNomeArea, strArrayFogli, strFogliVisibili) Then Exit Sub
+
+For a = 1 To UBound(strArrayFogli) ' Each foglio In Worksheets
+   On Error Resume Next
+   Set Foglio = Worksheets(strArrayFogli(a))
+   'se non esiste il foglio specificato, accende un errore
+   If Err.Number <> 0 Then
+      On Error GoTo error_handler
+      celle.Parent.Activate
+      celle.Select
+      Err.Raise 10000, "SvuotaFogliParam", "Il foglio '" & strArrayFogli(a) & "' specificato nell'area non esiste."
+   End If
+   On Error GoTo error_handler
+   ClearQueries Sheets(strArrayFogli(a))
+   ClearPivots Sheets(strArrayFogli(a))
+Next
+
+' Aggiorna variabile data ultima importazione
+Aggiorna_SQLLASTUPDATE Worksheets(SaveActiveSheet).Name, True
+
+' Esecuzione AutoMacro
+EseguiAutoMacro "clear", , strNomeArea, strFogliVisibili
+
+Worksheets(SaveActiveSheet).Activate
+
+Exit Sub
+ 
+error_handler:
+            
+With Application
+    If .Cursor <> xlDefault Then .Cursor = xlDefault
+End With
+
+GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.SvuotaTuttiFogli"
+
+End Sub
+
+'wrapper per SvuotaFogliParam
+Public Sub SvuotaVisibili()
+SvuotaFogliParam "", "1"
+End Sub
+
+'wrapper per SvuotaFogliParam
+Public Sub SvuotaNascosti()
+SvuotaFogliParam "", "2"
+End Sub
+Private Function Valuta(ByVal strEspressione As String, _
+                        Optional ByRef rng As Range = Nothing) As String
+Dim app  As Excel.Application
+Dim wkb  As Workbook
+Dim sht  As Worksheet
+
+On Error GoTo Valuta_err
+
+strEspressione = Trim(Replace(strEspressione, vbCrLf, ""))
+
+'pre-valuta un'espressione, in caso negativo accende un errore
+If strEspressione <> "" Then
+   If rng Is Nothing Then
+      'crea un foglio all'interno di una nuova cartella nascosta
+      Set app = New Excel.Application
+      Set wkb = app.Workbooks.Add
+      Set sht = wkb.ActiveSheet
+      Set rng = sht.Range("a1")
+   End If
+   
+   On Error Resume Next
+   'cerca di valutare l'espressione come formula
+   rng.Formula = "=" & strEspressione
+   'valuta la formula ottenuta da quella locale
+   If Not IsError(Evaluate(rng.Formula)) Then
+      Valuta = Evaluate(rng.Formula)
+   Else
+      'se il tentativo di valutazione dell'espressione come formula non |fffd|
+      'andato bene, allora scrive direttamente l'espressione come testo
+      Valuta = strEspressione
+   End If
+End If
+
+Valuta_err:
+If Not app Is Nothing Then
+   app.DisplayAlerts = False
+   For Each wkb In app.Workbooks
+      wkb.Close SaveChanges:=False
+   Next
+   app.Quit
+End If
+
+If Err.Number < 10000 And Err.Number <> 0 Then
+   Err.Raise Err.Number, "Valuta", Err.Description
+End If
+
+End Function
+
+Private Function ValutaBooleano(ByVal strCondizione As String, _
+                                Optional ByRef rng As Range = Nothing) As Boolean
+                                
+On Error Resume Next
+ValutaBooleano = CBool(Valuta(strCondizione, rng))
+If Err.Number = 13 Or Err.Number = 5 Then
+   On Error GoTo 0
+   Err.Raise 10000, "ValutaBooleano", _
+                    "La condizione " & SE & " (""" & strCondizione & """) non restituisce un valore logico."
+End If
+   
+End Function
+
+Private Sub EseguiAutoMacro(strAzione As String, _
+                            Optional ByVal strNomeFoglio As String = "", _
+                            Optional ByVal strNomeArea As String = "", _
+                            Optional ByVal strFogliVisibili As String = "", _
+                            Optional ByVal strFoglioOrigine As String = "")
+
+Dim SaveActiveSheet  As String
+Dim strArrayFogli()  As String
+Dim nam     As Name
+Dim namFoglio As String
+Dim namValore As String
+Dim blnTrovato As Boolean
+Dim i As Integer
+Dim strMacro As String
+Dim strMacroParms As String
+
+On Error GoTo error_handler
+
+SaveActiveSheet = ActiveSheet.Name
+
+If strNomeFoglio <> "" Then
+    ReDim Preserve strArrayFogli(1 To 1)
+    strArrayFogli(1) = strNomeFoglio
+Else
+    If Not PreparaArrayNomiFogli(strNomeArea, strArrayFogli, strFogliVisibili) Then Exit Sub
+End If
+
+' Sviluppo NAME
+For Each nam In ActiveWorkbook.Names
+    If InStr(1, nam.Name, "!") Then
+        If LCase(Mid(nam.Name, InStr(1, nam.Name, "!") + 1, Len(SQLAUTOMACRO))) = LCase(SQLAUTOMACRO) Then
+            namFoglio = Left(nam.Name, InStr(1, nam.Name, "!") - 1)
+            If Left(namFoglio, 1) = "'" Then
+                namFoglio = Mid(namFoglio, 2, Len(namFoglio) - 2)
+            End If
+            If strFoglioOrigine <> "" And strFoglioOrigine <> namFoglio Then
+                GoTo Next_Name
+            End If
+            namValore = Evaluate(nam.Value)
+            ' Verifica presenza riferimento ai fogli interessati
+            blnTrovato = False
+            For i = 1 To UBound(strArrayFogli)
+                If InStr(1, LCase(namValore), "fogliocollegato=") Then
+                    If InStr(1, LCase(namValore), LCase("fogliocollegato=" & strArrayFogli(i))) Then
+                        blnTrovato = True
+                        Exit For
+                    End If
+                Else
+                    If LCase(namFoglio) = LCase(strArrayFogli(i)) Then
+                        blnTrovato = True
+                        Exit For
+                    End If
+                End If
+            Next
+            ' Esecuzione Macro_Clear
+            If blnTrovato Then
+                ' Estrazione nome macro
+                strMacro = namValore
+                If InStr(1, strMacro, "(") Then
+                    strMacro = Left(strMacro, InStr(1, strMacro, "(") - 1)
+                End If
+                strMacro = "'" & ActiveWorkbook.Name & "'!" & strMacro
+                If LCase(strAzione) = "clear" Then
+                    strMacro = strMacro & "_Clear"
+                End If
+                
+                ' Estrazione parametri macro
+                strMacroParms = namValore
+                If InStr(1, strMacroParms, "(") Then
+                    strMacroParms = Mid(strMacroParms, InStr(1, strMacroParms, "(") + 1, _
+                                        InStr(1, strMacroParms, ")") - InStr(1, strMacroParms, "(") - 1)
+                Else
+                    strMacroParms = ""
+                End If
+
+                Application.Run strMacro, Left(nam.Name, InStr(1, nam.Name, "!") - 1), strMacroParms
+            End If
+        End If
+    End If
+Next_Name:
+Next
+
+Worksheets(SaveActiveSheet).Activate
+    
+Exit Sub
+    
+error_handler:
+            
+    With Application
+        If .Cursor <> xlDefault Then .Cursor = xlDefault
+    End With
+    
+    GestioneErrori Application.ODBCErrors, Err, "SAEP_TO_EXCEL_Aggiorna_Tabelle.basAggiornaTabelle.EseguiAutoMacro"
+
+End Sub
+'Wrapper per EseguiAutoMacro
+Public Sub EseguiAutoMacroFoglio_Clear()
+    gbAutoMacroManuale = True
+    EseguiAutoMacro "clear", , , , ActiveSheet.Name
+    gbAutoMacroManuale = False
+End Sub
+'Wrapper per EseguiAutoMacro
+Public Sub EseguiAutoMacroFoglio()
+    gbAutoMacroManuale = True
+    EseguiAutoMacro "import", , , , ActiveSheet.Name
+    gbAutoMacroManuale = False
+End Sub
+
+'questa procedura |fffd| una copia da inserire nel modulo della
+'cartella Excel che deve implementare la funzione di password
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
+Static blnWorking As Boolean
+Dim blnPWD        As Boolean
+Dim strNome       As String
+
+On Error Resume Next
+blnPWD = ThisWorkbook.CustomDocumentProperties("pwd ver") <> ""
+
+strNome = Target.Name.Name
+
+If LCase(strNome) Like "*pwd*" And blnPWD Then
+   If Not blnWorking Then
+      blnWorking = True
+      'imposta la formattazione personalizzata per la visualizzazione
+      'degli asterischi e cripta il testo contenuto nella cella
+      Target.NumberFormatLocal = ";;;" & Replace(String(Len(Target.Value), "\"), "\", "\*") '  "**;**;**;**"
+      Target.Value = Criptazione(Target.Value, Criptare)
+   Else
+      blnWorking = False
+   End If
+End If
+End Sub
+Attribute VB_Name = "clsIstruzioneHost"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+'Release 4.0.0
+
+Public Enum ErroriSQLHost
+   NoError = 0
+   FunctionError = 1
+   NessunaIstruzione = 2
+   SyntaxError = 3
+   StProcError = 4
+   ParamError = 5
+   'tipo errore non usato dalla classe ma disponibile per il chiamante
+   ConnectionError = 6
+End Enum
+
+'le macroistruzioni devono essere aggiunte a questo enumeratore
+'nell'ordine esatto di come dovranno essere interpretate, ovvero:
+'la prima che viene trovata nell'sql setta il tipo istruzione della classe
+'
+'il corrispondente elenco di chiavi |fffd| settato nell'evento Initialize
+Public Enum TipiIstruzione
+   [_numerotipiistruzione] = 3 'AGGIORNARE PER OGNI NUOVA MACROISTRUZIONE AGGIUNTA
+   Nessuna = 0
+   SelectOVR = 1
+   StoredProcedure = 2
+   SQLCall = 3
+End Enum
+
+Public CallString          As String 'la macroistruzione meno la chiave stessa
+Public ErrDescription      As String
+Public ErrFlag             As String 'flag settato dal chiamante
+Public File                As String
+Public InternalError       As ErroriSQLHost
+Public Keep                As Boolean
+Public Member              As String
+Public NomeStProc          As String
+Public OnErrorGo           As Boolean
+Public OriginalSqlString   As String 'SQL eventualmente contenuto dopo la macroistruzione
+Public SQLDaHost           As String 'SQL eventualmente restituito dall'host
+                                     '|fffd| settato dal chiamante dopo l'esecuzione
+                                     'della macroistruzione
+Public SQLEseguito         As String 'l'sql eseguito, dopo tutte le elaborazioni
+                                     '(serve per la macroistruzione debug)
+Public Trace               As Boolean 'memorizza se |fffd| stata rilevata la macroistruzione --DEBUG
+Public TraceOnError        As Boolean 'memorizza se |fffd| stato rilevato il parametro
+                                      'ONERROR nella macroistruzione --DEBUG
+
+Private Const ChiaveKeep      As String = "KEEP"
+Private Const ChiaveOnErrorGo As String = "ONERROR-GO"
+'Private Const ChiaveCall      As String = "--CALL"
+'Private Const ChiaveSqlHost   As String = "--SQLHOST"
+'Private Const ChiaveSqlProc   As String = "--SQLPROC"
+Private Const ChiaveEndCall   As String = "--ENDCALL"
+Private Const ChiaveParmCall  As String = "--PARM"
+Private Const ChiaviHost      As String = "--SQLHOST,--SQLPROC,--CALL"
+
+Private intTipoIstruzione     As TipiIstruzione
+Private vntChiaviMacro        As Variant
+Private strLibrary            As String
+Private strSQLString          As String
+Private vntMacroIstruzioni    As Variant
+Private vntParametri          As Variant
+
+Private Const intLunghezzaMaxDati     As Integer = 32766
+Private Const intLunghezzaMaxErrore   As Integer = 256
+Private Const intLunghezzaMaxFile     As Integer = 10
+Private Const intLunghezzaMaxLibreria As Integer = 10
+'Private Const intLunghezzaMaxMembro   As Integer = 10
+Private intLunghezzaMaxMembro   As Integer
+
+Public Property Get LunghezzaMaxDati() As Integer
+LunghezzaMaxDati = intLunghezzaMaxDati
+End Property
+
+Public Property Get LunghezzaMaxErrore() As Integer
+LunghezzaMaxErrore = intLunghezzaMaxErrore
+End Property
+
+Public Property Get LunghezzaMaxFile() As Integer
+LunghezzaMaxFile = intLunghezzaMaxFile
+End Property
+
+Public Property Get LunghezzaMaxLibreria() As Integer
+LunghezzaMaxLibreria = intLunghezzaMaxLibreria
+End Property
+
+Public Property Get LunghezzaMaxMembro() As Integer
+If intLunghezzaMaxMembro = 0 Then
+   intLunghezzaMaxMembro = 10
+End If
+LunghezzaMaxMembro = intLunghezzaMaxMembro
+End Property
+
+Public Property Let LunghezzaMaxMembro(ByVal intLunghezza As Integer)
+intLunghezzaMaxMembro = intLunghezza
+End Property
+
+Public Property Let Library(ByVal strLibreria As String)
+strLibrary = strLibreria
+End Property
+
+Public Property Get Library() As String
+If strLibrary = "" And TipoIstruzione <> SQLCall Then
+   Library = "*LIBL"
+Else
+   Library = strLibrary
+End If
+End Property
+
+Public Property Let Parametri(Optional ByVal Index As Variant, _
+                              ByVal vntValore As Variant)
+If Not IsMissing(Index) Then
+   vntParametri(Index) = vntValore
+Else
+   vntParametri = vntValore
+End If
+End Property
+
+Public Property Get Parametri(Optional ByVal Index As Variant) As Variant
+If Not IsMissing(Index) Then
+   Parametri = vntParametri(Index)
+Else
+   Parametri = vntParametri
+End If
+End Property
+
+Public Property Let SqlString(ByVal StrSQL As String)
+strSQLString = StrSQL
+End Property
+
+Public Property Get SqlString() As String
+SqlString = strSQLString
+End Property
+
+Public Property Get TipoIstruzione() As TipiIstruzione
+TipoIstruzione = intTipoIstruzione
+End Property
+
+'===========================================================================
+' FUNZIONE:    ValParam
+' PARAMETRI:   StProc - oggetto struttura
+' DESCRIZIONE: La funzione svolge normali controlli sui valori contenuti
+'              nella struttura StProc
+'===========================================================================
+Public Function ValParam() As Boolean
+    
+If NomeStProc = "" And intTipoIstruzione = StoredProcedure Then
+    ErrDescription = "Nome della Stored Procedure mancante." & vbCrLf & " " & vbCrLf _
+                            & "Impossibile continuare."
+ElseIf File = "" Then
+    ErrDescription = "Parametro File mancante." & vbCrLf & " " & vbCrLf _
+                            & "Impossibile continuare."
+ElseIf Member = "" And TipoIstruzione <> SQLCall Then
+    ErrDescription = "Parametro Membro mancante." & vbCrLf & " " & vbCrLf _
+                            & "Impossibile continuare."
+ElseIf Len(Library) > LunghezzaMaxLibreria Then
+    ErrDescription = "La lunghezza del parametro Libreria: " & Library _
+                            & " supera il valore consentito di 10 caratteri." & vbCrLf & " " _
+                            & vbCrLf & "Impossibile continuare."
+ElseIf Len(File) > LunghezzaMaxFile Then
+    ErrDescription = "La lunghezza del parametro File: " & File _
+                            & " supera il valore consentito di 10 caratteri." & vbCrLf & " " _
+                            & vbCrLf & "Impossibile continuare."
+ElseIf Len(Member) > LunghezzaMaxMembro Then
+    ErrDescription = "La lunghezza del parametro Membro: " & Member _
+                            & " supera il valore consentito di 10 caratteri." & vbCrLf & " " _
+                            & vbCrLf & "Impossibile continuare."
+Else
+    ErrDescription = ""
+    InternalError = NoError
+End If
+
+ValParam = True
+
+End Function
+
+Public Property Let MacroIstruzioni(ByVal vntElencoMacroIstruzioni As Variant)
+vntMacroIstruzioni = vntElencoMacroIstruzioni
+End Property
+
+'Private Property Get MacroIstruzioni() As Variant
+''Dim a As Integer
+''On Error GoTo errore
+'''restituisce l'elenco di macroistruzioni da ricercare, se vuoto le mette tutte
+''If Not IsEmpty(vntMacroIstruzioni) Then
+'   MacroIstruzioni = vntMacroIstruzioni
+''Else
+''   ReDim vntMacroIstruzioni(0 To TipiIstruzione.[_NumeroTipiIstruzione] - 1)
+''   For a = 0 To TipiIstruzione.[_NumeroTipiIstruzione] - 1
+'''      ReDim Preserve vntMacroIstruzioni(1 To a)
+''      vntMacroIstruzioni(a) = a + 1
+''   Next
+''End If
+''Exit Property
+''
+''errore:
+'End Property
+
+Public Function Validazione() As Boolean
+Dim a                      As Integer
+Dim intPos                 As Integer
+Dim intPosChiave           As Integer
+Dim intPosEnd              As Integer
+Dim strChiaveMacroComando  As String
+Dim strTemp                As String
+
+On Error GoTo Validazione_err
+
+'passa l'elenco delle macroistruzioni da ricercare,
+'e alla prima ricorrenza trovata setta la chiave ed esce
+For a = 0 To UBound(vntMacroIstruzioni)
+   If InStr(strSQLString, vntChiaviMacro(vntMacroIstruzioni(a) - 1)) > 0 Then
+      strChiaveMacroComando = vntChiaviMacro(vntMacroIstruzioni(a) - 1)
+      intTipoIstruzione = vntMacroIstruzioni(a)
+      Exit For
+   End If
+Next
+
+If intTipoIstruzione = Nessuna Then
+   InternalError = NessunaIstruzione
+End If
+
+'Select Case True
+'   'Controlla se si tratta di una SELECT OVR,...
+'   Case InStr(strSQLString, ChiaveSqlHost) <> 0
+'      intTipoIstruzione = SelectOVR
+'      strChiaveMacroComando = ChiaveSqlHost
+'
+'   '...di chiamata a SP,...
+'   Case InStr(strSQLString, ChiaveSqlProc) <> 0
+'      intTipoIstruzione = StoredProcedure
+'      strChiaveMacroComando = ChiaveSqlProc
+'
+'   '...o di istruzione CALL
+'   Case InStr(strSQLString, ChiaveCall) <> 0
+'      intTipoIstruzione = SQLCall
+'      strChiaveMacroComando = ChiaveCall
+'
+'   Case Else
+'      InternalError = NessunaIstruzione
+'End Select
+
+'se non ha trovato istruzioni host nell'sql,
+'la propriet|fffd| InternalError |fffd| gi|fffd| stata settata
+'in fase di assegnazione della stringa sql
+If InternalError = NessunaIstruzione Then Exit Function
+
+'memorizza la posizione della macroistruzione all'interno dell'SQL
+intPosChiave = InStr(strSQLString, strChiaveMacroComando)
+
+If intPosChiave = 0 Then
+   InternalError = NessunaIstruzione
+   Exit Function
+End If
+
+'memorizza la fine della macroistruzione, delimitata da punto e virgola
+intPos = InStr(intPosChiave, strSQLString, ";")
+
+'Controllo correttezza della sintassi chiamante
+If intPos = 0 Then
+   InternalError = SyntaxError
+   ErrDescription = "E' stato rilevato un errore nella sintassi della chiamata alla stored procedure"
+   Exit Function
+End If
+        
+'CallString |fffd| la macroistruzione
+'CallString = Mid(strSQLString, intPosChiave, InStr(intPosChiave, strSQLString, ";") - intPosChiave + 1)
+CallString = Mid(strSQLString, 1, InStr(intPosChiave, strSQLString, ";")) ' - intPosChiave + 1)
+'OriginalSqlString |fffd| tutto ci|fffd| che segue la macroistruzione
+OriginalSqlString = Mid(strSQLString, InStr(intPosChiave, strSQLString, ";") + 1)
+
+strTemp = CallString
+
+'ricava la sola istruzione sql togliendo la macro istruzione
+strTemp = Trim(Mid(strTemp, InStr(strTemp, strChiaveMacroComando) + Len(strChiaveMacroComando)))
+
+'controlla se |fffd| specificato il parametro Keep
+intPos = InStr(UCase(strTemp), ChiaveKeep)
+If intPos > 0 Then
+   strTemp = Trim(Left(strTemp, intPos - 1) & Mid(strTemp, intPos + 4))
+   Keep = True
+End If
+
+'controlla se |fffd| specificato il parametro OnErrorGo
+intPos = InStr(UCase(strTemp), ChiaveOnErrorGo)
+If intPos > 0 Then
+'questa parte |fffd| stata commentata su richiesta di Ghedin (mail 9/1/04)
+'        If OriginalSqlString = "" Then
+'            MsgBox "Impossibile eseguire l'operazione selezionata." & vbCrLf _
+'                    & "L'opzione ONERROR-GO necessita della presenza di " & vbCrLf _
+'                    & "una stringa SQL di partenza.", vbOKOnly + vbExclamation, "Attenzione!"
+'            InternalError = FunctionError
+'            Exit Function
+'        End If
+   strTemp = Trim(Left(strTemp, intPos - 1) & Mid(strTemp, intPos + Len(ChiaveOnErrorGo)))
+   OnErrorGo = True
+End If
+
+If TipoIstruzione = StoredProcedure Then
+   NomeStProc = Trim(Left(strTemp, InStr(strTemp, " ")))
+   strTemp = Trim(Mid(strTemp, Len(NomeStProc) + 1))
+End If
+
+'verifica se |fffd| specificata una libreria nell'istruzione
+If InStr(strTemp, "/") > 0 Then
+   Library = Trim(Left(strTemp, InStr(strTemp, "/") - 1))
+   strTemp = Mid(strTemp, InStr(strTemp, "/") + 1)
+Else
+   Library = ""
+End If
+
+If TipoIstruzione = SQLCall Then
+   'verifica la presenza dell'istruzione di chiusura call
+   'in mancanza della quale esce con errore
+   intPosEnd = InStr(intPosChiave, strSQLString, ChiaveEndCall)
+   
+   If intPosEnd = 0 Then
+      InternalError = SyntaxError
+      ErrDescription = "Macro istruzione " & ChiaveEndCall & " mancante."
+      Exit Function
+   End If
+   
+   OriginalSqlString = Mid(strSQLString, intPosEnd + Len(ChiaveEndCall) + 1)
+   
+   File = Trim(Replace(strTemp, ";", ""))
+   
+   'verifica la presenza dell'istruzione di parametro
+   intPos = InStr(intPosChiave, strSQLString, ChiaveParmCall)
+   
+   If intPos > 0 Then
+      intPos = intPos + Len(ChiaveParmCall)
+      'isola la parte di stringa contente i parametri tagliando il primo --PARAM
+      'perch|fffd| la successiva Split() non crei il primo elemento vuoto nell'array
+      strTemp = Mid(strSQLString, intPos, intPosEnd - intPos)
+      strTemp = Replace(strTemp, vbCrLf, "")
+      
+      vntParametri = Split(strTemp, ChiaveParmCall)
+      
+      'ripulisce tutti i parametri da spazi e dai punto e virgola finali
+      For a = LBound(vntParametri) To UBound(vntParametri)
+         vntParametri(a) = Trim(vntParametri(a))
+         intPosEnd = InStrRev(vntParametri(a), ";")
+         If intPosEnd > 0 Then
+            vntParametri(a) = Left(vntParametri(a), intPosEnd - 1)
+         End If
+      Next
+   End If
+Else
+   'se mancano le parentesi delimitatrici di membro/file, esce con errore
+   If InStr(intPosChiave, strSQLString, "(") = 0 Then
+      InternalError = SyntaxError
+      ErrDescription = "E' stato rilevato un errore nella sintassi della chiamata alla stored procedure"
+      Exit Function
+   End If
+   
+   'file e membro
+   File = Trim(Left(strTemp, InStr(strTemp, "(") - 1))
+   strTemp = Mid(strTemp, InStr(strTemp, "(") + 1)
+   Member = Trim(Left(strTemp, InStr(strTemp, ")") - 1))
+End If
+
+'effettua delle verifiche sulla sintassi recuperata
+ValParam
+
+If ErrDescription <> "" Then
+   InternalError = ParamError
+   Exit Function
+End If
+
+Validazione = True
+
+Exit Function
+
+Validazione_err:
+Err.Raise 10000, "Validazione", "Errore nell'interpretazione delle istruzioni host"
+End Function
+
+Private Sub Class_Initialize()
+Dim a As Integer
+
+ReDim vntChiaviMacro(0 To TipiIstruzione.[_numerotipiistruzione] - 1)
+ReDim vntMacroIstruzioni(0 To TipiIstruzione.[_numerotipiistruzione] - 1)
+
+'valorizza l'array contenente l'elenco delle macroistruzioni
+For a = 0 To TipiIstruzione.[_numerotipiistruzione] - 1
+   vntChiaviMacro(a) = Split(ChiaviHost, ",")(a)
+   vntMacroIstruzioni(a) = a + 1
+Next
+
+End Sub
+Attribute VB_Name = "clsStatusBar"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+'Release 4.0.0
+Dim blnStatus  As Boolean
+
+Private Sub Class_Initialize()
+blnStatus = Application.DisplayStatusBar
+Application.DisplayStatusBar = True
+End Sub
+
+Public Property Let Testo(ByVal strTesto As String)
+Application.StatusBar = strTesto
+End Property
+
+Private Sub Class_Terminate()
+Application.StatusBar = False
+Application.DisplayStatusBar = blnStatus
+End Sub
+
+' InQuest injected base64 decoded content
+' N*h1
+' x!{<
+
+INQUEST-PP=macro

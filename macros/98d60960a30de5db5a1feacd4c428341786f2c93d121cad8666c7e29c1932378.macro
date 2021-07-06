@@ -1,0 +1,694 @@
+Attribute VB_Name = "Module1"
+Attribute VB_Name = "Module2"
+Dim rowLimit As String
+'Change the number of rows to match rowLimit value
+Dim validationResults(1000, 200) As String
+Dim cTypes(1 To 200) As String
+Dim otmUrl As String
+Dim userDict As Scripting.Dictionary
+Dim queryUrl As String
+Dim sHostName As String
+Dim enteredUsr As String
+Dim enteredPwd As String
+Dim classNotes As String
+Dim usrPwd As String
+Dim intUrl As String
+Dim topIndex As Integer
+Dim itemQuery As String
+Dim authCheckQuery As String
+Dim orgName As String
+
+
+Sub Run_Click()
+Attribute Run_Click.VB_ProcData.VB_Invoke_Func = "R\n14"
+
+Worksheets("Control").Cells(3, "D").Value = "Processing ...."
+
+readControlData
+authCheck
+clearForRun
+buildCtypesAndTopIndex
+
+Dim irow As Integer
+irow = 2
+Dim part As String
+Dim desc As String
+Dim htsus As String
+Dim eccnus As String
+Dim schedb As String
+Dim returnText As String
+Dim gtmXml As String
+Dim itemFlag As String
+
+Dim codeQuery As String
+Dim CodeQueryResult As String
+
+
+'Do While ((Not IsEmpty(Worksheets("Data").Cells(irow, "A"))) And (irow <= rowLimit))
+Do While ((Not IsEmpty(Worksheets("Data").Cells(irow, "B"))) And (irow <= rowLimit))
+'Debug.Print irow
+'Read Data
+part = Worksheets("Data").Cells(irow, "B")
+'orgName = Worksheets("Data").Cells(irow, "A")
+orgName = "ENSCO"
+classNotes = Worksheets("Data").Cells(irow, "C").Value
+itemFlag = validateItem(part, irow)
+
+'Customs Info - Code Validation
+validateCodes irow, 4, topIndex
+
+If itemFlag = "ITEM EXISTS" Then
+
+'Build Xml
+If ("YES" = genXmlForRow(irow, 4, topIndex)) Then
+
+    gtmXml = GenerateItemXml(part, irow, 4, topIndex)
+    'Debug.Print "Xml: " & gtmXml
+
+    returnText = SendXml(gtmXml)
+
+    'Process response for success/failure
+    'Debug.Print "Return Xml: " & returnText
+
+    GetReferenceNumber returnText, irow
+Else
+    Worksheets("Logs").Cells(irow, "C").Value = "INVALID CODES"
+    Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(255, 0, 0)
+End If
+ElseIf itemFlag = "ITEM DOESN'T EXISTS" Then
+    Worksheets("Logs").Cells(irow, "C").Value = itemFlag
+    Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(255, 0, 0)
+End If
+
+Worksheets("Logs").Cells(irow, "A").Value = part
+Worksheets("Logs").Cells(irow, "B").Value = Format(Now(), "yyyy-MM-dd hh:mm:ss")
+
+irow = irow + 1
+
+Loop
+
+validateTransmissions
+
+Worksheets("Control").Cells(3, "D").Value = "DONE.                              Please review sheets 'Data','Logs' for details"
+'Worksheets("Control").Cells(11, "B").Interior.Color = RGB(255, 255, 255)
+
+'Worksheets("Control").Cells(3, "B").Clear
+
+End Sub
+Function SendXml(gtmXml As String) As String
+Dim oXmlHttp As MSXML2.XMLHTTP60
+
+' 2. Send xml
+'Dim oXmlHttp As MSXML2.XMLHTTP60
+Set oXmlHttp = New MSXML2.XMLHTTP60
+'oXmlHttp.Open "POST", intUrl, False, "ENSCO.GTM_LOADER", "CHANGEME"
+oXmlHttp.Open "POST", intUrl, False, enteredUsr, enteredPwd
+oXmlHttp.setRequestHeader "Content-Type", "application/xml"
+oXmlHttp.setRequestHeader "Connection", "Keep-Alive"
+oXmlHttp.setRequestHeader "Accept-Language", "en"
+
+On Error Resume Next
+oXmlHttp.send gtmXml
+
+SendXml = oXmlHttp.responseText
+
+End Function
+Function CSVQuery(sqlQuery As String) As String
+'Dim oXmlHttp As MSXML2.XMLHTTP60
+Dim url1 As String
+Dim EncodedUrl As String
+Dim Contents As String
+Contents = "rootName=SQL_RESULTS&sqlQuery=" & sqlQuery
+Dim oXmlReturn1 As MSXML2.DOMDocument60
+Set oXmlReturn1 = New MSXML2.DOMDocument60
+Worksheets("Control").Cells(36, "D").Value = sqlQuery
+
+' 2. Send xml
+
+Dim oXmlHttp As MSXML2.ServerXMLHTTP60
+Set oXmlHttp = New MSXML2.ServerXMLHTTP60
+
+'Debug.Print "sqlQuery: " & sqlQuery
+
+'url1 = queryUrl & "?command=xcsv&username=" & enteredUsr & "&password=" & enteredPwd & "&sqlQuery=" & sqlQuery & "&isXMLCSVOutput=Y"
+
+'Debug.Print "Url1: " & url1
+oXmlHttp.Open "POST", queryUrl, False, enteredUsr, enteredPwd
+
+oXmlHttp.setRequestHeader "Content-Type", "application/x-www-form-urlencoded"
+oXmlHttp.setRequestHeader "Connection", "Keep-Alive"
+oXmlHttp.setRequestHeader "Accept-Language", "en"
+oXmlHttp.setRequestHeader "Authorization", "Basic MY_AUTH_STRING"
+
+oXmlHttp.send Contents
+
+CSVQuery = oXmlHttp.responseText
+
+End Function
+Function GetReferenceNumber(returnText As String, irow As Integer) As String
+
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Dim RefTransNum As String
+
+Set oXmlReturn = New MSXML2.DOMDocument60
+oXmlReturn.LoadXML (returnText)
+
+Debug.Print returnText
+
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:otm=""http://xmlns.oracle.com/apps/otm"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+    If Not IsNull(xmlRoot.SelectSingleNode("//otm:ReferenceTransmissionNo")) And Not IsEmpty(xmlRoot.SelectSingleNode("//otm:ReferenceTransmissionNo").nodeTypedValue) Then
+
+        RefTransNum = xmlRoot.SelectSingleNode("//otm:ReferenceTransmissionNo").nodeTypedValue
+        'Debug.Print RefTransNum
+        Worksheets("Logs").Cells(irow, "C").Value = "Success ! - Sent to GTM"
+        Worksheets("Logs").Cells(irow, "D").Value = RefTransNum
+        Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(0, 255, 0)  'Green color for success
+    Else
+        Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(255, 0, 0)  'Red color for failure
+    End If
+Else
+    Worksheets("Logs").Cells(irow, "C").Interior.Color = RGB(255, 0, 0)  'Red color for failure
+End If
+    GetReferenceNumber = RefTransNum
+End Function
+
+Function processQueryXml(csvQStr As String) As String
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Dim itemID As String
+Set oXmlReturn = New MSXML2.DOMDocument60
+'Debug.Print "csvQStr: " + csvQStr
+oXmlReturn.LoadXML (csvQStr)
+Set xmlRoot = oXmlReturn.DocumentElement
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:dbxml=""http://xmlns.oracle.com/apps/otm/DBXML"""
+    If csvQStr Like "*ITEM_XID*" Then
+    If Not IsNull(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_XID")) And Not IsEmpty(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_XID").nodeTypedValue) Then
+        itemID = xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@ITEM_XID").nodeTypedValue
+        Worksheets("Control").Cells(36, "C").Value = itemID
+    End If
+    ElseIf csvQStr Like "*CLASSIFICATION_CODE*" Then
+      If Not IsNull(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@CLASSIFICATION_CODE")) And Not IsEmpty(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@CLASSIFICATION_CODE").nodeTypedValue) Then
+        itemID = xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@CLASSIFICATION_CODE").nodeTypedValue
+    End If
+    
+    End If
+End If
+
+'Dim strArray() As String
+'Dim intCount As Integer
+'
+'strArray = Split(itemID, Chr(10))
+   
+'Debug.Print UBound(strArray)
+    
+'If UBound(strArray) >= 4 Then
+'    processQueryXml = "ITEM EXISTS"
+'ElseIf UBound(strArray) = 3 Then
+'    processQueryXml = "ITEM DOESN'T EXISTS"
+'End If
+
+If itemID <> "" Then
+processQueryXml = "ITEM EXISTS"
+Else
+processQueryXml = "ITEM DOESN'T EXISTS"
+End If
+
+
+End Function
+Function validateTransmissions() As String
+Dim irow1 As Integer
+Dim trnNo As String
+Dim transQuery As String
+Dim transQueryResult  As String
+Dim transStatus  As String
+
+irow1 = 2
+Do While Not IsEmpty(Worksheets("Logs").Cells(irow1, "A"))
+    If (Not IsEmpty(Worksheets("Logs").Cells(irow1, "D"))) Then
+        trnNo = Worksheets("Logs").Cells(irow1, "D")
+        transQuery = "select status from i_transmission where i_transmission_no = "
+        transQuery = transQuery & trnNo
+        transQueryResult = CSVQuery(transQuery)
+        'Debug.Print processTransReturnXml(transQueryResult)
+        transStatus = processTransReturnXml(transQueryResult)
+        Worksheets("Logs").Cells(irow1, "E") = transStatus
+        If transStatus = """PROCESSED""" Then
+            Worksheets("Logs").Cells(irow1, "E").Interior.Color = RGB(0, 255, 0)
+        ElseIf transStatus = """ERROR""" Then
+            Worksheets("Logs").Cells(irow1, "E").Interior.Color = RGB(255, 0, 0)
+        End If
+    End If
+    irow1 = irow1 + 1
+Loop
+End Function
+Function processTransReturnXml(csvQStr As String) As String
+Dim oXmlReturn As MSXML2.DOMDocument60
+Dim xmlRoot As IXMLDOMElement
+Dim itemID As String
+Set oXmlReturn = New MSXML2.DOMDocument60
+'Debug.Print "csvQStr: " + csvQStr
+oXmlReturn.LoadXML (csvQStr)
+
+If oXmlReturn.HasChildNodes Then
+    oXmlReturn.SetProperty "SelectionLanguage", "XPath"
+    oXmlReturn.SetProperty "SelectionNamespaces", "xmlns:dbxml=""http://xmlns.oracle.com/apps/otm/DBXML"""
+    Set xmlRoot = oXmlReturn.DocumentElement
+    If Not IsNull(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@STATUS")) And Not IsEmpty(xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@STATUS").nodeTypedValue) Then
+        itemID = xmlRoot.SelectSingleNode("/*/dbxml:TRANSACTION_SET/SQL_RESULTS/@STATUS").nodeTypedValue
+        'Debug.Print itemID
+    End If
+End If
+
+Dim strArray() As String
+Dim intCount As Integer
+   
+strArray = Split(itemID, Chr(10))
+   
+'Debug.Print UBound(strArray)
+processTransReturnXml = strArray(UBound(strArray))
+
+End Function
+Function validateCode(code As String, irow As Integer, icol As Integer) As String
+Dim codeQuery As String
+Dim CodeQueryResult As String
+Dim codeFlag As String
+
+'codeQuery = "select classification_code from gtm_prod_class_code where classification_code = '"
+
+codeQuery = "select classification_code from gtm_prod_class_code where classification_code = '" & code & "'"
+codeQuery = codeQuery & " and gtm_prod_class_type_gid = '" & cTypes(icol) & "'"
+codeQuery = codeQuery & " and gtm_data_version_gid = (select gtm_data_version_gid from gtm_data_version where is_current = 'Y'"
+codeQuery = codeQuery & " and gtm_content_type_gid = (select gtm_content_type_gid from gtm_prod_class_type where gtm_prod_class_type_gid = '" & cTypes(icol) & "'))"
+
+CodeQueryResult = CSVQuery(codeQuery)
+codeFlag = processQueryXml(CodeQueryResult)
+
+If (codeFlag = "ITEM DOESN'T EXISTS") Then
+    Worksheets("Data").Cells(irow, icol).Interior.Color = RGB(255, 0, 0)
+End If
+
+validateCode = codeFlag
+
+End Function
+Function validateCodes(irow As Integer, startIndex As Integer, topIndex As Integer) As String
+Dim code As String
+Dim jcol As Integer
+Dim result As String
+Dim resultArr(1 To 200) As String
+Dim cType As String
+'Debug.Print "irow: " & irow
+For jcol = startIndex To topIndex Step 1
+    cType = cTypes(jcol)
+    'If (cType = "HTS CA") Then
+    '    validationResults(irow, jcol) = "ITEM EXISTS"
+    'Else
+        If (Worksheets("Data").Cells(irow, jcol) <> "") Then
+        code = Trim(Worksheets("Data").Cells(irow, jcol))
+        result = validateCode(code, irow, jcol)
+        validationResults(irow, jcol) = result
+    End If
+Next
+
+validateCodes = "Done"
+
+End Function
+Function genXmlForRow(irow As Integer, startIndex As Integer, topIndex As Integer) As String
+Dim rowResults As String
+Dim codeValid As String
+Dim funcVal As String
+Dim jcol As Integer
+
+funcVal = "NO"
+
+    For jcol = startIndex To topIndex Step 1
+        codeValid = validationResults(irow, jcol)
+        If (codeValid = "ITEM EXISTS") Then
+            funcVal = "YES"
+        End If
+    Next
+    
+genXmlForRow = funcVal
+
+End Function
+
+Function GenerateItemXml(part As String, irow As Integer, startIndex As Integer, topIndex As Integer) As String
+Dim gtmXml As String
+Dim col As Integer
+Dim cXml As String
+
+gtmXml = "<Transmission xmlns=""http://xmlns.oracle.com/apps/otm"">"
+gtmXml = gtmXml & "<TransmissionHeader>"
+gtmXml = gtmXml & "<UserName>" & enteredUsr & "</UserName>"
+gtmXml = gtmXml & "<Password>" & enteredPwd & "</Password>"
+gtmXml = gtmXml & "<SenderTransmissionNo>" & part & "</SenderTransmissionNo>"
+gtmXml = gtmXml & "<AckSpec><ComMethodGid><Gid><Xid>EMAIL</Xid></Gid></ComMethodGid><AckOption>ERROR</AckOption></AckSpec>"
+gtmXml = gtmXml & "</TransmissionHeader>"
+gtmXml = gtmXml & "<TransmissionBody>"
+gtmXml = gtmXml & "<GLogXMLElement>"
+gtmXml = gtmXml & "<otm:ItemMaster xmlns:otm = ""http://xmlns.oracle.com/apps/otm/transmission/v6.4"">"
+gtmXml = gtmXml & "<otm:Item>"
+gtmXml = gtmXml & "<otm:TransactionCode>IU</otm:TransactionCode>"
+gtmXml = gtmXml & "<otm:ItemGid>"
+gtmXml = gtmXml & "<otm:Gid>"
+gtmXml = gtmXml & "<otm:DomainName>" & orgName & "</otm:DomainName>"
+gtmXml = gtmXml & "<otm:Xid>" & part & "</otm:Xid>"
+gtmXml = gtmXml & "</otm:Gid>"
+gtmXml = gtmXml & "</otm:ItemGid>"
+
+Worksheets("Logs").Cells(irow, "F").Interior.Color = RGB(255, 165, 0)
+Worksheets("Logs").Cells(irow, "F").Value = "Complete"
+
+For col = startIndex To topIndex Step 1
+        cXml = addCodeXml(irow, col)
+        gtmXml = gtmXml & cXml
+Next
+
+gtmXml = gtmXml & "</otm:Item>"
+gtmXml = gtmXml & "</otm:ItemMaster>"
+gtmXml = gtmXml & "</GLogXMLElement>"
+gtmXml = gtmXml & "</TransmissionBody>"
+gtmXml = gtmXml & "</Transmission>"
+GenerateItemXml = gtmXml
+Worksheets("Control").Cells(36, "D").Value = gtmXml
+End Function
+Function addCodeXml(rowIndex As Integer, colIndex As Integer) As String
+Dim codeXml As String
+Dim cType As String
+Dim code As String
+Dim cFlag As String
+
+codeXml = ""
+
+cFlag = validationResults(rowIndex, colIndex)
+If cFlag = "ITEM EXISTS" Then
+    code = Trim(Worksheets("Data").Cells(rowIndex, colIndex).Value)
+    cType = cTypes(colIndex)
+    codeXml = codeXml & "<otm:GtmItemClassification>"
+    codeXml = codeXml & "<otm:GtmProdClassTypeGid>"
+    codeXml = codeXml & "<Gid><otm:Xid>" & cType & "</otm:Xid></Gid>"
+    codeXml = codeXml & "</otm:GtmProdClassTypeGid>"
+    codeXml = codeXml & "<otm:ClassificationCode>" & code & "</otm:ClassificationCode>"
+    codeXml = codeXml & "<otm:ClassificationNotes>" & classNotes & "</otm:ClassificationNotes>"
+    'codeXml = codeXml & "<otm:ClassificationStatus>" & classNotes & "</otm:ClassificationStatus>"
+    codeXml = codeXml & "</otm:GtmItemClassification>"
+ElseIf Worksheets("Data").Cells(rowIndex, colIndex).Value <> "" Then
+   Worksheets("Logs").Cells(rowIndex, "F").Interior.Color = RGB(255, 0, 0)
+   Worksheets("Logs").Cells(rowIndex, "F").Value = "Partial"
+End If
+
+addCodeXml = codeXml
+
+End Function
+Function saveWorkbook() As String
+Dim IntialName As String
+Dim sFileSaveName As Variant
+Dim withoutMacro As Workbook     'workbook you want to save
+'withoutMacro = ThisWorkbook
+ 
+ThisWorkbook.Sheets(Array("Data", "Logs")).Select
+ThisWorkbook.Sheets(Array("Data", "Logs")).Copy
+
+IntialName = "Sample Output"
+
+sFileSaveName = Application.GetSaveAsFilename(InitialFileName:=InitialName, fileFilter:="Excel Files (*.xlsx), *.xlsx")
+If sFileSaveName <> False Then
+    ActiveWorkbook.SaveAs sFileSaveName, FileFormat:=xlOpenXMLWorkbook, CreateBackup:=False
+End If
+
+End Function
+Function clearWorkbook() As String
+'When cleared auto save to a standard folder
+Worksheets("Control").Cells(3, "D").Value = "Processing ...."
+clearData
+clearLogs
+Worksheets("Control").Cells(3, "D").Value = "Done. Sheets Data and Logs are cleared...."
+End Function
+Function clearData() As String
+    For row1 = 2 To Worksheets("Data").Range("A" & Rows.Count).End(xlUp).Row Step 1
+        Worksheets("Data").Cells(row1, "A").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "A").ClearContents
+    Next
+    For row1 = 2 To Worksheets("Data").Range("B" & Rows.Count).End(xlUp).Row
+        Worksheets("Data").Cells(row1, "B").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "B").ClearContents
+    Next
+    For row1 = 2 To Worksheets("Data").Range("C" & Rows.Count).End(xlUp).Row
+        Worksheets("Data").Cells(row1, "C").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "C").ClearContents
+    Next
+    For row1 = 2 To Worksheets("Data").Range("D" & Rows.Count).End(xlUp).Row
+        Worksheets("Data").Cells(row1, "D").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "D").ClearContents
+    Next
+    For row1 = 2 To Worksheets("Data").Range("E" & Rows.Count).End(xlUp).Row
+        Worksheets("Data").Cells(row1, "E").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "E").ClearContents
+    Next
+    For row1 = 2 To Worksheets("Data").Range("F" & Rows.Count).End(xlUp).Row
+        Worksheets("Data").Cells(row1, "F").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "F").ClearContents
+    Next
+    For row1 = 2 To Worksheets("Data").Range("G" & Rows.Count).End(xlUp).Row
+        Worksheets("Data").Cells(row1, "G").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "G").ClearContents
+    Next
+    For row1 = 2 To Worksheets("Data").Range("H" & Rows.Count).End(xlUp).Row
+        Worksheets("Data").Cells(row1, "H").Interior.Color = RGB(255, 255, 255)
+        Worksheets("Data").Cells(row1, "H").ClearContents
+    Next
+End Function
+Function clearLogs() As String
+For col1 = 1 To 6 Step 1
+    For row1 = 2 To Worksheets("Logs").Range("F" & Rows.Count).End(xlUp).Row Step 1
+        Worksheets("Logs").Cells(row1, col1).Interior.Color = RGB(255, 255, 255)
+        Worksheets("Logs").Cells(row1, col1).ClearContents
+    Next
+Next
+End Function
+Function clearValidation() As String
+For col1 = 1 To 8 Step 1
+    For row1 = 2 To Worksheets("Data").Range("A" & Rows.Count).End(xlUp).Row Step 1
+        Worksheets("Data").Cells(row1, col1).Interior.Color = RGB(255, 255, 255)
+    Next
+Next
+End Function
+Function clearForRun() As String
+clearLogs
+clearValidation
+End Function
+'Function saveAndClearWorkbook() As String
+'saveWorkbook
+'clearWorkbook
+'End Function
+
+Function validateCodesB() As String
+
+    Worksheets("Control").Cells(3, "D").Value = "Processing ...."
+    
+    readControlData
+    authCheck
+    clearValidation
+    buildCtypesAndTopIndex
+
+    Dim irow1 As Integer
+    irow1 = 2
+    Dim part1 As String
+
+    Do While ((Not IsEmpty(Worksheets("Data").Cells(irow1, "A"))) And (irow1 <= rowLimit))
+        part1 = Worksheets("Data").Cells(irow1, "A")
+        validateItem part1, irow1
+        validateCodes irow1, 4, topIndex
+        irow1 = irow1 + 1
+    Loop
+
+    'Worksheets("Control").Cells(3, "B").Clear
+    Worksheets("Control").Cells(3, "D").Value = "DONE. Please review 'Data' sheet for validation errors"
+
+End Function
+Function validateTransmissionsB() As String
+
+    Worksheets("Control").Cells(3, "D").Value = "Processing ...."
+    
+    readControlData
+    authCheck
+    
+    validateTransmissions
+
+    'Worksheets("Control").Cells(3, "B").Clear
+    Worksheets("Control").Cells(3, "D").Value = "DONE. Please review 'Data' sheet for validation errors"
+
+End Function
+
+Function readControlData() As String
+enteredUsr = Worksheets("Control").Cells(2, "B").Value
+enteredPwd = Worksheets("Control").Cells(3, "B").Value
+'classNotes = Worksheets("Data").Cells(4, "B").Value
+
+otmUrl = Worksheets("Control").Cells(5, "B").Value
+'queryUrl = otmUrl & "/GC3/glog.integration.servlet.BatchCSVUtilServlet"
+queryUrl = otmUrl & "/GC3/glog.integration.servlet.DBXMLServlet?command=xmlExport"
+intUrl = otmUrl & "/GC3/glog.integration.servlet.WMServlet"
+
+rowLimit = 1000
+End Function
+
+Function buildCtypesAndTopIndex() As String
+Dim colIndex As Integer
+colIndex = 4
+
+Do While Not IsEmpty(Worksheets("Data").Cells(1, colIndex))
+Worksheets("Control").Cells(36, "C").Value = Worksheets("Data").Cells(1, colIndex)
+    cTypes(colIndex) = Worksheets("Data").Cells(1, colIndex)
+    'Debug.Print colIndex & cTypes(colIndex)
+    colIndex = colIndex + 1
+Loop
+
+topIndex = colIndex - 1
+'Debug.Print "topIndex: " & topIndex
+
+End Function
+Function validateItem(part As String, irow As Integer) As String
+    Dim itemQueryResult As String
+    
+    itemQuery = "select item_xid from item where item_gid = '" & orgName & "."
+    itemQuery = itemQuery & part
+    itemQuery = itemQuery & "'"
+
+    'Item Validation
+    itemQueryResult = CSVQuery(itemQuery)
+    'Debug.Print itemQueryResult
+
+    Dim glogerrorPos As Integer
+
+    glogerrorPos = InStr(1, itemQueryResult, "glog_error")
+    If (glogerrorPos <> 0) Then
+        Worksheets("Control").Cells(3, "D").Value = itemQueryResult
+    End If
+    
+    Dim itemFlag1 As String
+    
+    itemFlag1 = processQueryXml(itemQueryResult)
+    
+    'Debug.Print itemFlag
+    If (itemFlag1 = "ITEM DOESN'T EXISTS") Then
+        Worksheets("Data").Cells(irow, "A").Interior.Color = RGB(255, 0, 0)
+    End If
+    
+    validateItem = itemFlag1
+End Function
+Function authCheck() As String
+    Dim authCheckQueryResult As String
+    
+    authCheckQuery = "select 1 from dual"
+    
+    'Check authentication
+    authCheckQueryResult = CSVQuery(authCheckQuery)
+    
+    Dim glogerrorPos As Integer
+    glogerrorPos = InStr(1, authCheckQueryResult, "glog_error")
+    If (glogerrorPos <> 0) Then
+        Worksheets("Control").Cells(3, "D").Value = authCheckQueryResult
+        End
+    End If
+    
+End Function
+Attribute VB_Name = "Module3"
+Sub Button1_Click()
+    Call Run_Click
+End Sub
+Attribute VB_Name = "Module4"
+Sub Logs_Button1_Click()
+    Call validateTransmissionsB
+End Sub
+
+Sub Logs_Button2_Click()
+    Call saveWorkbook
+End Sub
+
+Sub Logs_Button3_Click()
+    Call clearWorkbook
+End Sub
+
+Sub Logs_Button5_Click()
+    Call validateCodesB
+End Sub
+
+'Sub Logs_Button4_Click()
+'    Call saveAndClearWorkbook
+'End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub TextBox1_Change()
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+End Sub
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Private Sub Workbook_Open()
+
+End Sub
+
+
+INQUEST-PP=macro

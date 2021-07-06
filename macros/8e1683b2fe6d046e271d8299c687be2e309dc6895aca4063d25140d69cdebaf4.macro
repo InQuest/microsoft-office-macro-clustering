@@ -1,0 +1,2038 @@
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "MakrosAEB"
+Option Explicit
+'
+' Makros zur Bestimmung der ZEs und DRGs aus den Tabellen des InEK
+'
+' Zur Optimierung wird ein Cache-Systemverwendet, das zuerst aufgebaut wird
+'
+
+'=====================================================================================
+'
+' F|fffd|r die Berechnungen werden Caches aus Key und Value angelegt
+'
+' F|fffd|r jede Berechnung ein eigener Cache, der Inhalt ist nach Key Sortiert und
+' f|fffd|r die Suche kann die Bin|fffd|re-Suche verwendet werden.
+'
+Global Const gMaxCacheEntries = 4000 ' Anzahl der Eintr|fffd|ge
+Global Const gNumCaches = 20         ' Anzahl unterschiedliche Caches
+
+Type TCacheEntry
+    key As String
+    value As Double
+End Type
+
+'
+' Jeder Cache hat einen Namen und merkt sich den letzten benutzten Speicherplatz
+'
+Type Tcache
+    name As String
+    isInit As Boolean
+    lastUpdate As Date
+    lastIndex As Long
+    cache(gMaxCacheEntries) As TCacheEntry
+End Type
+Global gCaches(1 To gNumCaches) As Tcache
+
+'
+' Kennung ob Debugmeldungen ausgegeben werden sollen
+'
+Const doDebug = False
+
+'
+' Mappen von Cachename auf direkte Array-Indexe
+'
+Function cacheMapName(aName As String) As Integer
+    Dim i As Integer
+    For i = 1 To gNumCaches
+        If aName = gCaches(i).name Then
+            cacheMapName = i
+            Exit Function
+        End If
+    Next i
+    cacheMapName = -1
+End Function
+'
+' Pr|fffd|fen ob ein Cache schon angelegt wurde
+'
+Function cacheIsInit(aName As String) As Boolean
+    Dim i As Integer
+    i = cacheMapName(aName)
+    If i <> -1 Then
+        cacheIsInit = gCaches(i).isInit
+    Else
+        cacheIsInit = False
+        'Err.Raise vbObjectError + 2000, "MakrosAEB.cacheIsInit()", "Cachename nicht gefunden!"
+    End If
+End Function
+'
+' Cache komplett leeren - wird aktuell nicht ben|fffd|tigt
+'
+Sub clearCache(aName As String)
+    Dim i As Integer
+    i = cacheMapName(aName)
+    If i <> -1 Then
+        With gCaches(i)
+            .isInit = True
+            .lastIndex = -1
+            For j = LBound(.cache) To UBound(.cache)
+                .cache(j).key = ""
+                .cache(j).value = 0
+            Next j
+        End With
+    Else
+        Err.Raise vbObjectError + 2000, "MakrosAEB.cacheIsInit()", "Cachename nicht gefunden!"
+    End If
+End Sub
+'
+' Neuen Cache anlegen
+'
+Sub newCache(aName As String)
+    Dim i As Integer
+    For i = 1 To gNumCaches
+        If gCaches(i).name = "" Then
+            With gCaches(i)
+                .name = aName
+                .isInit = True
+                .lastIndex = -1
+            End With
+            Exit Sub
+        End If
+    Next i
+    Err.Raise vbObjectError + 2000, "MakrosAEB.newCache()", "Kein freier Cache mehr!"
+End Sub
+'
+' Wert aus Cache auslesen
+'   Es wird zuerst nur der richtige Cache gesucht
+'
+Function getCacheValue(aName As String, aKey As String, aDefault As String)
+    Dim i As Integer
+    i = cacheMapName(aName)
+    If i = -1 Then
+        Err.Raise vbObjectError + 2000, "MakrosAEB.getCacheValue()", "Cachename nicht gefunden!"
+        getCacheValue = aDefault
+        Exit Function
+    End If
+    getCacheValue = getCacheValueBase(i, aKey, aDefault)
+End Function
+'
+' Wert aus |fffd|ber Index referenzierten Cache auslesen
+' Da der Cache-Inhalt sortiert vorliegt, kann die bin|fffd|re Suche verwendet werden...
+'
+Function getCacheValueBase(aIndex As Integer, aKey As String, aDefault As String)
+    Dim l As Integer
+    Dim r As Integer
+    Dim m As Integer
+    
+    With gCaches(aIndex)
+        If .lastIndex = -1 Then
+            getCacheValueBase = aDefault
+            Exit Function
+        Else
+            l = LBound(.cache)
+            r = .lastIndex
+            Do
+                If l > r Or aKey > .cache(r).key Or aKey < .cache(l).key Then
+                    ' Nicht gefunden!
+                    getCacheValueBase = aDefault
+                    Exit Function
+                Else
+                    m = Round((l + r) / 2)
+                    If aKey = .cache(m).key Then
+                        ' Gefunden!
+                        getCacheValueBase = .cache(m).value
+                        Exit Function
+                    ElseIf aKey < .cache(m).key Then
+                        ' Wert ist kleiner, links weitersuchen
+                        r = m - 1
+                    Else
+                        ' Wert ist gr|fffd||fffd|er, rechts weitersuchen
+                        l = m + 1
+                    End If
+                End If
+            Loop
+        End If
+    End With
+End Function
+'
+' Einen Wert in den Cache eintragen
+'    Dabei wird zuerst nur der richtige Cache gesucht
+'
+Sub putCacheValue(aName As String, aKey As String, aValue As Double)
+    Dim i As Integer
+    i = cacheMapName(aName)
+    If i = -1 Then
+        Err.Raise vbObjectError + 2000, "MakrosAEB.getCacheValue()", "Cachename nicht gefunden!"
+        Exit Sub
+    End If
+    Call putCacheValueBase(i, aKey, aValue)
+End Sub
+'
+' Einen Wert |fffd|ber den CacheIndex eintragen
+' Dazu wird zuerst per bin|fffd|rer Suche die Einf|fffd|gestelle gesucht und dann der gr|fffd||fffd|ere Teil der Werte verschoben
+'
+Sub putCacheValueBase(aIndex As Integer, aKey As String, aValue As Double)
+    Dim l As Integer
+    Dim r As Integer
+    Dim m As Integer
+    Dim newIndex As Integer
+    
+    With gCaches(aIndex)
+        If .lastIndex = -1 Then
+            ' Cache war vorher leer
+            .lastIndex = LBound(.cache)
+            .cache(.lastIndex).key = aKey
+            .cache(.lastIndex).value = aValue
+            Exit Sub
+        Else
+            l = LBound(.cache)
+            r = .lastIndex
+            newIndex = -1
+            ' Einf|fffd|gestelle suchen
+            Do
+                If aKey > .cache(r).key Then
+                    ' Rechts vom aktuellen rechten Rand
+                    newIndex = r + 1
+                    r = l - 1
+                ElseIf aKey < .cache(l).key Then
+                    ' Der Linke Rand ist der Treffer
+                    newIndex = l
+                    l = r + 1
+                Else
+                    m = Round((l + r) / 2)
+                    If aKey = .cache(m).key Then
+                        ' Dubletten ignorieren!
+                        Exit Sub
+                    ElseIf aKey < .cache(m).key Then
+                        ' Kleiner als die Mitte, links weitersuchen
+                        r = m - 1
+                    Else
+                        ' Gr|fffd||fffd|er als die Mitte, rechts weitersuchen
+                        l = m + 1
+                    End If
+                End If
+            Loop Until r < l
+            ' Neuen Eintrag z|fffd|hlen
+            If .lastIndex = gMaxCacheEntries Then
+                ' Fataler Fehler sollte nicht auftreten
+                Err.Raise vbObjectError + 2001, "MakrosAEB.putCacheValue()", "Caches sind nicht gro|fffd| genug!"
+            End If
+            .lastIndex = .lastIndex + 1
+            If newIndex < .lastIndex Then
+                ' Gr|fffd||fffd|ere Eintr|fffd|ge einen nach hinten kopieren...
+                For r = .lastIndex To newIndex + 1 Step -1
+                    .cache(r).key = .cache(r - 1).key
+                    .cache(r).value = .cache(r - 1).value
+                Next r
+            End If
+            ' Neue Werte ablegen
+            .cache(newIndex).key = aKey
+            .cache(newIndex).value = aValue
+        End If
+    End With
+End Sub
+'=====================================================================================
+Function checkZEPattern(aString As String) As Boolean
+'
+' Pr|fffd|fen ob ein String ein ZE sein kann
+'
+' Einfache Statemachine, die auf ZE[0-9][0-9]*\.[0-9][0-9] pr|fffd|ft
+'
+    Dim i As Integer
+    Dim s As Integer
+    Dim c As String
+    i = 1
+    s = 0
+    checkZEPattern = False
+    Do While i <= Len(aString)
+        c = Mid$(aString, i, 1)
+        Select Case s
+            Case 0:
+                If c <> "Z" Then
+                    Exit Function
+                Else
+                    s = 1
+                End If
+            Case 1:
+                If c <> "E" Then
+                    Exit Function
+                Else
+                    s = 2
+                End If
+            Case 2:
+                If InStr("0123456789", c) <= 0 Then
+                    Exit Function
+                Else
+                    s = 3
+                End If
+            Case 3:
+                If c = "." Then
+                    s = 4
+                ElseIf InStr("0123456789", c) <= 0 Then
+                    Exit Function
+                End If
+            Case 4:
+                If InStr("0123456789", c) <= 0 Then
+                    Exit Function
+                Else
+                    s = 5
+                End If
+            Case 5:
+                If InStr("0123456789", c) <= 0 Then
+                    Exit Function
+                Else
+                    s = 6
+                End If
+            Case 6:
+                Exit Function
+        End Select
+        i = i + 1
+    Loop
+    checkZEPattern = s > 2
+                
+End Function
+Sub parseZE(cacheName As String, sheetno As Integer, col1 As Integer, col2 As Integer)
+'
+' Tabellen mit ZEs in Cache einlesen
+'
+    Dim r As Integer
+    Dim maxr As Integer
+    Dim v As String
+    Dim k As String
+    Dim b As Boolean
+    
+    r = 1
+    maxr = Sheets(sheetno).UsedRange.SpecialCells(xlCellTypeLastCell).Row
+    If maxr <= 1 Then
+        maxr = Sheets(sheetno).UsedRange.Rows.count
+    End If
+    Do
+        ' ZE-Nummer auslesen
+        k = Trim$(Sheets(sheetno).Cells(r, col1).value)
+        ' Pr|fffd|fen ob am Ende eine Fu|fffd|note angef|fffd|gt wurde "[0-9])" und diese L|fffd|schen
+        If Len(k) > 0 Then
+            b = Len(k) > 3
+            If b Then
+                b = Right$(k, 1) = ")"
+                If b Then
+                    b = InStr("0123456789", Mid$(k, Len(k) - 1, 1)) > 0
+                End If
+            End If
+            If b Then
+                ' Falls zwischen ZE und Fu|fffd|note Leerzeichen waren, werden diese mit entfernt
+                k = Trim$(Left$(k, Len(k) - 2))
+            End If
+        End If
+        If checkZEPattern(k) Then
+            v = Sheets(sheetno).Cells(r, col2).value
+            ' Pr|fffd|fen ob es sich um eine Zahl handelt!
+            If Val(v) > 0 Then
+                ' Wert gefunden
+                Call putCacheValue(cacheName, Trim$(k), CDbl(v))
+            End If
+        End If
+        r = r + 1
+    Loop Until r > maxr
+        
+End Sub
+Public Function CalcZE(aZE As String, year As Integer)
+'
+' F|fffd|r die Jahre vor 2017 wurden Hilfstabellen ZE<Jahr>.ZE angelegt, die die Anlagen 2 und 5
+' zusammenfassten. Diese werden verwendet, wenn sie vorhanden sind. In allen anderen F|fffd|llen
+' wird zurest die Anlage 2 und dann die Anlage 5 durchsucht und alle Werte im Cache gesammelt.
+'
+    Dim foundA2 As Integer
+    Dim foundA5 As Integer
+    Dim foundZE As Integer
+    Dim i As Integer
+    Dim basename As String
+        
+    If doDebug Then Debug.Print "CalcZE('" & aZE & "'," & year & ")"
+    
+    If Not cacheIsInit("ZE" & CStr(year)) Then
+        ' Cache muss aufgebaut werden!
+        
+        Call newCache("ZE" & CStr(year))
+        
+        basename = "ZE" & year
+    
+        foundA2 = -1
+        foundA5 = -1
+        foundZE = -1
+    
+        i = Sheets.count
+        Do While i > 0
+           If Sheets(i).name = basename & ".A2" Then
+                foundA2 = i
+            ElseIf Sheets(i).name = basename & ".A5" Then
+                foundA5 = i
+            ElseIf Sheets(i).name = basename & ".ZE" Then
+                foundZE = i
+            End If
+            i = i - 1
+        Loop
+        If foundZE = -1 And (foundA2 = -1 Or foundA5 = -1) Then
+            CalcZE = "ERR:Bl|fffd|tter zu " & basename & " fehlen"
+            Exit Function
+        End If
+        If foundZE <> -1 Then
+            ' Alte Suche
+            Call parseZE("ZE" & CStr(year), foundZE, 1, 3)
+        Else
+            ' Neue Suche
+            Call parseZE("ZE" & CStr(year), foundA2, 1, 3)
+            Call parseZE("ZE" & CStr(year), foundA5, 3, 6)
+        End If
+    End If
+            
+    ' Wert aus Cache auslesen!
+    If doDebug Then
+        Dim CalcZE2 As Double
+        CalcZE2 = getCacheValue("ZE" & CStr(year), aZE, "kein ZE")
+        Debug.Print "==>" & CStr(CalcZE2)
+        CalcZE = CalcZE2
+    Else
+        CalcZE = getCacheValue("ZE" & CStr(year), aZE, "kein ZE")
+    End If
+                
+End Function
+Public Function CalcDRG(aDRG As String, year As Integer, bereich As String, resultColumn As Integer)
+'
+' Suche der korrekten Bewertungsrelation
+'
+' Die abgesenkten Relationen ab 2017 werden |fffd|ber das Blatt "Absenkungen" ausgezeichnet
+'
+    Dim SheetName As String
+    Dim i As Integer
+    Dim r As Long
+    Dim maxr As Long
+    Dim v As String
+        
+    If doDebug Then Debug.Print "======"; Now(), "CalcDRG('" & aDRG & "'," & year & ",'" & bereich & "'," & resultColumn & ") ==> ";
+    If Not (bereich = "HA" Or bereich = "BA") Then
+        CalcDRG = "ERR:Als Bereich sind nur HA oder BA erlaubt"
+        Debug.Print " Fehler!"
+        Exit Function
+    End If
+    
+    SheetName = UCase$(bereich) & year
+    ' Optimierung f|fffd|r Jahre vor 2017, muss evtl. ab 2019 angepasst werden!
+    If (year >= 2016) And (aDRG = "I68E" Or aDRG = "I68D") Then
+        '
+        ' Pr|fffd|fen ob eine Absenkung ber|fffd|cksichtigt werden muss, dann wird die andere Tabelle verwendet
+        '
+        ' Blatt Absenkung suchen
+        i = 1
+        Do While i < Sheets.count
+            If Sheets(i).name = "Absenkungen" Then
+                Exit Do
+            End If
+            i = i + 1
+        Loop
+        If i = Sheets.count Then
+            CalcDRG = "ERR:Blatt Absenkungen fehlt"
+            Debug.Print " Fehler!"
+            Exit Function
+        End If
+        ' Blatt Absenkungen durchsuchen, ob ein passender Eintrag vorliegt
+        r = 9
+        maxr = Sheets(i).UsedRange.SpecialCells(xlCellTypeLastCell).Row
+        If maxr = 1 Then
+            maxr = Sheets(i).UsedRange.Rows.count
+        End If
+        Do
+            If Sheets(i).Cells(r, 1).value = year And UCase$(Sheets(i).Cells(r, 3).value) = bereich And Sheets(i).Cells(r, 2).value = aDRG Then
+                ' Eintrag gefunden!
+                If UCase$(Sheets(i).Cells(r, 4).value) = "J" Then
+                    ' Abgesenkte Werte verwenden!
+                    SheetName = SheetName & "A"
+                End If
+                Exit Do ' Weitersuchen nicht n|fffd|tig!
+            End If
+            r = r + 1
+        Loop Until r > maxr
+    End If
+    
+    ' Blatt mit DRG-Informationen suchen
+    i = Sheets.count
+    Do While i > 0
+        If Sheets(i).name = SheetName Then
+            Exit Do
+        End If
+        i = i - 1
+    Loop
+    ' i = Sheets(SheetName).Index
+    If i > 0 Then
+        r = 9
+        maxr = Sheets(i).UsedRange.Rows.count
+        ' Korrekte DRG raussuchen
+        Do
+            If Sheets(i).Cells(r, 1).value = aDRG Then
+                CalcDRG = Sheets(i).Cells(r, resultColumn).value
+                If doDebug Then Debug.Print Sheets(i).Cells(r, resultColumn).value
+                Exit Function
+            End If
+            r = r + 1
+        Loop Until r > maxr
+        CalcDRG = "keine DRG"
+        If doDebug Then Debug.Print "keine DRG"
+    Else
+        CalcDRG = "ERR:Blatt " & SheetName & " fehlt"
+        Debug.Print " Fehler!"
+    End If
+    
+End Function
+
+Public Function GetPage(aRange As Range) As String
+'
+' Blatt-Nummern f|fffd|r Tabellenkopf bestimmen
+'
+    Dim i As Integer
+    Dim myCount As Integer
+    Dim count As Integer
+    
+    'Debug.Print "   "; Now(), "GetPage(" & aRange.Parent.Index & ")"
+    count = 0
+    For i = 1 To ActiveWorkbook.Sheets.count
+        If ActiveWorkbook.Sheets(i).Visible = xlSheetVisible Then
+            count = count + 1
+            If aRange.Parent.Index = i Then
+                myCount = count
+            End If
+        End If
+    Next i
+    GetPage = myCount & "/" & count
+End Function
+'
+' Aus einer Spaltenzahl die Excel-Buchstabenbezeichnung erzeugen
+'
+Function MakeCol(col As Integer) As String
+    Dim buffer As String
+    buffer = ""
+    If col > 26 Then
+        buffer = MakeCol((col - 1) \ 26)
+        col = ((col - 1) Mod 26) + 1
+    End If
+    MakeCol = buffer & Chr$(Asc("A") - 1 + col)
+End Function
+'
+' In Tabellen mit Summenzeilen diese an die Menge der aktuellen Eingabefelder anpassen
+'
+Sub FixSummenZeilen(rSumme As Integer, rStart As Integer, rEnde As Integer, spmax As Integer)
+    Dim i As Integer
+    For i = 1 To spmax
+        If Left$(ActiveSheet.Cells(rSumme, i).Formula, 5) = "=SUM(" Then
+            ActiveSheet.Cells(rSumme, i).Formula = "=SUM(" & MakeCol(i) & CStr(rStart) & ":" & MakeCol(i) & CStr(rEnde) & ")"
+        End If
+    Next i
+End Sub
+
+'
+' In Tabellen mit Eingabebl|fffd|cken am Ende eine neue Zeile einf|fffd|gen und dann die Summen anpassen
+'
+'
+' Tastenkombination: Strg+e
+'
+Sub FormularzeileAmEndeEinf|fffd|gen()
+Attribute FormularzeileAmEndeEinf|fffd|gen.VB_ProcData.VB_Invoke_Func = "e\n14"
+
+    Dim r As Integer
+    Dim rr As Integer
+    Dim rStart As Integer
+    Dim rEnde As Integer
+    Dim maxr As Integer
+    Dim sp As Integer
+    Dim maxsp As Integer
+    Dim i As Integer
+    Dim c As Long
+    
+    If Left$(ActiveSheet.name, 2) <> "E2" And Left$(ActiveSheet.name, 2) <> "E3" Then
+        If Left$(ActiveSheet.name, 2) = "E1" Then
+            ZeileEinf|fffd|gen
+        Else
+            Beep
+        End If
+        Exit Sub
+    End If
+        
+    Application.ScreenUpdating = False
+    ActiveSheet.Unprotect
+   
+    ' Ausdehnung bestimmen
+    maxr = ActiveSheet.UsedRange.SpecialCells(xlCellTypeLastCell).Row
+    If maxr = 1 Then
+        maxr = ActiveSheet.UsedRange.Rows.count
+    End If
+    maxsp = ActiveSheet.UsedRange.SpecialCells(xlCellTypeLastCell).Column
+    If maxsp = 1 Then
+        maxsp = ActiveSheet.UsedRange.Columns.count
+    End If
+
+    ' Erste Zeile finden
+    sp = 1
+    rr = 3
+
+    While rr < 100 And (ActiveSheet.Cells(rr, sp).Interior.Color <> &H99FFFF Or ActiveSheet.Rows(rr).Hidden)
+        rr = rr + 1
+    Wend
+    If rr = 100 Then
+BlattFehler:
+        MsgBox "Auf diesem Tabellenblatt kann keine Zeile eingef|fffd|gt werden!", vbOKOnly, "Fehlermeldung!"
+        GoTo FormularZieleAnf|fffd|genBeenden
+    End If
+    rStart = rr
+    ' Letzte Zeile finden
+    While rr <= maxr And (ActiveSheet.Cells(rr, sp).Interior.Color = &H99FFFF)
+        rr = rr + 1
+    Wend
+    If rr = maxr + 1 Then
+        GoTo BlattFehler
+    End If
+    
+    ' Alte letzte Zeile als Template kopieren
+    Rows(CStr(rr - 1) & ":" & CStr(rr - 1)).Select
+    rEnde = rr
+    Application.CutCopyMode = False
+    Selection.Copy
+    ' Und am Ende einf|fffd|gen
+    Rows(CStr(rr) & ":" & CStr(rr)).Select
+    Selection.Insert Shift:=xlDown
+    ' Alle Werte aus Eingabezellen l|fffd|schen
+    For sp = 1 To maxsp
+        If ActiveSheet.Cells(rr, sp).Interior.Color = &H99FFFF Then
+            ActiveSheet.Cells(rr, sp).value = ""
+        End If
+    Next sp
+    
+    ' Summenzeile korrigieren
+    FixSummenZeilen rr + 1, rStart, rEnde, maxsp
+    
+    ' Auf den ersten Eingabewert fokussieren
+    Range("A" & CStr(rr)).Select
+    
+FormularZieleAnf|fffd|genBeenden:
+    ActiveSheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True
+    Application.ScreenUpdating = True
+    Selection.Show
+
+End Sub
+Sub FormularZeileL|fffd|schen()
+Attribute FormularZeileL|fffd|schen.VB_ProcData.VB_Invoke_Func = "l\n14"
+'
+' Eine Zeile in einem Eingabeblock l|fffd|schen, dabei muss mindestens eine Zeile
+' stehen bleiben, damit die Formeln nicht verloren gehen. Wenn die Zeile Eingaben
+' enth|fffd|lt gibt es eine R|fffd|ckfrage. Danach werden die Summen angepasst.
+'
+' Tastenkombination: Strg+l
+'
+    Dim r As Integer
+    Dim rr As Integer
+    Dim rStart As Integer
+    Dim rEnde As Integer
+    Dim maxr As Integer
+    Dim sp As Integer
+    Dim maxsp As Integer
+    Dim i As Integer
+    Dim found As Boolean
+    Dim result As Integer
+        
+    If Left$(ActiveSheet.name, 2) <> "E2" And Left$(ActiveSheet.name, 2) <> "E3" Then
+        If Left$(ActiveSheet.name, 2) = "E1" Then
+            ZeileL|fffd|schen
+        Else
+            Beep
+        End If
+        Exit Sub
+    End If
+        
+    Application.ScreenUpdating = False
+    ActiveSheet.Unprotect
+   
+    ' Ausdehnung bestimmen
+    maxr = ActiveSheet.UsedRange.SpecialCells(xlCellTypeLastCell).Row
+    If maxr = 1 Then
+        maxr = ActiveSheet.UsedRange.Rows.count
+    End If
+    maxsp = ActiveSheet.UsedRange.SpecialCells(xlCellTypeLastCell).Column
+    If maxsp = 1 Then
+        maxsp = ActiveSheet.UsedRange.Columns.count
+    End If
+
+    ' Erste Zeile finden
+    sp = 1
+    rr = 3
+
+    While rr < 100 And (ActiveSheet.Cells(rr, sp).Interior.Color <> &H99FFFF Or ActiveSheet.Rows(rr).Hidden)
+        rr = rr + 1
+    Wend
+    If rr = 100 Then
+BlattFehler:
+        MsgBox "Auf diesem Tabellenblatt sind keine Eingabefelder!", vbOKOnly, "Fehlermeldung!"
+        GoTo FormularZeileL|fffd|schenBeenden
+    End If
+    rStart = rr
+    ' Letzte Zeile finden
+    While rr <= maxr And (ActiveSheet.Cells(rr, sp).Interior.Color = &H99FFFF)
+        rr = rr + 1
+    Wend
+    If rr = maxr + 1 Then
+        GoTo BlattFehler
+    End If
+    rEnde = rr - 1
+    
+    sp = 1
+    rr = Selection.Row
+
+    ' Es muss eine Eingabezeile sein
+    If ActiveSheet.Cells(rr, sp).Interior.Color <> &H99FFFF Then
+        MsgBox "An diesem Ort kann keine Zeile eingef|fffd|gt werden!", vbOKOnly, "Fehlermeldung!"
+        GoTo FormularZeileL|fffd|schenBeenden
+    End If
+    '
+    ' Pr|fffd|fen ob mindestens eine Eingabezeile |fffd|brig bleibt
+    '
+    If rStart = rEnde Then
+        MsgBox "Die letzte Zeile in einem Bereich kann nicht gel|fffd|scht werden!", vbOKOnly, "Fehlermeldung!"
+        GoTo FormularZeileL|fffd|schenBeenden
+    End If
+    
+    '
+    ' Pr|fffd|fen ob die Zeile leer ist
+    '
+    found = False
+    For sp = 1 To maxsp
+        If ActiveSheet.Cells(rr, sp).Interior.Color = &H99FFFF And Trim$(ActiveSheet.Cells(rr, sp).value) <> "" Then
+            found = True
+            Exit For
+        End If
+    Next sp
+    
+    If found Then
+        ' Wenn es Werte gab, dann R|fffd|ckfragen, ob diese ignoriert werden sollen
+        result = MsgBox("Die zu l|fffd|schende Zeile enth|fffd|lt Eintr|fffd|ge, wollen Sie diese trotzdem l|fffd|schen?", vbYesNo + vbDefaultButton1, "Sicherheitsr|fffd|ckfrage")
+        If result = vbYes Then
+            found = False
+        End If
+    End If
+    
+    If Not found Then
+        ' Die gew|fffd|hlte Zeile l|fffd|schen und Summen korrigieren
+        Rows(CStr(rr) & ":" & CStr(rr)).Select
+        Selection.Delete Shift:=xlUp
+        FixSummenZeilen rEnde, rStart, rEnde - 1, maxsp
+    End If
+      
+    sp = 1
+    If ActiveSheet.Cells(rr, sp).Interior.Color <> &H99FFFF Then
+        ' Wenn die letzte Zeile gel|fffd|scht wurde, muss eine Zeile nach oben gerutscht werden
+        Range("A" & CStr(rr - 1)).Select
+    Else
+        Range("A" & CStr(rr)).Select
+    End If
+    
+FormularZeileL|fffd|schenBeenden:
+    ActiveSheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True
+    Application.ScreenUpdating = True
+    Selection.Show
+
+End Sub
+'
+' Makro um ein Formularblatt nach rechts zu wechseln
+'
+' Strg-n
+'
+Sub SelectNextSheet()
+Attribute SelectNextSheet.VB_ProcData.VB_Invoke_Func = "n\n14"
+    Dim i As Integer
+    
+    i = ActiveSheet.Index + 1
+    While i < Sheets.count
+        If Not Sheets(i).Visible Then
+            i = i + 1
+        Else
+            Sheets(i).Activate
+            Exit Sub
+        End If
+    Wend
+    Sheets("Deckblatt").Activate
+End Sub
+'
+' Makro um direkt auf das Deckblatt zu springen
+'
+' Strg-D
+'
+Sub SelectDeckblatt()
+Attribute SelectDeckblatt.VB_ProcData.VB_Invoke_Func = "d\n14"
+    Sheets("Deckblatt").Activate
+End Sub
+Attribute VB_Name = "MakrosDevelopment"
+'
+' Sammlung von Makros zum Aufbereiten der InEK-Tabellen und zur Anpassung der Seiten
+' im Rahmen der j|fffd|hrlichen Umstellungen.
+'
+Sub FehlerKorrektur()
+'
+' FehlerKorrektur Makro
+'
+' Wird verwendet um evtl. falsch gesetzte Verweise zu identifizieren und zu reparieren
+'
+'
+    Dim i As Integer
+        
+    For i = 1 To ActiveWorkbook.Names.count
+        Debug.Print ActiveWorkbook.Names(i).name, ActiveWorkbook.Names(i).RefersTo
+    Next i
+    
+End Sub
+'
+' Inhaltsverzeichnis sauber aufbauen
+'
+Sub MakeInhaltsverzeichnis()
+    
+    Dim r As Integer
+    Dim rr As Integer
+    Dim sp As Integer
+    Dim i As Integer
+    Dim c As Long
+    
+    ActiveWorkbook.Sheets(1).Unprotect
+    r = 9
+    For i = 2 To ActiveWorkbook.Sheets.count - 1
+        If ActiveWorkbook.Sheets(i).Visible = xlSheetVisible And ActiveWorkbook.Sheets(i).name <> "Deckblatt" Then
+            ActiveWorkbook.Sheets(1).Cells(r, 1) = r - 8
+            ActiveWorkbook.Sheets(1).Cells(r, 2) = ActiveWorkbook.Sheets(i).name
+            If InStr(ActiveWorkbook.Sheets(i).name, "Import") > 0 Then
+                ActiveWorkbook.Sheets(1).Hyperlinks.Add Anchor:=ActiveWorkbook.Sheets(1).Cells(r, 2), Address:="", SubAddress:="'" & ActiveWorkbook.Sheets(i).name & "'!A2", TextToDisplay:=ActiveWorkbook.Sheets(i).name
+                ActiveWorkbook.Sheets(1).Cells(r, 3) = "Tabelle f|fffd|r Datenimport"
+                c = xlThemeColorAccent1
+            Else
+                If Left$(ActiveWorkbook.Sheets(i).name, 2) = "B1" Then
+                    sp = 3
+                Else
+                    sp = 1
+                End If
+                rr = 3
+                While rr < 100 And (ActiveWorkbook.Sheets(i).Cells(rr, sp).Interior.Color <> &H99FFFF Or ActiveWorkbook.Sheets(i).Rows(rr).Hidden)
+                    rr = rr + 1
+                Wend
+                If rr = 100 Then
+                    rr = 5
+                End If
+                ActiveWorkbook.Sheets(1).Hyperlinks.Add Anchor:=ActiveWorkbook.Sheets(1).Cells(r, 2), Address:="", SubAddress:="'" & ActiveWorkbook.Sheets(i).name & "'!" & Chr$(Asc("A") - 1 + sp) & CStr(rr), TextToDisplay:=ActiveWorkbook.Sheets(i).name
+                ActiveWorkbook.Sheets(1).Cells(r, 3) = ActiveWorkbook.Sheets(i).Cells(4, 1)
+                If InStr(ActiveWorkbook.Sheets(1).Cells(r, 3), "(Forderung") > 0 Then
+                    c = xlThemeColorAccent3
+                ElseIf InStr(ActiveWorkbook.Sheets(1).Cells(r, 3), "(Vereinbarung") > 0 Then
+                    c = xlThemeColorAccent5
+                ElseIf InStr(ActiveWorkbook.Sheets(1).Cells(r, 3), "B1 ") > 0 Then
+                    c = xlThemeColorAccent5
+                ElseIf InStr(ActiveWorkbook.Sheets(1).Cells(r, 3), "abgesenkte") > 0 Then
+                    c = xlThemeColorAccent1
+                Else
+                    c = xlThemeColorAccent6
+                End If
+                
+            End If
+            
+            With ActiveWorkbook.Sheets(i).Tab
+                .ThemeColor = c
+                .TintAndShade = 0.599963377788629
+            End With
+            
+            With ActiveWorkbook.Sheets(1).Range("A" & r & ":G" & r)
+                With .Interior
+                    .PatternColorIndex = xlAutomatic
+                    .ThemeColor = c
+                    .TintAndShade = 0.599963377788629
+                    .PatternTintAndShade = 0
+                End With
+                .Borders(xlDiagonalDown).LineStyle = xlNone
+                .Borders(xlDiagonalUp).LineStyle = xlNone
+                With .Borders(xlEdgeLeft)
+                    .LineStyle = xlContinuous
+                    .ColorIndex = 0
+                    .TintAndShade = 0
+                    .Weight = xlThin
+                End With
+                With .Borders(xlEdgeLeft)
+                    .LineStyle = xlContinuous
+                    .ColorIndex = 0
+                    .TintAndShade = 0
+                    .Weight = xlThin
+                End With
+                With .Borders(xlEdgeBottom)
+                    .LineStyle = xlContinuous
+                    .ColorIndex = 0
+                    .TintAndShade = 0
+                    .Weight = xlThin
+                End With
+                With .Borders(xlEdgeRight)
+                    .LineStyle = xlContinuous
+                    .ColorIndex = 0
+                    .TintAndShade = 0
+                    .Weight = xlThin
+                End With
+                With .Borders(xlInsideVertical)
+                    .LineStyle = xlContinuous
+                    .ColorIndex = 0
+                    .TintAndShade = 0
+                    .Weight = xlThin
+                End With
+                With .Borders(xlInsideHorizontal)
+                    .LineStyle = xlContinuous
+                    .ColorIndex = 0
+                    .TintAndShade = 0
+                    .Weight = xlThin
+                End With
+            End With
+            r = r + 1
+        End If
+    Next i
+    While ActiveWorkbook.Sheets(1).Cells(r, 1) <> ""
+        ActiveWorkbook.Sheets(1).Cells(r, 1) = ""
+        ActiveWorkbook.Sheets(1).Cells(r, 2) = ""
+        ActiveWorkbook.Sheets(1).Cells(r, 3) = ""
+        With ActiveWorkbook.Sheets(1).Range("A" & r & ":G" & r)
+            With .Interior
+                .Pattern = xlNone
+                .TintAndShade = 0
+                .PatternTintAndShade = 0
+            End With
+            .Borders(xlDiagonalDown).LineStyle = xlNone
+            .Borders(xlDiagonalUp).LineStyle = xlNone
+            .Borders(xlEdgeLeft).LineStyle = xlNone
+            .Borders(xlEdgeBottom).LineStyle = xlNone
+            .Borders(xlEdgeRight).LineStyle = xlNone
+            .Borders(xlInsideVertical).LineStyle = xlNone
+            .Borders(xlInsideHorizontal).LineStyle = xlNone
+        End With
+        r = r + 1
+    Wend
+    ActiveWorkbook.Sheets(1).Protect
+
+End Sub
+Sub SetzeDruckformat()
+'
+' Setzt das Druckformat f|fffd|r alle Seiten passend
+'
+    Dim i As Integer
+    
+    For i = 1 To ActiveWorkbook.Sheets.count
+        If ActiveWorkbook.Sheets(i).Visible = xlSheetVisible Then
+            Debug.Print "Druckformat f|fffd|r Seite " & ActiveWorkbook.Sheets(i).name
+            With ActiveWorkbook.Sheets(i).PageSetup
+                .LeftFooter = "&A"
+                .RightFooter = "&P von &N"
+                .CenterFooter = "AEB 2018 - Deutsche Krankenhausgesellschaft e. V."
+                .LeftHeader = ""
+                .RightHeader = ""
+                .CenterHeader = ""
+                .FitToPagesWide = 1
+                .FitToPagesTall = False
+            End With
+        End If
+    Next i
+    
+End Sub
+Sub fixMakroAufrufe()
+'
+' Nach dem Kopieren von Schaltfl|fffd|chen, die Namen korrekt anpassen
+'
+
+    Dim i As Integer
+    Dim obj As OLEObject
+            
+    i = 1
+    For Each obj In ActiveSheet.OLEObjects
+        If TypeOf obj.Object Is MSForms.CommandButton Then
+            
+            With obj
+                Debug.Print .name, .Object.Caption, .Height, .Width, .Top, .Left
+                .Height = 22
+                If .Object.Caption = "Import" Then
+                    .Width = 33
+                    .Left = 1121.4
+                    .Top = 228 + (i - 1) * (255 - 228)
+                    .name = "cmdImport" & CStr(i)
+                    i = i + 1
+                ElseIf .Object.Caption = "Zeile einf|fffd|gen" Then
+                    .name = "cmdZeileEinf|fffd|gen"
+                    .Width = 138
+                    .Top = 74.4
+                    .Left = 295
+                ElseIf .Object.Caption = "Zeile l|fffd|schen" Then
+                    .name = "cmdZeileL|fffd|schen"
+                    .Width = 138
+                    .Top = 74.4
+                    .Left = 467
+                End If
+            End With
+        End If
+    Next
+End Sub
+'
+' Makros zum Formattieren von der Tabellen f|fffd|r das Formular E1, wahrscheinlich obsolet
+'
+Sub TabelleFormatieren()
+
+    Dim wshTabelle1 As Worksheet
+    Dim wshTabelle2 As Worksheet
+    Dim wshTabelle3 As Worksheet
+    Dim rngBereichTab1 As Range
+    Dim rngBereichTab2 As Range
+    Dim rngLetzteZeile As Range
+    Dim intI As Integer, intJ As Integer, intK As Integer, intZ As Integer
+    Dim intI13 As Integer
+    Dim isADRG As Boolean
+
+    Set wshTabelle1 = Sheets(2)
+    Set wshTabelle2 = Sheets(3)
+    Set wshTabelle3 = Sheets(5)
+
+    Set rngBereichTab1 = wshTabelle1.Range("A13:A" & wshTabelle1.Cells(Rows.count, 1).End(xlUp).Row - 1)
+
+intZ = rngBereichTab1.Rows.count
+intJ = wshTabelle2.HPageBreaks.count
+
+For intI = 1 To intZ
+    
+    intI13 = intI + 13
+    isADRG = wshTabelle2.Range("A" & intI13).value Like "DRGs*"
+    
+    wshTabelle2.Range("E" & intI13).NumberFormat = "#,000.00"
+    wshTabelle2.Range("F" & intI13).NumberFormat = "#,000.00"
+    
+    If isADRG Then
+        wshTabelle2.Cells(intI13, 1).Font.Bold = True
+        wshTabelle2.Cells(intI13, 5).value = ""
+        wshTabelle2.Cells(intI13, 6).value = ""
+    Else
+        wshTabelle2.Cells(intI13, 6).Borders(xlEdgeRight).Weight = xlMedium
+    End If
+    
+    For intK = 1 To 6
+        If isADRG Then
+            With wshTabelle2.Cells(intI13, intK)
+                .Borders(xlEdgeTop).Weight = xlMedium
+                .Borders(xlEdgeBottom).Weight = xlMedium
+            End With
+        Else
+            wshTabelle2.Cells(intI13, intK).Borders(xlEdgeLeft).Weight = xlMedium
+        End If
+    Next intK
+
+Next intI
+
+    Set rngLetzteZeile = wshTabelle2.Range("A" & intZ + 14 & ":F" & intZ + 14)
+    
+    With rngLetzteZeile
+        .Borders(xlEdgeLeft).Weight = xlMedium
+        .Font.Bold = True
+    End With
+    
+For intK = 1 To 6
+    
+    With wshTabelle2.Cells(intZ + 14, intK)
+        .Borders(xlEdgeTop).Weight = xlMedium
+        .Borders(xlEdgeBottom).Weight = xlMedium
+        .Borders(xlEdgeLeft).Weight = xlMedium
+    End With
+    
+Next intK
+    
+    wshTabelle2.Range("A" & intZ + 14).value = "Insgesamt:"
+    wshTabelle2.Range("D" & intZ + 14).FormulaLocal = "=SUMME(D15:D" & intZ + 13 & ")"
+    wshTabelle2.Range("F" & intZ + 14).FormulaLocal = "=SUMME(F15:F" & intZ + 13 & ")"
+    wshTabelle2.Range("F" & intZ + 14).Borders(xlEdgeRight).Weight = xlMedium
+    wshTabelle2.Rows(intZ + 13).Delete
+    intK = wshTabelle2.HPageBreaks.count
+    
+    LinienSetzen
+    
+    ActiveSheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True
+    
+    Range("A5").Activate
+    
+End Sub
+
+Sub LinienSetzen()
+
+Dim intI As Integer, intSeitenZ|fffd|hler As Integer, strLetzteZeile As String
+
+ActiveWindow.View = xlPageBreakPreview
+
+intSeitenZ|fffd|hler = 1
+
+For intI = 1 To ActiveSheet.HPageBreaks.count
+    strLetzteZeile = ActiveSheet.HPageBreaks(intI).Location.Row - 1
+    
+    With Rows(strLetzteZeile).Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlMedium
+        .ColorIndex = xlAutomatic
+    End With
+
+    intSeitenZ|fffd|hler = intSeitenZ|fffd|hler + 1
+
+Next
+
+ActiveWindow.View = xlNormalView
+
+End Sub
+
+Sub TabelleF|fffd|llen()
+
+On Error Resume Next
+
+ActiveSheet.Unprotect
+
+Dim wshTabelle1 As Worksheet
+Dim wshTabelle2 As Worksheet
+Dim wshTabelle3 As Worksheet
+Dim rngBereich As Range
+Dim intI As Integer, intJ As Integer, intZ As Integer
+
+Set wshTabelle1 = Sheets(2)
+Set wshTabelle2 = Sheets(3)
+Set wshTabelle3 = Sheets(5)
+
+Set rngBereich = wshTabelle2.Range("A14:F" & wshTabelle2.Cells(Rows.count, 1).End(xlUp).Row)
+
+rngBereich.Delete Shift:=xlShiftUp
+
+Set rngBereich = wshTabelle1.Range("A13:A" & wshTabelle1.Cells(Rows.count, 1).End(xlUp).Row - 1)
+
+intZ = rngBereich.Rows.count
+
+For intI = 1 To intZ
+
+    wshTabelle2.Range("A" & intI + 13) = wshTabelle1.Range("A" & intI + 12)
+    wshTabelle2.Range("D" & intI + 13) = wshTabelle1.Range("B" & intI + 12)
+    wshTabelle2.Range("E" & intI + 13) = (wshTabelle1.Range("C" & intI + 12) * wshTabelle3.Range("E39"))
+    wshTabelle2.Range("F" & intI + 13) = (wshTabelle1.Range("H" & intI + 12) * wshTabelle3.Range("E39"))
+
+Next
+
+End Sub
+Sub TabelleKomplett()
+    
+    Application.ScreenUpdating = False
+    TabelleF|fffd|llen
+    TabelleFormatieren
+    Application.ScreenUpdating = True
+    
+End Sub
+
+Attribute VB_Name = "ModImport"
+Option Explicit
+'
+' Markos zur Unterst|fffd|tzung des Imports und der DRG-Tabellen in den 6 Bereichen (Formular E1)
+'
+Sub ZeileEinf|fffd|genQuick(aBlockNr As Integer)
+'
+' Schnelles einf|fffd|gen von Zeilen, darf nur aus der Import-Funktion heraus aufgerufen werden
+'
+    Dim intZeile As Integer
+    Dim templateRow As Integer
+    Dim n As Integer
+    
+    intZeile = ActiveCell.Row
+    
+    If intZeile < 15 Or intZeile > ActiveSheet.Cells(Rows.count, 1).End(xlUp).Row - 2 Then
+        MsgBox "Hier kann keine Zeile eingef|fffd|gt werden."
+        Exit Sub
+    End If
+    
+    intZeile = intZeile + 1
+    
+    Range("A" & intZeile & ":S" & intZeile).Select
+    
+    Selection.Insert Shift:=xlDown
+        
+    If False Then
+        templateRow = 4 + aBlockNr
+        For n = 1 To 17
+            Select Case n
+                Case 3, 4, 7, 8, 11, 12, 15, 16, 17
+                    Cells(intZeile, n).FormulaR1C1 = Cells(templateRow, n).FormulaR1C1
+                Case Else
+                    Cells(intZeile, n).value = ""
+            End Select
+            Cells(intZeile, n).Interior.ColorIndex = Cells(templateRow, n).Interior.ColorIndex
+            Cells(intZeile, n).DisplayFormat.Borders.Top = Cells(templateRow, n).DisplayFormat.Borders.Top
+        Next n
+    
+    Else
+        ' die Templates stehen in den Zeilen 5-10
+        ActiveSheet.Range("A" & CStr(aBlockNr + 4) & ":S" & CStr(aBlockNr + 4)).Select
+        
+        Selection.Copy
+        
+        Range("A" & intZeile & ":S" & intZeile).Select
+        
+        ActiveSheet.Paste
+    End If
+    
+End Sub
+Public Sub ZeileEinf|fffd|gen()
+Attribute ZeileEinf|fffd|gen.VB_ProcData.VB_Invoke_Func = " \n14"
+'
+' Zeile hinzufuegen
+'
+    Dim intZeile As Integer
+    Dim intWert As Integer
+    
+    ActiveSheet.Unprotect
+    
+    ActiveCell.Select
+    
+    intZeile = ActiveCell.Row
+    
+    If intZeile < 15 Or intZeile > ActiveSheet.Cells(Rows.count, 1).End(xlUp).Row - 2 Then
+        MsgBox "Hier kann keine Zeile eingef|fffd|gt werden."
+        Range("A16").Activate
+        GoTo FinishWork
+    End If
+    
+    intZeile = intZeile + 1
+    
+    Range("A" & intZeile & ":S" & intZeile).Select
+    
+    Selection.Insert Shift:=xlDown
+    
+    Range("R1").FormulaLocal = "=SUMME(R15:R" & ActiveCell.Row - 1 & ")"
+    intWert = Range("R1").value
+    
+    If intWert = 1 Then
+        ActiveSheet.Range("A5:S5").Select
+    ElseIf intWert = 2 Then
+        ActiveSheet.Range("A6:S6").Select
+    ElseIf intWert = 3 Then
+        ActiveSheet.Range("A7:S7").Select
+    ElseIf intWert = 4 Then
+        ActiveSheet.Range("A8:S8").Select
+    ElseIf intWert = 5 Then
+        ActiveSheet.Range("A9:S9").Select
+    Else
+        ActiveSheet.Range("A10:S10").Select
+    End If
+    
+    Selection.Copy
+    
+    Range("A" & intZeile & ":S" & intZeile).Select
+    
+    ActiveSheet.Paste
+    
+    Range("A" & intZeile).Activate
+    
+    ActiveCell.Select
+    
+FinishWork:
+    For intZeile = 16 To ActiveSheet.UsedRange.Rows.count
+        If ActiveSheet.Cells(intZeile, 1).value = "@" Then
+            Exit For
+        End If
+        ActiveSheet.Cells(intZeile, 1).value = ActiveSheet.Cells(intZeile, 1)
+        DoEvents
+    Next intZeile
+    ActiveSheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True
+    
+End Sub
+
+Public Sub ZeileL|fffd|schen()
+Attribute ZeileL|fffd|schen.VB_ProcData.VB_Invoke_Func = " \n14"
+'
+' Zeile loeschen aus den Bereichen 1 bis 6 l|fffd|schen
+'
+    Dim intZeile, test As Integer
+    
+    ActiveSheet.Unprotect
+    
+    ActiveCell.Select
+    
+    intZeile = ActiveCell.Row
+    
+    If intZeile < 15 Then
+        MsgBox "Diese Zeile kann nicht gel|fffd|scht werden!"
+        Range("A16").Activate
+        GoTo FinishWork
+    End If
+    
+    If Range("A" & intZeile).value Like "DRG*" Then
+        intZeile = intZeile + 1
+        Range("A" & intZeile).Activate
+        GoTo FinishWork
+    
+    ElseIf Range("A" & intZeile).value Like "SUMME*" Then
+        intZeile = intZeile - 1
+        Range("A" & intZeile).Activate
+        GoTo FinishWork
+        
+    ElseIf Range("A" & intZeile).value Like "@" Then
+        MsgBox "Diese Zeile kann nicht gel|fffd|scht werden!"
+        intZeile = intZeile - 1
+        Range("A" & intZeile).Activate
+        GoTo FinishWork
+        
+    End If
+    
+    On Error GoTo DeleteError
+    
+    Rows(intZeile).Select
+    
+    Selection.Delete Shift:=xlDown
+        
+    intZeile = intZeile - 1
+    
+    Range("A" & intZeile).Activate
+    
+FinishWork:
+    If True Then
+        ActiveSheet.Calculate
+    Else
+        For intZeile = 16 To ActiveSheet.UsedRange.Rows.count
+            If ActiveSheet.Cells(intZeile, 1).value = "@" Then
+                Exit For
+            End If
+            If ActiveSheet.Cells(intZeile, 1).Locked = False Then
+                ActiveSheet.Cells(intZeile, 1).value = ActiveSheet.Cells(intZeile, 1)
+                DoEvents
+            End If
+        Next intZeile
+    End If
+    If False Then
+DeleteError:
+        Debug.Print "Fehler beim L|fffd|schen: " & Error$
+    End If
+    ActiveSheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True
+
+End Sub
+Public Sub Importieren(intPosZeile As Integer)
+Attribute Importieren.VB_ProcData.VB_Invoke_Func = " \n14"
+'
+' Importieren der Werte aus dem Tabellenblatt "Import"
+' in den |fffd|bergeben Bereich
+'
+' Der |fffd|bergebene Parameter intPosZeile markiert die |fffd|berschriftenzeile des Bereichs
+'
+
+    Dim intZeile, intAnzahlZeilen As Integer
+    Dim intzaehler As Integer
+    Dim TargetSheet As Integer
+    Dim n As Integer
+    Dim aBlockNr As Integer
+    
+    TargetSheet = ActiveSheet.Index
+    
+    Application.ScreenUpdating = False
+    ActiveSheet.Unprotect
+    
+    Range("R1").FormulaLocal = "=SUMME(R15:R" & intPosZeile & ")"
+    Range("R1").Calculate
+    aBlockNr = Range("R1").value
+
+    ActiveSheet.EnableCalculation = False
+    
+    ' Zuerst den aktuellen Bereich komplett l|fffd|schen!
+    intZeile = intPosZeile + 1
+    Do While Not ActiveSheet.Cells(intZeile, 1).value Like "DRG*" _
+        And Not ActiveSheet.Cells(intZeile, 1) Like "SUMME*" _
+        And Not ActiveSheet.Cells(intZeile, 1) Like "@"
+        Rows(intZeile).Select
+        Selection.Delete Shift:=xlDown
+        'Debug.Print Now(), intzaehler, " Zeilen L|fffd|schen"
+    Loop
+    
+    ' Zu importierende Zeilen z|fffd|hlen
+    With Sheets("Import")
+        intZeile = 2
+        While Not IsEmpty(.Cells(intZeile, 1).value)
+            intZeile = intZeile + 1
+        Wend
+        intAnzahlZeilen = intZeile - 2
+    End With
+    
+    ' Entsprechende Anzahl von Zeilen einf|fffd|gen
+    Range("A" & intPosZeile).Select
+    For intzaehler = 1 To intAnzahlZeilen
+        ZeileEinf|fffd|genQuick aBlockNr
+        'Debug.Print Now(), intzaehler, " Zeilen einf|fffd|gen"
+    Next
+    
+    ' Jeweils die Bl|fffd|cke kopieren
+    For n = 0 To intAnzahlZeilen - 1
+        ' Spalte A->A
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 1) = Sheets("Import").Cells(2 + n, 1)
+        ' Spalte B->B
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 2) = Sheets("Import").Cells(2 + n, 2)
+        ' Spalte C->E
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 5) = Sheets("Import").Cells(2 + n, 3)
+        ' Spalte D->F
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 6) = Sheets("Import").Cells(2 + n, 4)
+        ' Spalte E->I
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 9) = Sheets("Import").Cells(2 + n, 5)
+        ' Spalte F->J
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 10) = Sheets("Import").Cells(2 + n, 6)
+        ' Spalte G->M
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 13) = Sheets("Import").Cells(2 + n, 7)
+        ' Spalte H->N
+        Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 14) = Sheets("Import").Cells(2 + n, 8)
+        'Debug.Print Now(), n, Sheets(TargetSheet).Cells(intPosZeile + 1 + n, 1) & " Kopieren"
+        DoEvents
+    Next n
+    
+    ActiveSheet.EnableCalculation = True
+        
+    If True Then
+        '
+        ' Aktualisieren der Berechnung erzwingen!
+        ' Es ist noch unklar, warum zwischendurch #VALUE!-Fehler auftreten
+        '
+        For n = 16 To ActiveSheet.UsedRange.Rows.count
+            'Debug.Print Now(), n, "recalc " & ActiveSheet.Cells(n, 1).value, ActiveSheet.Cells(n, 3).value
+            If ActiveSheet.Cells(n, 1).value = "@" Then
+                Exit For
+            End If
+            If ActiveSheet.Cells(n, 1).Interior.Color = &H99FFFF And Not IsEmpty(ActiveSheet.Cells(n, 1).value) Then
+                If IsError(ActiveSheet.Cells(n, 3).value) Then
+                    ActiveSheet.Cells(n, 1).value = ActiveSheet.Cells(n, 1).value
+                End If
+            End If
+            DoEvents
+        Next n
+    End If
+    
+    Range("A" & intPosZeile + 1).Select
+    
+    ActiveSheet.Protect DrawingObjects:=True, Contents:=True, Scenarios:=True
+   
+    Application.ScreenUpdating = True
+
+End Sub
+'
+' Einzelroutinen f|fffd|r die sechs Bereiche
+'
+Public Sub ImportBereich1()
+Attribute ImportBereich1.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim intPosZeile As Integer
+    ActiveSheet.Range("Bereich1").Select
+    intPosZeile = ActiveCell.Row
+    Importieren (intPosZeile)
+End Sub
+Public Sub ImportBereich2()
+Attribute ImportBereich2.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim intPosZeile As Integer
+    ActiveSheet.Range("Bereich2").Select
+    intPosZeile = ActiveCell.Row
+    Importieren (intPosZeile)
+End Sub
+Public Sub ImportBereich3()
+Attribute ImportBereich3.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim intPosZeile As Integer
+    ActiveSheet.Range("Bereich3").Select
+    intPosZeile = ActiveCell.Row
+    Importieren (intPosZeile)
+End Sub
+Public Sub ImportBereich4()
+Attribute ImportBereich4.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim intPosZeile As Integer
+    ActiveSheet.Range("Bereich4").Select
+    intPosZeile = ActiveCell.Row
+    Importieren (intPosZeile)
+End Sub
+Public Sub ImportBereich5()
+Attribute ImportBereich5.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim intPosZeile As Integer
+    ActiveSheet.Range("Bereich5").Select
+    intPosZeile = ActiveCell.Row
+    Importieren (intPosZeile)
+End Sub
+Public Sub ImportBereich6()
+Attribute ImportBereich6.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim intPosZeile As Integer
+    ActiveSheet.Range("Bereich6").Select
+    intPosZeile = ActiveCell.Row
+    Importieren (intPosZeile)
+End Sub
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle14"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle18"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle19"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle20"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle21"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle22"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle23"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle24"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle25"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle26"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle27"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle28"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle29"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle30"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle31"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle32"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle33"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle34"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle35"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle36"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle37"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle38"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle39"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle40"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle41"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub cmdBuildContent_Click()
+    MakrosAEB.MakeInhaltsverzeichnis
+End Sub
+Attribute VB_Name = "Tabelle44"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle45"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle46"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle47"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle48"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle54"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmdZeileEinf|fffd|gen, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "cmdZeileL|fffd|schen, 2, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport1, 3, 2, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport2, 4, 3, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport3, 5, 4, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport4, 6, 5, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport5, 7, 6, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport6, 8, 7, MSForms, CommandButton"
+Private Sub cmdImport1_Click()
+    ImportBereich1
+End Sub
+
+Private Sub cmdImport2_Click()
+    ImportBereich2
+End Sub
+
+Private Sub cmdImport3_Click()
+    ImportBereich3
+End Sub
+
+Private Sub cmdImport4_Click()
+    ImportBereich4
+End Sub
+
+Private Sub cmdImport5_Click()
+    ImportBereich5
+End Sub
+
+Private Sub cmdImport6_Click()
+    ImportBereich6
+End Sub
+
+Private Sub cmdZeileEinf|fffd|gen_Click()
+    ZeileEinf|fffd|gen
+End Sub
+Private Sub cmdZeileL|fffd|schen_Click()
+    ZeileL|fffd|schen
+End Sub
+
+Attribute VB_Name = "Tabelle55"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmdZeileEinf|fffd|gen, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "cmdZeileL|fffd|schen, 2, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport1, 3, 2, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport2, 4, 3, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport3, 5, 4, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport4, 6, 5, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport5, 7, 6, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport6, 8, 7, MSForms, CommandButton"
+Private Sub cmdImport1_Click()
+    ImportBereich1
+End Sub
+
+Private Sub cmdImport2_Click()
+    ImportBereich2
+End Sub
+
+Private Sub cmdImport3_Click()
+    ImportBereich3
+End Sub
+
+Private Sub cmdImport4_Click()
+    ImportBereich4
+End Sub
+
+Private Sub cmdImport5_Click()
+    ImportBereich5
+End Sub
+
+Private Sub cmdImport6_Click()
+    ImportBereich6
+End Sub
+
+Private Sub cmdZeileEinf|fffd|gen_Click()
+    ZeileEinf|fffd|gen
+End Sub
+Private Sub cmdZeileL|fffd|schen_Click()
+    ZeileL|fffd|schen
+End Sub
+Attribute VB_Name = "Tabelle56"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmdZeileEinf|fffd|gen, 3, 0, MSForms, CommandButton"
+Attribute VB_Control = "cmdZeileL|fffd|schen, 4, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport1, 5, 2, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport2, 6, 3, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport3, 7, 4, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport4, 8, 5, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport5, 9, 6, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport6, 10, 7, MSForms, CommandButton"
+Private Sub cmdImport1_Click()
+    ImportBereich1
+End Sub
+
+Private Sub cmdImport2_Click()
+    ImportBereich2
+End Sub
+
+Private Sub cmdImport3_Click()
+    ImportBereich3
+End Sub
+
+Private Sub cmdImport4_Click()
+    ImportBereich4
+End Sub
+
+Private Sub cmdImport5_Click()
+    ImportBereich5
+End Sub
+
+Private Sub cmdImport6_Click()
+    ImportBereich6
+End Sub
+
+Private Sub cmdZeileEinf|fffd|gen_Click()
+    ZeileEinf|fffd|gen
+End Sub
+Private Sub cmdZeileL|fffd|schen_Click()
+    ZeileL|fffd|schen
+End Sub
+
+Attribute VB_Name = "Tabelle57"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmdZeileEinf|fffd|gen, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "cmdZeileL|fffd|schen, 2, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport1, 3, 2, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport2, 4, 3, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport3, 5, 4, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport4, 6, 5, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport5, 7, 6, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport6, 8, 7, MSForms, CommandButton"
+Private Sub cmdImport1_Click()
+    ImportBereich1
+End Sub
+
+Private Sub cmdImport2_Click()
+    ImportBereich2
+End Sub
+
+Private Sub cmdImport3_Click()
+    ImportBereich3
+End Sub
+
+Private Sub cmdImport4_Click()
+    ImportBereich4
+End Sub
+
+Private Sub cmdImport5_Click()
+    ImportBereich5
+End Sub
+
+Private Sub cmdImport6_Click()
+    ImportBereich6
+End Sub
+
+Private Sub cmdZeileEinf|fffd|gen_Click()
+    ZeileEinf|fffd|gen
+End Sub
+Private Sub cmdZeileL|fffd|schen_Click()
+    ZeileL|fffd|schen
+End Sub
+
+Attribute VB_Name = "Tabelle58"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmdZeileEinf|fffd|gen, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "cmdZeileL|fffd|schen, 2, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport1, 3, 2, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport2, 4, 3, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport3, 5, 4, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport4, 6, 5, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport5, 7, 6, MSForms, CommandButton"
+Attribute VB_Control = "cmdImport6, 8, 7, MSForms, CommandButton"
+Private Sub cmdImport1_Click()
+    ImportBereich1
+End Sub
+
+Private Sub cmdImport2_Click()
+    ImportBereich2
+End Sub
+
+Private Sub cmdImport3_Click()
+    ImportBereich3
+End Sub
+
+Private Sub cmdImport4_Click()
+    ImportBereich4
+End Sub
+
+Private Sub cmdImport5_Click()
+    ImportBereich5
+End Sub
+
+Private Sub cmdImport6_Click()
+    ImportBereich6
+End Sub
+
+Private Sub cmdZeileEinf|fffd|gen_Click()
+    ZeileEinf|fffd|gen
+End Sub
+Private Sub cmdZeileL|fffd|schen_Click()
+    ZeileL|fffd|schen
+End Sub
+
+Attribute VB_Name = "Tabelle59"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub cmdImport1_Click()
+    ImportBereich1
+End Sub
+
+Private Sub cmdImport2_Click()
+    ImportBereich2
+End Sub
+
+Private Sub cmdImport3_Click()
+    ImportBereich3
+End Sub
+
+Private Sub cmdImport4_Click()
+    ImportBereich4
+End Sub
+
+Private Sub cmdImport5_Click()
+    ImportBereich5
+End Sub
+
+Private Sub cmdImport6_Click()
+    ImportBereich6
+End Sub
+
+Private Sub cmdZeileEinf|fffd|gen_Click()
+    ZeileEinf|fffd|gen
+End Sub
+Private Sub cmdZeileL|fffd|schen_Click()
+    ZeileL|fffd|schen
+End Sub
+
+Attribute VB_Name = "Tabelle6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle60"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

@@ -1,0 +1,408 @@
+Attribute VB_Name = "ConnectWebService"
+Public cc As closeClass
+
+Public Sub FileSave()
+
+On Error GoTo ErreurEnregistrementClassique
+
+    If ActiveDocument.CustomDocumentProperties("Source").Value = "ParcoursH" _
+    Then
+        If Not (Len(ActiveDocument.FullName) < 6 Or _
+                (Left(UCase(ActiveDocument.FullName), 4) <> "HTTP" And _
+                InStr(1, UCase(ActiveDocument.FullName), "DATA\") = False And _
+                InStr(1, UCase(ActiveDocument.FullName), "\LOCAL") = False)) _
+            Or GetTagTemp = "oui" Then
+        
+            On Error GoTo ErreurEnregistrementWebService
+            
+            If ActiveDocument.CustomDocumentProperties("WebServiceURL").Value = "" Then GoTo ErreurEnregistrementWebService
+            
+            Dim LocalFilePath As String
+            
+            LocalFilePath = GetMyDocumentsFolder() & "\" & ActiveDocument.Name
+            GestionTagTemp True
+                        
+            ActiveDocument.SaveAs (LocalFilePath)
+            ConnectWebService (LocalFilePath)
+            
+            Call MsgBox("Le document a bien |fffd|t|fffd| enregistr|fffd| sous ParcoursH.")
+            Exit Sub
+            
+ErreurEnregistrementWebService:
+            On Error GoTo 0
+            Err.Clear
+            Call MsgBox("Ce document ne peut pas |fffd|tre enregistr|fffd| directement sous ParcoursH. Vous n'avez pas les droits n|fffd|cessaires ou il existe un probl|fffd|me sur le serveur.")
+        Else
+            If Not (ActiveDocument.ReadOnly) Then
+                On Error GoTo ErreurEnregistrementClassique
+                ActiveDocument.Save
+                Exit Sub
+            End If
+        End If
+
+    End If
+    
+ErreurEnregistrementClassique:
+        On Error GoTo 0
+        Err.Clear
+    
+End Sub
+
+Public Sub GestionTagTemp(Activer As Boolean)
+
+    If Activer Then
+        On Error GoTo ErreurActivation
+        
+        ActiveDocument.CustomDocumentProperties("FichierTempParcoursH").Value = "oui"
+       
+        Exit Sub
+        
+ErreurActivation:
+
+        ActiveDocument.CustomDocumentProperties.Add Name:="FichierTempParcoursH", LinkToContent:=False, Type:=msoPropertyTypeString, Value:="oui"
+
+        On Error GoTo 0
+        Err.Clear
+    Else
+    
+        On Error GoTo ErreurActivation2
+        
+        ActiveDocument.CustomDocumentProperties("FichierTempParcoursH").Value = "non"
+       
+        Exit Sub
+        
+ErreurActivation2:
+
+        ActiveDocument.CustomDocumentProperties.Add Name:="FichierTempParcoursH", LinkToContent:=False, Type:=msoPropertyTypeString, Value:="non"
+
+        On Error GoTo 0
+        Err.Clear
+    
+    End If
+
+End Sub
+
+Public Function GetTagTemp() As String
+
+    Dim strRetour As String
+
+    On Error Resume Next
+    
+    strRetour = ActiveDocument.CustomDocumentProperties("FichierTempParcoursH").Value
+    
+    On Error GoTo 0
+    
+    GetTagTemp = strRetour
+
+End Function
+
+Private Sub ConnectWebService(LocalFilePath As String)
+
+    CopyFileByChunk ActiveDocument.CustomDocumentProperties("CheminDoc").Value, LocalFilePath, ActiveDocument.CustomDocumentProperties("User").Value, ActiveDocument.CustomDocumentProperties("IsDocumentType").Value
+
+End Sub
+
+Function CopyFileByChunk(fileName As String, sSource As String, sUser As String, isDocumentType As Boolean) As Boolean
+
+    Dim FileSize As Long, OddSize As Long, SoFar As Long
+    Dim Buffer() As Byte, f1 As Integer, ChunkSize As Long
+    
+    On Error GoTo CopyFileByChunk_Error
+    
+    f1 = FreeFile: Open sSource For Binary Access Read As #f1
+    
+    FileSize = LOF(f1)
+    
+    If FileSize = 0 Then GoTo Exit_CopyFileByChunk ' -- done!
+    
+    ChunkSize = 1000000 '5505024 -> 5.25MB
+    OddSize = FileSize Mod ChunkSize
+    
+    Dim index As Integer
+    index = 0
+    
+    If OddSize Then
+        ReDim Buffer(1 To OddSize)
+        Get #f1, , Buffer
+        index = index + 1
+        SoFar = OddSize
+        
+        If UploadFileViaWebService(Buffer, fileName, index, SoFar = FileSize, sUser, isDocumentType) Then
+            DoEvents
+        Else
+            GoTo CopyFileByChunk_Error
+        End If
+        
+    End If
+    
+    If ChunkSize Then
+    
+        ReDim Buffer(1 To ChunkSize)
+    
+        Do While SoFar < FileSize
+            Get #f1, , Buffer
+            index = index + 1
+            SoFar = SoFar + ChunkSize
+            
+            If UploadFileViaWebService(Buffer, fileName, index, SoFar = FileSize, sUser, isDocumentType) Then
+                'g_frmProgress.lblProgress = "Percent uploaded: " & Format(SoFar / FileSize, "0.0%")
+                'Debug.Print SoFar, Format(SoFar / FileSize, "0.0%")
+                DoEvents
+            Else
+                GoTo CopyFileByChunk_Error
+            End If
+            
+            Loop
+    End If
+    
+    CopyFileByChunk = True
+    
+Exit_CopyFileByChunk:
+        Close #f1
+        Exit Function
+    
+CopyFileByChunk_Error:
+        CopyFileByChunk = False
+        Resume Exit_CopyFileByChunk
+    
+End Function
+
+Public Function UploadFileViaWebService(dataChunk() As Byte, fileName As String, index As Integer, lastChunk As Boolean, sUser As String, isDocumentType As Boolean) As Boolean
+
+    On Error GoTo ErrHand
+    
+    Dim blnResult As Boolean
+    blnResult = False
+    'mdlConvert.SetProgressInfo "Connecting to the web server:" & vbNewLine & _
+        DQUOT & server_title() & DQUOT
+        
+    On Error Resume Next
+    
+    Dim strSoapAction As String
+    Dim strXml As String
+    
+    If isDocumentType Then
+    
+        strXml = "<?xml version=""1.0"" encoding=""utf-8""?>" & _
+        "<soap:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap=""http://schemas.xmlsoap.org/soap/envelope/"">" & _
+        "<soap:Body>" & _
+        "<UploadFile xmlns=""http://tempuri.org/"">" & _
+        "<fileName>" & fileName & "</fileName>" & _
+        "<bytes></bytes>" & _
+        "<index>" & index & "</index>" & _
+        "<isLastChunk>" & IIf(lastChunk, 1, 0) & "</isLastChunk>" & _
+        "<userName>" & sUser & "</userName>" & _
+        "<isDocumentType>true</isDocumentType>" & _
+        "</UploadFile>" & _
+        "</soap:Body>" & _
+        "</soap:Envelope>"
+    
+    Else
+    
+        strXml = "<?xml version=""1.0"" encoding=""utf-8""?>" & _
+        "<soap:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap=""http://schemas.xmlsoap.org/soap/envelope/"">" & _
+        "<soap:Body>" & _
+        "<UploadFile xmlns=""http://tempuri.org/"">" & _
+        "<fileName>" & fileName & "</fileName>" & _
+        "<bytes></bytes>" & _
+        "<index>" & index & "</index>" & _
+        "<isLastChunk>" & IIf(lastChunk, 1, 0) & "</isLastChunk>" & _
+        "<userName>" & sUser & "</userName>" & _
+        "<isDocumentType>false</isDocumentType>" & _
+        "</UploadFile>" & _
+        "</soap:Body>" & _
+        "</soap:Envelope>"
+        
+    End If
+
+    Dim objXmlhttp As Object
+    Dim objDom As Object
+    
+    Set objXmlhttp = CreateObject("MSXML2.xmlhttp")
+    ' Load XML
+    Set objDom = CreateObject("MSXML2.DOMDocument")
+    objDom.LoadXML strXml
+    'insert data chunk into XML doc
+    objDom.SelectSingleNode("//bytes").dataType = "bin.base64"
+    objDom.SelectSingleNode("//bytes").nodeTypedValue = dataChunk
+    ' Open the webservice
+    
+    
+'POST /WebServiceDocuments.asmx HTTP/1.1
+'Host: localhost
+'Content-Type: text/xml; charset=utf-8
+'Content -Length: Length
+'SOAPAction: "http://tempuri.org/UploadFile"
+
+    objXmlhttp.Open "POST", ActiveDocument.CustomDocumentProperties("WebServiceURL").Value, False
+    ' Create headings
+    strSoapAction = "http://tempuri.org/UploadFile"
+    objXmlhttp.setRequestHeader "Content-Type", "text/xml; charset=utf-8"
+    objXmlhttp.setRequestHeader "SOAPAction", strSoapAction
+    ' Send XML command
+    objXmlhttp.send objDom.XML
+    ' Get all response text from webservice
+    Dim strRet
+    strRet = objXmlhttp.responseText
+    ' Close object
+    Set objXmlhttp = Nothing
+    Set objDom = Nothing
+    'get the error if any
+    Set objDom = CreateObject("MSXML2.DOMDocument")
+    objDom.LoadXML strRet
+    
+    Dim isSoapResponse As Boolean
+    isSoapResponse = Not (objDom.SelectSingleNode("//soap:Envelope") Is Nothing)
+    
+    Dim error As String
+    
+    If Not isSoapResponse Then
+        error = "Woops, not a web service"
+    Else
+        error = objDom.SelectSingleNode("//soap:Envelope/soap:Body/soap:Fault/faultstring").Text
+    End If
+    
+    If error <> "" Then
+        MsgBox error, True
+        blnResult = False
+    Else
+        Err.Clear 'clear the error caused in the XPath query above
+        blnResult = True
+    End If
+    
+    'close dom object
+    Set objDom = Nothing
+    
+ErrHand:
+    If Err.Number <> 0 Then
+        MsgBox Err, "UploadFileViaWebService"
+        blnResult = False
+    End If
+    UploadFileViaWebService = blnResult
+    
+End Function
+
+Function GetMyDocumentsFolder()
+ 
+    Dim WshShell As Object
+
+    Set WshShell = CreateObject("WScript.Shell")
+    SpecialPath = WshShell.SpecialFolders("MyDocuments") & "\Documents temporaires ParcoursH"
+
+    Set fso = CreateObject("scripting.filesystemobject")
+
+    If fso.FolderExists(SpecialPath) = False Then
+        fso.CreateFolder (SpecialPath)
+    Else
+        On Error GoTo ErreurSuppression
+        
+        Dim NbFichiers As Integer
+        NbFichiers = fso.GetFolder(SpecialPath).Files.Count
+        
+        Dim myArray() As String
+        ReDim Preserve myArray(1 To NbFichiers, 1 To 2)
+        
+        If (NbFichiers >= 20) Then
+            For Each file In fso.GetFolder(SpecialPath).Files
+                For i = 1 To NbFichiers
+                    If (myArray(i, 1) = "") Then
+                        myArray(i, 1) = file.Path
+                        myArray(i, 2) = file.DateLastModified
+                        Exit For
+                    Else
+                        If (myArray(i, 2) > CDate(file.DateLastModified)) Then
+                            For j = NbFichiers - 1 To i
+                                If (myArray(j, 1) <> "") Then
+                                    myArray(j + 1, 1) = myArray(j, 1)
+                                    myArray(j + 1, 2) = myArray(j, 2)
+                                End If
+                            Next
+                            myArray(i, 1) = file.Path
+                            myArray(i, 2) = file.DateLastModified
+                            Exit For
+                        End If
+                    End If
+                Next
+            Next
+            
+            For index = 1 To NbFichiers - 19
+                fso.DeleteFile (myArray(index, 1))
+            Next
+        End If
+        
+ErreurSuppression:
+        Err.Clear
+        On Error GoTo 0
+    
+    End If
+    
+    GetMyDocumentsFolder = SpecialPath
+
+End Function
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+Private Sub Document_Open()
+
+    Set cc = New closeClass
+    Set cc.appWord = Application
+
+End Sub
+
+Attribute VB_Name = "closeClass"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Public WithEvents appWord As Application
+Attribute appWord.VB_VarHelpID = -1
+
+Private Sub appWord_DocumentBeforeClose(ByVal Doc As Document, Cancel As Boolean)
+
+On Error GoTo ErreurClose
+
+    If GetTagTemp <> "" Then
+
+        GestionTagTemp False
+
+        LocalFilePath = GetMyDocumentsFolder() & "\" & ActiveDocument.Name
+
+        ActiveDocument.Saved = False
+
+        'ActiveDocument.SaveAs (LocalFilePath)
+        ActiveDocument.Save
+        
+        'Cancel = True
+
+    End If
+
+    Exit Sub
+
+ErreurClose:
+
+    MsgBox Err.Description
+
+End Sub
+
+
+
+
+INQUEST-PP=macro

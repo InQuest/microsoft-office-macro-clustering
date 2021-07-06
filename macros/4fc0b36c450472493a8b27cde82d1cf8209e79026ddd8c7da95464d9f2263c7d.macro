@@ -1,0 +1,4786 @@
+Attribute VB_Name = "CmcCreateEmail"
+Dim rselection
+Dim useActiveItem As Boolean
+Public Category$
+Public cr$
+Public crlf$
+
+Public MSMAPI_Session As Object
+Public MSMAPI_messages As Object
+Public MSMAPI_Form As Object
+
+
+Public Sub Main(printfax As Integer)
+Attribute Main.VB_Description = "Create a letter using values from Commence"
+Attribute Main.VB_ProcData.VB_Invoke_Func = "TemplateProject.JJCreateFax.MAIN"
+'Dim gMSWord$
+Dim gWinFax$
+Dim gFax1$
+Dim gFax2$
+Dim gMsg1$
+Dim gBadDDE$
+Dim gMsg2$
+Dim gForItem$
+Dim gMsg4$
+Dim gMsg5$
+Dim gMsg6$
+Dim ErrorMsg$
+Dim ExitMsg$
+Dim gDelim$
+Dim q$
+Dim qcq$
+Dim c
+Dim version$
+Dim NameSize
+Dim nState
+Dim s$
+Dim nStart
+Dim nEnd
+Dim nNext
+Dim Name_$
+Dim PlainName$
+Dim Namefld$
+Dim i
+Dim J
+Dim FaxNumberField$
+Dim gMsg1_
+'Dim gMSWord_
+Dim Value$
+Dim Req$
+Dim Cname$
+Dim FC$
+Dim O
+Dim K
+Dim tmp$
+Dim Conn$
+Dim Rest$
+Dim cat$
+Dim Field_$
+Dim CCount$
+Dim Icount
+Dim Cnamelist$
+Dim Cnamefld$
+Dim Iloop
+Dim CNameP$
+Dim FaxNumber$
+Dim FaxNum$
+Dim AppName$
+Dim CmcObject$
+Dim MyDoc As Document
+Dim alreadyaskedsubject As Boolean
+Dim ContinueRunning As Integer
+Dim AskedNext As Boolean
+'   Dim objSession As Object
+'   Dim objMessage As Object
+'   Dim objRecipient As Object
+'   Dim sProfile As String
+'   Dim objsessionset As Boolean
+    
+'Copyright 1992-2001 Jensen-Jones Inc.
+
+' Literal Text strings ; START TRANSLATION .
+
+'gMSWord$ = "Microsoft Word"
+'gWinFax$ = "WinFax"
+
+gFax1$ = "e-mail"
+gFax2$ = "email"
+gMsg1$ = "CmcCreateEmail could not find the E-Mail address field for this category."
+gBadDDE$ = "??BAD DDE??"
+gMsg2$ = "No e-mail address for Commence item: "
+gForItem$ = " in item: "
+'gMsg4$ = "CmcCreateEmail has sent the fax number: "
+'gMsg5$ = " to WinFax and selected WinFax as your printer.  When you are ready to fax, just select File-Print "
+gMsg6$ = "CmcCreateEmail found a null E-Mail address for the field: "
+
+ErrorMsg$ = "The errror code is: "  ' Error message
+ExitMsg$ = "CmcCreateEmail macro exiting.  Macro error number: "
+
+' END OF TRANSLATION.
+
+gDelim$ = Chr(13)       ' delimits information received via DDE.
+q$ = Chr(34)        'Make a string with a single " for use in constructing DDE messages
+qcq$ = q$ + "," + q$    ' Make a string with "," for use in constructing DDE messages
+cr$ = Chr(13)
+crlf$ = Chr(13) + Chr(10)
+NameSize = 50
+alreadyaskedsubject = False
+'objsessionset = False
+Set MyDoc = ActiveDocument
+AskedNext = False
+
+'get what the replace selection is set to then set it to true
+rselection = Options.ReplaceSelection
+Options.ReplaceSelection = True
+
+CmcObject = "Commence.DB"
+AppName$ = "Commence"
+
+'Find out what version of Commence is running
+On Error GoTo -1: On Error GoTo Done
+If Not GetVersion(CmcObject, AppName) Then GoTo Normalx
+
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+
+' Turn on Clarify Info
+s$ = c.Request("[ClarifyItemNames(True)]")
+
+' Ask Commence what is currently in the letter view
+' Parse the return string, which is of the form:
+Call GetCategoryandPlainName(c, Category$, Name_$, PlainName$, view$, useActiveItem, True)
+
+'Get the name of the name field
+Namefld$ = GetNameField(c, Category$)
+
+'Mark the ActiveItem
+If useActiveItem Then
+    Temp$ = c.Request("[MarkActiveItem]")
+End If
+
+'Find the E-mail address field
+s$ = c.Request("[GetFieldNames(" + q$ + Category$ + q$ + ")]")
+
+' look for gFax1 first
+i = InStr(1, s$, gFax1$, 1)
+If i <> 0 Then
+    J = InStr(i, s$, gDelim$)
+    FaxNumberField$ = Mid(s$, i, J - i)
+ElseIf InStr(1, s$, gFax2, vbTextCompare) Then
+    i = InStr(1, s$, gFax2, vbTextCompare)
+    J = InStr(i, s$, gDelim$)
+    FaxNumberField$ = Mid(s$, i, J - i)
+Else
+    MsgBox gMsg1, 16, "CmcCreateEmail"
+    Err.Number = 9999
+    GoTo Normalx
+End If
+
+'Start looking for Fields to retrieve
+Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+
+Search:
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+
+Call FindString
+'With Selection.Find
+'    .Forward = True
+'    .MatchWholeWord = False
+'    .MatchWildcards = True
+'    .MatchCase = False
+'    .Wrap = wdFindStop
+'    .Execute FindText:="\(%*%\)"
+'End With
+
+'Now we have a field code, save it in a variable
+If InStr(1, Selection.Text, "%") < 1 Then GoTo Normalx
+FC$ = Selection.Text
+
+'Strip off the leading and trailing marks: (% and %)
+K = Len(FC$)
+tmp$ = Mid(FC$, 3, K - 4)
+
+'Check to see if this is a label template
+If UCase(FC) = "(%(-NEXT-)%)" And AskedNext = False Then
+    ContinueRunning = MsgBox(Prompt:="This template is for creating labels.  Please make sure you have selected the correct application prior to creating your letter.  Would you like to continue?", Buttons:=vbYesNo)
+    AskedNext = True
+    If ContinueRunning = 7 Then
+       MyDoc.Close SaveChanges:=wdDoNotSaveChanges
+       GoTo Bye
+    End If
+End If
+
+'Check to see if it is ME
+If UCase(tmp$) = "(-ME-) ITEM" Then
+    s$ = c.Request("[ClarifyItemNames(FALSE)]")
+    Req$ = "[GetPreference(Me,|fffd|)]"
+    GetData_ c, Req$, Value$, DDEerr
+    s$ = c.Request("[ClarifyItemNames(True)]")
+    If Value$ = "??BAD DDE??" Then
+        Value$ = ""
+    ElseIf DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    'On Error GoTo -1: On Error GoTo Done
+    
+    If Value$ <> "" Then
+        'parse out name
+        y = InStr(Value$, "|fffd|")
+        tmp$ = Trim(Mid(Value, y + 1))
+        Req$ = "[GetReverseName(" + q$ + dq$(tmp$) + q$ + ")]"
+        GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    InsertText (Value$)
+    GoTo Search:
+End If
+'email
+
+'Check to see if this is an indirect field: it is if it contains a %%
+i = InStr(tmp$, "%%")
+If i <> 0 Then GoTo Indirect        'We have an indirect field
+    'Other wise we have a direct field
+    'First check to see if this is just the name field
+    If ((tmp$ = Namefld$) Or (tmp$ = UCase(Namefld$)) Or (tmp$ = LCase(Namefld$))) Then
+        'Get the reversed version from Commence
+        Req$ = "[GetReverseName(" + q$ + PlainName$ + q$ + ")]"
+    
+    'This is not the name field, we need to get it from Commence
+    ElseIf useActiveItem Then
+        Req$ = "[GetField(,," + q$ + tmp$ + q$ + ")]"
+    Else
+        Req$ = "[GetField(" + q$ + Category$ + qcq$ + dq$(Name_$) + qcq$ + tmp$ + q$ + ")]"
+    End If
+        On Error GoTo -1: On Error GoTo BD1
+        Value$ = c.Request(Req$)
+        'This is the new error handling
+BD1:
+        If Err.Number = 3 Then
+            Value$ = gBadDDE$
+            Err.Number = 0
+        ElseIf Err.Number <> 0 Then
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+
+        InsertText (Value$)
+
+    'End If
+'Go back And look For more field codes
+GoTo Search:
+
+Indirect:   'This is an indirect field, parse it to get the values we neeed
+'Stop
+    Conn$ = Left(tmp$, i - 1)
+    Rest$ = Mid(tmp$, i + 2)
+    i = InStr(Rest$, "%%")
+    cat$ = Left(Rest$, i - 1)
+    Field_$ = Mid(Rest$, i + 2)
+    'Build the DDE command
+    If useActiveItem Then
+        Req$ = "[GetConnectedItemCount(,," + q$ + Conn$ + qcq$ + cat$ + q$ + ")]"
+    Else
+        Req$ = "[GetConnectedItemCount(" + q$ + Category$
+        Req$ = Req$ + qcq$ + dq$(Name_$) + qcq$ + Conn$ + qcq$ + cat$ + q$ + ")]"
+    End If
+    On Error GoTo -1: On Error GoTo BD2
+        CCount$ = c.Request(Req$)
+BD2:
+        If Err.Number = 3 Then
+            Value$ = gBadDDE$
+            Err.Number = 0
+            GoTo Insert2    'Skip down to the insertion of the value
+        ElseIf Err.Number <> 0 Then
+            GoTo Done
+        End If
+        
+        On Error GoTo -1: On Error GoTo Done
+
+    Icount = Val(CCount$)
+    
+    If Icount = 0 Then
+        Value$ = ""
+        InsertText (Value$)
+    ElseIf useActiveItem Then
+            Req$ = "[GetConnectedItemNames(,,""" + dq$(Conn$) + qcq$ + cat$ + """,|fffd|)]"
+        Else
+            Req$ = "[GetConnectedItemNames(" + q$ + Category$
+            Req$ = Req$ + qcq$ + dq$(Name_$) + qcq$ + Conn$ + qcq$ + cat$ + q$ + ",|fffd|)]"
+        End If
+
+        On Error GoTo -1: On Error GoTo BD21
+        Cnamelist$ = c.Request(Req$)
+BD21:
+        If Err.Number = 3 Then
+            Value$ = gBadDDE$
+            Err.Number = 0
+            GoTo Insert2    'Skip down to the insertion of the value
+        ElseIf Err.Number <> 0 Then
+            GoTo Done
+        End If
+        
+        On Error GoTo -1: On Error GoTo Done
+
+    'Get the name of the name field for the connected category
+    s$ = c.Request("[GetFieldNames(" + q$ + cat$ + q$ + ",|fffd|)]")
+    nStart = 1
+    nEnd = InStr(nStart, s$, "|fffd|")
+    If nEnd <> 0 Then
+        Cnamefld$ = Mid(s$, nStart, nEnd - nStart)
+    Else
+        Cnamefld$ = s$
+    End If
+    'Now loop through items from the list
+        nStart = 1
+        Value$ = ""
+        For Iloop = 1 To Icount
+            nEnd = InStr(nStart, Cnamelist$, "|fffd|")
+            If nEnd = 0 Then
+                Cname$ = Mid(Cnamelist$, nStart)
+            Else
+                Cname$ = Mid(Cnamelist$, nStart, nEnd - nStart)
+                nStart = nEnd + 1
+            End If
+        
+        'Now we have a Cname to use to get the desired field
+'Stop
+        'Check to see if we are looking for the Cname, if so we already have it
+        If Field_$ = Cnamefld$ Then
+            If Len(Cname$) > NameSize Then
+                'Get the name without the clarify data
+                CNameP$ = Trim(Mid(Cname$, 1, NameSize))
+            Else
+                CNameP$ = Trim(Cname$)
+            End If
+            'Get the reversed version from Commence
+            Req$ = "[GetReverseName(" + q$ + dq$(CNameP$) + q$ + ")]"
+            On Error GoTo -1: On Error GoTo BD9
+            Value$ = c.Request(Req$)
+            'This is the new error handling
+BD9:
+            If Err.Number = 3 Then
+                Value$ = gBadDDE$
+                Err.Number = 0
+            ElseIf Err.Number <> 0 Then
+                GoTo Done
+            End If
+            On Error GoTo -1: On Error GoTo Done
+
+        Else
+        Req$ = "[GetField(" + q$ + cat$ + qcq$ + dq$(Cname$) + qcq$ + Field_$ + q$ + ")]"
+          On Error GoTo -1: On Error GoTo BD3
+          Value$ = c.Request(Req$)
+BD3:
+          If Err.Number = 3 Then
+            Value$ = gBadDDE$
+            Err.Number = 0
+          ElseIf Err.Number <> 0 Then
+            GoTo Done
+          End If
+        
+          On Error GoTo -1: On Error GoTo Done
+        End If
+    
+    If Iloop = 1 Then
+        InsertText (Value$)
+    Else
+        AddText (Value$)
+    End If
+
+    Next Iloop
+
+    'End If  'End of Icount = 0 If
+    GoTo Search:
+Insert2:
+    InsertText (Value$)
+'Go back and look for more field codes
+GoTo Search:
+
+
+Done:
+StatusBar = ErrorMsg$ + Str(Err.Number) + Err.Description
+a = MsgBox(ExitMsg$ + Str(Err.Number) + Chr(10) + Err.Description, vbCritical, "Commence E-mail Macro")
+
+Normalx:
+
+If Err.Number = 0 Then
+    'Stop
+    ActiveDocument.Save
+    'Now get the E-Mail address for the item
+    If useActiveItem Then
+        Req$ = "[GetField(,," + q$ + FaxNumberField$ + q$ + ")]"
+    Else
+        Req$ = "[GetField(" + q$ + Category$ + qcq$ + Name_$ + qcq$ + FaxNumberField$ + q$ + ")]"
+    End If
+    On Error GoTo -1: On Error GoTo BD8
+    FaxNumber$ = c.Request(Req$)
+    
+        'This is the new error handling
+BD8:
+    If Err.Number <> 0 Then
+        MsgBox gMsg2$ + Name_$, 16, "CmcCreateEmail"
+        GoTo Normalx
+    End If
+    On Error GoTo -1: On Error GoTo Done
+'Stop
+FaxNum$ = Trim$(FaxNumber$)
+i = Len(FaxNum$)
+If Len(FaxNum$) <> 0 Then
+      
+      ' Leaving sProfile equal to Null will
+      ' force the user to select which Mapi
+      ' profile to use. To keep from being
+      ' prompted, you must supply a valid
+      ' user profile.
+'      sProfile = ""
+'
+      On Error GoTo -1: On Error GoTo Bye 'If cancelled
+'      ' Create the Session Object.
+'        Set objSession = CreateObject("mapi.session")
+'
+'      ' Log on using the session object.
+'      ' Specify a valid profile name if you want to
+'      ' avoid the logon dialog box.
+'      On Error GoTo -1: On Error GoTo Bye 'If cancelled
+'      objSession.Logon profileName:=sProfile
+'      objsessionset = True
+'
+'
+'      ' Add a new message object to the OutBox.
+'      Set objMessage = objSession.Outbox.messages.Add
+'
+'      ' Add a recipient object to the objMessage.Recipients collection.
+'      Set objRecipient = objMessage.Recipients.Add
+'
+'      ' Set the properties of the recipient object.
+'       objRecipient.Address = "SMTP:" + FaxNum
+'       objRecipient.Type = 1
+'      'objRecipient.Name = PlainName
+      
+      ' Set the properties of the message object.
+      doctitle$ = MyDoc.BuiltInDocumentProperties(wdPropertyTitle)
+      If doctitle = "" And alreadyaskedsubject = False Then
+          'On Error GoTo -1: On Error GoTo Bye 'If cancelled
+          doctitle = InputBox("Please enter a subject for the E-Mail Message or select Cancel to leave it blank.")
+      End If
+      alreadyaskedsubject = True
+'      objMessage.subject = doctitle
+      
+      
+    FocusNewDocument (MyDoc)
+    Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+      
+    Selection.WholeStory
+    
+    MSMAPI_Login
+    On Error Resume Next
+    MSMAPI_Send FaxNum, doctitle, Selection.Text, printfax
+    MSMAPI_Logout
+
+'    objMessage.Text = Selection.Text
+'
+'
+'      On Error GoTo -1: On Error GoTo Bye 'If cancelled
+'
+'      'Put back in if want it to check for valid address
+'       objRecipient.Resolve
+'
+'       MyDoc.Close SaveChanges:=wdDoNotSaveChanges
+'       objMessage.Update
+'    If printfax = 0 Then
+'        MsgBox "The e-mail message has been created.  Press the Send button when you are ready to send this message.", 48, "CmcCreateEmail"
+'
+'       objMessage.Send showDialog:=True
+'    Else
+'      objMessage.Send showDialog:=False
+'    End If
+    On Error GoTo 0
+
+Else
+    FocusNewDocument (MyDoc)
+    Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+    MsgBox gMsg2$ + Name_$, 16, "CmcCreateEmail"
+End If
+    
+
+End If
+      
+Bye:
+      On Error GoTo -1: On Error GoTo bye2
+      If MyDoc.ActiveWindow.Active Then
+       MyDoc.Close SaveChanges:=wdDoNotSaveChanges
+      End If
+      On Error GoTo -1: On Error GoTo 0
+
+      ' Log off using the session object.
+bye2:
+'If objsessionset = True Then
+'    objSession.Logoff
+'End If
+
+Set c = Nothing
+Set cmcobj = Nothing
+Options.ReplaceSelection = rselection
+
+    'For Each myTask In Tasks
+    '    If InStr(myTask.Name, AppName) > 0 Then
+    '        myTask.Activate
+    '    End If
+    'Next myTask
+
+
+End Sub
+
+Public Sub MSMAPI_Login()
+   'MsgBox "start msmapi_login"
+   Set MSMAPI_Form = New MapiForm
+   
+   'Set CmcCreateEmail.MSMAPI_Session = CreateObject("MSMAPI.MAPISession")
+   Set CmcCreateEmail.MSMAPI_Session = MSMAPI_Form.MAPISession1
+    
+   With CmcCreateEmail.MSMAPI_Session
+
+      .NewSession = False
+      .LogonUI = True
+      .DownLoadMail = False
+      .username = ""
+
+      .SignOn
+
+   End With
+   
+   'MsgBox "end msmapi_login"
+End Sub
+Public Sub MSMAPI_Send(recipient, subject, message, sendnow)
+   'MsgBox "start msmapi_send"
+   
+   'Set CmcCreateEmail.MSMAPI_messages = CreateObject("MSMAPI.MAPIMessages")
+   Set CmcCreateEmail.MSMAPI_messages = MSMAPI_Form.MAPIMessages1
+
+   With CmcCreateEmail.MSMAPI_messages
+
+      .SessionID = CmcCreateEmail.MSMAPI_Session.SessionID
+
+      .Compose
+      .MsgIndex = -1
+
+      'recipient index (0-based), name, address and type
+      .RecipIndex = 0
+      .RecipDisplayName = recipient
+      .RecipAddress = recipient
+      .RecipType = 1 'RECIPTYPE_TO 'mapToList
+
+      .MsgSubject = subject
+
+      .MsgNoteText = message
+      
+      If sendnow = 0 Then
+        MsgBox "The e-mail message has been created.  Press the Send button when you are ready to send this message.", 48, "CmcCreateEmail"
+        .Send True   'true to preview
+      Else
+        .Send False  'false to send immediately
+      End If
+      
+      DoEvents ' specific to VB -- like Sleep()
+   End With
+   
+   Set CmcCreateEmail.MSMAPI_messages = Nothing
+   'MsgBox "end msmapi_send"
+End Sub
+
+Public Sub MSMAPI_Logout()
+    'MsgBox "start msmapi_logout"
+    
+   'end messaging session and sign user off
+    CmcCreateEmail.MSMAPI_Session.SignOff
+        
+    Set CmcCreateEmail.MSMAPI_Session = Nothing
+    
+   'MSMAPI_Form.Unload
+   Set CmcCreateEmail.MSMAPI_Form = Nothing
+    
+    'MsgBox "end msmapi_logout"
+End Sub
+Attribute VB_Name = "CmcCreateEnvelopeTemplate"
+'Public Field__$(700)
+'Public Field2__$(100)
+Public AppName$
+Public CmcObject$
+'Public c
+'Public fldcount
+'Public Masterfldcount
+'Public LabelTextValue$
+
+
+
+Public Sub Main(TemplateName As String)
+Dim RunMsg$
+Dim DlgCaption1$
+Dim DlgInfo1$
+Dim DlgCaption2$
+Dim DlgInfo2$
+Dim DlgCaption3$
+Dim DlgInfo3$
+Dim DlgFooter$
+Dim ErrorMsg$
+Dim q$
+Dim catlist$
+Dim i
+Dim J
+Dim Idefault
+Dim Category$
+Dim Iquit
+Dim fldcount
+Dim K
+Dim Tmp1$
+Dim Tmp2$
+Dim NextValue$
+
+'Copyright 1992-2001 Commence Corp.
+'Commence Envelope Template Creation Macro
+'This macro allows choosing of field codes for a Envelope template
+
+
+' Init some strings
+RunMsg$ = "Running Select Template Field Codes From Commence "
+DlgCaption1$ = "Commence - Category Selection" ' Dialog box text
+DlgInfo1$ = "Select a Category from the list"           ' Dialog box text
+DlgCaption2$ = "Commence - Field Code Selection"        ' Dialog box text
+DlgInfo2$ = "Select a Field Code from the list"         ' Dialog box text
+DlgCaption3$ = "Field Codes for category "          ' Dialog box text
+DlgInfo3$ = "Select an Indirect Field Code"         ' Dialog box text
+strCopyright$ = "Copyright |fffd| 1992-2001 Commence Corp."       ' Dialog box text
+Tmp1 = "1. Select the Category then the fields that will be used to create the template.  The fields will appear in the Address Text field.  You can add spaces and carriage returns to format the address text."
+strTitle$ = Tmp1 + Chr(10) + "2. When done, select Done and you will be presented with the Word Create Envelope dialog.  Select the proper envelope format in Options then click Add to Document."
+strInfo$ = DlgInfo1$
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+
+PersonCategory$ = "Person/Company"                  ' Default category name
+ErrorMsg$ = "The error code is: "
+
+StatusBar = RunMsg$
+
+On Error GoTo -1: On Error GoTo Done
+ReDim Fld2__$(100)
+q$ = Chr(34)
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+'Get the list of category names
+scatcount$ = c.Request("[GetCategoryCount()]")
+CatCount = Val(scatcount$)
+catlist = c.Request("[GetCategoryNames(|fffd|)]")
+    For i = 0 To CatCount - 1
+        J = InStr(catlist, "|fffd|")
+        If J <> 0 Then
+            Cats__$(i) = Left$(catlist, J - 1)
+            If Cats__$(i) = PersonCategory$ Then
+                PersonIndex = i
+            End If
+            catlist = Mid(catlist, J + 1)
+        Else
+            Cats__$(i) = RTrim$(catlist)
+            GoTo Break0
+        End If
+    Next i
+
+Break0:
+
+    'Ask which category to use
+
+    Index = PersonIndex
+    AddAnother = False
+    frmGetFieldsLabel.btnInsert.Caption = "OK"
+    frmGetFieldsLabel.txtTitle.Caption = strTitle
+    frmGetFieldsLabel.txtLabel.Caption = "Address Text"
+    frmGetFieldsLabel.Show
+    DlgCaption1$ = ""
+    DlgInfo1$ = ""
+    
+
+    If Cancelled Then GoTo Normalx
+
+
+
+'Second, display Envelope/Label dialog
+
+
+With Dialogs(wdDialogToolsCreateEnvelope)
+    .AddrText = LabelTextValue
+    .Show
+End With
+
+
+'Save as template name
+ActiveDocument.SaveAs FileName:=TemplateName
+
+
+
+Done:
+'MsgBox (ErrorMsg$ + Str(Err.Number) + " " + Err.Description)
+StatusBar = ErrorMsg$ + Str(Err.Number) + " " + Err.Description
+
+
+Normalx:
+Set c = Nothing
+Set cmcobj = Nothing
+
+
+
+
+End Sub
+Attribute VB_Name = "CmcCreateLabel"
+'Public q$
+Public qcq$
+Public cr$
+Public crlf$
+Public Category$
+Public AppName$
+Public CmcObject$
+Public Names$
+Public RowValue$
+Public ColumnValue$
+Public cnum
+Public rnum
+
+
+Public Sub Main(PrintLetter As Integer)
+Attribute Main.VB_Description = "Create a letter using values from Commence"
+Attribute Main.VB_ProcData.VB_Invoke_Func = "TemplateProject.JJCreateLetter.MAIN"
+Dim ErrorMsg$
+Dim ExitMsg$
+Dim c
+Dim version$
+Dim NameSize
+Dim s$
+Dim nStart
+Dim nEnd
+Dim nNext
+Dim PlainName$
+Dim Namefld$
+Dim Value$
+Dim Req$
+Dim Cname$
+Dim FC$
+Dim i
+Dim O
+Dim K
+Dim tmp$
+Dim DDEerr
+Dim Conn$
+Dim Rest$
+Dim cat$
+Dim Field_$
+Dim CCount$
+Dim Icount
+Dim Cnamelist$
+Dim Cnamefld$
+Dim Iloop
+Dim CNameP$
+Dim rselection
+Dim useActiveItem As Boolean
+Dim MyDoc As Document
+Dim CValue As Integer
+Dim RValue As Integer
+Dim CurrentShowAllActive As Boolean
+Dim CurrentView
+
+'Copyright 1992-97 Commence Corporation
+'Commence letter template expansion macro
+'This macro creates a letter using values from the letter view info item in Commence
+
+' Revisions for 1.00a (10/92)"
+'  Prints values from all connected items (this was distributed to some users prior  to 1.00a)
+'  Support for clarify fields so we can deal with items with calrified identical names
+'  Gets the actual name fields (don't assume they are always called "Name")
+'  Gets rid of Tr$ subroutine so we can handle "~" in field codes
+
+'Revisions for 1.1
+' (2/11/93)
+' Add dq function to handle values with embedded quotes
+' Separate DDE GetData calls out to a subroutine to simplify code
+
+' Revisions for 3.0 (4/4/95)
+' Support for 50 character item names, Commence 1.0a or later required
+
+q$ = Chr(34)        ' Make a string with a single " for use in constructing DDE messages
+qcq$ = q$ + "," + q$    ' Make a string with "," for use in constructing DDE messages
+cr$ = Chr(13)
+crlf$ = Chr(13) + Chr(10)
+
+NameSize = 50
+Cancelled = False
+
+'get what the replace selection is set to then set it to true
+rselection = Options.ReplaceSelection
+Options.ReplaceSelection = True
+
+'Switch to page view
+    If ActiveWindow.view.SplitSpecial = wdPaneNone Then
+        CurrentView = ActiveWindow.ActivePane.view.Type
+        ActiveWindow.ActivePane.view.Type = wdPageView
+    Else
+        CurrentView = ActiveWindow.view.Type
+        ActiveWindow.view.Type = wdPageView
+    End If
+
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+
+' Init some strings.
+ErrorMsg$ = "The error code is: "
+ExitMsg$ = " CmcCreateLetter macro exiting.  Macro error number: "
+
+Set MyDoc = ActiveDocument
+CurrentShowAll = ActiveWindow.view.ShowAll
+ActiveWindow.view.ShowAll = True
+
+'Find out what version of Commence is running
+On Error GoTo -1: On Error GoTo Done
+If Not CmcCreateLetter.GetVersion(CmcObject, AppName) Then GoTo Normalx
+
+On Error GoTo -1: On Error GoTo NoTable
+
+'Get number of cells
+Set MyTable = ActiveDocument.Tables(1)
+
+
+On Error GoTo -1: On Error GoTo NoTable
+cnumtotal = Selection.Rows(1).Cells.count
+cnum = cnumtotal
+
+rnumtotal = Selection.Columns(1).Cells.count
+rnum = rnumtotal
+
+If cnum > 1 Then
+    MyTable.Cell(1, 2).Select
+    If Selection.Characters.count < 2 Then
+        cnum = (cnumtotal \ 2) + 1
+    End If
+End If
+
+If rnum > 1 Then
+    MyTable.Cell(2, 1).Select
+    If Selection.Characters.count < 2 Then
+        rnum = (rnumtotal \ 2) + 1
+    End If
+End If
+
+On Error GoTo 0
+Selection.Collapse Direction:=wdCollapseStart
+
+With frmCreateLabel
+    .lblRow.Caption = "Row (1-" + Str(rnum) + "):"
+    .lblColumn.Caption = "Column (1-" + Str(cnum) + "):"
+    .Show
+End With
+
+If cnum <> cnumtotal Then
+    CValue = Val(ColumnValue) + Val(ColumnValue) - 1
+Else
+    CValue = Val(ColumnValue)
+End If
+
+If rnum <> rnumtotal Then
+    RValue = Val(RowValue) + Val(RowValue) - 1
+Else
+    RValue = Val(RowValue)
+End If
+
+If Cancelled Then GoTo EndMacro
+
+'Clear out rest of label
+For i = 1 To rnumtotal
+    For J = 1 To cnumtotal
+        If (i = RValue) And (J = CValue) Then
+            'Do Nothing
+        Else
+            'Clear
+            MyTable.Rows(i).Cells(J).Select
+            Selection.Delete
+        End If
+    Next J
+Next i
+        
+
+'Start up a DDE link to Commence
+On Error GoTo -1: On Error GoTo Done
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+' Turn on Clarify Info
+s$ = c.Request("[ClarifyItemNames(True)]")
+
+
+' Ask Commence what is currently in the letter view
+' Parse the return string, which is of the form:
+Call CmcCreateLetter.GetCategoryandPlainName(c, Category$, Name_$, PlainName$, view$, useActiveItem, True)
+
+'Get the name of the name field
+Namefld$ = CmcCreateLetter.GetNameField(c, Category$)
+
+'Mark the ActiveItem
+If useActiveItem Then
+    Temp$ = c.Request("[MarkActiveItem]")
+End If
+
+'Start looking for Fields to retrieve
+Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+
+ActiveWindow.ActivePane.view.SeekView = wdSeekMainDocument
+
+Search:     'Return here to look for the next field
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+    
+
+FindAnother:
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+
+Call CmcCreateLetter.FindString
+
+'Now we have a field code, save it in a variable
+If InStr(1, Selection.Text, "%") < 1 Then GoTo Normalx
+FC$ = Selection.Text
+
+'We have a valid field code, strip off the leading and trailing marks: (% and %)
+K = Len(FC$)
+tmp$ = Mid(FC$, 3, K - 4)
+
+
+'Check to see if it is (next)
+If FC = "(%(-Next-)%)" Then
+    Selection.Delete
+    Selection.MoveRight Unit:=wdCharacter, count:=1, Extend:=wdExtend
+    If Selection.Text = " " Or Selection.Text = Chr(13) Then
+        Selection.MoveLeft Unit:=wdCharacter, count:=1, Extend:=wdMove
+        Selection.Delete Unit:=wdCharacter, count:=1
+    Else
+        Selection.Collapse
+    End If
+    GoTo FindAnother
+End If
+
+'Check to see if it is ME
+If UCase(tmp$) = "(-ME-) ITEM" Then
+    s$ = c.Request("[ClarifyItemNames(FALSE)]")
+    Req$ = "[GetPreference(Me,|fffd|)]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    s$ = c.Request("[ClarifyItemNames(True)]")
+    If Value$ = "??BAD DDE??" Then
+        Value$ = ""
+    ElseIf DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    'On Error GoTo -1: On Error GoTo Done
+    
+    If Value$ <> "" Then
+        'parse out name
+        y = InStr(Value$, "|fffd|")
+        tmp$ = Trim(Mid(Value, y + 1))
+        Req$ = "[GetReverseName(" + q$ + dq$(tmp$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    CmcCreateLetter.InsertText (Value$)
+    GoTo FindAnother:
+End If
+
+'Check to see if this is an indirect field: it is if it contains a %%
+i = InStr(tmp$, "%%")
+
+If i <> 0 Then GoTo Indirect        'We have an indirect field
+'Other wise we have a direct field
+'First check to see if this is just the name field
+If ((tmp$ = Namefld$) Or (tmp$ = UCase(Namefld$)) Or (tmp$ = LCase(Namefld$))) Then
+    'Get the reversed version from Commence
+    Req$ = "[GetReverseName(" + q$ + dq$(PlainName$) + q$ + ")]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    Selection.TypeText Text:=Value$
+Else    'This is not the name field, we need to get it from Commence
+    If useActiveItem Then
+        Req$ = "[GetField(,," + q$ + tmp$ + q$ + ")]"
+    Else
+        Req$ = "[GetField(" + q$ + Category$ + qcq$ + dq$(Name_$) + qcq$ + tmp$ + q$ + ")]"
+    End If
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    CmcCreateLetter.InsertText (Value$)
+End If
+    'Go back And look For more field codes
+    GoTo FindAnother:
+
+Indirect:   'This is an indirect field, parse it to get the values we neeed
+Conn$ = Left(tmp$, i - 1)
+Rest$ = Mid(tmp$, i + 2)
+i = InStr(Rest$, "%%")
+cat$ = Left(Rest$, i - 1)
+Field_$ = Mid(Rest$, i + 2)
+'Build the DDE command
+If useActiveItem Then
+    Req$ = "[GetConnectedItemCount(,," + q$ + Conn$ + qcq$ + cat$ + q$ + ")]"
+Else
+    Req$ = "[GetConnectedItemCount(" + q$ + Category$
+    Req$ = Req$ + qcq$ + dq$(Name_$) + qcq$ + Conn$ + qcq$ + cat$ + q$ + ")]"
+End If
+CmcCreateLetter.GetData_ c, Req$, CCount$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+On Error GoTo -1: On Error GoTo Done
+If CCount$ = "??BAD DDE??" Then
+    Value$ = "??BAD DDE??"
+    GoTo DDEerror
+End If
+Icount = Val(CCount$)
+If Icount = 0 Then  'No connected items, just set Value$ to null
+    Value$ = ""
+    CmcCreateLetter.InsertText (Value$)
+Else            'Get the connected items
+    If useActiveItem Then
+        Req$ = "[GetConnectedItemNames(,,""" + dq$(Conn$) + qcq$ + cat$ + """,|fffd|)]"
+    Else
+        Req$ = "[GetConnectedItemNames(" + q$ + Category$
+        Req$ = Req$ + qcq$ + dq$(Name_$) + qcq$ + Conn$ + qcq$ + cat$ + q$ + ",|fffd|)]"
+    End If
+    CmcCreateLetter.GetData_ c, Req$, Cnamelist$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If Cnamelist$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+    'Get the name of the name field for the connected category
+    Cnamefld$ = CmcCreateLetter.GetConnectedNamefield(c, cat$)
+    
+    'Now loop through items from the list
+    nStart = 1
+    Value$ = ""
+    For Iloop = 1 To Icount
+        nEnd = InStr(nStart, Cnamelist$, "|fffd|")
+        If nEnd = 0 Then
+            Cname$ = Mid(Cnamelist$, nStart)
+        Else
+            Cname$ = Mid(Cnamelist$, nStart, nEnd - nStart)
+            nStart = nEnd + 1
+        End If
+        
+        'Now we have a Cname to use to get the desired field
+        'Check to see if we are looking for the Cname, if so we already have it
+    If Field_$ = Cnamefld$ Then
+        If Len(Cname$) > NameSize Then
+            'Get the name without the clarify data
+            CNameP$ = RTrim(Mid(Cname$, 1, NameSize))
+        Else
+            CNameP$ = RTrim(Cname$)
+        End If
+        'Get the reversed version from Commence
+        Req$ = "[GetReverseName(" + q$ + dq$(CNameP$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    Else
+        Req$ = "[GetField(" + q$ + cat$ + qcq$ + dq$(Cname$) + qcq$ + Field_$ + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    
+    If Iloop = 1 Then
+        CmcCreateLetter.InsertText (Value$)
+    Else
+        CmcCreateLetter.AddText (Value$)
+    End If
+
+Next Iloop
+
+End If  'End of Icount = 0 If
+    GoTo FindAnother
+DDEerror:           'Come here if the connection is invalid
+    InsertText (Value$)
+    GoTo FindAnother:
+Insert2:
+    CmcCreateLetter.InsertText (Value$)
+'Go back and look for more field codes
+GoTo FindAnother
+
+NoTable:
+MsgBox Prompt:="Label Templates must have the field codes in a table.  This template does not have a table.  Please select another letter template", Buttons:=vbCritical
+ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+GoTo Bye
+
+Done:
+StatusBar = ErrorMsg$ + Str(Err.Number) + Err.Description
+
+'********These are the only different lines between JJCreateLetter, JJPrintLetter and JJFaxLetter:
+a = MsgBox(ExitMsg$ + Str(Err.Number) + Chr(10) + Err.Description, vbCritical, "Commence Letter Macro")
+Normalx:
+
+ If PrintLetter = 1 Then
+    If Err.Number = 0 Then
+        ActiveDocument.Save
+        ActiveDocument.PrintOut Background:=True
+        ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+    End If
+ ElseIf Err.Number = 0 Then
+    ActiveDocument.Save
+    FocusNewDocument (MyDoc)
+    'For Each myTask In Tasks
+    '    If (InStr(myTask.Name, "Microsoft Word") And InStr(myTask.Name, "~JJ")) > 0 Then
+    '        myTask.Activate
+    '        myTask.WindowState = wdWindowStateMaximize
+    '    End If
+    'Next myTask
+    'Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+ End If
+
+'End of difference ********************
+
+Bye:
+Set c = Nothing
+Set cmcobj = Nothing
+Options.ReplaceSelection = rselection
+ActiveWindow.view.ShowAll = CurrentShowAll
+
+'Set it to back to the users view
+    If ActiveWindow.view.SplitSpecial = wdPaneNone Then
+        ActiveWindow.ActivePane.view.Type = CurrentView
+    Else
+        ActiveWindow.view.Type = CurrentView
+    End If
+
+EndMacro:
+    If Cancelled Then
+        ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+    End If
+End Sub
+Attribute VB_Name = "CmcCreateLabelTemplate"
+'Public Cats__$(300)
+Public Field__$(700)
+Public Field2__$(100)
+Public AppName$
+Public CmcObject$
+Public c
+Public fldcount
+Public Masterfldcount
+Public LabelTextValue$
+
+
+
+Public Sub Main(TemplateName As String)
+Dim RunMsg$
+Dim DlgCaption1$
+Dim DlgInfo1$
+Dim DlgCaption2$
+Dim DlgInfo2$
+Dim DlgCaption3$
+Dim DlgInfo3$
+Dim DlgFooter$
+Dim ErrorMsg$
+Dim q$
+Dim catlist$
+Dim i
+Dim J
+Dim Idefault
+Dim Category$
+Dim Iquit
+Dim fldcount
+Dim K
+Dim Tmp1$
+Dim Tmp2$
+Dim NextValue$
+
+'Copyright 1992-2001 Commence Corp.
+'Commence Label Template Creation Macro
+'This macro allows choosing of field codes for a label template
+
+
+' Init some strings
+RunMsg$ = "Running Select Template Field Codes From Commence "
+DlgCaption1$ = "Commence - Category Selection" ' Dialog box text
+DlgInfo1$ = "Select a Category from the list"           ' Dialog box text
+DlgCaption2$ = "Commence - Field Code Selection"        ' Dialog box text
+DlgInfo2$ = "Select a Field Code from the list"         ' Dialog box text
+DlgCaption3$ = "Field Codes for category "          ' Dialog box text
+DlgInfo3$ = "Select an Indirect Field Code"         ' Dialog box text
+strCopyright$ = "Copyright |fffd| 1992-2001 Commence Corp."       ' Dialog box text
+Tmp1 = "1. Select the Category then the fields that will be used to create the template.  The fields will appear in the Label Text field.  You can add spaces and carriage returns to format the label text."
+strTitle$ = Tmp1 + Chr(10) + "2. When done, select Done and you will be presented with the Word Create Label dialog.  Select the proper label format in Options then click New Document."
+strInfo$ = DlgInfo1$
+
+'This is the value to use to determine the next item.
+NextValue = "(%(-Next-)%)"
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+
+PersonCategory$ = "Person/Company"                  ' Default category name
+ErrorMsg$ = "The error code is: "
+
+StatusBar = RunMsg$
+
+ '       ActiveDocument.Close SaveChanges:=False
+
+
+On Error GoTo -1: On Error GoTo Done
+ReDim Fld2__$(100)
+q$ = Chr(34)
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+'Get the list of category names
+scatcount$ = c.Request("[GetCategoryCount()]")
+CatCount = Val(scatcount$)
+catlist = c.Request("[GetCategoryNames(|fffd|)]")
+    For i = 0 To CatCount - 1
+        J = InStr(catlist, "|fffd|")
+        If J <> 0 Then
+            Cats__$(i) = Left$(catlist, J - 1)
+            If Cats__$(i) = PersonCategory$ Then
+                PersonIndex = i
+            End If
+            catlist = Mid(catlist, J + 1)
+        Else
+            Cats__$(i) = RTrim$(catlist)
+            GoTo Break0
+        End If
+    Next i
+
+Break0:
+
+    'Ask which category to use
+
+    Index = PersonIndex
+    AddAnother = False
+    frmGetFieldsLabel.btnInsert.Caption = "OK"
+    frmGetFieldsLabel.txtTitle.Caption = strTitle
+    frmGetFieldsLabel.Show
+    DlgCaption1$ = ""
+    DlgInfo1$ = ""
+    
+    ActiveDocument.Close SaveChanges:=False
+
+    If Cancelled Then GoTo Normalx
+
+
+
+'Second, display Envelope/Label dialog
+
+
+With Dialogs(wdDialogToolsCreateLabels)
+    .AddrText = NextValue + LabelTextValue
+    .Show
+End With
+
+
+'Save as template name
+ActiveDocument.SaveAs FileName:=TemplateName
+
+'i = MsgBox(Prompt:="Made it here", Buttons:=vbOKOnly, Title:="CmcCreateLabelTemplate")
+GoTo Normalx
+
+Done:
+MsgBox (ErrorMsg$ + Str(Err.Number) + " " + Err.Description)
+StatusBar = ErrorMsg$ + Str(Err.Number) + " " + Err.Description
+
+
+Normalx:
+Set c = Nothing
+Set cmcobj = Nothing
+'        ActiveDocument.Close SaveChanges:=False
+
+
+
+
+End Sub
+Attribute VB_Name = "CmcCreateLetter"
+Public q$
+Public qcq$
+Public cr$
+Public crlf$
+Public Category$
+Public AppName$
+Public CmcObject$
+Dim Names$
+
+Public Sub Main(PrintLetter As Integer)
+Attribute Main.VB_Description = "Create a letter using values from Commence"
+Attribute Main.VB_ProcData.VB_Invoke_Func = "TemplateProject.JJCreateLetter.MAIN"
+Dim ErrorMsg$
+Dim ExitMsg$
+Dim c
+Dim version$
+Dim NameSize
+Dim s$
+Dim nStart
+Dim nEnd
+Dim nNext
+Dim PlainName$
+Dim Namefld$
+Dim Value$
+Dim Req$
+Dim Cname$
+Dim FC$
+Dim i
+Dim O
+Dim K
+Dim tmp$
+Dim DDEerr
+Dim Conn$
+Dim Rest$
+Dim cat$
+Dim Field_$
+Dim CCount$
+Dim Icount
+Dim Cnamelist$
+Dim Cnamefld$
+Dim Iloop
+Dim CNameP$
+Dim rselection
+Dim useActiveItem As Boolean
+Dim MyDoc As Document
+Dim SearchedHeader As Boolean
+Dim SearchedFooter As Boolean
+Dim SearchedMain As Boolean
+Dim ContinueRunning As Integer
+Dim AskedNext As Boolean
+
+
+'Copyright 1992-97 Commence Corporation
+'Commence letter template expansion macro
+'This macro creates a letter using values from the letter view info item in Commence
+
+' Revisions for 1.00a (10/92)"
+'  Prints values from all connected items (this was distributed to some users prior  to 1.00a)
+'  Support for clarify fields so we can deal with items with calrified identical names
+'  Gets the actual name fields (don't assume they are always called "Name")
+'  Gets rid of Tr$ subroutine so we can handle "~" in field codes
+
+'Revisions for 1.1
+' (2/11/93)
+' Add dq function to handle values with embedded quotes
+' Separate DDE GetData calls out to a subroutine to simplify code
+
+' Revisions for 3.0 (4/4/95)
+' Support for 50 character item names, Commence 1.0a or later required
+
+q$ = Chr(34)        ' Make a string with a single " for use in constructing DDE messages
+qcq$ = q$ + "," + q$    ' Make a string with "," for use in constructing DDE messages
+cr$ = Chr(13)
+crlf$ = Chr(13) + Chr(10)
+
+NameSize = 50
+SearchedHeader = False
+SearchedFooter = False
+SearchedMain = False
+AskedNext = False
+
+'get what the replace selection is set to then set it to true
+rselection = Options.ReplaceSelection
+Options.ReplaceSelection = True
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+
+' Init some strings.
+ErrorMsg$ = "The error code is: "
+ExitMsg$ = " CmcCreateLetter macro exiting.  Macro error number: "
+
+Set MyDoc = ActiveDocument
+
+'Find out what version of Commence is running
+On Error GoTo -1: On Error GoTo Done
+If Not GetVersion(CmcObject, AppName) Then GoTo Normalx
+
+'Start up a DDE link to Commence
+On Error GoTo -1: On Error GoTo Done
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+' Turn on Clarify Info
+s$ = c.Request("[ClarifyItemNames(True)]")
+
+
+' Ask Commence what is currently in the letter view
+' Parse the return string, which is of the form:
+Call GetCategoryandPlainName(c, Category$, Name_$, PlainName$, view$, useActiveItem, True)
+
+'Get the name of the name field
+Namefld$ = GetNameField(c, Category$)
+
+'Mark the ActiveItem
+If useActiveItem Then
+    Temp$ = c.Request("[MarkActiveItem]")
+End If
+
+'Start looking for Fields to retrieve
+Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+
+
+Search:     'Return here to look for the next field
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+    
+If SearchedHeader = False Then
+    If ActiveWindow.ActivePane.view.Type = wdNormalView Or ActiveWindow. _
+        ActivePane.view.Type = wdOutlineView Then
+        If wdPrintView = Empty Then
+            ActiveWindow.ActivePane.view.Type = wdPageView
+        Else
+            ActiveWindow.ActivePane.view.Type = wdPrintView
+        End If
+    End If
+    ActiveWindow.ActivePane.view.SeekView = wdSeekCurrentPageHeader
+    SearchedHeader = True
+ElseIf SearchedFooter = False Then
+    If ActiveWindow.ActivePane.view.Type = wdNormalView Or ActiveWindow. _
+        ActivePane.view.Type = wdOutlineView Then
+        If wdPrintView = Empty Then
+            ActiveWindow.ActivePane.view.Type = wdPageView
+        Else
+            ActiveWindow.ActivePane.view.Type = wdPrintView
+        End If
+    End If
+    ActiveWindow.ActivePane.view.SeekView = wdSeekCurrentPageFooter
+    SearchedFooter = True
+ElseIf SearchedMain = False Then
+    ActiveWindow.ActivePane.view.SeekView = wdSeekMainDocument
+    SearchedMain = True
+End If
+
+FindAnother:
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+
+Call CmcCreateLetter.FindString
+
+'Now we have a field code, save it in a variable
+If (InStr(1, Selection.Text, "%") < 1) And (SearchedFooter = False) Then GoTo Search
+If (InStr(1, Selection.Text, "%") < 1) And (SearchedMain = False) Then GoTo Search
+If (InStr(1, Selection.Text, "%") < 1) And (SearchedHeader = True) And (SearchedFooter = True) And (SearchedMain = True) Then GoTo Normalx
+FC$ = Selection.Text
+
+'We have a valid field code, strip off the leading and trailing marks: (% and %)
+K = Len(FC$)
+tmp$ = Mid(FC$, 3, K - 4)
+
+
+If UCase(FC) = "(%(-NEXT-)%)" And AskedNext = False Then
+    ContinueRunning = MsgBox(Prompt:="This template is for creating labels.  Please make sure you have selected the correct application prior to creating your letter.  Would you like to continue?", Buttons:=vbYesNo)
+    AskedNext = True
+    If ContinueRunning = 7 Then
+       MyDoc.Close SaveChanges:=wdDoNotSaveChanges
+       GoTo Bye
+    End If
+End If
+
+'Check to see if it is ME
+If UCase(tmp$) = "(-ME-) ITEM" Then
+    s$ = c.Request("[ClarifyItemNames(FALSE)]")
+    Req$ = "[GetPreference(Me,|fffd|)]"
+    GetData_ c, Req$, Value$, DDEerr
+    s$ = c.Request("[ClarifyItemNames(True)]")
+    If Value$ = "??BAD DDE??" Then
+        Value$ = ""
+    ElseIf DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    'On Error GoTo -1: On Error GoTo Done
+    
+    If Value$ <> "" Then
+        'parse out name
+        y = InStr(Value$, "|fffd|")
+        tmp$ = Trim(Mid(Value, y + 1))
+        Req$ = "[GetReverseName(" + q$ + dq$(tmp$) + q$ + ")]"
+        GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    InsertText (Value$)
+    GoTo FindAnother:
+End If
+
+'Check to see if this is an indirect field: it is if it contains a %%
+i = InStr(tmp$, "%%")
+
+If i <> 0 Then GoTo Indirect        'We have an indirect field
+'Other wise we have a direct field
+'First check to see if this is just the name field
+If ((tmp$ = Namefld$) Or (tmp$ = UCase(Namefld$)) Or (tmp$ = LCase(Namefld$))) Then
+    'Get the reversed version from Commence
+    Req$ = "[GetReverseName(" + q$ + dq$(PlainName$) + q$ + ")]"
+    GetData_ c, Req$, Value$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    Selection.TypeText Text:=Value$
+Else    'This is not the name field, we need to get it from Commence
+    If useActiveItem Then
+        Req$ = "[GetField(,," + q$ + tmp$ + q$ + ")]"
+    Else
+        Req$ = "[GetField(" + q$ + Category$ + qcq$ + dq$(Name_$) + qcq$ + tmp$ + q$ + ")]"
+    End If
+    GetData_ c, Req$, Value$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    InsertText (Value$)
+End If
+    'Go back And look For more field codes
+    GoTo FindAnother:
+
+Indirect:   'This is an indirect field, parse it to get the values we neeed
+Conn$ = Left(tmp$, i - 1)
+Rest$ = Mid(tmp$, i + 2)
+i = InStr(Rest$, "%%")
+cat$ = Left(Rest$, i - 1)
+Field_$ = Mid(Rest$, i + 2)
+'Build the DDE command
+If useActiveItem Then
+    Req$ = "[GetConnectedItemCount(,," + q$ + Conn$ + qcq$ + cat$ + q$ + ")]"
+Else
+    Req$ = "[GetConnectedItemCount(" + q$ + Category$
+    Req$ = Req$ + qcq$ + dq$(Name_$) + qcq$ + Conn$ + qcq$ + cat$ + q$ + ")]"
+End If
+GetData_ c, Req$, CCount$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+On Error GoTo -1: On Error GoTo Done
+If CCount$ = "??BAD DDE??" Then
+    Value$ = "??BAD DDE??"
+    GoTo DDEerror
+End If
+Icount = Val(CCount$)
+If Icount = 0 Then  'No connected items, just set Value$ to null
+    Value$ = ""
+    InsertText (Value$)
+Else            'Get the connected items
+    If useActiveItem Then
+        Req$ = "[GetConnectedItemNames(,,""" + dq$(Conn$) + qcq$ + cat$ + """,|fffd|)]"
+    Else
+        Req$ = "[GetConnectedItemNames(" + q$ + Category$
+        Req$ = Req$ + qcq$ + dq$(Name_$) + qcq$ + Conn$ + qcq$ + cat$ + q$ + ",|fffd|)]"
+    End If
+    GetData_ c, Req$, Cnamelist$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If Cnamelist$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+    'Get the name of the name field for the connected category
+    Cnamefld$ = GetConnectedNamefield(c, cat$)
+    
+    'Now loop through items from the list
+    nStart = 1
+    Value$ = ""
+    For Iloop = 1 To Icount
+        nEnd = InStr(nStart, Cnamelist$, "|fffd|")
+        If nEnd = 0 Then
+            Cname$ = Mid(Cnamelist$, nStart)
+        Else
+            Cname$ = Mid(Cnamelist$, nStart, nEnd - nStart)
+            nStart = nEnd + 1
+        End If
+        
+        'Now we have a Cname to use to get the desired field
+        'Check to see if we are looking for the Cname, if so we already have it
+    If Field_$ = Cnamefld$ Then
+        If Len(Cname$) > NameSize Then
+            'Get the name without the clarify data
+            CNameP$ = RTrim(Mid(Cname$, 1, NameSize))
+        Else
+            CNameP$ = RTrim(Cname$)
+        End If
+        'Get the reversed version from Commence
+        Req$ = "[GetReverseName(" + q$ + dq$(CNameP$) + q$ + ")]"
+        GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    Else
+        Req$ = "[GetField(" + q$ + cat$ + qcq$ + dq$(Cname$) + qcq$ + Field_$ + q$ + ")]"
+        GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    
+    If Iloop = 1 Then
+        InsertText (Value$)
+    Else
+        AddText (Value$)
+    End If
+
+Next Iloop
+
+End If  'End of Icount = 0 If
+    GoTo FindAnother
+DDEerror:           'Come here if the connection is invalid
+    InsertText (Value$)
+    GoTo FindAnother:
+Insert2:
+    InsertText (Value$)
+'Go back and look for more field codes
+GoTo FindAnother
+
+Done:
+StatusBar = ErrorMsg$ + Str(Err.Number) + Err.Description
+
+'********These are the only different lines between JJCreateLetter, JJPrintLetter and JJFaxLetter:
+a = MsgBox(ExitMsg$ + Str(Err.Number) + Chr(10) + Err.Description, vbCritical, "Commence Letter Macro")
+Normalx:
+
+ If PrintLetter = 1 Then
+    If Err.Number = 0 Then
+        ActiveDocument.Save
+        ActiveDocument.PrintOut Background:=True
+        ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+    End If
+ ElseIf Err.Number = 0 Then
+    ActiveDocument.Save
+    FocusNewDocument (MyDoc)
+    'For Each myTask In Tasks
+    '    If (InStr(myTask.Name, "Microsoft Word") And InStr(myTask.Name, "~JJ")) > 0 Then
+    '        myTask.Activate
+    '        myTask.WindowState = wdWindowStateMaximize
+    '    End If
+    'Next myTask
+    'Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+ End If
+
+'End of difference ********************
+
+Bye:
+Set c = Nothing
+Set cmcobj = Nothing
+Options.ReplaceSelection = rselection
+
+End Sub
+
+
+Public Sub InsertText(Value$)
+Dim cr$
+Dim Line1$
+Dim Lines2$
+Dim Test$
+'Inserts data, checking to see if blank lines are created and handling the case of BAD DDE values
+cr$ = Chr(13)
+Line1$ = Chr(13)
+Lines2$ = Line1$ + Line1$
+
+If Value$ = "" Then
+    'Clear out the code, we got a null value back
+    Selection.Delete
+    'Check to see if we are creating a blank line
+    Selection.MoveLeft Unit:=wdCharacter, count:=1, Extend:=wdMove
+    Selection.MoveRight Unit:=wdCharacter, count:=2, Extend:=wdExtend
+    Test$ = Selection.Text
+    If Test$ = Lines2$ Then 'Have a blank, remove one line
+        Selection.Collapse Direction:=wdCollapseEnd
+        Selection.MoveLeft Unit:=wdCharacter, count:=1, Extend:=wdExtend
+        Selection.Delete
+        If Selection.Text = " " Then
+            Selection.Delete
+        End If
+    ElseIf Selection.Characters.count > 1 Then
+        Selection.Collapse Direction:=wdCollapseStart
+    Else
+        Selection.Collapse Direction:=wdCollapseEnd
+        Selection.MoveLeft Unit:=wdCharacter, count:=1, Extend:=wdMove
+        'Selection.MoveRight Unit:=wdCharacter, count:=1, Extend:=wdExtend
+    End If
+
+ElseIf Value$ = "??BAD DDE??" Then
+    'Move the insertion point and leave the field code
+    Selection.Collapse Direction:=wdCollapseEnd
+
+Else
+    'Replace the field code with the value
+    Selection.TypeText Text:=Value$
+End If
+
+End Sub
+
+Public Sub AddText(Value$)
+Dim cr$
+'Adds text from connected items, with cr after each item
+cr$ = Chr(13)
+
+If Value$ = "" Then
+    'Just skip a line
+    'ActiveDocument.Content.InsertAfter Text:=vbCr
+    Selection.TypeText Text:=" "
+    Selection.Collapse Direction:=wdCollapseEnd
+ElseIf Value$ = "??BAD DDE??" Then
+    'Do nothing
+Else
+    'Insert a cr followed by the new value
+    'ActiveDocument.Content.InsertAfter Text:=vbCr
+    Selection.TypeText Text:=" "
+    'Selection.TypeText Text:=vbCRLF
+    Selection.TypeText Text:=Value$
+End If
+
+End Sub
+
+Public Sub GetData_(chan, sReq$, sValue$, DDEerr)
+'Gets data from Commence, checking for invalid DDE calls
+On Error GoTo -1: On Error GoTo BD0
+'sValue$ = DDERequest(chan, sReq$)
+sValue$ = chan.Request(sReq$)
+BD0:
+If Err.Number = 3 Or Err.Number = 2 Then
+    sValue$ = "??BAD DDE??"
+    DDEerr = 0
+    Err.Number = 0
+ElseIf Err.Number <> 0 Then
+    DDEerr = Err.Number
+End If
+        
+End Sub
+
+
+Public Function dq$(s$)
+Dim q$
+Dim nLen
+Dim tmp$
+Dim i
+Dim p$
+'doubles quotes in strings for transmission to Commence
+
+q$ = Chr(34)        ' The double-quote character
+
+' Quick check for the expected (typical) case
+If InStr(1, s$, q$) = 0 Then
+    dq$ = s$
+Else
+    nLen = Len(s$)
+    tmp$ = ""
+    For i = 1 To nLen
+        p$ = Mid(s$, i, 1)
+        If p$ = q$ Then
+            tmp$ = tmp$ + p$ + q$
+        Else
+            tmp$ = tmp$ + p$
+        End If
+    Next i
+    dq$ = tmp$
+End If
+
+End Function
+
+Public Sub FindString()
+
+With Selection.Find
+    .Forward = True
+    .MatchWholeWord = False
+    .MatchWildcards = True
+    .MatchCase = False
+    .Wrap = wdFindStop
+    .Execute FindText:="\(%*%\)"
+End With
+
+End Sub
+
+Public Function GetNameField(ch, Category$) As String
+'s$ = DDERequest(ch, "[GetFieldNames(" + q$ + Category$ + q$ + ")]")
+s$ = ch.Request("[GetFieldNames(" + q$ + Category$ + q$ + ",|fffd|)]")
+nStart = 1
+nEnd = InStr(nStart, s$, "|fffd|")
+If nEnd = 0 Then
+    GetNameField = s$
+Else
+    GetNameField = Mid(s$, 1, nEnd - 1)
+End If
+
+End Function
+
+Public Function GetVersion(obj_name$, app_name$) As Boolean
+Set obj = CreateObject(obj_name$)
+Set c = obj.GetConversation(app_name, "System")
+version$ = c.Request("Version")
+Set c = Nothing
+Set obj = Nothing
+If Left(version$, 9) = "Version 1" Or Left(version$, 9) = "Version 2" Then
+    MsgBox "This macro can only work with Commence Version 3.0 and above", vbCritical, "Commence Letter Macro"
+    GetVersion = False
+Else
+    GetVersion = True
+End If
+
+
+End Function
+
+Public Sub GetCategoryandPlainName(ch, cat$, Name_$, pname$, viewname$, useActiveItem As Boolean, SingleLetter As Boolean)
+
+useActiveItem = True
+
+If SingleLetter Then
+    useActiveItem = True
+
+    On Error Resume Next
+    'MsgBox Err.Description + Err.Number
+    s$ = ch.Request("[GetActiveViewInfo(|fffd|)]")
+
+    If (Err.Number = 3) Or (Err.Number = 121) Then 'add item is the active view, bad!
+        Err.Clear   ' Clear Err object fields
+        t$ = ch.Request("[GetLetterViewInfo(|fffd|)]")
+        s$ = t$
+        useActiveItem = False
+    End If
+Else
+    s$ = ch.Request("[GetLetterViewInfo(|fffd|)]")
+End If
+
+On Error GoTo 0
+
+ParseViewInfo s, cat$, pname$, Name_$, viewname$
+
+
+End Sub
+Public Sub ParseViewInfo(viewinfo$, cat$, pname$, Name_$, viewname$)
+
+'viewinfo is a string either received from GetActiveViewInfo or GetLetterViewInfo.
+'This includes the following information:
+'   <View Name>
+'   <View Type>
+'   <Category Name>
+'   <Clarifed Item Name (if appropriate)>
+'   <Field Name (if an item detail is up)>
+'The returned value is the category and the plain name (without the clarify info)
+
+Dim cr$
+cr$ = Chr(13)
+
+nStart = 1
+nEnd = InStr(nStart, viewinfo, "|fffd|")
+viewname$ = Mid(viewinfo, nStart, nEnd - 1)
+nStart = nEnd + 1
+nEnd = InStr(nStart, viewinfo, "|fffd|")
+'Get the active category
+nStart = nEnd + 1
+nEnd = InStr(nStart, viewinfo, "|fffd|")
+cat$ = Mid(viewinfo, nStart, nEnd - nStart)
+'Get the highlighted item
+nStart = nEnd + 1
+nEnd = InStr(nStart, viewinfo, "|fffd|")
+'Look for the very last cr$ in case the clarify field is multi-line
+'LastCR:
+'nNext = InStr(nEnd + 1, viewinfo, "|fffd|")
+nNext = InStr(nStart, viewinfo, cr$)
+If nNext <> 0 Then
+    nEnd = nNext
+    'GoTo LastCR
+End If
+'Get the name and the clarify data (if any)
+Name_$ = Mid(viewinfo, nStart, nEnd - nStart)
+
+' NOTE:  If the clarify field Is a multi - Line Text field, And the value of the clarify field For an item
+' contains a cr/nl, then 'this macro will fail because it will not get all of the clarify field value.
+' This is a pretty unlikely scenario, so we will not account for it here.
+' If Name$ is greater than NameSize, then it is clarified
+If Len(Name_$) > NameSize Then
+    'Get the name without the clarify data
+    pname$ = RTrim(Mid(Name_$, 1, 50))
+Else
+    pname$ = RTrim(Name_$)
+End If
+
+
+
+End Sub
+Public Function GetConnectedNamefield(ch, ccat$) As String
+    s$ = ch.Request("[GetFieldNames(" + q$ + ccat$ + q$ + ",|fffd|)]")
+    nStart = 1
+    nEnd = InStr(nStart, s$, "|fffd|")
+    If nEnd = 0 Then
+        GetConnectedNamefield = s$
+    Else
+        GetConnectedNamefield = Mid(s$, nStart, nEnd - nStart)
+    End If
+
+End Function
+Public Sub FocusNewDocument(sDoc)
+    Application.Documents(sDoc).Activate
+    Application.WindowState = wdWindowStateMaximize
+End Sub
+    
+
+Attribute VB_Name = "CmcCreateTemplate"
+Public TemplateTypes$(5)
+Public NumberTemplates
+Public WhatCreate As Integer
+
+Public Sub Main(TemplateName$)
+
+TemplateTypes(0) = "Letter"
+TemplateTypes(1) = "E-Mail"
+TemplateTypes(2) = "Label"
+TemplateTypes(3) = "Envelope & Letter"
+NumberTemplates = 3
+
+
+With frmCreateTemplate
+    .lblTitle.Caption = "Select the type of template you wish to create."
+    .Show
+End With
+
+If Cancelled Then
+    'ActiveDocument.Close SaveChanges:=False
+    GoTo Done
+End If
+
+Select Case WhatCreate
+    Case 0  'Letter
+        'Documents.Add
+        ActiveDocument.SaveAs FileName:=TemplateName
+    Case 1  'E-mail
+        'Documents.Add
+        ActiveDocument.SaveAs FileName:=TemplateName
+    Case 2  'Label
+        Call CmcCreateLabelTemplate.Main(TemplateName)
+    Case 3  'Envelope
+        Documents.Add
+        Call CmcCreateEnvelopeTemplate.Main(TemplateName)
+    Case Else
+End Select
+
+
+
+Done:
+
+End Sub
+
+Attribute VB_Name = "CmcGetFields"
+Public Cats__$(300)
+Public Fld__$(700)
+Public CatCount
+Public strTitle$
+Public strInfo$
+Public PersonCategory$
+Public strCopyright$
+Public selCategory$
+Public Cancelled As Boolean
+Public AddAnother As Boolean
+Public Index
+Public AppName$
+Public CmcObject$
+
+
+
+Public Sub Main()
+Attribute Main.VB_Description = "Get Field Codes from Commence"
+Attribute Main.VB_ProcData.VB_Invoke_Func = "TemplateProject.JJGetFields.MAIN"
+Dim RunMsg$
+Dim DlgCaption1$
+Dim DlgInfo1$
+Dim DlgCaption2$
+Dim DlgInfo2$
+Dim DlgCaption3$
+Dim DlgInfo3$
+Dim DlgFooter$
+Dim ErrorMsg$
+Dim q$
+Dim c
+Dim catlist$
+Dim i
+Dim J
+Dim Idefault
+Dim Category$
+Dim Iquit
+Dim fldcount
+Dim K
+Dim Tmp1$
+Dim Tmp2$
+Dim AppName$
+Dim Masterfldcount
+'Copyright 1992-97 Commence Corp.
+'Commence Letter Field Code Macro
+'This macro inserts letter template field codes into a document
+
+'ActiveDocument.AttachedTemplate.Variables.Add
+
+
+' Init some strings
+RunMsg$ = "Running Select Template Field Codes From Commence "
+DlgCaption1$ = "Commence - Category Selection" ' Dialog box text
+DlgInfo1$ = "Select a Category from the list"           ' Dialog box text
+DlgCaption2$ = "Commence - Field Code Selection"        ' Dialog box text
+DlgInfo2$ = "Select a Field Code from the list"         ' Dialog box text
+DlgCaption3$ = "Field Codes for category "          ' Dialog box text
+DlgInfo3$ = "Select an Indirect Field Code"         ' Dialog box text
+strCopyright$ = "Copyright |fffd| 1992-2001 Commence Corp."       ' Dialog box text
+strTitle$ = DlgCaption1$
+strInfo$ = DlgInfo1$
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+
+PersonCategory$ = "Person/Company"                  ' Default category name
+ErrorMsg$ = "The error code is: "
+
+rselection = Options.ReplaceSelection
+Options.ReplaceSelection = False
+
+StatusBar = RunMsg$
+
+On Error GoTo -1: On Error GoTo Done
+ReDim Fld2__$(100)
+q$ = Chr(34)
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+'Get the list of category names
+scatcount$ = c.Request("[GetCategoryCount()]")
+CatCount = Val(scatcount$)
+catlist = c.Request("[GetCategoryNames(|fffd|)]")
+    For i = 0 To CatCount - 1
+        J = InStr(catlist, "|fffd|")
+        If J <> 0 Then
+            Cats__$(i) = Left$(catlist, J - 1)
+            If Cats__$(i) = PersonCategory$ Then
+                PersonIndex = i
+            End If
+            catlist = Mid(catlist, J + 1)
+        Else
+            Cats__$(i) = RTrim$(catlist)
+            GoTo Break0
+        End If
+    Next i
+
+Break0:
+
+
+'Dialog box 1
+'Ask which category to use
+
+    Index = PersonIndex
+    AddAnother = False
+    frmGetFields.btnAddAnother.Enabled = False
+    frmGetFields.btnInsert.Caption = "OK"
+    frmGetFields.Show
+    DlgCaption1$ = ""
+    DlgInfo1$ = ""
+    
+
+    If Cancelled Then GoTo Normalx
+
+'End If
+
+
+'Get the names of the direct fields
+scatcount$ = c.Request("[GetFieldCount(" + q$ + dq$(selCategory$) + q$ + ")]")
+CatCount = Val(scatcount) + 1
+catlist = c.Request("[GetFieldNames(" + q$ + dq$(selCategory$) + q$ + ",|fffd|)]")
+
+Fld__$(0) = "(%(-Me-) Item%)"
+
+For i = 1 To CatCount - 1
+    J = InStr(catlist, "|fffd|")
+    If J <> 0 Then
+        Fld__$(i) = "(%" + Left$(catlist, J - 1) + "%)"
+        catlist = Mid(catlist, J + 1)
+    Else
+        Fld__$(i) = "(%" + RTrim$(catlist) + "%)"
+        GoTo Break1
+    End If
+Next i
+Break1:
+
+'Get the indirect fields
+fldcount = CatCount
+scatcount$ = c.Request("[GetConnectionCount(" + q$ + dq$(selCategory$) + q$ + ")]")
+CatCount = Val(scatcount$)
+catlist = c.Request("[GetConnectionNames(" + q$ + dq$(selCategory$) + q$ + ",|fffd|,%%)]")
+
+Iquit = 0
+If CatCount > 0 Then
+    For i = 0 To CatCount - 1
+        J = InStr(catlist, "|fffd|")
+        If J <> 0 Then
+            Fld__$(i + fldcount) = Left$(catlist, J - 1) + "..."
+            catlist = Mid(catlist, J + 1)
+        ElseIf catlist <> "" Then
+                Fld__$(i + fldcount) = RTrim$(catlist) + "..."
+        Else
+            Iquit = 1
+        End If
+    Next i
+    CatCount = CatCount + fldcount
+Else
+    CatCount = fldcount
+End If
+
+Masterfldcount = CatCount
+
+Break2:
+
+For i = 0 To CatCount - 1
+    Cats__$(i) = Fld__$(i)
+Next i
+
+StartAgain:
+strTitle$ = DlgCaption2$
+strInfo$ = DlgInfo2$
+Index = 0
+AddAnother = False
+frmGetFields.Show
+
+If Cancelled Then GoTo Normalx
+
+
+i = InStr(selCategory$, "...")
+
+'Insert "The value of I is: " + Str$(I)
+If i = 0 Then
+    Selection.TypeText Text:=selCategory$
+    If AddAnother Then GoTo StartAgain
+    GoTo Normalx
+Else
+    'This code extracts the connection and the category
+    'It assumes they are separated by at least two spaces
+    
+    J = InStr(selCategory, "%%")
+    Tmp1$ = Left$(selCategory$, J - 1)
+    Tmp2$ = Right$(selCategory$, Len(selCategory$) - J - 1)
+    Tmp2$ = Left$(Tmp2$, Len(Tmp2$) - 3)
+    'Now strip off the leading spaces from the to category
+    
+    scatcount$ = c.Request("[GetFieldCount(" + q$ + dq$(Tmp2$) + q$ + ",|fffd|)]")
+    CatCount = Val(scatcount$)
+    catlist = c.Request("[GetFieldNames(" + q$ + dq$(Tmp2$) + q$ + ",|fffd|)]")
+End If
+
+'Just fill up the 50 elements with what we have
+For i = 0 To CatCount - 1
+    J = InStr(catlist, "|fffd|")
+    If J <> 0 Then
+        Fld2__$(i) = "(%" + Tmp1 + "%%" + Tmp2 + "%%" + Left$(catlist, J - 1) + "%)"
+        catlist = Mid(catlist, J + 1)
+    Else
+        Fld2__$(i) = "(%" + Tmp1 + "%%" + Tmp2 + "%%" + RTrim$(catlist) + "%)"
+        GoTo Break3:
+    End If
+Next i
+
+Break3:
+
+For i = 0 To CatCount - 1
+    Cats__$(i) = Fld2__$(i)
+Next i
+
+
+strTitle$ = DlgCaption3$
+strInfo$ = DlgInfo3$
+AddAnother = False
+frmGetFields.Show
+
+If Cancelled Then GoTo Normalx
+
+
+    Selection.TypeText Text:=selCategory$
+    If AddAnother Then
+        For i = 0 To Masterfldcount - 1
+            Cats__$(i) = Fld__$(i)
+        Next i
+        CatCount = Masterfldcount
+        GoTo StartAgain
+    End If
+    GoTo Normalx
+
+Done:
+MsgBox (ErrorMsg$ + Str(Err.Number) + " " + Err.Description)
+StatusBar = ErrorMsg$ + Str(Err.Number) + " " + Err.Description
+Normalx:
+Set c = Nothing
+Set cmcobj = Nothing
+Options.ReplaceSelection = rselection
+End Sub
+Attribute VB_Name = "CmcLetterLog"
+Public InitLogname$
+Public ConnectedItemName$
+Public ConnectedItemNameIndex
+Public Notes$
+Public LogItemName$
+'Public Cancelled As Boolean
+Public Items$(1000)
+Public ItemCount
+Public None$
+Public ShowCompany As Boolean
+Public Filter As Boolean
+Public AddItem As Boolean
+Public filterPersonFirstName$
+Public filterPersonLastName$
+Public filterCompanyName$
+Public bFilterOnPerson As Boolean
+Public PersonFirstNameFld$
+Public PersonLastNameFld$
+Public CompanyNameFld$
+Public Company$
+Public Person$
+Public ItemType(100)
+Public AppName$
+Public CmcObject$
+Public SentVia(4)
+Public LogItemSentVia$
+
+'Public None$
+'Public PersonCategory$
+'Public Index
+
+Public Sub Main()
+Attribute Main.VB_Description = "Log a document to Commence"
+Attribute Main.VB_ProcData.VB_Invoke_Func = "TemplateProject.JJLetLog.MAIN"
+Dim NameSize
+Dim q$
+Dim Logcat$
+Dim Datefld$
+Dim Filefld$
+Dim Notefld$
+Dim Pconn$
+Dim Cconn$
+Dim RunMsg$
+Dim ShowCompanies$
+Dim ShowPeople$
+Dim DlgInfo$
+Dim ErrorMsg$
+Dim EnterName$
+Dim LetterFile$
+Dim LetterName$
+Dim Logname$
+Dim Req$
+Dim AppName$
+Dim PersonItems$(1000)
+Dim CompanyItems$(1000)
+Dim Clarify As Boolean
+Dim BeenHereFilterPerson As Boolean
+Dim BeenHereFilterCompany As Boolean
+Dim PersonFields$(100)
+Dim PersonType(100)
+Dim CompanyFields$(100)
+Dim CompanyType(100)
+Dim ShowCompanyButton As Boolean
+Dim CompanyItemNameName$
+
+'Copyright 1992-2001 Commence Corporation
+'This macro creates a Commence letter log item for the current document
+
+'********************************************************************
+'  Variables to hold names of logging category and its fields
+'  Change these variables if you want to log letters in a different category with different fieldnames
+Logcat$ = "Notes/History"   'The name of the logging category
+Datefld$ = "Date"           'The field name of the date the letter was sent
+Filefld$ = "Document"       'The name of the data file field that will point to the document
+Notefld$ = "Details"          'The name of the note field
+Typefld$ = "Type"           'The name of the type field
+TypeValue$ = "Letter Log" 'the value to set the type field to
+Pconn$ = "is for"        'The name of the connection to the Person category
+Cconn$ = "is for"        'The name of the connection to the Company category
+Company$ = "Person/Company"
+CompanyNameFld$ = "Company"
+Person$ = "Person/Company"
+PersonFirstNameFld$ = "First Name"
+PersonLastNameFld$ = "Last Name"
+SentViafld$ = "Sent Via"
+SentVia(0) = "Mail"
+SentVia(1) = "Fax"
+SentVia(2) = "E-Mail"
+SentVia(3) = "Other"
+
+ShowCompanyButton = False
+
+
+'********************************************************************
+
+NameSize = 50
+q$ = Chr(34)
+
+   
+None$ = "(none)"
+    
+PersonCategory$ = Person$
+
+' Init some strings
+RunMsg$ = "Running Commence Letter Log"
+ShowCompanies$ = "Show Companies Instead"
+ShowPeople$ = "Show People Instead"
+DlgCaption$ = "Commence Letter Log Macro"
+DlgFooter$ = "Copyright |fffd| 1992-2001 Commence Corp."
+DlgInfo$ = "Log item name:"
+ErrorMsg$ = "The error code is: "
+EnterName$ = "You must enter a name for the log item."
+None$ = "None"
+AppName$ = "Commence"
+CmcObject$ = "Commence.DB"
+
+StatusBar = RunMsg$
+
+On Error GoTo -1: On Error GoTo Done
+
+'Get the filepath and name
+LetterFile$ = ActiveDocument.FullName
+'Strip off the filename (LetterFile$)  for use as the default name of the log item
+J = InStr(LetterFile$, "\")
+K = J
+While J <> 0
+    K = J
+    J = InStr(K + 1, LetterFile$, "\")
+Wend
+LetterName$ = Mid(LetterFile$, K + 1)
+
+If (Mid(LetterName$, 1, 8) = "Document") Then
+   J = MsgBox("Save this document before trying to log it!", 16, "Commence Letter Log Macro")
+    GoTo Abort
+End If
+
+
+'' Start up the DDE Link to Commence
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+LogItemName$ = LetterName$
+Notes$ = ""
+
+Call GetItems(c, Person$, personcount, Clarify, cField$)
+beenherePerson = True
+
+'Save the info if have to be called again
+ItemCount = personcount
+For i = 1 To personcount
+    PersonItems$(i) = Items(i)
+Next i
+pClarify = Clarify
+pcfield$ = cField
+
+GetPersonNames:
+
+'recal the info
+If beenherePerson Then
+    ItemCount = personcount
+    For i = 1 To personcount
+        Items$(i) = PersonItems(i)
+    Next i
+End If
+Clarify = pClarify
+cField = pcfield
+
+
+If ItemCount > 999 Then
+    MsgPart$ = "There are 1000 or more items in the selected category." + Chr(13) + Chr(10) + "Only the first 1000 items will be listed." + Chr(13) + Chr(10)
+    MsgPart$ = MsgPart$ + "If you want to display other items, select the Filter button," + Chr(13) + Chr(10)
+    MsgPart$ = MsgPart$ + "to filter the category."
+    MsgBox MsgPart, vbOKOnly + vbInformation, "Commence Letter Log Macro"
+End If
+
+' Dialog box 1
+'Show the list of items and get the Log item data
+With frmLogItem
+    .txtTitle.Caption = DlgCaption$
+    .txtCopyright.Caption = DlgFooter$
+    .txtLogItemName.Text = LogItemName$
+    .txtNotes.Text = Notes$
+    .txtLogItemName.ControlTipText = "Enter the Name for the item to be added to the category " + Logcat
+    .txtNotes.ControlTipText = "Enter the Notes for the Logged item"
+    .lstConnectedItem.ControlTipText = "Select the item this Logged Letter is for"
+    .btnAddItem.ControlTipText = "Select to save the item in Commence"
+    If selCategory = Person And ShowCompanyButton = True Then
+        .btnShowCompany.ControlTipText = "Select to display the " + Company$ + " items"
+        .btnShowCompany.Caption = "Show " + Company
+        .lblConnectedItem.Caption = Cconn + " " + Person + ": " + Str(ItemCount)
+    ElseIf selCategory = Company And ShowCompanyButton = True Then
+        .btnShowCompany.ControlTipText = "Select to display the " + Person$ + " items"
+        .btnShowCompany.Caption = "Show " + Person
+        .lblConnectedItem.Caption = Cconn + " " + Company + ": " + Str(ItemCount)
+    Else
+        .lblConnectedItem.Caption = Cconn + " " + Person + ": " + Str(ItemCount)
+        .btnShowCompany.Visible = False
+    End If
+End With
+selCategory = Person
+connection = True
+frmLogItem.Show
+
+If Cancelled Then GoTo Normalx
+
+If AddItem Then GoTo LogLetter
+
+If Filter Then GoTo FilterList
+
+If ShowCompany And beenhereCompany Then
+        GoTo GetCompanyNames
+End If
+
+GetCompanyNames:
+If beenhereCompany Then GoTo GetCompanyNames2
+Call GetItems(c, Company$, companycount, Clarify, cField$)
+beenhereCompany = True
+
+'Save the info if have to be called again
+ItemCount = companycount
+For i = 1 To companycount
+    CompanyItems$(i) = Items(i)
+Next i
+
+cClarify = Clarify
+ccfield$ = cField
+
+GetCompanyNames2:
+'recal the info
+    ItemCount = companycount
+    For i = 1 To companycount
+        Items$(i) = CompanyItems(i)
+    Next i
+Clarify = cClarify
+cField = ccfield
+
+' Dialog box 2
+'Show the list of items and get the Log item data
+
+If ItemCount > 999 Then
+    MsgPart$ = "There are 1000 or more items in the selected category." + Chr(13) + Chr(10) + "Only the first 1000 items will be listed." + Chr(13) + Chr(10)
+    MsgPart$ = MsgPart$ + "If you want to display other items, select the Filter button," + Chr(13) + Chr(10)
+    MsgPart$ = MsgPart$ + "to filter the category."
+    MsgBox MsgPart, vbOKOnly + vbInformation, "Commence Letter Log Macro"
+End If
+
+With frmLogItem
+    .txtTitle.Caption = DlgCaption$
+    .txtCopyright.Caption = DlgFooter$
+    .txtLogItemName.Text = LogItemName$
+    .txtNotes.Text = Notes$
+    .txtLogItemName.ControlTipText = "Enter the Name for the item to be added to the category " + Logcat
+    .txtNotes.ControlTipText = "Enter the Notes for the Logged item"
+    .lstConnectedItem.ControlTipText = "Select the item this Logged Letter is for"
+    .btnAddItem.ControlTipText = "Select to save the item in Commence"
+    If selCategory = Person And ShowCompanyButton = True Then
+        .btnShowCompany.ControlTipText = "Select to display the " + Company$ + " items"
+        .btnShowCompany.Caption = "Show " + Company
+        .lblConnectedItem.Caption = Cconn + " " + Person + ": " + Str(ItemCount)
+    ElseIf selCategory = Company And ShowCompanyButton = True Then
+        .btnShowCompany.ControlTipText = "Select to display the " + Person$ + " items"
+        .btnShowCompany.Caption = "Show " + Person
+        .lblConnectedItem.Caption = Cconn + " " + Company + ": " + Str(ItemCount)
+    Else
+        .lblConnectedItem.Caption = Cconn + " " + Person + ": " + Str(ItemCount)
+        .btnShowCompany.Visible = False
+    End If
+End With
+selCategory = Company
+connection = False
+frmLogItem.Show
+
+If Cancelled Then GoTo Normalx
+
+If AddItem Then GoTo LogLetter
+
+If ShowCompany Then GoTo GetPersonNames
+
+If Filter Then GoTo FilterList
+
+FilterList:
+
+If selCategory = Person And Not BeenHereFilterPerson Then
+    'Call GetFields(c)
+    BeenHereFilterPerson = True
+    'For i = 0 To CatCount
+    '    PersonFields(i) = Items(i)
+    '    PersonType(i) = ItemType(i)
+    'Next i
+ElseIf selCategory = Person And BeenHereFilterPerson Then
+    'For i = 0 To CatCount
+    '    Items(i) = PersonFields(i)
+    '    ItemType(i) = PersonType(i)
+    'Next i
+ElseIf selCategory = Company And Not BeenHereFilterCompany Then
+    'Call GetFields(c)
+    BeenHereFilterCompany = True
+    'For i = 0 To CatCount
+    '    CompanyFields(i) = Items(i)
+    '    CompanyType(i) = ItemType(i)
+    'Next i
+ElseIf selCategory = Company And BeenHereFilterCompany Then
+    'For i = 0 To CatCount
+    '    Items(i) = CompanyFields(i)
+    '    ItemType(i) = CompanyType(i)
+    'Next i
+End If
+
+'ItemCount = CatCount
+
+frmFilterPerson.Show
+If Cancelled Then GoTo GetPersonNames
+
+Call DoFilter(c)
+Call GetViewItems(c, Clarify, cField$, selCategory)
+
+
+If ItemCount > 999 Then
+    MsgPart$ = "There are 1000 or more items in the selected category." + Chr(13) + Chr(10) + "Only the first 1000 items will be listed." + Chr(13) + Chr(10)
+    MsgPart$ = MsgPart$ + "If you want to other items, select the Filter button," + Chr(13) + Chr(10)
+    MsgPart$ = MsgPart$ + "and then the filter."
+    MsgBox MsgPart, vbOKOnly + vbInformation, "Commence Letter Log Macro"
+End If
+
+    
+With frmLogItem
+    .txtLogItemName.Text = LogItemName$
+    .txtNotes.Text = Notes$
+    .txtLogItemName.ControlTipText = "Enter the Name for the item to be added to the category " + Logcat
+    .txtNotes.ControlTipText = "Enter the Notes for the Logged item"
+    .lstConnectedItem.ControlTipText = "Select the item this Logged Letter is for"
+    .btnAddItem.ControlTipText = "Select to save the item in Commence"
+    .btnFilter.ControlTipText = "Select to filter the list"
+    If selCategory = Person And ShowCompanyButton = True Then
+        .btnShowCompany.ControlTipText = "Select to display the " + Company$ + " items"
+        .btnShowCompany.Caption = "Show " + Company
+        .lblConnectedItem.Caption = Cconn + " " + Person + ": " + Str(ItemCount)
+    ElseIf selCategory = Company And ShowCompanyButton = True Then
+        .btnShowCompany.ControlTipText = "Select to display the " + Person$ + " items"
+        .btnShowCompany.Caption = "Show " + Person
+        .lblConnectedItem.Caption = Cconn + " " + Company + ": " + Str(ItemCount)
+    Else
+        .lblConnectedItem.Caption = Cconn + " " + Person + ": " + Str(ItemCount)
+        .btnShowCompany.Visible = False
+    End If
+End With
+frmLogItem.Show
+If Cancelled Then GoTo Normalx
+
+If AddItem Then GoTo LogLetter
+
+If Filter Then GoTo FilterList
+
+If selCategory = Person Then
+    If ShowCompany Then GoTo GetCompanyNames
+Else
+    If ShowCompany Then GoTo GetPersonNames
+End If
+
+LogLetter:
+'Get the item name of the item to connect to:
+If ConnectedItemName$ <> "None" And ConnectedItemName <> Empty Then
+    ConnectedItemNameName = c.Request("[ViewItemName(" + Str(ConnectedItemNameIndex) + ")]")
+End If
+If Len(LogItemName$) > NameSize Then
+    LogItemName$ = Left$(LogItemName$, NameSize)
+End If
+
+' Limit the size of the description to avoid DDE problems
+If Len(Notes$) > 80 Then
+    Notes$ = Left$(Notes$, 80)
+End If
+
+'Create the log item
+Req$ = "[AddItem(" + Logcat$ + "," + q$ + LogItemName$ + q$ + ")]"
+c.Execute (Req$)
+
+'Add the other data to the log item
+'Notes
+If Notes <> "" And Notes <> Empty Then
+    Req$ = "[EditItem(,," + Notefld$ + "," + q$ + Notes$ + q$ + ")]"
+    c.Execute (Req$)
+End If
+'Date Sent
+Req$ = "[EditItem(,," + Datefld$ + ",Today)]"
+c.Execute (Req$)
+
+'Letter File (the path of the document file)
+Req$ = "[EditItem(,," + Filefld$ + "," + q$ + LetterFile$ + q$ + ")]"
+c.Execute (Req$)
+
+'Type of item
+Req$ = "[EditItem(,," + Typefld$ + "," + q$ + TypeValue$ + q$ + ")]"
+c.Execute (Req$)
+
+'Sent Via
+Req$ = "[EditItem(,," + SentViafld$ + "," + q$ + LogItemSentVia + q$ + ")]"
+c.Execute (Req$)
+
+'Assign the connection if the item is not "None"
+If ConnectedItemName$ <> "None" And ConnectedItemName <> Empty Then
+
+    If Not bShowCompanyButton Then  'Only Person Company shown
+        Req$ = "[AssignConnection(,," + Pconn$ + ",""" + Person + """,""" + ConnectedItemNameName + """)]"
+    Else
+        Req$ = "[AssignConnection(,," + Cconn$ + ",""" + Company + """,""" + ConnectedItemNameName + """)]"
+    End If
+  'If connection Then      'Connect to Person category
+  '  If Clarify Then
+  '      J = InStr(ConnectedItemName$, cField)
+  '      Tmp1 = Mid$(ConnectedItemName, 1, J - 1)
+  '      Tmp2 = Mid$(ConnectedItemName, J + Len(cField), Len(ConnectedItemName))
+  '  End If
+  '  Req$ = "[AssignConnection(,," + Pconn$ + "," + Person$ + "," + q$ + Tmp1 + Chr(9) + Tmp2 + q$ + ")]"
+  'Else                   'Connect to Company category
+  '  If Clarify Then
+  '      J = InStr(ConnectedItemName$, cField)
+  '      Tmp1 = Mid$(ConnectedItemName, 1, J - 1)
+  '      Tmp2 = Mid$(ConnectedItemName, J + Len(cField), Len(ConnectedItemName))
+  '  End If
+  '  Req$ = "[AssignConnection(,," + Cconn$ + "," + Company$ + "," + q$ + Tmp1 + Chr(9) + Tmp2 + q$ + ")]"
+  'End If
+
+  c.Execute (Req$)
+
+End If
+GoTo Normalx
+
+Done:       'Show the error code if there was a problem
+MsgBox ErrorMsg$ + Str(Err.Number) + " " + Err.Description, 16
+
+
+StatusBar = ErrorMsg$ + Str(Err.Number) + " " + Err.Description
+
+
+Normalx:
+
+Abort:
+Set c = Nothing
+Set cmcobj = Nothing
+End Sub
+
+
+
+Public Sub GetItems(ByVal ch, ByVal cat$, ByRef count, ByRef bClarify, ByRef cField$)
+
+'Get the list of person names
+sItemCount$ = ch.Request("[GetItemCount(" + cat$ + ")]")
+count = Val(sItemCount$)
+If count > 1000 Then count = 1000
+Items(0) = None$
+
+sItemCount$ = ch.Request("[GetCategoryDefinition(" + cat$ + ",|fffd|)]")
+J = InStr(sItemCount$, "|fffd|")
+sItemCount = Mid$(sItemCount, J + 1, Str(Len(sItemCount)))
+Clarify$ = Mid$(sItemCount, 10, 1)
+If Clarify$ = "1" Then  'Items are clarified get separator
+    sItemCount = Mid$(sItemCount, 12, Str(Len(sItemCount)))
+    J = InStr(sItemCount$, "|fffd|")
+    cField$ = Mid$(sItemCount, 1, J - 1)
+    junk$ = ch.Request("[ClarifyItemNames(TRUE)]")
+End If
+    
+junk$ = ch.Request("[ViewCategory(" + cat$ + ")]")
+junk$ = ch.Request("[ViewSort(" + PersonLastNameFld + ",Ascending," + PersonFirstNameFld + ",Ascending)]")
+For i = 1 To count
+    If cat = Person$ Then
+        ln$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonLastNameFld) + """)]")
+        fn$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonFirstNameFld) + """)]")
+        co$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(CompanyNameFld) + """)]")
+        If co = "" Then
+            Items(i) = ln + ", " + fn
+        Else
+            Items(i) = ln + ", " + fn + " (" + co + ")"
+        End If
+    ElseIf cat = Company$ Then
+        ln$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonLastNameFld) + """)]")
+        fn$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonFirstNameFld) + """)]")
+        co$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(CompanyNameFld) + """)]")
+        If co = "" Then
+            Items(i) = ln + ", " + fn
+        Else
+            Items(i) = ln + ", " + fn + " (" + co + ")"
+        End If
+    Else
+        Items(i) = ch.Request("[ViewItemName(" + Str(i) + ")]")
+        'If Clarify = "1" Then
+        '    J = InStr(Items(i), cField)
+        '    Tmp1 = Mid$(Items(i), 1, J - 1)
+        '    Tmp2 = Mid(Items(i), J, Len(Items(i)))
+        '    Items(i) = RTrim$(Tmp1) + Tmp2
+        'End If
+    End If
+Next i
+        
+If Clarify = "1" Then
+    bClarify = True
+Else
+    bClarify = False
+End If
+
+'Set the first name to None => no connection will be set
+'Get up to 999 other names (if you have more items, increase this limit as well as the dimension of Fld
+'For i = 1 To count
+'    J = InStr(retlist$, "|fffd|")
+'    If J <> 0 Then
+'        Items$(i) = Left(retlist$, J - 1)
+'        retlist$ = Mid(retlist$, J + 1)
+'    Else
+'        Items$(i) = retlist$
+'        i = count + 1
+'    End If
+'Next i
+End Sub
+
+Private Sub GetCategory(ByRef ch, ByRef PIndex, ByRef CCount)
+scatcount$ = ch.Request("[GetCategoryCount()]")
+CCount = Val(scatcount$)
+catlist$ = ch.Request("[GetCategoryNames(|fffd|)]")
+For i = 0 To CCount - 1
+    J = InStr(catlist$, "|fffd|")
+    If J <> 0 Then
+        Cats__(i) = Left$(catlist$, J - 1)
+        If Cats__(i) = PersonCategory$ Then
+            PIndex = i
+        End If
+        catlist$ = Mid(catlist$, J + 1)
+    Else
+        Cats__(i) = catlist$
+        i = CCount
+    End If
+Next i
+
+End Sub
+
+Private Sub GetFields(ByRef ch)
+
+scatcount$ = ch.Request("[GetFieldCount(" + q$ + dq$(selCategory$) + q$ + ")]")
+CatCount = Val(scatcount)
+catlist$ = ch.Request("[GetFieldNames(" + q$ + dq$(selCategory$) + q$ + ",|fffd|)]")
+Items(0) = None$
+ItemType(0) = 99
+For i = 1 To CatCount
+    J = InStr(catlist$, "|fffd|")
+    If J <> 0 Then
+        Items$(i) = Left$(catlist$, J - 1)
+        catlist$ = Mid(catlist$, J + 1)
+        typelist$ = ch.Request("[GetFieldDefinition(" + q$ + dq$(selCategory$) + q$ + "," + q$ + dq$(Items$(i)) + q$ + ",|fffd|)]")
+        K = InStr(typelist$, "|fffd|")
+        ItemType(i) = Val(Left$(typelist$, K - 1))
+        If ItemType(i) = 12 Or ItemType(i) = 13 Or ItemType(i) = 15 Then
+            i = i - 1
+            CatCount = CatCount - 1
+        End If
+    Else
+        Items$(i) = catlist$
+        typelist$ = ch.Request("[GetFieldDefinition(" + q$ + dq$(selCategory$) + q$ + "," + q$ + dq$(Items$(i)) + q$ + ",|fffd|)]")
+        K = InStr(typelist$, "|fffd|")
+        ItemType(i) = Val(Left$(typelist$, K - 1))
+        If ItemType(i) = 12 Or ItemType(i) = 13 Or ItemType(i) = 15 Then
+            i = i - 1
+            CatCount = CatCount - 1
+        End If
+        i = CatCount
+    End If
+Next i
+
+End Sub
+
+Private Sub DoFilter(ByRef ch)
+    
+    junk$ = ch.Request("[ViewCategory(" + q$ + dq$(selCategory$) + q$ + ")]")
+   
+    'Set filters
+    If bFilterOnPerson Then
+        junk$ = ch.Request("[ViewFilter(1,f,,""" + dq$(PersonFirstNameFld$) + """,Contains,""" + dq$(filterPersonFirstName) + """)]")
+        junk$ = ch.Request("[ViewFilter(2,f,,""" + dq$(PersonLastNameFld$) + """,Contains,""" + dq$(filterPersonLastName) + """)]")
+    Else
+        junk$ = ch.Request("[ViewFilter(1,f,,""" + dq$(CompanyNameFld$) + """,Contains,""" + dq$(filterCompanyName) + """)]")
+    End If
+    junk$ = ch.Request("[ViewItemCount()]")
+End Sub
+
+Private Sub GetViewItems(ByRef ch, ByRef bClarify, ByRef cField, cat$)
+
+sItemCount$ = ch.Request("[ViewItemCount]")
+ItemCount = Val(sItemCount)
+Items(0) = None$
+junk$ = ch.Request("[ViewSort(" + PersonLastNameFld + ",Ascending," + PersonFirstNameFld + ",Ascending)]")
+For i = 1 To ItemCount
+    If cat = Person$ Then
+        ln$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonLastNameFld) + """)]")
+        fn$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonFirstNameFld) + """)]")
+        co$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(CompanyNameFld) + """)]")
+        If co = "" Then
+            Items(i) = ln + ", " + fn
+        Else
+            Items(i) = ln + ", " + fn + " (" + co + ")"
+        End If
+    ElseIf cat = Company$ Then
+        ln$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonLastNameFld) + """)]")
+        fn$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(PersonFirstNameFld) + """)]")
+        co$ = ch.Request("[ViewField(" + Str(i) + ",""" + dq$(CompanyNameFld) + """)]")
+        If co = "" Then
+            Items(i) = ln + ", " + fn
+        Else
+            Items(i) = ln + ", " + fn + " (" + co + ")"
+        End If
+    Else
+        Items(i) = ch.Request("[ViewItemName(" + Str(i) + ")]")
+        'If Clarify = "1" Then
+        '    J = InStr(Items(i), cField)
+        '    Tmp1 = Mid$(Items(i), 1, J - 1)
+        '    Tmp2 = Mid(Items(i), J, Len(Items(i)))
+        '    Items(i) = RTrim$(Tmp1) + Tmp2
+        'End If
+    End If
+
+Next i
+
+End Sub
+Attribute VB_Name = "CmcMultipleEmail"
+
+Public Sub Main()
+Dim gMSWord$
+Dim gWinFax$
+Dim gFax1$
+Dim gFax2$
+Dim gMsg1$
+Dim gBadDDE$
+Dim gMsg2$
+Dim gForItem$
+Dim gMsg5$
+Dim ErrorMsg$
+Dim ExitMsg$
+Dim gDelim$
+Dim q$
+Dim cr$
+Dim Line1$
+Dim Lines2$
+Dim LetterFile$
+Dim c
+Dim version$
+Dim NameSize
+Dim b
+Dim nState
+Dim s$
+Dim nStart
+Dim nEnd
+Dim view$
+Dim Req$
+Dim tmp$
+Dim ItemCount
+Dim Namefld$
+Dim i
+Dim J
+Dim FaxNumberField$
+Dim nLoop
+Dim IC$
+Dim Value$
+Dim Cname$
+Dim FC$
+Dim O
+Dim K
+Dim PlainName$
+Dim Category$
+Dim Conn$
+Dim Rest$
+Dim cat$
+Dim Field_$
+Dim CCount$
+Dim Icount
+Dim Cnamefld$
+Dim Iloop
+Dim PlainCName$
+Dim FaxNumber$
+Dim FaxNum$
+Dim AppName$
+Dim CmcObject$
+Dim alreadyaskedsubject As Boolean
+Dim ContinueRunning As Integer
+Dim AskedNext As Boolean
+Dim NumberNoEmail
+   'Dim objSession As Object
+   'Dim objMessage As Object
+   'Dim objRecipient As Object
+   'Dim sProfile As String
+   'Dim objsessionset As Boolean
+
+'Copyright 1992-2001 Commence Corporation
+'Commence letter template expansion macro
+
+' Literal Text strings ; START TRANSLATION .
+
+gMSWord$ = "Microsoft Word"
+gWinFax$ = "WinFax"
+
+gFax1$ = "email"
+gFax2$ = "e-mail"
+gMsg1$ = "CmcMultipleEmail could not find the e-mail number field for this category."
+
+gBadDDE$ = "??BAD DDE??"
+gMsg2$ = "CmcMultipleEmail could not get the e-mail address: "
+gForItem$ = " in item: "
+gMsg5$ = "CmcMultipleEmail found a null e-mail address for the field: "
+
+ErrorMsg$ = "The errror code is: "  ' Error message
+ExitMsg$ = "CmcMultipleEmail macro exiting.  Macro error number: "
+
+' END OF TRANSLATION.
+
+gDelim$ = Chr(13)
+q$ = Chr(34)
+cr$ = Chr(13)
+Line1$ = Chr(13)
+Lines2$ = Line1$ + Line1$
+NameSize = 50
+alreadyaskedsubject = False
+'objsessionset = False
+AskedNext = False
+NumberNoEmail = 0
+
+'get what the replace selection is set to then set it to true
+rselection = Options.ReplaceSelection
+Options.ReplaceSelection = True
+
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+
+LetterFile$ = ActiveDocument.FullName
+
+'Find out what version of Commence is running
+On Error GoTo -1: On Error GoTo Done
+If Not CmcCreateLetter.GetVersion(CmcObject, AppName) Then GoTo Normalx
+
+'Start up a GetData DDE link to Commence
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+On Error GoTo -1: On Error GoTo Bye
+
+     ' Leaving sProfile equal to Null will
+      ' force the user to select which Mapi
+      ' profile to use. To keep from being
+      ' prompted, you must supply a valid
+      ' user profile.
+      'sProfile = ""
+
+      ' Create the Session Object.
+      ' Set objSession = CreateObject("mapi.session")
+      
+      ' Log on using the session object.
+      ' Specify a valid profile name if you want to
+      ' avoid the logon dialog box.
+'      objSession.Logon profileName:=sProfile
+'      objsessionset = True
+      MSMAPI_Login
+
+On Error GoTo -1: On Error GoTo Done
+
+Call CmcCreateLetter.GetCategoryandPlainName(c, Category$, Name_$, PlainName$, view$, False, False)
+
+
+' Ask Commence what is currently highlighted
+nState = 1
+
+'Now find out how many items are in the view
+'Turn on Clarify Info
+s$ = c.Request("[ClarifyItemNames(True)]")
+
+Req$ = "[ViewCategory(" + q$ + Category$ + q$ + ")]"
+
+tmp$ = c.Request(Req$)
+Req$ = "[ViewView(" + q$ + view$ + q$ + ")]"
+tmp$ = c.Request(Req$)
+tmp$ = c.Request("[ViewItemCount]")
+ItemCount = Val(tmp$)
+
+'Get the name of the name field
+Namefld$ = CmcCreateLetter.GetNameField(c, Category$)
+
+'Find the Email address field
+s$ = c.Request("[GetFieldNames(" + q$ + Category$ + q$ + ")]")
+i = InStr(1, s$, gFax1$, 1)
+If i <> 0 Then
+    J = InStr(i, s$, gDelim$)
+    FaxNumberField$ = Mid(s$, i, J - i)
+ElseIf InStr(1, s$, gFax2, vbTextCompare) Then
+    i = InStr(1, s$, gFax2, vbTextCompare)
+    J = InStr(i, s$, gDelim$)
+    FaxNumberField$ = Mid(s$, i, J - i)
+Else
+    MsgBox gMsg1, 16, "CmcMultipleEmail"
+    Err.Number = 9999
+    GoTo Normalx
+End If
+
+
+'Start main loop
+For nLoop = 1 To ItemCount
+IC$ = Str(nLoop)
+If nLoop <> 1 Then Documents.Open FileName:=LetterFile$
+Set MyDoc = ActiveDocument
+
+'Start looking for Fields to retrieve
+Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+
+Search:     'Return here to look for the next field
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+Call CmcCreateLetter.FindString
+'Now we have a field code, save it in a variable
+If InStr(1, Selection.Text, "%") < 1 Then GoTo LetterEnd
+FC$ = Selection.Text
+
+'We have a valid field code, strip off the leading and trailing marks: (% and %)
+K = Len(FC$)
+tmp$ = Mid(FC$, 3, K - 4)
+
+'Check to see if this is a label template
+If UCase(FC) = "(%(-NEXT-)%)" And AskedNext = False Then
+    ContinueRunning = MsgBox(Prompt:="This template is for creating labels.  Please make sure you have selected the correct application prior to creating your letter.  Would you like to continue?", Buttons:=vbYesNo)
+    AskedNext = True
+    If ContinueRunning = 7 Then
+       MyDoc.Close SaveChanges:=wdDoNotSaveChanges
+       GoTo Bye
+    End If
+End If
+
+'Check to see if it is ME
+If UCase(tmp$) = "(-ME-) ITEM" Then
+    s$ = c.Request("[ClarifyItemNames(FALSE)]")
+    Req$ = "[GetPreference(Me,|fffd|)]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    s$ = c.Request("[ClarifyItemNames(True)]")
+    If DDErr = 126 Then
+        Value$ = ""
+    ElseIf DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    'On Error GoTo -1: On Error GoTo Done
+    
+    If Value$ <> "" Then
+        'parse out name
+        y = InStr(Value$, "|fffd|")
+        tmp$ = Trim(Mid(Value, y + 1))
+        Req$ = "[GetReverseName(" + q$ + dq$(tmp$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    CmcCreateLetter.InsertText (Value$)
+    GoTo Search:
+End If
+
+
+'Check to see if this is an indirect field: it is if it contains a %
+i = InStr(tmp$, "%%")
+If i = 0 Then       'We have a direct field
+
+    Req$ = "[ViewField(" + IC$ + "," + q$ + tmp$ + q$ + ")]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    'Handle the case of the name field
+    If Len(Value$) > NameSize And tmp$ = Namefld$ Then
+        'Get the name without the clarify data
+        Value$ = RTrim(Mid(Value$, nStart, NameSize))
+    Else
+        Value$ = RTrim(Value$)
+    End If
+'Now check to see if this is the name field, if it is we will switch first and last names
+    If ((tmp$ = Namefld$) Or (tmp$ = UCase(Namefld$)) Or (tmp$ = LCase(Namefld$))) Then
+        PlainName = Value
+        Req$ = "[ViewReverseName(" + q$ + dq$(Value$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    CmcCreateLetter.InsertText (Value$)
+        
+Else    'This is an indirect field, parse it to get the values we neeed
+    Conn$ = Left$(tmp$, i - 1)
+    Rest$ = Mid(tmp$, i + 2)
+    i = InStr(Rest$, "%%")
+    cat$ = Left$(Rest$, i - 1)
+    Field_$ = Mid(Rest$, i + 2)
+    Req$ = "[ViewConnectedCount(" + IC$ + "," + q$ + Conn$ + q$ + "," + q$ + cat$ + q$ + ")]"
+    CmcCreateLetter.GetData_ c, Req$, CCount$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If CCount$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+    Icount = Val(CCount$)
+    'Check for zero connected items
+    If Icount = 0 Then
+        Value$ = ""
+        CmcCreateLetter.InsertText (Value$)
+    Else
+    'Loop through connected items
+    ''Get the name of the name field for the connected category
+    'Get the name of the name field for the connected category
+    Cnamefld$ = CmcCreateLetter.GetConnectedNamefield(c, cat$)
+
+    For Iloop = 1 To Icount
+    'Build the DDE command
+    Req$ = "[ViewConnectedItem(" + IC$ + "," + q$ + Conn$ + q$ + "," + q$ + cat$ + q$ + "," + Str(Iloop) + ")]"
+    CmcCreateLetter.GetData_ c, Req$, Cname$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If Cname$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+
+    'Check to see if we are looking for the name, if so we already have it
+    If Field_$ = Cnamefld$ Then
+        If Len(Cname$) > NameSize Then
+            'Get the name without the clarify data
+            PlainCName$ = RTrim(Mid(Cname$, 1, NameSize))
+        Else
+            PlainCName$ = RTrim(Cname$)
+        End If
+          
+        Req$ = "[ViewReverseName( " + q$ + dq$(PlainCName$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    Else
+            Req$ = "[GetField(" + q$ + cat$ + q$ + "," + q$ + dq$(Cname$) + q$ + "," + q$ + Field_$ + q$ + ")]"
+            CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+            If DDEerr <> 0 Then
+                Err.Number = DDEerr
+                GoTo Done
+            End If
+            On Error GoTo -1: On Error GoTo Done
+    End If
+    If Iloop = 1 Then
+        CmcCreateLetter.InsertText (Value$)
+    Else
+        CmcCreateLetter.AddText (Value$)
+    End If
+
+Next Iloop
+End If  'End of Icount = 0 case
+GoTo Search
+DDEerror:           'Come here if the connection is invalid
+    CmcCreateLetter.InsertText (Value$)
+    GoTo Search:
+Insert2:
+        CmcCreateLetter.InsertText (Value$)
+End If
+
+'Go back and look for more field codes
+GoTo Search:
+LetterEnd:
+
+'FileSave
+    'Now get the email address for the item
+        Req$ = "[ViewField(" + IC$ + "," + q$ + FaxNumberField$ + q$ + ")]"
+        On Error GoTo -1: On Error GoTo BD8
+        FaxNumber$ = c.Request(Req$)
+        'If PlainName = "" Then
+            'PlainName = c.Request("[ViewField(" + Namefld + ")]")
+        'End If
+'This is the new error handling
+BD8:
+    If Err.Number <> 0 Then
+        'WordBasic.MsgBox gMsg2$ + FaxNumberField$ + gForItem$ + PlainName$, gMSWord$, 16
+        'GoTo Normalx
+    End If
+    On Error GoTo -1: On Error GoTo Done
+
+FaxNum$ = Trim$(FaxNumber$)
+i = Len(FaxNum$)
+If Len(FaxNum$) <> 0 Then
+      ' Add a new message object to the OutBox.
+'      Set objMessage = objSession.Outbox.messages.Add
+
+      ' Set the properties of the message object.
+      If alreadyaskedsubject = False Then
+        doctitle$ = MyDoc.BuiltInDocumentProperties(wdPropertyTitle)
+        If doctitle = "" Then
+            doctitle = InputBox("Please enter a subject for the E-Mail Message or select Cancel to leave it blank.")
+        End If
+        alreadyaskedsubject = True
+      End If
+'      objMessage.subject = doctitle
+      
+      
+    'CmcCreateLetter.FocusNewDocument (MyDoc)
+    Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+      
+    Selection.WholeStory
+
+'    objMessage.Text = Selection.Text
+'
+'      ' Add a recipient object to the objMessage.Recipients collection.
+'      Set objRecipient = objMessage.Recipients.Add
+'
+'      ' Set the properties of the recipient object.
+'      'objRecipient.Name = FaxNum
+'       objRecipient.Address = "SMTP:" + FaxNum
+'       objRecipient.Type = 1
+'
+      On Error GoTo -1: On Error GoTo ErrorNextItem 'If cancelled
+'      objRecipient.Resolve
+      
+'      On Error GoTo 0
+
+      MSMAPI_Send FaxNum, doctitle, Selection.Text, 1
+      ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+
+'      objMessage.Update
+'
+'      objMessage.Send showDialog:=False
+      
+      GoTo NextItem
+      
+ErrorNextItem:
+      ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+
+      
+Else
+    NumberNoEmail = NumberNoEmail + 1
+    'MsgBox gMsg5$ + FaxNumberField$ + cr$ + gForItem$ + PlainName$, 16, "CmcMultipleEmail"
+    ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+End If
+
+NextItem:
+
+'Go back an get the next item from the view
+Next nLoop
+'All done, go the the normal exit
+GoTo Normalx
+
+Done:
+    StatusBar = ErrorMsg$ + Str(Err.Number) + Err.Description
+    a = MsgBox(ExitMsg$ + Str(Err.Number) + Chr(10) + Err.Description, vbCritical, "Commence Multiple E-mail Macro")
+    'ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+
+    Err.Number = 0
+    'Just stop processing letters at this point: there is an error in the template
+
+Bye:
+ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+
+'If objsessionset = True Then
+'    objSession.Logoff
+'    objsessionset = False
+'End If
+MSMAPI_Logout
+
+Normalx:
+
+If NumberNoEmail > 0 Then
+    a = MsgBox("There were " + Str(NumberNoEmail) + " item(s) with no e-mail address.  These items were not sent.", vbCritical, "Commence Multiple E-mail Macro")
+End If
+
+Set c = Nothing
+Set cmcobj = Nothing
+
+' This causes the hourglass cursor to be turned into a normal pointer.
+Tasks(AppName$).Visible = True
+
+End Sub
+
+Attribute VB_Name = "CmcMultipleLabels"
+Public AppName$
+Public CmcObject$
+Public cr$
+Public crlf$
+
+
+Public Sub Main()
+Attribute Main.VB_Description = "Print letters to all the items in the current view in Commence"
+Attribute Main.VB_ProcData.VB_Invoke_Func = "TemplateProject.JJMultipleLetters.MAIN"
+Dim ErrorMsg$
+Dim ExitMsg$
+Dim q$
+Dim cr$
+Dim Line1$
+Dim Lines2$
+Dim LetterFile$
+Dim c
+Dim version$
+Dim NameSize
+Dim b
+Dim nState
+Dim s$
+Dim nStart
+Dim nEnd
+Dim view$
+Dim Req$
+Dim tmp$
+Dim ItemCount
+Dim Namefld$
+Dim nLoop
+Dim IC$
+Dim Value$
+Dim Cname$
+Dim FC$
+Dim i
+Dim O
+Dim K
+Dim DDEerr
+Dim Conn$
+Dim Rest$
+Dim cat$
+Dim Field_$
+Dim CCount$
+Dim Icount
+Dim Cnamefld$
+Dim Iloop
+Dim PlainCName$
+Dim rselection
+Dim useActiveItem As Boolean
+Dim Category$
+Dim BeenHere As Boolean
+Dim CurrentShowAll As Boolean
+'Copyright 1992-97 Commence Corp.
+'Commence letter template expansion macro
+'This version will print letters to all the items in the current letter view
+
+' Revisions for 1.00a (10/92)"
+'  Prints values from all connected items (this was distributed to some users prior  to 1.00a)
+'  Support for clarify fields so we can deal with items with clarified but identical names
+'  Gets the actual name fields (don't assume they are always called "Name")
+
+'Revisions for 1.1
+' 2/11/93)
+' Add dq function to handle values with embedded quotes
+' Separate DDE GetData calls out to a subroutine to simplify code
+' Fix GetActiveView bug
+' Fix truncation of non-name fields bug
+
+' Revisions for 3.0 (4/4/95)
+' Support for 50 character item names, Commence 1.0a or later required
+
+' Init some strings
+ErrorMsg$ = "The error code is: "
+ExitMsg$ = " CmcMultipleLetters macro exiting.  Macro error number: "
+
+q$ = Chr(34)
+cr$ = Chr(13)
+crlf$ = Chr(13) + Chr(10)
+Line1$ = Chr(13)
+Lines2$ = Line1$ + Line1$
+NameSize = 50
+BeenHere = False
+
+'get what the replace selection is set to then set it to true
+rselection = Options.ReplaceSelection
+Options.ReplaceSelection = True
+
+CurrentShowAll = ActiveWindow.view.ShowAll
+ActiveWindow.view.ShowAll = True
+
+'Set it to page view
+    If ActiveWindow.view.SplitSpecial = wdPaneNone Then
+        CurrentView = ActiveWindow.ActivePane.view.Type
+        ActiveWindow.ActivePane.view.Type = wdPageView
+    Else
+        CurrentView = ActiveWindow.view.Type
+        ActiveWindow.view.Type = wdPageView
+    End If
+
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+
+LetterFile$ = ActiveDocument.FullName
+
+'Find out what version of Commence is running
+On Error GoTo -1: On Error GoTo Done
+If Not CmcCreateLetter.GetVersion(CmcObject, AppName) Then GoTo Normalx
+
+'Start up a GetData DDE link to Commence
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+On Error GoTo -1: On Error GoTo Done
+
+Call CmcCreateLetter.GetCategoryandPlainName(c, Category$, Name_$, PlainName$, view$, useActiveItem, False)
+
+
+' Ask Commence what is currently highlighted
+nState = 1
+
+'Now find out how many items are in the view
+'Turn on Clarify Info
+s$ = c.Request("[ClarifyItemNames(True)]")
+
+Req$ = "[ViewCategory(" + q$ + Category$ + q$ + ")]"
+
+tmp$ = c.Request(Req$)
+Req$ = "[ViewView(" + q$ + view$ + q$ + ")]"
+tmp$ = c.Request(Req$)
+tmp$ = c.Request("[ViewItemCount]")
+ItemCount = Val(tmp$)
+
+'Get the name of the name field
+Namefld$ = CmcCreateLetter.GetNameField(c, Category$)
+
+On Error GoTo -1: On Error GoTo NoTable
+
+'Get number of cells
+Set MyTable = ActiveDocument.Tables(1)
+
+'totalcells = rnum * cnum
+    
+Selection.Tables(1).Select
+Selection.Copy
+On Error GoTo 0
+
+
+Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+
+'Start main loop
+For nLoop = 1 To ItemCount
+IC$ = Str(nLoop)
+'If nLoop <> 1 Then Documents.Open FileName:=LetterFile$
+
+'Start looking for Fields to retrieve
+'Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+'ActiveDocument.Tables(1).Cell(1, 1).Select
+
+'GoTo Normalx
+
+
+'Selection.Tables(1).Rows(1).Cells (1)
+
+Search:     'Return here to look for the next field
+
+FindAnother:
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+
+Call CmcCreateLetter.FindString
+
+'Check if we need to add another page
+FC = Selection.Text
+a = InStr(1, FC, "%", vbTextCompare)
+If (InStr(1, Selection.Text, "%") < 1) And (nLoop < ItemCount) Then
+    Selection.GoTo What:=wdGoToLine, Which:=wdGoToLast
+    'SendKeys "{Down}"
+    Selection.Paste
+    'Selection.GoTo What:=wdGoToLine, Which:=wdGoToFirst
+    Selection.GoTo What:=wdGoToTable, Which:=wdGoToLast
+    GoTo Search
+ElseIf (InStr(1, Selection.Text, "%") < 1) Then
+    GoTo LetterEnd
+End If
+    
+'Now we have a field code, save it in a variable
+FC$ = Selection.Text
+
+'Check if have to go to next item
+If FC = "(%(-Next-)%)" And (nLoop = 1) And (BeenHere = False) Then
+    Selection.Delete
+    Selection.MoveRight Unit:=wdCharacter, count:=1, Extend:=wdExtend
+    If Selection.Text = " " Or Selection.Text = Chr(13) Then
+        Selection.MoveLeft Unit:=wdCharacter, count:=1, Extend:=wdMove
+        Selection.Delete Unit:=wdCharacter, count:=1
+    Else
+        Selection.Collapse
+    End If
+    BeenHere = True
+    GoTo FindAnother
+ElseIf (FC = "(%(-Next-)%)") Then
+    Selection.Delete
+    Selection.MoveRight Unit:=wdCharacter, count:=1, Extend:=wdExtend
+    If Selection.Text = " " Or Selection.Text = Chr(13) Then
+        Selection.MoveLeft Unit:=wdCharacter, count:=1, Extend:=wdMove
+        Selection.Delete Unit:=wdCharacter, count:=1
+    Else
+        Selection.Collapse Direction:=wdCollapseStart
+    End If
+    
+    GoTo NextItem
+End If
+
+'We have a valid field code, strip off the leading and trailing marks: (% and %)
+K = Len(FC$)
+tmp$ = Mid(FC$, 3, K - 4)
+
+'Check to see if it is ME
+If UCase(tmp$) = "(-ME-) ITEM" Then
+    s$ = c.Request("[ClarifyItemNames(FALSE)]")
+    Req$ = "[GetPreference(Me,|fffd|)]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    s$ = c.Request("[ClarifyItemNames(True)]")
+    If DDErr = 126 Then
+        Value$ = ""
+    ElseIf DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    'On Error GoTo -1: On Error GoTo Done
+    
+    If Value$ <> "" Then
+        'parse out name
+        y = InStr(Value$, "|fffd|")
+        tmp$ = Trim(Mid(Value, y + 1))
+        Req$ = "[GetReverseName(" + q$ + dq$(tmp$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    CmcCreateLetter.InsertText (Value$)
+    GoTo FindAnother:
+End If
+
+
+'Check to see if this is an indirect field: it is if it contains a %
+i = InStr(tmp$, "%%")
+If i = 0 Then       'We have a direct field
+
+    Req$ = "[ViewField(" + IC$ + "," + q$ + tmp$ + q$ + ")]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    'Handle the case of the name field
+    If Len(Value$) > NameSize And tmp$ = Namefld$ Then
+        'Get the name without the clarify data
+        Value$ = RTrim(Mid(Value$, nStart, NameSize))
+    Else
+        Value$ = RTrim(Value$)
+    End If
+'Now check to see if this is the name field, if it is we will switch first and last names
+    If ((tmp$ = Namefld$) Or (tmp$ = UCase(Namefld$)) Or (tmp$ = LCase(Namefld$))) Then
+        Req$ = "[ViewReverseName(" + q$ + dq$(Value$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    CmcCreateLetter.InsertText (Value$)
+        
+Else    'This is an indirect field, parse it to get the values we neeed
+    Conn$ = Left$(tmp$, i - 1)
+    Rest$ = Mid(tmp$, i + 2)
+    i = InStr(Rest$, "%%")
+    cat$ = Left$(Rest$, i - 1)
+    Field_$ = Mid(Rest$, i + 2)
+    Req$ = "[ViewConnectedCount(" + IC$ + "," + q$ + Conn$ + q$ + "," + q$ + cat$ + q$ + ")]"
+    CmcCreateLetter.GetData_ c, Req$, CCount$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If CCount$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+    Icount = Val(CCount$)
+    'Check for zero connected items
+    If Icount = 0 Then
+        Value$ = ""
+        CmcCreateLetter.InsertText (Value$)
+    Else
+    'Loop through connected items
+    ''Get the name of the name field for the connected category
+    'Get the name of the name field for the connected category
+    Cnamefld$ = CmcCreateLetter.GetConnectedNamefield(c, cat$)
+
+    For Iloop = 1 To Icount
+    'Build the DDE command
+    Req$ = "[ViewConnectedItem(" + IC$ + "," + q$ + Conn$ + q$ + "," + q$ + cat$ + q$ + "," + Str(Iloop) + ")]"
+    CmcCreateLetter.GetData_ c, Req$, Cname$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If Cname$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+
+    'Check to see if we are looking for the name, if so we already have it
+    If Field_$ = Cnamefld$ Then
+        If Len(Cname$) > NameSize Then
+            'Get the name without the clarify data
+            PlainCName$ = RTrim(Mid(Cname$, 1, NameSize))
+        Else
+            PlainCName$ = RTrim(Cname$)
+        End If
+          
+        Req$ = "[ViewReverseName( " + q$ + dq$(PlainCName$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    Else
+            Req$ = "[GetField(" + q$ + cat$ + q$ + "," + q$ + dq$(Cname$) + q$ + "," + q$ + Field_$ + q$ + ")]"
+            CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+            If DDEerr <> 0 Then
+                Err.Number = DDEerr
+                GoTo Done
+            End If
+            On Error GoTo -1: On Error GoTo Done
+    End If
+    If Iloop = 1 Then
+        CmcCreateLetter.InsertText (Value$)
+    Else
+        CmcCreateLetter.AddText (Value$)
+    End If
+
+Next Iloop
+End If  'End of Icount = 0 case
+GoTo FindAnother
+DDEerror:           'Come here if the connection is invalid
+    CmcCreateLetter.InsertText (Value$)
+    GoTo FindAnother
+Insert2:
+        CmcCreateLetter.InsertText (Value$)
+End If
+
+'Go back and look for more field codes
+GoTo FindAnother
+
+NextItem:
+Next nLoop
+
+LetterEnd:
+
+'Check if have empty cells at end
+
+ClearOutCells:
+'If InStr(1, Selection.Text, "%", vbTextCompare) > 1 Then
+If InStr(1, FC, "%", vbTextCompare) > 1 Then 'There are cells left at the end
+    cnum = Selection.Rows(1).Cells.count
+    'rnum = (rnum \ 2) + 1
+    rnum = Selection.Columns(1).Cells.count
+
+    Call CmcCreateLetter.FindString
+    If InStr(1, Selection.Text, "%", vbTextCompare) > 1 Then
+    currentcolumn = Selection.Cells(1).ColumnIndex
+    currentrow = Selection.Cells(1).RowIndex
+    
+    'Clear out current row first
+    For J = currentcolumn To cnum
+        MyTable.Cell(Row:=currentrow, Column:=J).Select
+        Selection.Cut
+    Next J
+
+    
+    For i = currentrow + 1 To rnum
+        For J = 1 To cnum
+            MyTable.Cell(Row:=i, Column:=J).Select
+            Selection.Cut
+        Next J
+    Next i
+    End If
+Else
+    'Do nothing?
+End If
+
+PrintOut:
+
+ActiveDocument.PrintOut Background:=True
+ActiveDocument.Close SaveChanges:=wdSaveChanges
+
+'Go back an get the next item from the view
+
+'All done, go the the normal exit
+GoTo Normalx
+
+NoTable:
+MsgBox Prompt:="Label Templates must have the field codes in a table.  This template does not have a table.  Please select another letter template", Buttons:=vbCritical
+ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+GoTo Normalx
+
+Done:
+StatusBar = ErrorMsg$ + Str(Err.Number) + Err.Description
+a = MsgBox(ExitMsg$ + Str(Err.Number) + Chr(10) + Err.Description, vbCritical, "Commence Letter Macro")
+
+ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+Err.Number = 0
+'Just stop processing letters at this point: there is an error in the template
+
+Normalx:
+Set c = Nothing
+Set cmcobj = Nothing
+Options.ReplaceSelection = rselection
+ActiveWindow.view.ShowAll = CurrentShowAll
+'Set it to back to the users view
+    If ActiveWindow.view.SplitSpecial = wdPaneNone Then
+        ActiveWindow.ActivePane.view.Type = CurrentView
+    Else
+        ActiveWindow.view.Type = CurrentView
+    End If
+
+
+
+Bye:
+' This causes the hourglass cursor to be turned into a normal pointer.
+Tasks(AppName$).Visible = True
+
+End Sub
+Attribute VB_Name = "CmcMultipleLetters"
+Public AppName$
+Public CmcObject$
+Public cr$
+Public crlf$
+
+
+Public Sub Main()
+Attribute Main.VB_Description = "Print letters to all the items in the current view in Commence"
+Attribute Main.VB_ProcData.VB_Invoke_Func = "TemplateProject.JJMultipleLetters.MAIN"
+Dim ErrorMsg$
+Dim ExitMsg$
+Dim q$
+Dim cr$
+Dim Line1$
+Dim Lines2$
+Dim LetterFile$
+Dim c
+Dim version$
+Dim NameSize
+Dim b
+Dim nState
+Dim s$
+Dim nStart
+Dim nEnd
+Dim view$
+Dim Req$
+Dim tmp$
+Dim ItemCount
+Dim Namefld$
+Dim nLoop
+Dim IC$
+Dim Value$
+Dim Cname$
+Dim FC$
+Dim i
+Dim O
+Dim K
+Dim DDEerr
+Dim Conn$
+Dim Rest$
+Dim cat$
+Dim Field_$
+Dim CCount$
+Dim Icount
+Dim Cnamefld$
+Dim Iloop
+Dim PlainCName$
+Dim rselection
+Dim useActiveItem As Boolean
+Dim Category$
+Dim SearchedHeader As Boolean
+Dim SearchedFooter As Boolean
+Dim SearchedMain As Boolean
+Dim ContinueRunning As Integer
+Dim AskedNext As Boolean
+
+'Copyright 1992-2001 Commence Corp.
+'Commence letter template expansion macro
+'This version will print letters to all the items in the current letter view
+
+' Revisions for 1.00a (10/92)"
+'  Prints values from all connected items (this was distributed to some users prior  to 1.00a)
+'  Support for clarify fields so we can deal with items with clarified but identical names
+'  Gets the actual name fields (don't assume they are always called "Name")
+
+'Revisions for 1.1
+' 2/11/93)
+' Add dq function to handle values with embedded quotes
+' Separate DDE GetData calls out to a subroutine to simplify code
+' Fix GetActiveView bug
+' Fix truncation of non-name fields bug
+
+' Revisions for 3.0 (4/4/95)
+' Support for 50 character item names, Commence 1.0a or later required
+
+' Init some strings
+ErrorMsg$ = "The error code is: "
+ExitMsg$ = " CmcMultipleLetters macro exiting.  Macro error number: "
+
+q$ = Chr(34)
+cr$ = Chr(13)
+crlf$ = Chr(13) + Chr(10)
+Line1$ = Chr(13)
+Lines2$ = Line1$ + Line1$
+NameSize = 50
+
+'get what the replace selection is set to then set it to true
+rselection = Options.ReplaceSelection
+Options.ReplaceSelection = True
+
+CmcObject$ = "Commence.DB"
+AppName$ = "Commence"
+AskedNext = False
+
+LetterFile$ = ActiveDocument.FullName
+
+'Find out what version of Commence is running
+On Error GoTo -1: On Error GoTo Done
+If Not CmcCreateLetter.GetVersion(CmcObject, AppName) Then GoTo Normalx
+
+'Start up a GetData DDE link to Commence
+Set cmcobj = CreateObject(CmcObject$)
+Set c = cmcobj.GetConversation(AppName$, "GetData")
+
+On Error GoTo -1: On Error GoTo Done
+
+Call CmcCreateLetter.GetCategoryandPlainName(c, Category$, Name_$, PlainName$, view$, useActiveItem, False)
+
+
+' Ask Commence what is currently highlighted
+nState = 1
+
+'Now find out how many items are in the view
+'Turn on Clarify Info
+s$ = c.Request("[ClarifyItemNames(True)]")
+
+Req$ = "[ViewCategory(" + q$ + Category$ + q$ + ")]"
+
+tmp$ = c.Request(Req$)
+Req$ = "[ViewView(" + q$ + view$ + q$ + ")]"
+tmp$ = c.Request(Req$)
+tmp$ = c.Request("[ViewItemCount]")
+ItemCount = Val(tmp$)
+
+'Get the name of the name field
+Namefld$ = CmcCreateLetter.GetNameField(c, Category$)
+
+'Start main loop
+For nLoop = 1 To ItemCount
+IC$ = Str(nLoop)
+If nLoop <> 1 Then Documents.Open FileName:=LetterFile$
+
+'Start looking for Fields to retrieve
+Selection.GoTo What:=wdGoToLine, Which:=wdGoToAbsolute, count:=1
+
+SearchedHeader = False
+SearchedFooter = False
+SearchedMain = False
+
+Search:     'Return here to look for the next field
+
+If SearchedHeader = False Then
+    If ActiveWindow.ActivePane.view.Type = wdNormalView Or ActiveWindow. _
+        ActivePane.view.Type = wdOutlineView Then
+        If wdPrintView = Empty Then
+            ActiveWindow.ActivePane.view.Type = wdPageView
+        Else
+            ActiveWindow.ActivePane.view.Type = wdPrintView
+        End If
+    End If
+    ActiveWindow.ActivePane.view.SeekView = wdSeekCurrentPageHeader
+    SearchedHeader = True
+ElseIf SearchedFooter = False Then
+    If ActiveWindow.ActivePane.view.Type = wdNormalView Or ActiveWindow. _
+        ActivePane.view.Type = wdOutlineView Then
+        If wdPrintView = Empty Then
+            ActiveWindow.ActivePane.view.Type = wdPageView
+        Else
+            ActiveWindow.ActivePane.view.Type = wdPrintView
+        End If
+    End If
+    ActiveWindow.ActivePane.view.SeekView = wdSeekCurrentPageFooter
+    SearchedFooter = True
+ElseIf SearchedMain = False Then
+    ActiveWindow.ActivePane.view.SeekView = wdSeekMainDocument
+    SearchedMain = True
+End If
+
+FindAnother:
+Value$ = ""
+Req$ = ""
+Cname$ = ""
+
+Call CmcCreateLetter.FindString
+
+'Now we have a field code, save it in a variable
+If (InStr(1, Selection.Text, "%") < 1) And (SearchedFooter = False) Then GoTo Search
+If (InStr(1, Selection.Text, "%") < 1) And (SearchedMain = False) Then GoTo Search
+If (InStr(1, Selection.Text, "%") < 1) And (SearchedHeader = True) And (SearchedFooter = True) And (SearchedMain = True) Then GoTo LetterEnd
+FC$ = Selection.Text
+
+'We have a valid field code, strip off the leading and trailing marks: (% and %)
+K = Len(FC$)
+tmp$ = Mid(FC$, 3, K - 4)
+
+'Check to see if this is a label template
+If UCase(FC) = "(%(-NEXT-)%)" And AskedNext = False Then
+    ContinueRunning = MsgBox(Prompt:="This template is for creating labels.  Please make sure you have selected the correct application prior to creating your letter.  Would you like to continue?", Buttons:=vbYesNo)
+    AskedNext = True
+    If ContinueRunning = 7 Then
+       ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+       GoTo Normalx
+    End If
+End If
+
+'Check to see if it is ME
+If UCase(tmp$) = "(-ME-) ITEM" Then
+    s$ = c.Request("[ClarifyItemNames(FALSE)]")
+    Req$ = "[GetPreference(Me,|fffd|)]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    s$ = c.Request("[ClarifyItemNames(True)]")
+    If DDErr = 126 Then
+        Value$ = ""
+    ElseIf DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    'On Error GoTo -1: On Error GoTo Done
+    
+    If Value$ <> "" Then
+        'parse out name
+        y = InStr(Value$, "|fffd|")
+        tmp$ = Trim(Mid(Value, y + 1))
+        Req$ = "[GetReverseName(" + q$ + dq$(tmp$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    CmcCreateLetter.InsertText (Value$)
+    GoTo FindAnother:
+End If
+
+
+'Check to see if this is an indirect field: it is if it contains a %
+i = InStr(tmp$, "%%")
+If i = 0 Then       'We have a direct field
+
+    Req$ = "[ViewField(" + IC$ + "," + q$ + tmp$ + q$ + ")]"
+    CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    'Handle the case of the name field
+    If Len(Value$) > NameSize And tmp$ = Namefld$ Then
+        'Get the name without the clarify data
+        Value$ = RTrim(Mid(Value$, nStart, NameSize))
+    Else
+        Value$ = RTrim(Value$)
+    End If
+'Now check to see if this is the name field, if it is we will switch first and last names
+    If ((tmp$ = Namefld$) Or (tmp$ = UCase(Namefld$)) Or (tmp$ = LCase(Namefld$))) Then
+        Req$ = "[ViewReverseName(" + q$ + dq$(Value$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    End If
+    CmcCreateLetter.InsertText (Value$)
+        
+Else    'This is an indirect field, parse it to get the values we neeed
+    Conn$ = Left$(tmp$, i - 1)
+    Rest$ = Mid(tmp$, i + 2)
+    i = InStr(Rest$, "%%")
+    cat$ = Left$(Rest$, i - 1)
+    Field_$ = Mid(Rest$, i + 2)
+    Req$ = "[ViewConnectedCount(" + IC$ + "," + q$ + Conn$ + q$ + "," + q$ + cat$ + q$ + ")]"
+    CmcCreateLetter.GetData_ c, Req$, CCount$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If CCount$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+    Icount = Val(CCount$)
+    'Check for zero connected items
+    If Icount = 0 Then
+        Value$ = ""
+        CmcCreateLetter.InsertText (Value$)
+    Else
+    'Loop through connected items
+    ''Get the name of the name field for the connected category
+    'Get the name of the name field for the connected category
+    Cnamefld$ = CmcCreateLetter.GetConnectedNamefield(c, cat$)
+
+    For Iloop = 1 To Icount
+    'Build the DDE command
+    Req$ = "[ViewConnectedItem(" + IC$ + "," + q$ + Conn$ + q$ + "," + q$ + cat$ + q$ + "," + Str(Iloop) + ")]"
+    CmcCreateLetter.GetData_ c, Req$, Cname$, DDEerr
+    If DDEerr <> 0 Then
+        Err.Number = DDEerr
+        GoTo Done
+    End If
+    On Error GoTo -1: On Error GoTo Done
+    If Cname$ = "??BAD DDE??" Then
+        Value$ = "??BAD DDE??"
+        GoTo DDEerror
+    End If
+
+    'Check to see if we are looking for the name, if so we already have it
+    If Field_$ = Cnamefld$ Then
+        If Len(Cname$) > NameSize Then
+            'Get the name without the clarify data
+            PlainCName$ = RTrim(Mid(Cname$, 1, NameSize))
+        Else
+            PlainCName$ = RTrim(Cname$)
+        End If
+          
+        Req$ = "[ViewReverseName( " + q$ + dq$(PlainCName$) + q$ + ")]"
+        CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+        If DDEerr <> 0 Then
+            Err.Number = DDEerr
+            GoTo Done
+        End If
+        On Error GoTo -1: On Error GoTo Done
+    Else
+            Req$ = "[GetField(" + q$ + cat$ + q$ + "," + q$ + dq$(Cname$) + q$ + "," + q$ + Field_$ + q$ + ")]"
+            CmcCreateLetter.GetData_ c, Req$, Value$, DDEerr
+            If DDEerr <> 0 Then
+                Err.Number = DDEerr
+                GoTo Done
+            End If
+            On Error GoTo -1: On Error GoTo Done
+    End If
+    If Iloop = 1 Then
+        CmcCreateLetter.InsertText (Value$)
+    Else
+        CmcCreateLetter.AddText (Value$)
+    End If
+    
+Next Iloop
+End If  'End of Icount = 0 case
+GoTo FindAnother
+DDEerror:           'Come here if the connection is invalid
+    CmcCreateLetter.InsertText (Value$)
+    GoTo FindAnother
+Insert2:
+        CmcCreateLetter.InsertText (Value$)
+End If
+
+'Go back and look for more field codes
+GoTo FindAnother
+
+LetterEnd:
+ActiveDocument.PrintOut Background:=True
+ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+
+'Go back an get the next item from the view
+Next nLoop
+'All done, go the the normal exit
+GoTo Normalx
+
+Done:
+StatusBar = ErrorMsg$ + Str(Err.Number) + Err.Description
+a = MsgBox(ExitMsg$ + Str(Err.Number) + Chr(10) + Err.Description, vbCritical, "Commence Letter Macro")
+
+ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+Err.Number = 0
+'Just stop processing letters at this point: there is an error in the template
+
+Normalx:
+Set c = Nothing
+Set cmcobj = Nothing
+Options.ReplaceSelection = rselection
+
+' This causes the hourglass cursor to be turned into a normal pointer.
+Tasks(AppName$).Visible = True
+
+End Sub
+Attribute VB_Name = "MapiForm"
+Attribute VB_Base = "0{3EA48A41-9E26-44B0-BDD7-3B0EE174C64B}{46E36EE2-D3EE-4477-9602-4AF674FC5049}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+
+
+
+
+Attribute VB_Name = "frmCreateLabel"
+Attribute VB_Base = "0{137FD3F9-9005-462B-B662-DB8E82AC415A}{98A47DED-AF56-4069-985E-2F7EF2085523}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+Private Sub btnCancel_Click()
+    Cancelled = True
+    Unload Me
+End Sub
+
+Private Sub btnOK_Click()
+    With frmCreateLabel
+        RowValue = .txtRow.Value
+        ColumnValue = .txtColumn.Value
+        If Val(RowValue) > rnum Or Val(RowValue) = 0 Then
+            .txtRow.EnterFieldBehavior = fmEnterFieldBehaviorSelectAll
+            .txtRow.SetFocus
+        ElseIf Val(ColumnValue) > cnum Or Val(ColumnValue) = 0 Then
+            .txtColumn.EnterFieldBehavior = fmEnterFieldBehaviorSelectAll
+            .txtColumn.SetFocus
+        Else
+            Unload Me
+        End If
+    End With
+        
+End Sub
+Attribute VB_Name = "frmCreateTemplate"
+Attribute VB_Base = "0{9F4F6380-5F3E-4D22-B1AD-FF402A8843BB}{7FC0EB44-9A72-4841-AB1F-83047914F02D}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+Private Sub btnCancel_Click()
+    Unload Me
+    Cancelled = True
+End Sub
+
+Private Sub btnOK_Click()
+    With frmCreateTemplate
+        WhatCreate = .cbxTemplateType.ListIndex
+        Cancelled = False
+        Unload Me
+    End With
+End Sub
+
+
+Private Sub UserForm_Initialize()
+    With frmCreateTemplate
+        For i = 0 To NumberTemplates
+            .cbxTemplateType.AddItem TemplateTypes(i)
+        Next i
+        .cbxTemplateType.ListIndex = 0
+        Cancelled = False
+    End With
+End Sub
+Attribute VB_Name = "frmFilterPerson"
+Attribute VB_Base = "0{BF05D153-06B5-44A6-AEB6-F7FB07FD430D}{1806DBFB-9C4B-492F-AA02-BB2CD627190C}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+Private Sub butOK_Click()
+    With frmFilterPerson
+        filterPersonFirstName$ = .txtFirstName.Value
+        filterPersonLastName$ = .txtLastName.Value
+        filterCompanyName$ = .txtCompany.Value
+        If frmFilterPerson.optPerson.Value = True Then
+            bFilterOnPerson = True
+        Else
+            bFilterOnPerson = False
+        End If
+    End With
+    Unload frmFilterPerson
+End Sub
+
+Private Sub optCompany_Click()
+    With frmFilterPerson
+        If optCompany.Value = True Then
+            .txtCompany.Enabled = True
+            .txtFirstName.Enabled = False
+            .txtLastName.Enabled = False
+        End If
+    End With
+End Sub
+
+Private Sub optPerson_Click()
+    With frmFilterPerson
+        If optPerson.Value = True Then
+            .txtCompany.Enabled = False
+            .txtFirstName.Enabled = True
+            .txtLastName.Enabled = True
+        End If
+    End With
+
+End Sub
+
+Private Sub UserForm_Initialize()
+    With frmFilterPerson
+        .optPerson.Value = True
+        .txtFirstName.Enabled = True
+        .txtFirstName.SetFocus
+        .txtLastName.Enabled = True
+        .optCompany.Value = False
+        .txtCompany.Enabled = False
+    End With
+End Sub
+
+Private Sub btnCancel_Click()
+    Cancelled = True
+    Unload Me
+End Sub
+
+Attribute VB_Name = "frmGetFields"
+Attribute VB_Base = "0{3E1A5033-7B02-4E48-AEF2-5445B1321279}{9C0BD387-A2BB-4543-B9E1-097B4DDE1F35}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+Private Sub btnAddAnother_Click()
+    'Save selected Category
+    selCategory$ = lstCategory.List(lstCategory.ListIndex)
+    Cancelled = False
+    AddAnother = True
+    Unload Me
+End Sub
+
+Private Sub btnCancel_Click()
+    Cancelled = True
+    Unload Me
+End Sub
+
+Private Sub btnInsert_Click()
+    'Save selected Category
+    selCategory$ = lstCategory.List(lstCategory.ListIndex)
+    Cancelled = False
+    Unload Me
+End Sub
+
+Private Sub lstCategory_Click()
+    selCategory$ = lstCategory.List(lstCategory.ListIndex)
+    If (InStr(selCategory$, "...") > 0 Or InStr(selCategory$, "%)") = 0) Then
+        Me.btnAddAnother.Enabled = False
+        Me.btnInsert.Caption = "OK"
+    Else
+        Me.btnAddAnother.Enabled = True
+        Me.btnInsert.Caption = "Insert"
+    End If
+End Sub
+
+Private Sub lstCategory_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    'Save selected Category
+    selCategory$ = lstCategory.List(lstCategory.ListIndex)
+    Cancelled = False
+    Unload Me
+
+End Sub
+
+Private Sub UserForm_Initialize()
+    With frmGetFields
+        .txtTitle.Caption = strTitle$
+        .txtCopyright.Caption = strCopyright$
+        .txtInfo.Caption = strInfo$
+        
+        lstCategory.ColumnCount = 1        'This list box contains 1 data columns
+        For i = 0 To CatCount - 1
+            lstCategory.AddItem (Cats__$(i))
+        Next i
+        If Index = Empty Then
+            lstCategory.ListIndex = 0
+        Else
+            lstCategory.ListIndex = Index
+        End If
+    End With
+End Sub
+Attribute VB_Name = "frmGetFieldsLabel"
+Attribute VB_Base = "0{0FDD822E-12D2-4698-8B7A-717D53155B6D}{6CF99A01-F744-4A71-863B-A0ACCB3913A8}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+
+
+Private Sub btnBack_Click()
+    'Reload the previous field labels and connections
+        lstCategory.Clear
+        For i = 0 To Masterfldcount - 1
+            lstCategory.AddItem (Field__$(i))
+        Next i
+        lstCategory.ListIndex = 0
+    'disable the back button
+    btnBack.Enabled = False
+    Cancelled = False
+    'Unload Me
+End Sub
+
+Private Sub btnCancel_Click()
+    Cancelled = True
+    Unload Me
+End Sub
+
+Private Sub btnInsert_Click()
+    'Save selected Category/field
+    selCategory$ = lstCategory.List(lstCategory.ListIndex)
+    
+    'check to see if it is a connection
+    i = InStr(selCategory$, "...")
+
+'If not a connection and Insert button says OK, then this is the selected category
+'and we have to get the fields/connections for the category
+If (frmGetFieldsLabel.btnInsert.Caption = "OK") And (i < 1) Then
+    
+    'Get the names of the direct fields
+    scatcount$ = c.Request("[GetFieldCount(" + q$ + dq$(selCategory$) + q$ + ")]")
+    CatCount = Val(scatcount) + 1
+    catlist = c.Request("[GetFieldNames(" + q$ + dq$(selCategory$) + q$ + ",|)]")
+
+    Field__$(0) = "(%(-Me-) Item%)"
+
+    For i = 1 To CatCount - 1
+        J = InStr(catlist, "|")
+        If J <> 0 Then
+            Field__$(i) = "(%" + Left$(catlist, J - 1) + "%)"
+            catlist = Mid(catlist, J + 1)
+        Else
+            Field__$(i) = "(%" + RTrim$(catlist) + "%)"
+            GoTo Break1
+        End If
+    Next i
+Break1:
+
+    'Get the indirect fields
+    fldcount = CatCount
+    scatcount$ = c.Request("[GetConnectionCount(" + q$ + dq$(selCategory$) + q$ + ")]")
+    CatCount = Val(scatcount$)
+    catlist = c.Request("[GetConnectionNames(" + q$ + dq$(selCategory$) + q$ + ",|,%%)]")
+
+    Iquit = 0
+    If CatCount > 0 Then
+        For i = 0 To CatCount - 1
+            J = InStr(catlist, "|")
+            If J <> 0 Then
+                Field__$(i + fldcount) = Left$(catlist, J - 1) + "..."
+                catlist = Mid(catlist, J + 1)
+            ElseIf catlist <> "" Then
+                Field__$(i + fldcount) = RTrim$(catlist) + "..."
+            Else
+                Iquit = 1
+            End If
+        Next i
+        CatCount = CatCount + fldcount
+    Else
+        CatCount = fldcount
+    End If
+
+    Masterfldcount = CatCount
+
+Break2:
+
+    For i = 0 To CatCount - 1
+        Cats__$(i) = Field__$(i)
+    Next i
+
+    'Load the fields in the list control
+    lstCategory.Clear
+    For i = 0 To CatCount - 1
+        lstCategory.AddItem (Cats__$(i))
+    Next i
+    lstCategory.ListIndex = 0
+
+    
+
+'If we have a direct field, then put in textbox
+ElseIf i = 0 Then
+    txtLabelText = txtLabelText.Value + selCategory
+Else    'we have an indirect and have to get the fields
+    'This code extracts the connection and the category
+    'It assumes they are separated by at least two spaces
+    btnBack.Enabled = True
+    J = InStr(selCategory, "%%")
+    Tmp1$ = Left$(selCategory$, J - 1)
+    Tmp2$ = Right$(selCategory$, Len(selCategory$) - J - 1)
+    Tmp2$ = Left$(Tmp2$, Len(Tmp2$) - 3)
+    
+    'Now strip off the leading spaces from the to category
+    scatcount$ = c.Request("[GetFieldCount(" + q$ + dq$(Tmp2$) + q$ + ",|)]")
+    CatCount = Val(scatcount$)
+    catlist = c.Request("[GetFieldNames(" + q$ + dq$(Tmp2$) + q$ + ",|)]")
+
+    'Just fill up the 50 elements with what we have
+    For i = 0 To CatCount - 1
+        J = InStr(catlist, "|")
+        If J <> 0 Then
+            Field2__$(i) = "(%" + Tmp1 + "%%" + Tmp2 + "%%" + Left$(catlist, J - 1) + "%)"
+            catlist = Mid(catlist, J + 1)
+        Else
+            Field2__$(i) = "(%" + Tmp1 + "%%" + Tmp2 + "%%" + RTrim$(catlist) + "%)"
+            GoTo Break3:
+        End If
+    Next i
+
+Break3:
+
+    'fill the list control
+    For i = 0 To CatCount - 1
+        Cats__$(i) = Field2__$(i)
+    Next i
+
+    lstCategory.Clear
+    For i = 0 To CatCount - 1
+        lstCategory.AddItem (Cats__$(i))
+    Next i
+        
+    lstCategory.ListIndex = 0
+   
+End If
+
+    
+    Cancelled = False
+    'Unload Me
+End Sub
+
+Private Sub CommandButton1_Click()
+    With frmGetFieldsLabel
+        LabelTextValue = .txtLabelText.Value
+        
+    End With
+    Unload Me
+End Sub
+
+Private Sub lstCategory_Click()
+    selCategory$ = lstCategory.List(lstCategory.ListIndex)
+    If (InStr(selCategory$, "...") > 0 Or InStr(selCategory$, "%)") = 0) Then
+        Me.btnInsert.Caption = "OK"
+    Else
+        Me.btnInsert.Caption = "Insert"
+    End If
+End Sub
+
+Private Sub lstCategory_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    selCategory$ = lstCategory.List(lstCategory.ListIndex)
+    'txtLabelText = txtLabelText.Value + selCategory
+    i = InStr(selCategory$, "...")
+
+If (frmGetFieldsLabel.btnInsert.Caption = "OK") And (i < 1) Then
+    'Get the fields for the selected category
+    'Get the names of the direct fields
+    scatcount$ = c.Request("[GetFieldCount(" + q$ + dq$(selCategory$) + q$ + ")]")
+    CatCount = Val(scatcount) + 1
+    catlist = c.Request("[GetFieldNames(" + q$ + dq$(selCategory$) + q$ + ",|)]")
+
+    Field__$(0) = "(%(-Me-) Item%)"
+
+    For i = 1 To CatCount - 1
+        J = InStr(catlist, "|")
+        If J <> 0 Then
+            Field__$(i) = "(%" + Left$(catlist, J - 1) + "%)"
+            catlist = Mid(catlist, J + 1)
+        Else
+            Field__$(i) = "(%" + RTrim$(catlist) + "%)"
+            GoTo Break1
+        End If
+    Next i
+Break1:
+
+    'Get the indirect fields
+    fldcount = CatCount
+    scatcount$ = c.Request("[GetConnectionCount(" + q$ + dq$(selCategory$) + q$ + ")]")
+    CatCount = Val(scatcount$)
+    catlist = c.Request("[GetConnectionNames(" + q$ + dq$(selCategory$) + q$ + ",|,%%)]")
+
+    Iquit = 0
+    If CatCount > 0 Then
+        For i = 0 To CatCount - 1
+            J = InStr(catlist, "|")
+            If J <> 0 Then
+                Field__$(i + fldcount) = Left$(catlist, J - 1) + "..."
+                catlist = Mid(catlist, J + 1)
+            ElseIf catlist <> "" Then
+                Field__$(i + fldcount) = RTrim$(catlist) + "..."
+            Else
+                Iquit = 1
+            End If
+        Next i
+        CatCount = CatCount + fldcount
+    Else
+        CatCount = fldcount
+    End If
+
+    Masterfldcount = CatCount
+
+Break2:
+
+    For i = 0 To CatCount - 1
+        Cats__$(i) = Field__$(i)
+    Next i
+
+        lstCategory.Clear
+        For i = 0 To CatCount - 1
+            lstCategory.AddItem (Cats__$(i))
+        Next i
+        If Index = Empty Then
+            lstCategory.ListIndex = 0
+        ElseIf Index > lstCategory.ListCount Then
+            lstCategory.ListIndex = 0
+        Else
+            lstCategory.ListIndex = Index
+        End If
+
+    
+
+'Insert "The value of I is: " + Str$(I)
+ElseIf i = 0 Then
+    txtLabelText = txtLabelText.Value + selCategory
+Else
+    'This code extracts the connection and the category
+    'It assumes they are separated by at least two spaces
+    btnBack.Enabled = True
+    J = InStr(selCategory, "%%")
+    Tmp1$ = Left$(selCategory$, J - 1)
+    Tmp2$ = Right$(selCategory$, Len(selCategory$) - J - 1)
+    Tmp2$ = Left$(Tmp2$, Len(Tmp2$) - 3)
+    'Now strip off the leading spaces from the to category
+    
+    scatcount$ = c.Request("[GetFieldCount(" + q$ + dq$(Tmp2$) + q$ + ",|)]")
+    CatCount = Val(scatcount$)
+    catlist = c.Request("[GetFieldNames(" + q$ + dq$(Tmp2$) + q$ + ",|)]")
+
+'Just fill up the 50 elements with what we have
+For i = 0 To CatCount - 1
+    J = InStr(catlist, "|")
+    If J <> 0 Then
+        Field2__$(i) = "(%" + Tmp1 + "%%" + Tmp2 + "%%" + Left$(catlist, J - 1) + "%)"
+        catlist = Mid(catlist, J + 1)
+    Else
+        Field2__$(i) = "(%" + Tmp1 + "%%" + Tmp2 + "%%" + RTrim$(catlist) + "%)"
+        GoTo Break3:
+    End If
+Next i
+
+Break3:
+
+For i = 0 To CatCount - 1
+    Cats__$(i) = Field2__$(i)
+Next i
+
+        lstCategory.Clear
+        For i = 0 To CatCount - 1
+            lstCategory.AddItem (Cats__$(i))
+        Next i
+        
+        lstCategory.ListIndex = 0
+   
+End If
+
+    
+    Cancelled = False
+    'Unload Me
+End Sub
+
+Private Sub UserForm_Initialize()
+    With frmGetFields
+        .txtTitle.Caption = strTitle$
+        .txtCopyright.Caption = strCopyright$
+        .txtInfo.Caption = strInfo$
+        
+        lstCategory.ColumnCount = 1        'This list box contains 1 data columns
+        For i = 0 To CatCount - 1
+            lstCategory.AddItem (Cats__$(i))
+        Next i
+        If Index = Empty Then
+            lstCategory.ListIndex = 0
+        Else
+            lstCategory.ListIndex = Index
+        End If
+    End With
+End Sub
+Attribute VB_Name = "frmLogItem"
+Attribute VB_Base = "0{DF2AC68D-BEC7-473C-B99F-F76FF165300F}{5B4E1BBA-78E0-4101-8FD4-3A33642758A3}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+
+
+
+Private Sub btnCancel_Click()
+    Cancelled = True
+    Unload Me
+End Sub
+
+Private Sub btnAddItem_Click()
+    'Save selected Category
+    LogItemName$ = txtLogItemName.Text
+    If LogItemName = "" Then
+        MsgBox "Please enter a Log Item Name"
+        txtLogItemName.SetFocus
+        Exit Sub
+    End If
+    Notes$ = txtNotes.Text
+    If InStr(Notes, Chr(34)) > 0 Then
+        MsgBox "Invalid Character: " + Chr(34) + "  Please remove these characters"
+        txtNotes.SetFocus
+        Exit Sub
+    End If
+    ConnectedItemName$ = lstConnectedItem.List(lstConnectedItem.ListIndex)
+    ConnectedItemNameIndex = lstConnectedItem.ListIndex
+    LogItemSentVia = comboSentVia.Value
+    AddItem = True
+    Cancelled = False
+    Unload Me
+End Sub
+
+Private Sub lstConnectedItem_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    'Save selected Category
+    LogItemName$ = txtLogItemName.Text
+    If LogItemName = "" Then
+        MsgBox "Please enter a Log Item Name"
+        txtLogItemName.SetFocus
+        Exit Sub
+    End If
+    Notes$ = txtNotes.Text
+    If InStr(Notes, Chr(34)) > 0 Then
+        MsgBox "Invalid Character: " + Chr(34) + "  Please remove these characters"
+        txtNotes.SetFocus
+        Exit Sub
+    End If
+    ConnectedItemName$ = lstConnectedItem.List(lstConnectedItem.ListIndex)
+    AddItem = True
+    Cancelled = False
+    Unload Me
+End Sub
+
+Private Sub btnShowCompany_Click()
+    Notes$ = txtNotes.Text
+    LogItemName$ = txtLogItemName.Text
+    Cancelled = False
+    ShowCompany = True
+    ShowOther = False
+    Unload Me
+End Sub
+
+Private Sub btnFilter_Click()
+    Notes$ = txtNotes.Text
+    LogItemName$ = txtLogItemName.Text
+    Cancelled = False
+    ShowCompany = False
+    Filter = True
+    'frmLogItem.Hide
+    Unload Me
+End Sub
+
+Private Sub UserForm_Initialize()
+    ShowCompany = False
+    Filter = False
+    Cancelled = False
+    AddItem = False
+        
+    With frmLogItem
+        lstConnectedItem.ColumnCount = 1        'This list box contains 2 data columns
+        For i = 0 To ItemCount
+            lstConnectedItem.AddItem (Items$(i))
+        Next i
+        lstConnectedItem.ListIndex = 0
+        .comboSentVia.ColumnCount = 1
+        .comboSentVia.DropDown
+        For i = 0 To 3
+            .comboSentVia.AddItem SentVia(i)
+        Next i
+    End With
+End Sub
+
+' InQuest injected base64 decoded content
+' jZ N
+
+INQUEST-PP=macro

@@ -1,0 +1,809 @@
+Attribute VB_Name = "ComDlg"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+ 
+DefStr S
+DefLng N
+DefBool B
+DefVar V
+ 
+' OFN constants.
+Const OFN_ALLOWMULTISELECT   As Long = &H200
+Const OFN_CREATEPROMPT       As Long = &H2000
+Const OFN_EXPLORER           As Long = &H80000
+Const OFN_EXTENSIONDIFFERENT As Long = &H400
+Const OFN_FILEMUSTEXIST      As Long = &H1000
+Const OFN_HIDEREADONLY       As Long = &H4
+Const OFN_LONGNAMES          As Long = &H200000
+Const OFN_NOCHANGEDIR        As Long = &H8
+Const OFN_NODEREFERENCELINKS As Long = &H100000
+Const OFN_OVERWRITEPROMPT    As Long = &H2
+Const OFN_PATHMUSTEXIST      As Long = &H800
+Const OFN_READONLY           As Long = &H1
+ 
+' The maximum length of a single file path.
+Const MAX_PATH As Long = 260
+' This MAX_BUFFER value allows you to select approx.
+' 500 files with an average length of 25 characters.
+' Change this value as needed.
+Const MAX_BUFFER As Long = 50 * MAX_PATH
+' String constants:
+Const sBackSlash As String = "\"
+Const sPipe As String = "|"
+ 
+' API functions to use the Windows common dialog boxes.
+Private Declare PtrSafe Function GetOpenFileName _
+  Lib "comdlg32.dll" Alias "GetOpenFileNameA" _
+  (pOpenfilename As OPENFILENAME) As Long
+Private Declare PtrSafe Function GetSaveFileName _
+  Lib "comdlg32.dll" Alias "GetSaveFileNameA" _
+  (pOpenfilename As OPENFILENAME) As Long
+Private Declare PtrSafe Function GetActiveWindow _
+  Lib "user32" () As Long
+
+Private Type OPENFILENAME
+lStructSize As Long
+hwndOwner As LongPtr
+hInstance As LongPtr
+strFilter As String
+strCustomFilter As String
+nMaxCustFilter As Long
+nFilterIndex As Long
+strFile As String
+nMaxFile As Long
+strFileTitle As String
+nMaxFileTitle As Long
+strInitialDir As String
+strTitle As String
+Flags As Long
+nFileOffset As Integer
+nFileExtension As Integer
+strDefExt As String
+lCustData As Long
+lpfnHook As LongPtr
+lpTemplateName As String
+End Type
+
+
+ 
+' Private variables.
+Private OFN As OPENFILENAME
+Private colFileTitles As New Collection
+Private colFileNames As New Collection
+Private sFullName As String
+Private sFileTitle As String
+Private sPath As String
+Private sExtension As String
+ 
+' Public enumeration variable.
+Public Enum XFlags
+  PathMustExist = OFN_PATHMUSTEXIST
+  FileMustExist = OFN_FILEMUSTEXIST
+  PromptToCreateFile = OFN_CREATEPROMPT
+End Enum
+ 
+Property Let AllowMultiSelect(bFlag As Boolean)
+  SetFlag OFN_ALLOWMULTISELECT, bFlag
+End Property
+ 
+Property Let DialogTitle(sCaption As String)
+  OFN.strTitle = sCaption
+End Property
+ 
+Property Let Filter(vFilter)
+  If IsArray(vFilter) Then _
+    vFilter = Join(vFilter, vbNullChar)
+    OFN.strFilter = _
+    Replace(vFilter, sPipe, vbNullChar) & vbNullChar
+End Property
+ 
+Property Get Filter()
+  With OFN
+    If .nFilterIndex Then
+      Dim sTemp()
+      sTemp = Split(.lpstrFilter, vbNullChar)
+      Filter = sTemp(.nFilterIndex * 2 - 2) & sPipe & _
+        sTemp(.nFilterIndex * 2 - 1)
+    End If
+  End With
+End Property
+ 
+Property Let FilterIndex(nIndex)
+  OFN.nFilterIndex = nIndex
+End Property
+ 
+Property Get FilterIndex() As Long
+  FilterIndex = OFN.nFilterIndex
+End Property
+ 
+Property Let RestoreCurDir(bFlag As Boolean)
+  SetFlag OFN_NOCHANGEDIR, bFlag
+End Property
+ 
+Property Let ExistFlags(nFlags As XFlags)
+  OFN.Flags = OFN.Flags Or nFlags
+End Property
+ 
+Property Let CheckBoxVisible(bFlag As Boolean)
+  SetFlag OFN_HIDEREADONLY, Not bFlag
+End Property
+ 
+Property Let CheckBoxSelected(bFlag As Boolean)
+  SetFlag OFN_READONLY, bFlag
+End Property
+ 
+Property Get CheckBoxSelected() As Boolean
+  CheckBoxSelected = OFN.Flags And OFN_READONLY
+End Property
+ 
+Property Let FileName(sFileName As String)
+  If Len(sFileName) <= MAX_PATH Then _
+    OFN.strFile = sFileName
+End Property
+ 
+Property Get FileName() As String
+  FileName = sFullName
+End Property
+ 
+Property Get FileNames() As Collection
+  Set FileNames = colFileNames
+End Property
+ 
+Property Get FileTitle() As String
+  FileTitle = sFileTitle
+End Property
+ 
+Property Get FileTitles() As Collection
+  Set FileTitles = colFileTitles
+End Property
+ 
+Property Let Directory(sInitDir)
+  OFN.strInitialDir = sInitDir
+End Property
+ 
+Property Get Directory() As String
+  Directory = sPath
+End Property
+ 
+Property Let Extension(sDefExt As String)
+  OFN.strDefExt = LCase$(Left$( _
+    Replace(sDefExt, ".", vbNullString), 3))
+    
+End Property
+ 
+Property Get Extension() As String
+  Extension = sExtension
+End Property
+ 
+Function ShowOpen() As Boolean
+  ShowOpen = show(True)
+End Function
+ 
+Function ShowSave() As Boolean
+  ' Set or clear appropriate flags for Save As dialog.
+  SetFlag OFN_ALLOWMULTISELECT, False
+  SetFlag OFN_PATHMUSTEXIST, True
+  SetFlag OFN_OVERWRITEPROMPT, True
+  ShowSave = show(False)
+End Function
+ 
+Private Function show(bOpen As Boolean)
+  With OFN
+    .lStructSize = LenB(OFN)
+    ' Could be zero if no owner is required.
+    .hwndOwner = GetActiveWindow
+    ' If the RO checkbox must be checked, we should also
+    ' display it.
+    If .Flags And OFN_READONLY Then _
+      SetFlag OFN_HIDEREADONLY, False
+    ' Create large buffer if multiple file selection
+    ' is allowed.
+    .nMaxFile = IIf(.Flags And OFN_ALLOWMULTISELECT, _
+      MAX_BUFFER + 1, MAX_PATH + 1)
+    .nMaxFileTitle = MAX_PATH + 1
+    ' Initialize the buffers.
+
+    .strFile = .strFile & String$( _
+        .nMaxFile - 1 - Len(.strFile), 0)
+  
+     .strFileTitle = String$(.nMaxFileTitle - 1, 0)
+     
+     
+    ' Display the appropriate dialog.
+    If bOpen Then
+      show = GetOpenFileName(OFN)
+    Else
+      show = GetSaveFileName(OFN)
+    End If
+ 
+    If show Then
+      ' Remove trailing null characters.
+      Dim nDoubleNullPos
+      nDoubleNullPos = InStr(.strFile & vbNullChar, _
+                              String$(2, 0))
+      If nDoubleNullPos Then
+        ' Get the file name including the path name.
+        sFullName = Left$(.strFile, nDoubleNullPos - 1)
+        ' Get the file name without the path name.
+        sFileTitle = Left$(.strFileTitle, _
+          InStr(.strFileTitle, vbNullChar) - 1)
+        ' Get the path name.
+        sPath = Left$(sFullName, .nFileOffset - 1)
+        ' Get the extension.
+        If .nFileExtension Then
+          sExtension = Mid$(sFullName, .nFileExtension + 1)
+        End If
+        ' If sFileTitle is a string,
+        ' we have a single selection.
+        If Len(sFileTitle) Then
+          ' Add to the collections.
+          colFileTitles.Add _
+            Mid$(sFullName, .nFileOffset + 1)
+          colFileNames.Add sFullName
+        Else  ' Tear multiple selection apart.
+          Dim sTemp(), nCount
+          sTemp = Split(sFullName, vbNullChar)
+          ' If array contains no elements,
+          ' UBound returns -1.
+          If UBound(sTemp) > LBound(sTemp) Then
+            ' We have more than one array element!
+            ' Remove backslash if sPath is the root folder.
+            If Len(sPath) = 3 Then _
+              sPath = Left$(sPath, 2)
+            ' Loop through the array, and create the
+            ' collections; skip the first element
+            ' (containing the path name), so start the
+            ' counter at 1, not at 0.
+            For nCount = 1 To UBound(sTemp)
+              colFileTitles.Add sTemp(nCount)
+              ' If the string already contains a backslash,
+              ' the user must have selected a shortcut
+              ' file, so we don't add the path.
+              colFileNames.Add IIf(InStr(sTemp(nCount), _
+                sBackSlash), sTemp(nCount), _
+                sPath & sBackSlash & sTemp(nCount))
+            Next
+            ' Clear this variable.
+            sFullName = vbNullString
+          End If
+        End If
+        ' Add backslash if sPath is the root folder.
+        If Len(sPath) = 2 Then _
+          sPath = sPath & sBackSlash
+      End If
+    End If
+  End With
+End Function
+ 
+Private Sub SetFlag(nValue, bTrue As Boolean)
+  ' Wrapper routine to set or clear bit flags.
+  With OFN
+    If bTrue Then
+      .Flags = .Flags Or nValue
+    Else
+      .Flags = .Flags And Not nValue
+    End If
+  End With
+End Sub
+ 
+Private Sub Class_Initialize()
+  ' This routine runs when the object is created.
+  OFN.Flags = OFN.Flags Or OFN_EXPLORER Or _
+              OFN_LONGNAMES Or OFN_HIDEREADONLY
+End Sub
+
+
+
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit 'declaration variables is necessary
+Private Sub Workbook_Open()
+On Error GoTo Err_Workbook_Open
+  
+    Range("naam").Select 'set focus to textbox "naam"
+
+Exit_Workbook_Open:
+    Exit Sub
+
+Err_Workbook_Open:
+    MsgBox Err.Description & " - " & Err.Number, vbCritical, "ERROR in Workbook_Open"
+    Resume Exit_Workbook_Open
+
+End Sub
+Attribute VB_Name = "Weekstaat"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "cmbSend, 1, 0, MSForms, CommandButton"
+Attribute VB_Control = "cmdBereken, 15, 1, MSForms, CommandButton"
+Attribute VB_Control = "cmbWis, 44, 2, MSForms, CommandButton"
+Option Explicit 'declaration variables is necessary
+'***************************************************************************
+'* Description:   Code behind Weekstaat: validation protocol
+'* Author:        J. Kooman
+'* Version:       1.7
+'* Date:          15-10-2010
+'* aangepaste versie j.vas oktober 2014, v1
+'* 1) als men alleen reisuren invult > 8 dan geen melding (indien sumthuis = 0)
+'* 2) fix wel/niet dagvergoeding (bugfix in formule in veld E84)
+'* 3) controle maximaal 24uur per dag eruit
+'* 4) standaard wel/niet dagvergoeding op "niet"
+'* formule berekening dagvergoeding aangepast, 12 november 2014
+'***************************************************************************
+Private Sub cmbWis_Click()
+Dim teller2 As Integer
+
+    teller2 = 6 'eerste rij van eerste dag
+
+    Do While teller2 < 66 'loop alle dagen langs
+        Range("B" & (teller2) & ":I" & teller2 + 4).Select
+        Selection.ClearContents
+        teller2 = teller2 + 11 'ga naar volgende dag/weekend
+    Loop
+    Range("B71:I75").Select
+    Selection.ClearContents
+    Range("E13").Select
+    ActiveCell.Value = "Geen dagvergoeding"
+    Range("E24").Select
+    ActiveCell.Value = "Geen dagvergoeding"
+    Range("E35").Select
+    ActiveCell.Value = "Geen dagvergoeding"
+    Range("E46").Select
+    ActiveCell.Value = "Geen dagvergoeding"
+    Range("E57").Select
+    ActiveCell.Value = "Geen dagvergoeding"
+    Range("E67").Select
+    ActiveCell.Value = "Geen dagvergoeding"
+    Range("E77").Select
+    ActiveCell.Value = "Geen dagvergoeding"
+    Range("B6").Select
+    
+End Sub
+Private Sub cmdBereken_Click() 'calculate dates of the week
+Dim intWeek, intJaar As Integer 'values entered by the user
+    
+    intJaar = ActiveWorkbook.Names("jaar").RefersToRange
+    intWeek = ActiveWorkbook.Names("weeknummer").RefersToRange
+    
+    If IsEmpty(intJaar) Then 'validatie 1: jaar moet ingevuld zijn
+        MsgBox "Dit is een ongeldig jaar!", vbCritical, "Weekstaat niet correct ingevuld"
+        Range("jaar").Select
+        Exit Sub
+    End If
+    
+    If intJaar <= 0 Then 'validatie 2: jaar moet groter dan 0 zijn
+        MsgBox "Dit is een ongeldig jaar!", vbCritical, "Weekstaat niet correct ingevuld"
+        Range("jaar").Select
+        Exit Sub
+    End If
+    
+    If IsEmpty(intWeek) Then 'validatie 3: weeknummer moet ingevuld zijn
+        MsgBox "Dit is een ongeldig weeknummer!", vbCritical, "Weekstaat niet correct ingevuld"
+        Range("weeknummer").Select
+        Exit Sub
+    End If
+    
+    If intWeek <= 0 Then 'validatie 4: weeknummer moet groter dan 0 zijn
+        MsgBox "Dit is een ongeldig weeknummer!", vbCritical, "Weekstaat niet correct ingevuld"
+        Range("weeknummer").Select
+        Exit Sub
+    End If
+
+    Range("maandag_datum").Select 'selecteer de datum van maandag
+
+    Select Case intJaar
+        Case 2004:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 2, DateSerial(2004, 1, 5)) 'the date number of the monday in week 1
+        Case 2005:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2005, 1, 3))
+        Case 2006:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2006, 1, 2))
+        Case 2007:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2007, 1, 1))
+        Case 2008:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2008, 1, 0))
+        Case 2009:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2009, 1, -2))
+        Case 2010:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek, DateSerial(2010, 1, -3))
+        Case 2011:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2011, 1, 3))
+        Case 2012:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2012, 1, 2))
+        Case 2013:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2013, 1, 0))
+        Case 2014:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2014, 1, -1))
+        Case 2015:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2015, 1, -2))
+        Case 2016:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2016, 1, 4))
+        Case 2017:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2017, 1, 2))
+        Case 2018:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2018, 1, 1))
+            Case 2019:
+            ActiveCell.FormulaR1C1 = DateAdd("ww", intWeek - 1, DateSerial(2019, 1, 0))
+        Case Else:
+  
+    End Select
+
+End Sub
+Private Sub cmbSend_Click() 'user press 'Weekstaat versturen'-button
+On Error GoTo Err_cmbSend_Click
+'In this function many validation rules will be passed before the weekstaat will be saved and send
+
+If IsEmpty(Range("registratienummer")) Then
+    MsgBox "U moet uw registratienummer invullen!", vbCritical, "Weekstaat niet correct ingevuld!"
+    Range("registratienummer").Select
+    Exit Sub
+End If
+
+If Not Range("registratienummer") Like "####" Then
+    MsgBox "U heeft geen geldig registratienummer ingevuld!", vbCritical, "Weekstaat niet correct ingevuld!"
+    Range("registratienummer").Select
+    Exit Sub
+End If
+
+If IsEmpty(Range("jaar")) Then
+    MsgBox "U moet het jaar invullen!", vbCritical, "Weekstaat niet correct ingevuld!"
+    Range("jaar").Select
+    Exit Sub
+End If
+
+If IsEmpty(Range("weeknummer")) Then
+    MsgBox "U moet het weeknummer invullen!", vbCritical, "Weekstaat niet correct ingevuld!"
+    Range("weeknummer").Select
+    Exit Sub
+End If
+
+
+'**VALIDATION OF THE FORM:
+
+Dim rawdesc, trimmeddesc
+Dim teller1, teller2, result As Integer '2 tellers om alle rijen langs te gaan;
+'teller 2 voor de start van een dag (de eerste rij van een dag) en teller 1 voor de rij
+'binnen een dag
+'result om een tijdelijk resultaat in op te slaan
+
+    teller1 = 0 'nummer van de geselecteerde rij (begint bij 0)
+    teller2 = 6 'eerste rij van eerste dag
+
+'**Deze lus kijkt of er bij opgegeven buitenuren ook een (Metrix) ordernummer is ingevuld
+    Do While teller2 < 76 'loop alle dagen langs
+        Do While teller1 < 5 'loop hierbinnen alle rijen langs
+            If IsNumeric(Range("h" & (teller1 + teller2))) Then
+                If CInt(Range("h" & (teller1 + teller2))) <> 0 Then 'er zijn buitenuren ingevuld
+                    rawdesc = Range("b" & (teller1 + teller2))
+                    trimmeddesc = Replace(rawdesc, " ", "")
+                    If IsEmpty(Range("b" & (teller1 + teller2))) Or Len(trimmeddesc) = 0 Then  'maar geen ordernummer --> foutmelding
+                        MsgBox "U moet een Ordernummer invullen bij gewerkte buitenuren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                        Range("b" & (teller1 + teller2)).Select
+                        Exit Sub
+                    End If
+                End If
+            End If
+            teller1 = teller1 + 1 'ga naar volgende rij binnen dezelfde dag
+        Loop
+        teller1 = 0 'zet rijteller binnen een dag weer op 0
+        If teller2 = 61 Then
+            teller2 = teller2 + 10
+        Else
+            teller2 = teller2 + 11 'ga naar volgende dag/weekend
+        End If
+   Loop
+
+   teller1 = 0 'nummer van de geselecteerde rij (begint bij 0)
+   teller2 = 6 'eerste rij van eerste dag
+
+'**Deze lus kijkt of er bij opgegeven buitenuren ook beschrijving is ingevuld
+    Do While teller2 < 76 'loop alle dagen langs
+        Do While teller1 < 5 'loop hierbinnen alle rijen langs
+            If IsNumeric(Range("h" & (teller1 + teller2))) Then
+                If CInt(Range("h" & (teller1 + teller2))) <> 0 Then 'er zijn buitenuren ingevuld
+                    rawdesc = Range("d" & (teller1 + teller2))
+                    trimmeddesc = Replace(rawdesc, " ", "")
+                    
+                    If IsEmpty(Range("d" & (teller1 + teller2))) Or Len(trimmeddesc) = 0 Then 'maar geen beschrijving --> foutmelding
+                        MsgBox "U moet een Naam invullen van de klant bij gewerkte buitenuren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                        Range("d" & (teller1 + teller2)).Select
+                        Exit Sub
+                    End If
+                End If
+            End If
+            teller1 = teller1 + 1 'ga naar volgende rij binnen dezelfde dag
+        Loop
+        teller1 = 0 'zet rijteller binnen een dag weer op 0
+        If teller2 = 61 Then
+            teller2 = teller2 + 10
+        Else
+            teller2 = teller2 + 11 'ga naar volgende dag/weekend
+        End If
+   Loop
+    
+   teller1 = 0 'nummer van de geselecteerde rij (begint bij 0)
+   teller2 = 6 'eerste rij van eerste dag
+
+'**Deze lus kijkt of er bij opgegeven binnenuren ook beschrijving is ingevuld
+    Do While teller2 < 76 'loop alle dagen langs
+        Do While teller1 < 5 'loop hierbinnen alle rijen langs
+            If IsNumeric(Range("g" & (teller1 + teller2))) Then
+                If CInt(Range("g" & (teller1 + teller2))) <> 0 Then 'er zijn binnenuren ingevuld
+                    rawdesc = Range("d" & (teller1 + teller2))
+                    trimmeddesc = Replace(rawdesc, " ", "")
+
+                    If IsEmpty(Range("d" & (teller1 + teller2))) Or Len(trimmeddesc) = 0 Then 'maar geen beschrijving --> foutmelding
+                        MsgBox "U moet een Naam of omschrijving invullen bij gewerkte binnenuren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                        Range("d" & (teller1 + teller2)).Select
+                        Exit Sub
+                    End If
+                End If
+            End If
+            teller1 = teller1 + 1 'ga naar volgende rij binnen dezelfde dag
+        Loop
+        teller1 = 0 'zet rijteller binnen een dag weer op 0
+        If teller2 = 61 Then
+            teller2 = teller2 + 10
+        Else
+            teller2 = teller2 + 11 'ga naar volgende dag/weekend
+        End If
+   Loop
+
+'**Deze lus kijkt of er per dag niet meer dan 24 en niet minder dan 8 uur ingevuld is;
+    teller2 = 12
+     
+    Do While teller2 < 58 'loop alle weekdagen langs
+         If IsNumeric(Range("h" & teller2)) Then
+            If CInt(Range("h" & teller2)) > 24 Then
+                MsgBox "U kunt niet meer dan 24 uur per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("h" & teller2).Select
+                Exit Sub
+            End If
+            If CInt(Range("h" & teller2)) < 8 Then
+                MsgBox "U moet minstens 8 uur per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("h" & teller2).Select
+                Exit Sub
+            End If
+            ' max 16 24uurs uren...
+            If CInt(Range("i" & (teller2 - 1))) > 16 Then
+                MsgBox "U kunt niet meer dan 16 24-uurs uren per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("h" & teller2).Select
+                Exit Sub
+            End If
+            ' totaal gewerkte uren plus 24uurs uren niet > 24 ...
+            ' uitgezet in v1
+            'If CInt(Range("h" & teller2)) + CInt(Range("i" & (teller2 - 1))) > 24 Then
+            '    MsgBox "U kunt totaal niet meer dan 24 uur per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+            '    Range("h" & teller2).Select
+            '    Exit Sub
+            'End If
+            
+         End If
+        teller2 = teller2 + 11 'ga naar volgende dag/weekend
+    Loop
+    
+    'check of er op zaterdag niet meer dan 24 uur ingevuld zijn
+    If IsNumeric(Range("h" & teller2)) Then
+        If CInt(Range("h" & teller2)) > 24 Then
+            MsgBox "U kunt niet meer dan 24 uur per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+            Range("h" & teller2).Select
+            Exit Sub
+        End If
+        ' maximaal 24 24uurs uren...
+        If CInt(Range("i" & (teller2 - 1))) > 24 Then
+            MsgBox "U kunt niet meer dan 24 24-uurs uren per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+            Range("h" & teller2).Select
+            Exit Sub
+        End If
+        ' totaal gewerkte uren plus 24uurs uren niet > 24 ...
+        'If CInt(Range("h" & teller2)) + CInt(Range("i" & (teller2 - 1))) > 24 Then
+        '    MsgBox "U kunt totaal niet meer dan 24 uur per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+        '    Range("h" & teller2).Select
+        '    Exit Sub
+        'End If
+    End If
+    teller2 = teller2 + 10
+    
+    'check of er op zondag niet meer dan 24 uur ingevuld zijn
+    If IsNumeric(Range("h" & teller2)) Then
+        If CInt(Range("h" & teller2)) > 24 Then
+            MsgBox "U kunt niet meer dan 24 uur per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+            Range("h" & teller2).Select
+            Exit Sub
+        End If
+        ' max 24 24uurs uren...
+        If CInt(Range("i" & (teller2 - 1))) > 24 Then
+            MsgBox "U kunt niet meer dan 24 24-uurs uren per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+            Range("h" & teller2).Select
+            Exit Sub
+        End If
+        ' totaal gewerkte uren plus 24uurs uren niet > 24 ...
+        'If CInt(Range("h" & teller2)) + CInt(Range("i" & (teller2 - 1))) > 24 Then
+        '    MsgBox "U kunt totaal niet meer dan 24 uur per dag declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+        '    Range("h" & teller2).Select
+        '    Exit Sub
+        'End If
+    End If
+
+
+
+'**Deze lus kijkt of er per werkdag
+'       - niet minder dan 0 Snipper/ADV-uren worden ingevuld
+'       - niet minder dan 0 TvT-uren worden gedeclareerd
+'       - geen Snipper/ADV-uren worden ingevuld terwijl er al minstens 8 uur 'normaal' gewerkt is
+'       - geen opgenomen TvT-uren worden ingevuld terwijl er al minstens 8 uur 'normaal' gewerkt is
+
+   teller2 = 11
+    
+   Do While teller2 < 58
+        If IsNumeric(Range("d" & teller2)) Then
+            If CInt(Range("d" & teller2)) < 0 Then
+                MsgBox "U kunt geen negatieve Snipper/ADV uren declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("d" & teller2).Select
+                Exit Sub
+            End If
+        End If
+        If IsNumeric(Range("d" & teller2 + 1)) Then
+            If CInt(Range("d" & teller2 + 1)) < 0 Then
+                MsgBox "U kunt geen negatieve TvT-uren declareren!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("d" & teller2 + 1).Select
+                Exit Sub
+            End If
+        End If
+        If IsNumeric(Range("h" & teller2 + 1) And IsNumeric(Range("d" & teller2))) Then
+            If CInt(Range("h" & teller2 + 1)) > 8 And CInt(Range("d" & teller2)) > 0 Then
+                MsgBox "U kunt geen Snipper/ADV-uren opnemen omdat er al minstens 8 uren zijn gedeclareerd!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("d" & teller2).Select
+                Exit Sub
+            End If
+        End If
+        If IsNumeric(Range("h" & teller2 + 1)) And IsNumeric(Range("d" & teller2 + 1)) Then
+            If CInt(Range("h" & teller2 + 1)) > 8 And CInt(Range("d" & teller2 + 1)) > 0 Then
+                MsgBox "U kunt geen TvT-uren opnemen omdat er al minstens 8 uren zijn gedeclareerd!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("d" & teller2 + 1).Select
+                Exit Sub
+            End If
+        End If
+        teller2 = teller2 + 11 'ga naar volgende Snipper/ADV hokje van volgende dag/weekend
+   Loop
+
+'**Deze lus kijkt of er per dag geen TvT-uren gespaard worden die helemaal niet gemaakt zijn (anders
+'gezegd: er moeten meer dan 8 uren per dag worden gemaakt om TvT-uren te kunnen sparen
+   teller2 = 13
+   
+   Do While teller2 < 58
+        If IsNumeric(Range("h" & teller2)) And IsNumeric(Range("d" & teller2)) Then
+            If CInt(Range("h" & teller2)) < 0 And CInt(Range("d" & teller2)) > 0 Then
+                result = CInt(Range("d" & teller2)) + CInt(Range("h" & teller2)) 'bereken hoeveel overuren als TvT-uren gedeclareerd mogen worden
+                If result < 1 Then
+                    MsgBox "U kunt op deze dag geen TvT-uren sparen!", vbCritical, "Weekstaat niet correct ingevuld!"
+                ElseIf result = 1 Then
+                    MsgBox "U kunt op deze dag maximaal 1 TvT-uur sparen!", vbCritical, "Weekstaat niet correct ingevuld!"
+                Else
+                    MsgBox "U kunt op deze dag maximaal " & CStr(result) & " TvT-uren sparen!", vbCritical, "Weekstaat niet correct ingevuld!"
+                End If
+                Range("d" & teller2).Select
+                Exit Sub
+            End If
+        End If
+        teller2 = teller2 + 11
+   Loop
+
+'**Deze lus kijkt of er bij nul reis/binnen/buitenuren maximaal 8 reis/thuiswerk/trainguren worden geschreven... j.vas augustus 2014
+   teller2 = 6
+   Dim sumtravel As Double
+   Dim sumwork As Double
+   Dim sumthuis As Double
+   Do While teller2 < 76 'loop alle dagen langs
+        sumtravel = 0
+        sumthuis = 0
+        sumwork = 0
+        Do While teller1 < 5 'loop hierbinnen alle rijen langs
+            Dim ReisUren, BinnenUren, BuitenUren As Double
+            ReisUren = 0: BinnenUren = 0: BuitenUren = 0
+            
+            If IsNumeric(Range("F" & (teller1 + teller2))) Then ReisUren = CDbl(Range("F" & (teller1 + teller2)))
+            If IsNumeric(Range("G" & (teller1 + teller2))) Then BinnenUren = CDbl(Range("G" & (teller1 + teller2)))
+            If IsNumeric(Range("H" & (teller1 + teller2))) Then BuitenUren = CDbl(Range("H" & (teller1 + teller2)))
+            sumtravel = sumtravel + ReisUren
+            sumwork = sumwork + BinnenUren + BuitenUren
+            If IsNumeric(Range("J" & (teller1 + teller2))) Then
+                sumthuis = sumthuis + CDbl(Range("J" & (teller1 + teller2)))
+            End If
+            If (sumthuis + sumtravel) > 8 And sumwork = 0 And sumthuis <> 0 Then  'mag max 8 uren thuiswerk/training schrijven...
+                MsgBox "Maximaal 8 uren reis/thuiswerk/training toegestaan", vbCritical, "Weekstaat niet correct ingevuld!"
+                Range("J" & (teller1 + teller2)).Select
+                Exit Sub
+            End If
+            teller1 = teller1 + 1 'ga naar volgende rij binnen dezelfde dag
+        Loop
+        
+        teller1 = 0 'zet rijteller binnen een dag weer op 0
+        If teller2 = 61 Then
+            teller2 = teller2 + 10
+        Else
+            teller2 = teller2 + 11 'ga naar volgende dag/weekend
+        End If
+   Loop
+        
+
+
+Dim CDLG As New ComDlg 'declaration Common Dialog-object
+  
+  With CDLG
+    .AllowMultiSelect = False    'multiple file selection is not allowed
+    .CheckBoxVisible = False     'Read-only checkbox is not visible
+    .DialogTitle = "Locaal opslaan weekstaat voordat weekstaat wordt verzonden"  'Title of the Common Dialog
+    .Directory = "C:\"           'initial path of the box
+    .Extension = ".xls"          'default extension for new files
+    .FileName = "Weekstaat-" & Range("registratienummer") & "-" & Range("jaar") & "-" & Range("weeknummer") 'default value of the name-textbox
+    .Filter = "Excel weekstaat (*.xls)|*.xls" 'only excel weekstaten accepted
+    .RestoreCurDir = True        'go always back to current directory
+    
+    If .ShowSave Then
+        If ThisWorkbook.Name = .FileTitle Then 'if the weekstaat has the same name as the new name, only save
+            ThisWorkbook.Save
+        Else
+            ThisWorkbook.SaveAs FileName:=.FileName, ReadOnlyRecommended:=False 'else save the weekstaat under new name
+        End If
+    Else
+        Exit Sub
+    End If
+  End With
+  Set CDLG = Nothing
+
+'**Indien geen fouten meer op formulier --> sla formulier op
+   Call Send
+   
+Exit_cmbSend_Click:
+    Exit Sub
+
+Err_cmbSend_Click:
+    MsgBox Err.Description & " - " & Err.Number, vbCritical, "ERROR in cmbSend_Click"
+    Resume Exit_cmbSend_Click
+
+End Sub
+Private Sub Send() 'Send button pressed
+On Error GoTo Err_Send
+Dim appOutlook As New Outlook.Application   'Outlook application for e-mail
+Dim objMail As Outlook.MailItem             'mailitem with message
+
+    Set appOutlook = CreateObject("Outlook.Application")  'start Outlook application
+    Set objMail = appOutlook.CreateItem(olMailItem) 'set objMail as connection to a new created e-mail message
+
+    objMail.To = "weekstaat@delftdi.com"
+    objMail.Subject = ThisWorkbook.Name 'fill subject area
+    objMail.HTMLBody = "<B>HIER GEEN TEKST TYPEN! <P>Deze mail wordt automatisch verwerkt<P>Hier getypte tekst wordt niet gelezen!</B>" 'fill the body with little text
+    objMail.Attachments.Add ThisWorkbook.FullName 'add current document to the mail as attachement
+    objMail.Display 'show e-mail message
+
+Exit_Send:
+    Exit Sub
+
+Err_Send:
+    MsgBox Err.Description & " - " & Err.Number, vbCritical, "ERROR in Send"
+    Resume Exit_Send
+
+End Sub
+
+
+
+
+INQUEST-PP=macro

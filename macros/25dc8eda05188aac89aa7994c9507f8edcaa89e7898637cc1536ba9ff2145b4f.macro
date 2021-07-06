@@ -1,0 +1,4447 @@
+Attribute VB_Name = "AppEventHandler"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2012 Mendeley Ltd.
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+' (No code from Zotero in this source file)
+
+' author: steve.ridout@mendeley.com
+
+Option Explicit
+
+' Note about events on Windows and Mac:
+'
+' The set of events which VBA code can listen for is much smaller in Word for Mac 2011 than
+' Word for Windows 2003-2010.
+'
+Public WithEvents App As Word.Application
+Attribute App.VB_VarHelpID = -1
+
+' Listen for selection changes and update the state of the 'Insert Citation' button.
+' This event is not available on Mac.
+Private Sub App_WindowSelectionChange(ByVal Sel As Selection)
+    ' Don't do anything if we're in the middle of an operation
+    If uiDisabled Or Not initialised Or unitTest Then
+        Exit Sub
+    End If
+    
+    On Error GoTo ErrorHandler
+
+#If Win32 Then
+    If USE_RIBBON Then
+        Call recoverRibbonUi
+    End If
+#End If
+    
+    Dim selectedFields() As Object
+    Call getFieldsAtSelection(2, selectedFields)
+
+    Dim currentField As field
+    If selectedFields(1) Is Nothing Then
+        Set currentField = Nothing
+    Else
+        Set currentField = selectedFields(1)
+    End If
+    
+    Dim undoEditButton As CommandBarButton
+    Set undoEditButton = getUndoEditButton()
+    
+    Dim insertCitationButton As CommandBarButton
+    Set insertCitationButton = getInsertCitationButton()
+    
+    If Not previouslySelectedField Is Nothing Then
+        If currentField Is Nothing Then
+            Call checkForCitationEdit
+        Else
+            On Error GoTo ResetPreviouslySelected
+            If Not previouslySelectedField.index = currentField.index Then Call checkForCitationEdit
+            If DEBUG_MODE Then
+                On Error GoTo 0
+            Else
+                On Error GoTo ErrorHandler
+            End If
+            If False Then
+ResetPreviouslySelected:
+                Set previouslySelectedField = Nothing
+            End If
+        End If
+    End If
+
+    Dim prevRibbonCitationButtonState As String
+    prevRibbonCitationButtonState = ribbonCitationButtonState
+    
+    If Not selectedFields(2) Is Nothing Then
+        ribbonCitationButtonState = RIBBON_MERGE_CITATIONS
+    ElseIf Not currentField Is Nothing Then
+        Dim position As Long
+        Dim markName As String
+        markName = getMarkName(currentField)
+        position = InStr(markName, CSL_CITATION)
+        
+        If position > 0 Then
+        
+            insertCitationButton.Caption = TOOLBAR_EDIT_CITATION
+            insertCitationButton.TooltipText = prepareShortcutMessage(TOOLTIP_EDIT_CITATION)
+            ribbonCitationButtonState = RIBBON_EDIT_CITATION
+                    
+            If mendeleyApiClient().hasManualEdit(markName) Then
+                ribbonCitationButtonState = RIBBON_UNDO_CITATION
+            End If
+        
+        ElseIf isMendeleyBibliographyField(currentField.code.Text) Or _
+            startsWith(currentField.code.Text, MENDELEY_CITATION) Then
+            insertCitationButton.Caption = TOOLBAR_EDIT_CITATION
+            insertCitationButton.TooltipText = prepareShortcutMessage(TOOLTIP_EDIT_CITATION)
+            ribbonCitationButtonState = RIBBON_EDIT_CITATION
+        ElseIf startsWith(currentField.code.Text, MENDELEY_EDITED_CITATION) Then
+            ribbonCitationButtonState = RIBBON_UNDO_CITATION
+        Else
+            insertCitationButton.Caption = TOOLBAR_INSERT_CITATION
+            insertCitationButton.TooltipText = TOOLTIP_INSERT_CITATION
+            ribbonCitationButtonState = RIBBON_INSERT_CITATION
+        End If
+    Else
+        insertCitationButton.Caption = TOOLBAR_INSERT_CITATION
+        insertCitationButton.TooltipText = TOOLTIP_INSERT_CITATION
+        ribbonCitationButtonState = RIBBON_INSERT_CITATION
+    End If
+    
+    If undoEditButton.Visible <> (ribbonCitationButtonState = RIBBON_UNDO_CITATION) Then
+        undoEditButton.Visible = (ribbonCitationButtonState = RIBBON_UNDO_CITATION)
+    End If
+    
+#If Win32 Then
+    If USE_RIBBON And (prevRibbonCitationButtonState <> ribbonCitationButtonState) Then
+        ribbonUi.Invalidate
+    End If
+#End If
+
+    If currentField Is Nothing Then
+        previouslySelectedFieldResultText = ""
+        Set previouslySelectedField = Nothing
+    Else
+        If Not previouslySelectedField Is Nothing Then
+            If Not (currentField.index = previouslySelectedField.index) Then
+                Call updatePrevious
+            End If
+        Else
+            Call updatePrevious
+        End If
+    End If
+    
+    GoTo EndOfSub
+ErrorHandler:
+    ' Can't call reportError here since unfortunately we expect to get errors while the user
+    ' is using the Word spell-checker
+EndOfSub:
+
+    ' stop word trying to save changes to this template
+    ThisDocument.Saved = True
+End Sub
+
+Sub updatePrevious()
+    Dim updatePrevious As Boolean
+                
+    Dim currentField As field
+    Set currentField = getFieldAtSelection()
+    
+    If previouslySelectedField Is Nothing Then
+        updatePrevious = True
+    ElseIf previouslySelectedField.index = currentField.index Then updatePrevious = True
+    End If
+    
+    If updatePrevious Then
+        previouslySelectedFieldResultText = currentField.result.Text
+        Set previouslySelectedField = currentField
+    End If
+End Sub
+
+' Refresh documents containing Mendeley citation styles on open.
+' This event is not available on Mac
+Private Sub App_DocumentOpen(ByVal Doc As Document)
+    If uiDisabled Then
+        Exit Sub
+    End If
+    If Not DEBUG_MODE Then
+        On Error GoTo EndOfSub
+    End If
+    uiDisabled = True
+
+    Call refreshDocument(True)
+    
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+
+
+
+Attribute VB_Name = "FrameExitHandler"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub Class_Terminate()
+    Call Debug_ExitFunc
+End Sub
+Attribute VB_Name = "Mendeley"
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2013 Mendeley Ltd.
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+' author: steve.ridout@mendeley.com
+
+Option Explicit
+
+' The API connection point
+Private theApiClient As Object
+
+' These need to be Global as they are accessed from AppEventHandler
+Global previouslySelectedField As field
+Global previouslySelectedFieldResultText As String
+
+Global Const DEBUG_MODE = False
+
+Global Const TEMPLATE_NAME_DURING_BUILD = "MendeleyPlugin"
+
+Global Const MENDELEY_DOCUMENT = "Mendeley Document"
+Global Const MENDELEY_USER_ACCOUNT = "Mendeley User Name"
+Global Const MENDELEY_CITATION = "Mendeley Citation"
+Global Const MENDELEY_CITATION_EDITOR = "Mendeley Citation Editor"
+Global Const MENDELEY_CITATION_MAC = " PRINTDATE Mendeley Citation"
+Global Const MENDELEY_EDITED_CITATION = "Mendeley Edited Citation"
+Global Const MENDELEY_BIBLIOGRAPHY = "Mendeley Bibliography"
+Global Const MENDELEY_BIBLIOGRAPHY_MAC = " PRINTDATE Mendeley Bibliography"
+Global Const MENDELEY_CITATION_STYLE = "Mendeley Citation Style"
+Global Const DEFAULT_CITATION_STYLE = "http://www.zotero.org/styles/apa"
+Global Const DEFAULT_CITATION_STYLE_NAME = "American Psychological Association"
+Global Const SELECT_ME_FETCH_STYLES = "Select me to fetch the styles"
+
+Global Const CSL_CITATION = "CSL_CITATION "
+Global Const CSL_BIBLIOGRAPHY = "CSL_BIBLIOGRAPHY"
+Global Const CSL_BIBLIOGRAPHY_OLD = "CSL_BIBLIOGRAPHY "
+Global Const INSERT_CITATION_TEXT = "{Formatting Citation}"
+Global Const CITATION_EDIT_TEXT = ""
+Global Const BIBLIOGRAPHY_TEXT = "{Bibliography}"
+Global Const MERGING_TEXT = "{Merging Citations}"
+Global Const TOOLBAR = "Mendeley Toolbar"
+Global Const TOOLBAR_CITATION_STYLE = "Citation Style"
+
+Global Const TOOLBAR_INSERT_CITATION = "Insert Citation"
+Global Const TOOLBAR_EDIT_CITATION = "Edit Citation"
+' On Mac, the button is labeled 'Insert or Edit Citation' instead of changing state
+' depending on whether a Mendeley citation is selected in the document
+Global Const TOOLBAR_INSERT_OR_EDIT_CITATION = "Insert or Edit Citation"
+
+Global Const TOOLBAR_MERGE_CITATIONS = "Merge Citations"
+Global Const TOOLBAR_INSERT_BIBLIOGRAPHY = "Insert Bibliography"
+Global Const TOOLBAR_REFRESH = "Refresh"
+Global Const TOOLBAR_EXPORT = "Export..."
+Global Const TOOLBAR_UNDO_EDIT = "Undo Edit"
+Global Const MERGE_CITATIONS_NOT_ENOUGH_CITATIONS = "Please select at least two citations to merge."
+Global Const CITATIONS_NOT_ADJACENT = "Citations must be adjacent to merge."
+Global Const CITATION_ADJECENT_LIMIT = 4
+Global Const MACRO_ALREADY_RUNNING = "Waiting For Response From Mendeley Desktop"
+Global Const RECENT_STYLE_NAME = "Mendeley Recent Style Name"
+Global Const RECENT_STYLE_ID = "Mendeley Recent Style Id"
+Global Const SHORTCUT = "%SHORTCUT%"
+
+#If Win32 Then
+Global Const TOOLTIP_INSERT_CITATION = "Insert a new citation (%SHORTCUT%)"
+Global Const TOOLTIP_EDIT_CITATION = "Edit the selected citation (%SHORTCUT%)"
+#Else
+Global Const TOOLTIP_INSERT_CITATION = "Insert a new citation or edit the selected citation (%SHORTCUT%)"
+Global Const TOOLTIP_EDIT_CITATION = TOOLTIP_INSERT_CITATION
+#End If
+
+Global Const TOOLTIP_UNDO_EDIT = "Undo custom edit of the selected citation"
+Global Const TOOLTIP_MERGE_CITATIONS = "Merge the selected citations into one"
+Global Const TOOLTIP_INSERT_BIBLIOGRAPHY = "Insert a bibliography"
+Global Const TOOLTIP_REFRESH = "Refresh citations and bibliographies"
+Global Const TOOLTIP_CITATION_STYLE = "Select a citation style"
+Global Const TOOLTIP_EXPORT_OPENOFFICE = "Export a copy of the document compatible with OpenOffice"
+Global Const TOOLTIP_EXPORT = "Export the document with different options"
+
+Global Const CONNECTION_CONNECTED = 0
+Global Const CONNECTION_VERSION_MISMATCH = 1
+Global Const CONNECTION_MENDELEY_DESKTOP_NOT_FOUND = 2
+Global Const CONNECTION_NOT_A_MENDELEY_DOCUMENT = 3
+
+' The following dictate the maximum length of the strings to store in each of these data types
+Global Const MAX_PROPERTY_LENGTH = 255
+Global Const BOOKMARK_ID_STRING_LENGTH = 10
+Global Const ZOTERO_BOOKMARK_REFERENCE_PROPERTY = "Mendeley_Bookmark"
+
+'The following constants describe a location in a document
+Global Const ZOTERO_ERROR = 0 'Frame, comments, header, footer
+Global Const ZOTERO_MAIN = 1 'Main document including things like tables (wdMainTextStory)
+Global Const ZOTERO_FOOTNOTE = 2 'Footnote (wdFootnotesStory)
+Global Const ZOTERO_ENDNOTE = 3 'Endnote (wdEndnotesStory)
+Global Const ZOTERO_TABLE = 4 ' Inside a Table
+
+Global Const MSGBOX_RESULT_YES = 6
+Global Const MSGBOX_BUTTONS_YES_NO = 4
+
+' Event handlers for app, document and Mendeley toolbar events
+Global theAppEventHandler As New AppEventHandler
+#If Win32 Then
+Global theStyleComboBoxEventHandler As New StyleComboBoxEventHandler
+#End If
+
+Global StyleListModel As New StyleListModel
+
+Global initialised As Boolean
+
+' to prevent user from performing actions while we're still in the middle of another one
+Global uiDisabled As Boolean
+Global awaitingResponseFromMD As Boolean
+Global ZoteroUseBookmarks As Boolean
+
+Global seedGenerated As Boolean
+
+Global unitTest As Boolean
+
+' initialise on word startup and on new / open document
+Public Sub AutoExec()
+    If Not USE_RIBBON Then
+        Call initialise
+    End If
+End Sub
+Public Sub AutoNew()
+    Call initialise
+End Sub
+Public Sub AutoOpen()
+    If buildingPlugin() Then
+        Exit Sub
+    End If
+    
+    Call initialise
+End Sub
+
+Private Sub winInitMendeleyPlugin()
+        Dim PLUGIN_CLASS_NAME As String
+        PLUGIN_CLASS_NAME = "MendeleyWordPlugin.PluginComServer.1"
+        
+        On Error GoTo StartApiClient
+        Set theApiClient = GetObject(, PLUGIN_CLASS_NAME)
+        
+StartApiClient:
+        If theApiClient Is Nothing Then
+            Set theApiClient = CreateObject(PLUGIN_CLASS_NAME)
+        End If
+End Sub
+
+' Returns the COM server used for communication with Mendeley Desktop.
+' The COM server is started on-demand the first time that this function is called.
+' Except when loading a document that already has Mendeley citations, this should
+' not be called until the user interacts with the 'Mendeley Cite-O-Matic' toolbar/ribbon.
+Public Function mendeleyApiClient() As Object
+    If theApiClient Is Nothing Then
+#If Win32 Then
+        Call winInitMendeleyPlugin
+#Else
+        Set theApiClient = New MacMendeleyClient
+#End If
+    End If
+    Set mendeleyApiClient = theApiClient
+End Function
+Public Sub initialise()
+    uiDisabled = True
+    ThisDocument.Saved = True
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+
+    setupShortcut
+    
+    ' Listen for document selection change and open events in order
+    ' to update the Mendeley toolbar when the user selects citations.
+    ' This is not used on Mac.
+    Set theAppEventHandler.App = Word.Application
+    
+    ' Update the citation styles box.  We avoid fetching the list
+    ' of citation styles here to avoid blocking Word startup whilst
+    ' loading the plugin's COM server and trying to contact Mendeley Desktop
+    
+    ' Possible race condition here
+    If initialised Then
+        Call updateCitationStylesComboBox(fetchStyles:=False)
+        ThisDocument.Saved = True
+        GoTo EndOfSub
+    End If
+    initialised = True
+
+    ' Set up citation styles combo box.  We do not populate the style list right
+    ' away to avoid starting Mendeley and blocking Word when the add-in is loaded.
+    Call updateCitationStylesComboBox(fetchStyles:=False)
+    
+    Call addTooltipsToButtons
+
+    ' Hide the 'Undo Edit' button which undoes manual changes to a citation.
+    ' This is shown when the user selects an edited citation.
+    '
+    ' On Mac, we don't get a notification when the current selection changes,
+    ' so the button is always shown.
+#If Win32 Then
+    getUndoEditButton().Visible = False
+#Else
+    getUndoEditButton().Visible = True
+    getInsertCitationButton().Caption = TOOLBAR_INSERT_OR_EDIT_CITATION
+#End If
+
+    ' stop word trying to save changes to this template
+    ThisDocument.Saved = True
+    
+    GoTo EndOfSub
+    
+ErrorHandler:
+    Call reportError
+    
+EndOfSub:
+    ' enable the mendeley plugin ui
+    uiDisabled = False
+End Sub
+
+
+' ----- Top level functions - those directly triggered by user actions -----
+
+Sub privateInsertCitation(Optional hintText As String, Optional documentUuid As String)
+    Dim currentMark As field
+    
+    Dim bringToForeground As Boolean
+    bringToForeground = False
+    
+    Dim citeField As field
+
+    Set currentMark = getFieldAtSelection()
+
+    Dim markName As String
+    Dim undoActionText As String
+    undoActionText = "Insert Mendeley Citation"
+    
+    If Not (currentMark Is Nothing) And Not IsEmpty(currentMark) Then
+        Dim fieldType As String
+    
+        markName = getMarkName(currentMark)
+        
+        If isMendeleyCitationField(markName) Then
+            undoActionText = "Edit Mendeley Citation"
+        ElseIf isMendeleyBibliographyField(markName) Then
+            MsgBox "Bibliographies are generated automatically and cannot be manually edited"
+            GoTo EndOfSub
+        Else
+            MsgBox "This is not an editable citation."
+            GoTo EndOfSub
+        End If
+    End If
+    
+    Call setMendeleyDocument(True)
+      
+    Dim connectionStatus As Long
+    connectionStatus = launchMendeleyIfNecessary()
+    If connectionStatus = CONNECTION_MENDELEY_DESKTOP_NOT_FOUND Then
+        reportError "Unable to start Mendeley Desktop automatically: " & mendeleyApiClient().lastError() & vbCrLf & vbCrLf & "Try starting Mendeley Desktop manually."
+        GoTo EndOfSub
+    End If
+    
+    Call sendWordProcessorVersion
+    
+    Dim useCitationEditor As Boolean
+    useCitationEditor = True
+    
+    ZoteroUseBookmarks = False
+
+    Dim selectedRange As range
+    Set selectedRange = fnSelection()
+    If (selectedRange Is Nothing) Then Return
+    
+    Dim citationText As String
+    If useCitationEditor Then
+        citationText = CITATION_EDIT_TEXT
+        Set citeField = getFieldAtSelection()
+    Else
+        citationText = MENDELEY_CITATION
+    End If
+    
+    If (citeField Is Nothing) Or IsEmpty(citeField) Then
+        If selectedRange.Characters.count > 15 Then
+            Dim result
+            result = MsgBox("Are you sure you want to replace the following with a citation:" & _
+                vbCrLf & vbCrLf & selectedRange.Text, MSGBOX_BUTTONS_YES_NO, "Insert Citation?")
+            
+            If result <> MSGBOX_RESULT_YES Then
+                GoTo EndOfSub
+            End If
+        End If
+    End If
+        
+    If connectionStatus = CONNECTION_CONNECTED Then
+        If Not isDocumentLinkedToCurrentUser Then
+            GoTo EndOfSub
+        End If
+    
+        Dim buttonText As String
+        buttonText = "Send Citation\nto Word;Cancel\nCitation"
+        
+        awaitingResponseFromMD = True
+        
+        ' TODO Pass hint
+        Call allowMendeleyToSetForeground
+        
+        Dim fieldCode As String
+        If documentUuid <> "" Then
+            fieldCode = mendeleyApiClient().getFieldCodeFromUuid(documentUuid)
+        Else
+            fieldCode = showCitationEditor(markName)
+        End If
+        
+        awaitingResponseFromMD = False
+        
+        bringToForeground = True
+        Call bringWordToForeground
+     
+        ' check for null result:
+        If (Len(fieldCode) = 0) Or ((Len(fieldCode) = 1) And (fieldCode = "")) Then
+            ' MsgBox "No Citation Received from Mendeley"
+            GoTo EndOfSub
+        End If
+        
+        ' check if another instance of Word is awaiting a response from Mendeley
+        If fieldCode = "<CURRENTLY-PROCESSING-REQUEST>" Then
+            MsgBox "You can only make one citation at a time, " + _
+                "please choose the documents for your initial citation in Mendeley Desktop first"
+            GoTo EndOfSub
+        End If
+        
+        Call beginUndoTransaction(undoActionText)
+        
+        If (currentMark Is Nothing) Or IsEmpty(currentMark) Then
+            Set citeField = fnAddMark(selectedRange, citationText)
+        Else
+            Set citeField = currentMark
+        End If
+           
+        'citeField.result.Text = INSERT_CITATION_TEXT
+        citeField.code.Text = fieldCode
+        Call refreshDocument(False)
+        
+        Call endUndoTransaction
+    End If
+    
+    GoTo EndOfSub
+    
+ErrorHandler:
+    Call reportError
+    
+EndOfSub:
+    If Not (citeField Is Nothing) And IsObjectValid(citeField) Then
+        If getMarkText(citeField) = INSERT_CITATION_TEXT Or _
+            getMarkText(citeField) = CITATION_EDIT_TEXT Then
+                citeField.Delete
+        End If
+    End If
+    
+    If bringToForeground Then
+        Call bringWordToForeground
+    End If
+End Sub
+
+Sub insertBibliography()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    ZoteroUseBookmarks = False
+    
+    If Not getFieldAtSelection() Is Nothing Then
+        MsgBox "A bibliography cannot be inserted within another citation or bibliography."
+        GoTo EndOfSub
+    End If
+    
+    Call setMendeleyDocument(True)
+    
+    If Not (launchMendeleyIfNecessary() = CONNECTION_CONNECTED) Then
+        GoTo EndOfSub
+    End If
+    
+    If Not isDocumentLinkedToCurrentUser Then
+        GoTo EndOfSub
+    End If
+    
+    Call beginUndoTransaction("Insert Mendeley Bibliography")
+    
+    Dim thisField 'As Field
+    Set thisField = fnAddMark(fnSelection(), "ADDIN " & MENDELEY_BIBLIOGRAPHY & " " & CSL_BIBLIOGRAPHY_OLD)
+    Call refreshDocument
+    
+    Call endUndoTransaction
+    
+    GoTo EndOfSub
+    
+ErrorHandler:
+    Call reportError
+    
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub undoEdit()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Const NOT_IN_EDITABLE_CITATION_TITLE = "Undo Citation Edit"
+    Const NOT_IN_EDITABLE_CITATION_TEXT = "Place cursor within an edited citation and press this button to undo the edit"
+    
+    Dim currentMark As field
+    
+    If Not IsEmpty(getFieldAtSelection()) Then
+        Set currentMark = getFieldAtSelection()
+    End If
+    
+    If currentMark Is Nothing Or IsEmpty(currentMark) Then
+        MsgBox NOT_IN_EDITABLE_CITATION_TEXT, 1, NOT_IN_EDITABLE_CITATION_TITLE
+        GoTo EndOfSub
+    End If
+    
+    If Not isDocumentLinkedToCurrentUser Then
+        GoTo EndOfSub
+    End If
+    
+    Dim markName As String
+    markName = getMarkName(currentMark)
+        
+    Dim newMarkName As String
+    newMarkName = mendeleyApiClient().undoManualFormat(markName)
+    
+    Call fnRenameMark(currentMark, newMarkName)
+    Call subSetMarkText(currentMark, INSERT_CITATION_TEXT)
+    
+    ' On Windows, hide the 'Undo Edit' button once the manual edit has
+    ' been reverted.  On Mac leave this button visible as the toolbar
+    ' is static and does not update as the user changes the current selection.
+#If Win32 Then
+    getUndoEditButton().Visible = False
+#End If
+    
+    #If Win32 Then
+    If USE_RIBBON Then
+        Call recoverRibbonUi
+        ribbonCitationButtonState = RIBBON_INSERT_CITATION
+        Call ribbonUi.Invalidate
+    End If
+    #End If
+    
+    Call refreshDocument
+    GoTo EndOfSub
+    
+ErrorHandler:
+   Call reportError
+    
+EndOfSub:
+   uiDisabled = False
+End Sub
+
+Sub refresh()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+
+    Call beginUndoTransaction("Refresh Mendeley Citations and Bibliography")
+    Call refreshDocument
+    Call endUndoTransaction
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub chooseCitationStyle()
+    If isUiDisabled() Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Dim chosenStyle As String
+    
+    Call setMendeleyDocument(True)
+        
+    Call beginUndoTransaction("Change Citation Style")
+    
+    If launchMendeleyIfNecessary() = CONNECTION_CONNECTED Then
+        chosenStyle = mendeleyApiClient().getCitationStyleFromDialog(getCitationStyleId())
+        Call setCitationStyle(chosenStyle)
+        Call refreshDocument
+    End If
+    Call refreshDocument
+    
+    Call endUndoTransaction
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+' Called from "More styles..." in the combobox
+Sub OpenCitationsFromMendeley()
+    If isUiDisabled() Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Dim chosenStyle As String
+    
+    Call setMendeleyDocument(True)
+        
+    If launchMendeleyIfNecessary() = CONNECTION_CONNECTED Then
+        
+        Call allowMendeleyToSetForeground
+        chosenStyle = mendeleyApiClient().getCitationStyleFromDialog(getCitationStyleId())
+        Call bringWordToForeground
+        Call updateCitationStylesComboBox
+        
+        Dim ComboBox As CommandBarComboBox
+        Set ComboBox = getCitationStyleComboBox()
+        ComboBox.Text = getStyleNameFromId(chosenStyle)
+        ThisDocument.Saved = True
+        
+        Call setCitationStyle(chosenStyle)
+        Call refreshDocument
+    End If
+    
+    Call refreshDocument
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub afterSave()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Call refreshDocument
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub afterOpen()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Call refreshDocument
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub insertCitationButton()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Dim tipText As String
+    tipText = "Tip: You can press Alt-M instead of clicking Insert Citation."
+    
+    Dim insertCitationButton As CommandBarButton
+    Set insertCitationButton = getInsertCitationButton()
+    
+    If Not (insertCitationButton.Caption = TOOLBAR_INSERT_CITATION) Then
+        tipText = "Tip: You can press ALT-M instead of clicking Edit Citation."
+    End If
+    
+    Call privateInsertCitation(tipText)
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub insertCitation()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Call privateInsertCitation("")
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub exportAsBookmarks()
+    Call exportCompatibleOpenOffice
+End Sub
+
+Sub exportCompatibleOpenOffice()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    Dim fileName As String
+    fileName = getSaveFileName()
+    
+    If fileName <> "" Then
+        Call privateExportCompatibleOpenOffice(fileName)
+    End If
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Sub privateExportCompatibleOpenOffice(exportFilename As String)
+    ZoteroUseBookmarks = True
+    
+    Dim documentState As MendeleyDataTypes.DocumentStateType
+    documentState = startUpdatingDocument(ActiveDocument)
+    Dim marks
+
+    Set marks = fnGetMarks(ZoteroUseBookmarks)
+    
+#If Mac Then
+    ' On Mac, SaveAs() will use the current format if none is explicitly specified, instead of the .doc default
+    Call ActiveDocument.SaveAs(fileName:=exportFilename, FileFormat:=wdFormatDocument)
+#Else
+    Call ActiveDocument.SaveAs(fileName:=exportFilename)
+#End If
+    Call finishUpdatingDocument(documentState)
+End Sub
+
+Sub exportWithoutMendeleyFields()
+    ' Opens a Save As file dialog and saves the document
+    ' converting the fields into plain text
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+    
+    If ActiveDocument.path = "" Then
+        MsgBox "Please save this document using the ""File->Save As..."" before exporting."
+        GoTo EndOfSub
+    End If
+        
+    Dim saveFileName As String
+    saveFileName = getSaveFileName()
+    
+    If saveFileName <> "" Then
+        Dim Doc As Document
+        
+        Call ActiveDocument.SaveAs(ActiveDocument.FullName)
+
+        'the next line copies the active document
+        Call Application.Documents.Add(ActiveDocument.FullName)
+        
+        Set Doc = ActiveDocument
+
+        Call removeMendeleyFields(Doc)
+        
+        ' Save the copy to the selected location
+        Call ActiveDocument.SaveAs(fileName:=saveFileName)
+        
+        ' next line closes the copy leaving you with the original document
+        Call ActiveDocument.Close
+    End If
+    Set previouslySelectedField = Nothing
+    
+    GoTo EndOfSub
+ErrorHandler:
+    Call reportError
+    
+EndOfSub:
+        uiDisabled = False
+End Sub
+
+Sub removeMendeleyFields(Doc As Document)
+    Dim documentState As MendeleyDataTypes.DocumentStateType
+    documentState = startUpdatingDocument(Doc)
+    ' Delete the custom properties clearing them, since deleting
+    ' doesn't get saved
+    
+    ' Write directly to the document to avoid calling to
+    ' Mendeley Desktop during this part as it would happen
+    ' if setCitationStyle function is used.
+    Call subSetProperty(MENDELEY_CITATION_STYLE, "")
+    Call subSetProperty(MENDELEY_USER_ACCOUNT, "")
+    Call subSetProperty(MENDELEY_DOCUMENT, "")
+        
+    ' Fields in document
+    Dim fld As field
+    For Each fld In Doc.fields
+        Call ConvertMendeleyFieldToText(fld)
+    Next
+
+    ' Fields in footnotes
+    Dim i As Long
+    i = 1
+    While i <= Doc.Footnotes.count
+        For Each fld In Doc.Footnotes(i).range.fields
+            Call ConvertMendeleyFieldToText(fld)
+        Next
+        i = i + 1
+    Wend
+
+    ' Fields in TextBoxes
+    i = 1
+    While i <= Doc.Shapes.count
+        If Doc.Shapes(i).Type <> msoPicture Then
+            For Each fld In Doc.Shapes(i).TextFrame.TextRange.fields
+                    Call ConvertMendeleyFieldToText(fld)
+            Next
+        End If
+        i = i + 1
+    Wend
+    Call finishUpdatingDocument(documentState)
+End Sub
+
+' ----- end of top level functions -----
+Function isUiDisabled() As Boolean
+        If awaitingResponseFromMD Then
+            Call MsgBox("Please finish selecting a citation from Mendeley Desktop first.", _
+                vbOKOnly, MACRO_ALREADY_RUNNING)
+        End If
+        
+        isUiDisabled = uiDisabled
+End Function
+
+Sub mergeCitations()
+    If isUiDisabled Then Exit Sub
+    If Not DEBUG_MODE Then
+        On Error GoTo ErrorHandler
+    End If
+    uiDisabled = True
+
+    ' Gathers the selected UUIDS to uuids and deletes the fields
+    Dim selectedFields As fields
+    Set selectedFields = Selection.range.fields
+    
+    If selectedFields.count < 2 Then
+        MsgBox MERGE_CITATIONS_NOT_ENOUGH_CITATIONS
+        GoTo EndOfSub
+    End If
+    
+    If Not (launchMendeleyIfNecessary() = CONNECTION_CONNECTED) Then
+        GoTo EndOfSub
+    End If
+    
+    Dim markName As String
+    Dim markUuids As String
+
+    Dim mark As field
+
+    Dim previousStart As Long
+    Dim previousEnd As Long
+    previousStart = -1
+
+    Dim mergeFieldCount As Long
+    Dim mergeFieldCodes() As String
+
+    For Each mark In selectedFields
+        If previousStart > 0 Then
+            Dim inbetween As range
+            Set inbetween = mark.result.Duplicate
+
+            If mark.result.Start > previousStart Then
+                inbetween.Start = previousEnd
+                inbetween.End = mark.result.Start
+            Else
+                inbetween.Start = mark.result.End
+                inbetween.End = previousStart
+            End If
+        
+            If Len(inbetween.Text) > CITATION_ADJECENT_LIMIT Then
+                MsgBox CITATIONS_NOT_ADJACENT
+                GoTo EndOfSub
+            End If
+        End If
+        
+        previousStart = mark.result.Start
+        previousEnd = mark.result.End
+    
+        markName = getMarkName(mark)
+        If isMendeleyCitationField(markName) = False Then
+            GoTo SkipField
+        End If
+        
+        mergeFieldCount = mergeFieldCount + 1
+        ReDim Preserve mergeFieldCodes(0 To mergeFieldCount)
+        mergeFieldCodes(UBound(mergeFieldCodes)) = markName
+SkipField:
+    Next
+    
+    ' Creates a new field with the previously selected UUIDS
+    Dim selectedRange As range
+    
+    Dim newFieldCodeText As String
+    newFieldCodeText = mendeleyApiClient().mergeFields(mergeFieldCodes)
+    
+    Call beginUndoTransaction("Merge Mendeley Citations")
+    
+    Dim citeField As field
+    Set selectedRange = fnSelection()
+    Set citeField = fnAddMark(selectedRange, newFieldCodeText)
+    citeField.result.Text = MERGING_TEXT
+    Call refreshDocument
+    
+    Call endUndoTransaction
+    
+    GoTo EndOfSub
+    
+ErrorHandler:
+    Call reportError
+    
+EndOfSub:
+    uiDisabled = False
+End Sub
+
+Attribute VB_Name = "MendeleyDataTypes"
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2013 Mendeley Ltd.
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+Option Explicit
+
+' DynamicArray:
+' Tries to redim the array as less as possible but allows to grow up
+
+Public Type DynamicArrayType
+    currentSize As Long
+    ArrayContents As Variant
+End Type
+
+' DynamicString:
+' This is a string which has extra spaces on the end, to fill up the allocated memory
+' when appending, if there isn't enough allocated memory, double the allocated memory.
+' This is more efficient than a normal string for lots of small string concatenations.
+
+Public Type DynamicStringType
+    length As Long
+    contents As String
+End Type
+
+' DocumentState:
+' For restoring the document state after performing an operating on it
+Public Type DocumentStateType
+    Document As Document
+    trackChangesOn As Boolean
+    showRevisionsOn As Boolean
+End Type
+
+Global Const ARRAY_INITIAL_SIZE = 10
+Global Const ARRAY_INCREMENTS = 5
+
+' #### DynamicArray
+Function DynamicArrayInit() As DynamicArrayType
+    Dim ArrayContents() As String
+    ReDim ArrayContents(0 To ARRAY_INITIAL_SIZE)
+    
+    Dim DynamicArray As DynamicArrayType
+    DynamicArray.currentSize = 0
+    DynamicArray.ArrayContents = ArrayContents
+    DynamicArrayInit = DynamicArray
+End Function
+
+Function DynamicArrayAppend(DynamicArray As DynamicArrayType, value As String) As MendeleyDataTypes.DynamicArrayType
+    Dim lastPosition As Long
+    lastPosition = DynamicArray.currentSize
+       
+    If lastPosition = UBound(DynamicArray.ArrayContents) Then
+        ReDim Preserve DynamicArray.ArrayContents(0 To UBound(DynamicArray.ArrayContents) + ARRAY_INCREMENTS)
+    End If
+    
+    DynamicArray.ArrayContents(lastPosition) = value
+    DynamicArray.currentSize = DynamicArray.currentSize + 1
+    DynamicArrayAppend = DynamicArray
+End Function
+
+Function DynamicArrayGetPosition(DynamicArray As DynamicArrayType, position As Long) As String
+    Dim value As String
+    
+    value = DynamicArray.ArrayContents(position)
+    DynamicArrayGetPosition = value
+End Function
+
+Function DynamicArraySize(DynamicArray As DynamicArrayType) As Long
+    DynamicArraySize = DynamicArray.currentSize
+End Function
+
+Function DynamicArrayHasElement(DynamicArray As DynamicArrayType, searchFor As String) As Boolean
+    Dim i As Long
+    DynamicArrayHasElement = False
+    
+    For i = 0 To UBound(DynamicArray.ArrayContents)
+        If DynamicArray.ArrayContents(i) = searchFor Then
+            DynamicArrayHasElement = True
+            Exit Function
+        End If
+    Next
+End Function
+
+Function DynamicArrayTest()
+    Dim DynamicArray As DynamicArrayType
+    DynamicArray = DynamicArrayInit()
+    
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test01")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test02")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test03")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test04")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test05")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test06")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test07")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test08")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test09")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test10")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test11")
+    DynamicArray = DynamicArrayAppend(DynamicArray, "Test12")
+    
+    MsgBox DynamicArrayHasElement(DynamicArray, "dkdkdk") & " expected false"
+    MsgBox DynamicArrayHasElement(DynamicArray, "Test01") & " expected true"
+    MsgBox DynamicArrayHasElement(DynamicArray, "Test12") & " exepcted true"
+    MsgBox DynamicArrayHasElement(DynamicArray, "Test07") & " expected true"
+    
+    MsgBox "ArraySize:" & DynamicArraySize(DynamicArray) & " expected 12"
+    MsgBox "Position:" & DynamicArrayGetPosition(DynamicArray, 1) & " Test02"
+End Function
+
+' #### DynamicString
+
+Function DynamicStringInit(initialLength As Long) As MendeleyDataTypes.DynamicStringType
+    If initialLength < 1 Then
+        initialLength = 1
+    End If
+    
+    Dim stringContents As String
+    stringContents = Space(initialLength)
+    
+    Dim dynamicString As DynamicStringType
+    dynamicString.length = 0
+    dynamicString.contents = stringContents
+    
+    DynamicStringInit = dynamicString
+End Function
+
+Function DynamicStringAppend(dynamicString As DynamicStringType, toAppend As String) As MendeleyDataTypes.DynamicStringType
+    If (Len(toAppend) > 0) Then
+        ' if not enough allocated space in the string, keep doubling it till there is
+        Do While dynamicString.length + Len(toAppend) > Len(dynamicString.contents)
+            dynamicString.contents = dynamicString.contents & Space(Len(dynamicString.contents))
+        Loop
+        
+        Mid$(dynamicString.contents, dynamicString.length + 1, Len(toAppend)) = toAppend
+        dynamicString.length = dynamicString.length + Len(toAppend)
+    End If
+    
+    DynamicStringAppend = dynamicString
+End Function
+
+Function DynamicStringGet(dynamicString As DynamicStringType) As String
+    DynamicStringGet = Left$(dynamicString.contents, dynamicString.length)
+End Function
+
+Sub DynamicStringTest()
+    Dim testString As DynamicStringType
+    
+    testString = DynamicStringInit(10)
+    testString = DynamicStringAppend(testString, "Tim: Hello there!")
+    MsgBox DynamicStringGet(testString)
+    testString = DynamicStringAppend(testString, Chr(13) & "Tom: And hello to you!")
+    MsgBox DynamicStringGet(testString)
+    testString = DynamicStringAppend(testString, Chr(13) & "Tim: What an interesting conversation we are having!!!! :) ;-)")
+    MsgBox DynamicStringGet(testString)
+End Sub
+
+' #### DocumentState
+
+' Stores the active document state and turns off reviewing features which
+' aren't compatible with the document update
+' NOTE: this should only be used if needed since the reviewing
+'       are useful for some actions like inserting a citation
+Function startUpdatingDocument(Document As Document) As MendeleyDataTypes.DocumentStateType
+    Dim documentState As DocumentStateType
+    
+    Set documentState.Document = Document
+    
+    ' Remember reviewing tools state
+    documentState.trackChangesOn = Document.TrackRevisions
+    documentState.showRevisionsOn = Document.ShowRevisions
+        
+    ' Disable reviewing tools
+    Document.TrackRevisions = False
+    Document.ShowRevisions = False
+    
+    startUpdatingDocument = documentState
+End Function
+
+Sub finishUpdatingDocument(documentState As DocumentStateType)
+    ' restore state of review changes feature
+    documentState.Document.TrackRevisions = documentState.trackChangesOn
+    documentState.Document.ShowRevisions = documentState.showRevisionsOn
+End Sub
+
+Attribute VB_Name = "MendeleyDebugUtils"
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2013 Mendeley Ltd.
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+Private stack(1 To 1000) As String
+Private stackIndex As Long
+
+Private log As Object
+
+Public Sub Debug_EnterFunc(name As String)
+    stackIndex = stackIndex + 1
+    stack(stackIndex) = name
+        If log Is Nothing Then
+                Dim logPath As String
+                logPath = Environ("TEMP") & "\mendeley-word-plugin-log.txt"
+
+                Dim fso As Object
+                Set fso = CreateObject("Scripting.FileSystemObject")
+                Set log = fso.CreateTextFile(logPath)
+        End If
+
+        log.WriteLine "> " & name
+End Sub
+
+Public Sub Debug_ExitFunc()
+    If stackIndex > 1 Then
+                log.WriteLine "< " & stack(stackIndex)
+        stackIndex = stackIndex - 1
+    End If
+End Sub
+
+Attribute VB_Name = "MendeleyLib"
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2013 Mendeley Ltd.
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+' author: steve.ridout@mendeley.com
+
+Option Explicit
+
+#If Win32 Then
+#If VBA7 Then
+   Private Declare PtrSafe Function AllowSetForegroundWindow Lib "User32" (ByVal processId As Long) As Boolean
+   Private Declare PtrSafe Function GetCurrentProcessId Lib "kernel32" () As Long
+   Private Declare PtrSafe Function GetActiveWindow Lib "User32" () As LongPtr
+   Private Declare PtrSafe Function SetForegroundWindow Lib "User32" (ByVal hwnd As LongPtr) As Boolean
+#Else
+   Private Declare Function AllowSetForegroundWindow Lib "User32" (ByVal processId As Long) As Boolean
+   Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
+   Private Declare Function GetActiveWindow Lib "User32" () As Long
+   Private Declare Function SetForegroundWindow Lib "User32" (ByVal hwnd As Long) As Boolean
+#End If
+#End If
+
+Function buildingPlugin() As Boolean
+    buildingPlugin = Left(ActiveDocument.name, Len(TEMPLATE_NAME_DURING_BUILD)) = TEMPLATE_NAME_DURING_BUILD
+End Function
+
+Function isMendeleyInstalled() As Boolean
+#If Win32 Then
+    Dim myWS As Object
+    Dim executablePath As String
+    On Error GoTo ErrorHandler
+    Set myWS = CreateObject("WScript.Shell")
+    executablePath = myWS.RegRead("HKEY_CURRENT_USER\Software\Mendeley Ltd.\Mendeley Desktop\ExecutablePath")
+    
+    isMendeleyInstalled = (Dir(executablePath) <> "")
+    Exit Function
+  
+ErrorHandler:
+    isMendeleyInstalled = False
+#Else
+    isMendeleyInstalled = True
+#End If
+End Function
+
+' Gives Mendeley Desktop permission to set the foreground window.
+' See AllowSetForegroundWindow()
+Function allowMendeleyToSetForeground() As Boolean
+#If Win32 Then
+    Dim processId As Long
+    processId = mendeleyApiClient().mendeleyProcessId()
+    allowMendeleyToSetForeground = AllowSetForegroundWindow(processId)
+#Else
+    allowMendeleyToSetForeground = True
+#End If
+End Function
+
+' Detects if Word 2013 hack for Range.InsertFile is required.
+' See MD-18803 for explanation of issue.
+Function isWordRangeHackRequired() As Boolean
+#If Win32 Then
+    If Val(Application.version) >= 15 Then
+        isWordRangeHackRequired = True
+    Else
+        isWordRangeHackRequired = False
+    End If
+#Else
+    isWordRangeHackRequired = False
+#End If
+End Function
+
+
+' Attempt to bring Word to the foreground
+' This requires that either Word or Mendeley Desktop currently
+' has the focus
+Sub bringWordToForeground()
+#If Win32 Then
+    ' If Mendeley has focus, ask it to allow Word to steal focus
+    Dim processId As Long
+    processId = GetCurrentProcessId()
+    Call mendeleyApiClient().allowSetFocus(processId)
+#End If
+    Application.Activate
+End Sub
+
+Function errorDetailsString() As String
+    errorDetailsString = Err.Description & " (" & Str(Err.Number) & ") in " & Err.source
+End Function
+
+Sub reportError(Optional message As String)
+    If message = "" Then
+        message = errorDetailsString()
+    ElseIf Err.Number <> 0 Then
+        message = message & vbCrLf & vbCrLf & "Details: " & errorDetailsString()
+    End If
+
+    If isMendeleyInstalled() = False Then
+        Exit Sub
+    End If
+    
+    message = message & vbCrLf & vbCrLf & "For more help, please visit http://support.mendeley.com"
+    MsgBox message, Title:="Mendeley Word Plugin Problem"
+End Sub
+
+Sub sendWordProcessorVersion()
+    Dim appName As String
+
+#If Win32 Then
+        appName = "WinWord"
+#ElseIf Mac Then
+        appName = "MacWord"
+#End If
+
+    Call mendeleyApiClient().setWordProcessor(appName, Application.version)
+End Sub
+
+
+' Refresh the citations in this document and update the
+' citation selector combo-box
+'
+' @param openingDocument Set to true if the refresh is being
+' called whilst opening a new document or false if refreshing
+' an existing already-open document
+'
+Function refreshDocument(Optional openingDocument As Boolean = False) As Boolean
+    Dim currentDocumentPath As String
+    currentDocumentPath = activeDocumentPath()
+
+    refreshDocument = False
+    Call ActiveDocument.Activate
+    
+    ZoteroUseBookmarks = False
+    
+    If openingDocument = True Then
+        If Not unitTest Then
+            Dim ComboBox2 As CommandBarComboBox
+            Set ComboBox2 = getCitationStyleComboBox()
+            ComboBox2.Text = getStyleNameFromId(getCitationStyleId())
+        End If
+        ThisDocument.Saved = True
+        Exit Function
+    End If
+    
+    If launchMendeleyIfNecessary() <> CONNECTION_CONNECTED Then
+        Exit Function
+    End If
+    
+    If Not isDocumentLinkedToCurrentUser Then
+        Exit Function
+    End If
+    
+    Dim documentState As MendeleyDataTypes.DocumentStateType
+    documentState = startUpdatingDocument(ActiveDocument)
+    ' Update document
+    Call beginUndoTransaction("Format Mendeley Citations and Bibliography")
+    
+    Call sendWordProcessorVersion
+    
+    Call setCitationStyle(getCitationStyleId())
+    If Not unitTest Then
+        Call updateCitationStylesComboBox
+    End If
+    
+#If Win32 Then
+    If USE_RIBBON Then
+        Call recoverRibbonUi
+        ribbonUi.Invalidate
+    End If
+#End If
+
+    ' Subscribe to events (e.g. WindowSelectionChange) doing on refreshDocument as it
+    ' doesn't work in initialise() when addExternalFunctions() is also called
+    If Not openingDocument Then
+        Set theAppEventHandler.App = Word.Application
+    End If
+
+    Dim citationNumberCount As Long
+    citationNumberCount = 0
+    
+    Dim bibliography As String
+
+    Call mendeleyApiClient().resetCitations
+    
+    Dim marks
+    Set marks = fnGetMarks(ZoteroUseBookmarks)
+    
+    Dim markName As String
+    
+    Dim thisField As field
+
+    Dim mark
+
+    Dim citationNumber As Long
+    citationNumber = 0
+
+    
+    For Each mark In marks
+        Set thisField = mark
+        
+        markName = getMarkName(thisField)
+        
+        If startsWith(markName, "ref Mendeley") Then
+            markName = Right(markName, Len(markName) - 4)
+            thisField.code.Text = markName
+        End If
+        
+        If isMendeleyCitationField(markName) Then
+            citationNumber = citationNumber + 1
+            
+            ' Just send an empty string if the displayed text is a temporary placeholder
+            Dim displayedText As String
+            displayedText = getMarkText(thisField)
+            'displayedText = getMarkTextWithFormattingTags(thisField)
+            If displayedText = INSERT_CITATION_TEXT Or displayedText = MERGING_TEXT Then
+                displayedText = ""
+            End If
+            mendeleyApiClient().addCitation markName, displayedText
+            
+            thisField.Locked = True
+        End If
+    Next
+    
+    Dim oldCitationStyle As String
+    oldCitationStyle = getCitationStyleId()
+    
+    ' Now that we've compiled the list of uuids, give them to Mendeley Desktop
+    ' and tell it to format the citations and bibliography
+    If Not mendeleyApiClient().formatCitationsAndBibliography() Then
+        Call bringWordToForeground
+        Dim errorCitationIndex As Long
+        errorCitationIndex = mendeleyApiClient().lastErrorCitationIndex()
+        If errorCitationIndex <> -1 Then
+            Dim errorField As field
+            Dim citationIndex As Long
+            citationIndex = mendeleyApiClient().lastErrorCitationIndex() + 1
+            Set errorField = marks(citationIndex)
+            Call promptToRemoveField(errorField, citationIndex)
+        End If
+        GoTo ExitFunction
+    End If
+    
+    citationNumber = 0
+    
+    Set marks = fnGetMarks(ZoteroUseBookmarks)
+    For Each mark In marks 'ActiveDocument.Fields
+        If currentDocumentPath <> activeDocumentPath() Then
+            GoTo ExitFunction
+        End If
+
+        Set thisField = mark
+        Dim fieldText As String
+        fieldText = ""
+        markName = getMarkName(thisField)
+
+        If IsObjectValid(thisField) = False Then
+            GoTo NextIterationLoop
+        End If
+        
+        If (isMendeleyCitationField(markName)) Then
+
+            fieldText = mendeleyApiClient().getFormattedCitation(citationNumber)
+            
+            Dim previousFormattedCitation As String
+            previousFormattedCitation = mendeleyApiClient().getPreviouslyFormattedCitation(citationNumber)
+            
+            Dim jsonData As String
+            jsonData = mendeleyApiClient().getFieldCode(citationNumber)
+
+            If currentDocumentPath <> activeDocumentPath() Then
+                GoTo ExitFunction
+            End If
+            Set thisField = fnRenameMark(thisField, jsonData)
+            
+            If fieldText <> getMarkText(thisField) Then
+                If currentDocumentPath <> activeDocumentPath() Then
+                    GoTo ExitFunction
+                End If
+                
+                ' if Mendeley sends us an empty field, leave it alone since we want to
+                ' preserve the user's formatting options
+                If fieldText <> "" Then
+                    Call applyFormatting(fieldText, thisField)
+                End If
+            End If
+            
+            citationNumber = citationNumber + 1
+        ElseIf isMendeleyBibliographyField(markName) Then
+            If Not InStr(markName, CSL_BIBLIOGRAPHY) > 0 Then
+                    Call fnRenameMark(mark, markName & " " & CSL_BIBLIOGRAPHY)
+            End If
+        
+            If bibliography = "" Then
+                bibliography = bibliography + mendeleyApiClient().getFormattedBibliography()
+            End If
+                Dim range As range
+                Set range = thisField.result
+                
+                ' Get font used at start of bibliography
+                range.Collapse (wdCollapseStart)
+                
+                Dim currentFontName As String
+                Dim currentSize As Long
+                currentFontName = range.Font.name
+                currentSize = range.Font.size
+
+                ' Insert updated bibliography
+                Set range = thisField.result
+                ' Word 2013 dirty hack: We can not insert on the whole selection, we need to keep
+                ' one character at the end of the selection
+                If isWordRangeHackRequired Then
+                    range.End = range.End - 1
+                End If
+                range.InsertFile (bibliography)
+                ' Word 2013 dirty hack: Remove the last character
+                If isWordRangeHackRequired Then
+                    Set range = thisField.result
+                    range.Start = range.End - 1
+                    range.Text = ""
+                End If
+                
+                ' Disable spell and grammar checking on the bibliography.
+                ' This is done when the field is created in fnAddMark(), but the InsertFile() call
+                ' resets this property of the Field result's range (at least on Mac Word 2011).
+                Set range = thisField.result
+                range.LanguageID = wdNoProofing
+                
+                ' Apply font to whole range
+                range.Font.name = currentFontName
+                range.Font.size = currentSize
+
+                ' Delete first two characters (spaces and newline) (inserted for a workaround in OO.org)
+                range.End = range.Start + 2
+                range.Text = ""
+        End If
+        
+        If Not (fieldText = "") Then
+            ' Put text in field
+                If thisField.ShowCodes Then
+                    thisField.ShowCodes = False
+                End If
+        End If
+        
+        thisField.Locked = True
+NextIterationLoop:
+    Next
+    
+    If Not unitTest Then
+        Dim newCitationStyle As String
+        newCitationStyle = mendeleyApiClient().getCitationStyleId()
+        
+        If (newCitationStyle <> oldCitationStyle) Then
+            ' set new citation style
+            Call setCitationStyle(newCitationStyle)
+            
+            ' update citation styles list
+            Call updateCitationStylesComboBox
+        End If
+        
+            Set previouslySelectedField = getFieldAtSelection()
+        If Not IsNull(previouslySelectedField) And Not IsEmpty(previouslySelectedField) Then
+            previouslySelectedFieldResultText = getMarkText(previouslySelectedField)
+        Else
+            previouslySelectedFieldResultText = ""
+        End If
+    End If
+
+    refreshDocument = True
+
+ExitFunction:
+    Call endUndoTransaction
+    Call finishUpdatingDocument(documentState)
+End Function
+
+Sub setCitationStyle(style As String)
+    Dim currentStyle As String
+    currentStyle = getCitationStyleId(returnDefaultIfNotSet:=False)
+    If style <> currentStyle Then
+        Call subSetProperty(MENDELEY_CITATION_STYLE, style)
+    End If
+    
+    Call mendeleyApiClient().setCitationStyle(style)
+End Sub
+
+' Informs the user that there was a problem updating a field and asks them
+' if they wish to remove it.
+Sub promptToRemoveField(errorField As field, citationIndex As Long)
+    errorField.Select
+    Dim result As VbMsgBoxResult
+    result = MsgBox("There was a problem updating Mendeley citation #" & LTrim(Str(citationIndex)) & vbCrLf & "Do you want to remove this citation?", vbYesNo, "Remove Citation Field?")
+    If result = vbYes Then
+        errorField.Delete
+    End If
+End Sub
+
+' Returns the citation style currently saved in the document
+' or DEFAULT_CITATION_STYLE otherwise.  If 'returnDefaultIfNotSet' is False,
+' an empty string is returned instead of DEFAULT_CITATION_STYLE if
+' no style is saved in the document
+Function getCitationStyleId(Optional returnDefaultIfNotSet As Boolean = True) As String
+    getCitationStyleId = fnGetProperty(MENDELEY_CITATION_STYLE)
+    If getCitationStyleId = "" And returnDefaultIfNotSet Then
+        getCitationStyleId = DEFAULT_CITATION_STYLE
+    End If
+End Function
+
+Function getStyleNameFromId(styleId As String) As String
+    ' For compatibility with old system where the name was used as the identifier
+    getStyleNameFromId = styleId
+    
+    If Not (startsWith(styleId, "http://") Or startsWith(styleId, "https://")) Then
+        Exit Function
+    End If
+    
+    getStyleNameFromId = StyleListModel.nameForStyle(styleId)
+End Function
+
+' returns the user account which this document is currently linked to
+Function mendeleyUserAccount() As String
+    On Error GoTo CatchError
+    
+    mendeleyUserAccount = ActiveDocument.CustomDocumentProperties(MENDELEY_USER_ACCOUNT).value
+    Exit Function
+    
+CatchError:
+    mendeleyUserAccount = ""
+End Function
+
+Sub setMendeleyUserAccount(value As String)
+    On Error GoTo CatchError
+    
+    Dim test As String
+    
+    ' if MENDELEY_DOCUMENT property not set this will throw an exception
+    test = ActiveDocument.CustomDocumentProperties(MENDELEY_USER_ACCOUNT).value
+    
+    ActiveDocument.CustomDocumentProperties(MENDELEY_USER_ACCOUNT).value = value
+
+    Exit Sub
+CatchError:
+    ActiveDocument.CustomDocumentProperties.Add name:=MENDELEY_USER_ACCOUNT, _
+        LinkToContent:=False, value:=value, Type:=msoPropertyTypeString
+End Sub
+
+Function getFieldAtSelection() As field
+    Dim fields() As Object
+    Call getFieldsAtSelection(1, fields)
+        
+    If Not IsEmpty(fields) Then
+        If Not fields(LBound(fields)) Is Nothing Then
+            Set getFieldAtSelection = fields(LBound(fields))
+        End If
+    End If
+End Function
+
+Sub getFieldsAtSelection(maximumNumberToFind As Long, ByRef result() As Object)
+    Dim selectedFields As Collection
+    Set selectedFields = New Collection
+    
+    Dim item As field
+    For Each item In Selection.fields
+        selectedFields.Add item
+    Next
+    
+    If selectedFields.count = 0 Then
+        Dim sentenceRange As range
+        Set sentenceRange = Selection.range
+        sentenceRange.Expand wdSentence
+       
+        For Each item In sentenceRange.fields
+            If Selection.range.InRange(item.result) Then
+                selectedFields.Add item
+            End If
+        Next
+    End If
+        
+        ReDim result(1 To maximumNumberToFind)
+        Dim i As Long
+        For i = 1 To selectedFields.count
+                If i > maximumNumberToFind Then
+                        Exit For
+                End If
+                Set result(i) = selectedFields(i)
+        Next
+End Sub
+
+' Returns connection status
+Function launchMendeleyIfNecessary() As Long
+    ' Only need to launch Mendeley if the document contains the
+    ' MENDELEY property
+    If Not isMendeleyDocument Then
+        launchMendeleyIfNecessary = CONNECTION_NOT_A_MENDELEY_DOCUMENT
+        Exit Function
+    End If
+
+    If mendeleyApiClient().launchMendeley() Then
+        launchMendeleyIfNecessary = CONNECTION_CONNECTED
+    Else
+        launchMendeleyIfNecessary = CONNECTION_MENDELEY_DESKTOP_NOT_FOUND
+    End If
+End Function
+
+Function isMendeleyRunning() As Boolean
+    isMendeleyRunning = mendeleyApiClient().isMendeleyRunning()
+End Function
+
+Function isMendeleyDocument() As Boolean
+    If fnGetProperty(MENDELEY_DOCUMENT) = "True" Then
+        isMendeleyDocument = True
+    Else
+        isMendeleyDocument = False
+    End If
+End Function
+
+Sub setMendeleyDocument(value As Boolean)
+    If value Then
+        Call subSetProperty(MENDELEY_DOCUMENT, "True")
+    Else
+        Call subSetProperty(MENDELEY_DOCUMENT, "False")
+    End If
+End Sub
+
+Sub createCitationStyleComboBox()
+    Dim mendeleyControl As CommandBarControl
+    
+    For Each mendeleyControl In CommandBars(TOOLBAR).Controls
+        If mendeleyControl.Parameter = TOOLBAR_CITATION_STYLE Then
+            ' clear existing styles in combo box
+            Call mendeleyControl.Clear
+            Exit Sub
+        End If
+    Next
+    
+    ' Create combo box
+    Call CommandBars(TOOLBAR).Controls.Add( _
+        Type:=msoControlComboBox, Parameter:=TOOLBAR_CITATION_STYLE, Before:=5)
+End Sub
+
+Sub setUpContextMenus()
+    ' add to "Text" command bar, which is the context menu which shows
+    ' outside Mendeley fields
+
+    Dim textCommandBar As CommandBar
+    Set textCommandBar = CommandBars("Text")
+    Dim menuItem As CommandBarControl
+    
+    Dim foundMendeleyItem As Boolean
+    foundMendeleyItem = False
+    
+    Const ENABLE_MENU_ICONS = False
+    
+    ' Get the icon from the Insert/Edit citation button
+    Dim mendeleyControl As CommandBarControl
+    
+    If ENABLE_MENU_ICONS Then
+        For Each mendeleyControl In CommandBars(TOOLBAR).Controls
+            If mendeleyControl.Caption = TOOLBAR_INSERT_CITATION Or mendeleyControl.Caption = TOOLBAR_EDIT_CITATION Then
+                ' clear existing styles in combo box
+                Call mendeleyControl.CopyFace
+            End If
+        Next
+    End If
+    
+    Dim insertCitationButton As CommandBarControl
+    Dim beforeButtonIndex As Long
+    beforeButtonIndex = 0
+    For Each menuItem In textCommandBar.Controls
+        If menuItem.id = 22 Then ' id 22 has caption "&Paste" in English
+            beforeButtonIndex = menuItem.index + 1
+        End If
+        ' Delete old menu item
+        If menuItem.Caption = "Insert Mendeley Citation" Then
+            foundMendeleyItem = True
+            Set insertCitationButton = menuItem
+            insertCitationButton.Delete
+        End If
+    Next
+    
+    Set insertCitationButton = textCommandBar.Controls.Add(msoControlButton, Before:=beforeButtonIndex)
+    insertCitationButton.Caption = "Insert Mendeley Citation"
+    insertCitationButton.OnAction = "insertCitation"
+    insertCitationButton.BeginGroup = True
+    If ENABLE_MENU_ICONS Then
+        Call insertCitationButton.PasteFace
+    End If
+    
+    ' add to "Fields" context menu which shows when inside a field
+    ' (slight problem is that it is also used for non-Mendeley fields)
+    Dim editCitationButton As CommandBarControl
+    beforeButtonIndex = 0
+    For Each menuItem In CommandBars("Fields").Controls
+        If menuItem.id = 22 Then ' id 22 has caption "&Paste" in English
+            beforeButtonIndex = menuItem.index + 1
+        End If
+        ' Delete old menu item
+        If menuItem.Caption = "Edit Mendeley Citation" Then
+            foundMendeleyItem = True
+            Set editCitationButton = menuItem
+            editCitationButton.Delete
+        End If
+    Next
+    Set editCitationButton = CommandBars("Fields").Controls.Add(msoControlButton, Before:=beforeButtonIndex)
+    editCitationButton.Caption = "Edit Mendeley Citation"
+    editCitationButton.OnAction = "insertCitation"
+    editCitationButton.BeginGroup = True
+    If ENABLE_MENU_ICONS Then
+        Call editCitationButton.PasteFace
+    End If
+End Sub
+
+Sub createCitationStyleComboBoxAndQuit()
+    Call createCitationStyleComboBox
+    ThisDocument.Saved = False
+    ' Save to file and quit
+    Call ThisDocument.Save
+    ThisDocument.Close
+    
+    Call Application.Quit
+End Sub
+
+Function getCitationStyleComboBox() As CommandBarComboBox
+    Dim mendeleyControl As CommandBarControl
+    
+    ' @todo: cache comboBox again, but need a map of documents -> comboBoxes
+    '       instead of just the one
+    
+    For Each mendeleyControl In CommandBars(TOOLBAR).Controls
+        If mendeleyControl.Parameter = TOOLBAR_CITATION_STYLE Then
+            Set getCitationStyleComboBox = mendeleyControl
+            Exit Function
+        End If
+    Next
+    ' if here, combo box hasn't been created yet
+    ' (this was happening very rarely, looks safe to create now
+    ' and subsequent calls will have the combobox)
+    
+    ' (maybe caused by a commented race condition in initialise)
+    'Call createCitationStyleComboBox
+    If Not buildingPlugin() Then
+        MsgBox "Combo box not found"
+    End If
+End Function
+
+Function getUndoEditButton() As CommandBarButton
+    Dim mendeleyControl As CommandBarControl
+    
+    For Each mendeleyControl In CommandBars(TOOLBAR).Controls
+        If mendeleyControl.Caption = TOOLBAR_UNDO_EDIT Then
+            Set getUndoEditButton = mendeleyControl
+            Exit Function
+        End If
+    Next
+    ' if here, button hasn't been created yet
+    MsgBox "Undo edit button not found"
+End Function
+
+Function getInsertCitationButton() As CommandBarButton
+    Dim mendeleyControl As CommandBarControl
+    
+    For Each mendeleyControl In CommandBars(TOOLBAR).Controls
+        If mendeleyControl.Caption = TOOLBAR_INSERT_CITATION _
+        Or mendeleyControl.Caption = TOOLBAR_EDIT_CITATION _
+        Or mendeleyControl.Caption = TOOLBAR_INSERT_OR_EDIT_CITATION Then
+            Set getInsertCitationButton = mendeleyControl
+            Exit Function
+        End If
+    Next
+    ' if here, button hasn't been created yet
+    MsgBox "Insert citation button not found"
+End Function
+
+' Returns true if the comboBox contains item in its list
+Function comboBoxContains(ComboBox As CommandBarComboBox, item As String) As Boolean
+    Dim index As Long
+    
+    For index = 1 To ComboBox.ListCount
+        If item = ComboBox.List(index) Then
+            comboBoxContains = True
+            Exit Function
+        End If
+    Next
+    
+    comboBoxContains = False
+End Function
+
+' Update the citation style for the current document
+' from the current selection in the style combobox
+Sub updateStyleFromComboBox()
+    Dim citationStyleComboBox As CommandBarComboBox
+    Set citationStyleComboBox = getCitationStyleComboBox()
+    
+    Dim newStyleId As String
+    newStyleId = StyleListModel.styleIdFromIndex(citationStyleComboBox.ListIndex)
+    If newStyleId <> "" Then
+        Call setCitationStyle(newStyleId)
+    End If
+End Sub
+
+' PullStyles() is invoked when the user makes a selection in the citation style combo-box
+Sub PullStyles()
+    Dim ComboBox As CommandBarComboBox
+    Set ComboBox = getCitationStyleComboBox()
+    
+    If Not isMendeleyRunning() Then
+        Dim temp
+        temp = mendeleyApiClient().launchMendeley()
+    End If
+
+    If ComboBox.ListCount = 1 Then
+        ' The citation style box is empty, aside from the initial 'Select me to fetch styles' entry.
+        ' Populate the style list
+        Call updateCitationStylesComboBox
+    End If
+    
+    If ComboBox.ListCount > 1 And ComboBox.ListIndex = ComboBox.ListCount Then
+        ' User clicked 'More Styles...' entry.  Show the citation style selection dialog
+        ' in Mendeley.
+        Call OpenCitationsFromMendeley
+    Else
+        ' On Windows, changing of the selected combo-box entry is handled in StyleComboBoxEventHandler.
+        ' That event is not available on Mac, so update the style and refresh the document here.
+#If Mac Then
+        ' User changed selected citation style.  Refresh the document
+        Call updateStyleFromComboBox
+        Call refreshDocument
+
+        ' Work around an issue where the combo-box text can get cleared during the
+        ' refreshDocument() call on Mac - without us clearing the combo-box text directly.
+        If ComboBox.Text = "" Then
+            Call updateCitationStylesComboBox(fetchStyles:=False)
+        Else
+            ' ComboBox.Text returns the style name, but visually is empty.
+            ' (Just adding MsgBox("TEST") fixes the problem (!). Below code seems
+            ' to be the minimum code that I could do to ensure that the content is visible.
+            Dim comboBoxText As String
+            comboBoxText = ComboBox.Text
+            ComboBox.Visible = True
+            ComboBox.Text = comboBoxText
+        End If
+#End If
+    End If
+End Sub
+
+' Refresh the contents of the citation style combobox.  If 'fetchStyles'
+' is false or Mendeley Desktop is not running, the combobox will display
+' a single item indicating that the citation style list will be updated when
+' "Insert Citation" is clicked
+Sub updateCitationStylesComboBox(Optional fetchStyles As Boolean = True)
+    Dim mendeleyControl As CommandBarControl
+        
+    Dim ComboBox As CommandBarComboBox
+    Set ComboBox = getCitationStyleComboBox()
+    
+    ComboBox.TooltipText = TOOLTIP_CITATION_STYLE
+    ComboBox.OnAction = "PullStyles"
+
+    Call StyleListModel.refreshStyles(fetchStyles)
+    
+    If StyleListModel.count() = 0 Then
+        ComboBox.Clear
+        ComboBox.AddItem SELECT_ME_FETCH_STYLES, 1
+        ComboBox.Width = 180
+        ComboBox.ListIndex = 1
+        Exit Sub
+    End If
+
+    ComboBox.Clear
+    Dim citationStyle As Variant
+    Dim index As Long
+        
+    For index = 1 To StyleListModel.count()
+        ComboBox.AddItem StyleListModel.styleNameFromIndex(index)
+    Next
+    
+    Call ComboBox.AddItem("More Styles...")
+    
+    ' Set default style if none set
+    If getCitationStyleId() = "" Then
+        Dim defaultStyle As String
+        defaultStyle = DEFAULT_CITATION_STYLE_NAME
+        If comboBoxContains(ComboBox, defaultStyle) Then
+            setCitationStyle (defaultStyle)
+        Else
+            setCitationStyle (StyleListModel.styleNameFromIndex(1))
+        End If
+    End If
+    
+    ' display current style in combo box
+    ' check first whether combo box has a different text - we do this because
+    ' although getCitationStyle gets the citation style for the current document,
+    ' ComboBox.Text = ?? will set it for ALL the currently open documents which isn't desired
+    Dim styleName As String
+    styleName = StyleListModel.nameForStyle(getCitationStyleId())
+    If ComboBox.Text <> styleName Then
+        ComboBox.Text = styleName
+    End If
+    
+#If Win32 Then
+    ' subscribe to events
+    Set theStyleComboBoxEventHandler.ComboBox = ComboBox
+#End If
+
+    ' adjust width of combo box as default is a bit small
+    ComboBox.Width = 160
+    
+    ' stop word trying to save changes to this template
+    ThisDocument.Saved = True
+End Sub
+
+Sub addTooltipsToButtons()
+    If CommandBars(TOOLBAR).Visible Then
+        CommandBars(TOOLBAR).Controls(TOOLBAR_INSERT_CITATION).TooltipText = TOOLTIP_INSERT_CITATION
+        CommandBars(TOOLBAR).Controls(TOOLBAR_UNDO_EDIT).TooltipText = TOOLTIP_UNDO_EDIT
+        CommandBars(TOOLBAR).Controls(TOOLBAR_MERGE_CITATIONS).TooltipText = TOOLTIP_MERGE_CITATIONS
+        CommandBars(TOOLBAR).Controls(TOOLBAR_INSERT_BIBLIOGRAPHY).TooltipText = TOOLTIP_INSERT_BIBLIOGRAPHY
+        CommandBars(TOOLBAR).Controls(TOOLBAR_REFRESH).TooltipText = TOOLTIP_REFRESH
+        
+        ' The "Export..." button doesn't have a Parameter member so find by Caption
+        Dim mendeleyControl As CommandBarControl
+        Dim exportMenu As CommandBarPopup
+        
+        For Each mendeleyControl In CommandBars(TOOLBAR).Controls
+            If mendeleyControl.Caption = "Export..." Then
+                Set exportMenu = mendeleyControl
+            End If
+        Next
+        
+        If Not exportMenu.Caption = TOOLBAR_EXPORT Then
+            MsgBox "export popup not found"
+        Else
+            exportMenu.TooltipText = TOOLTIP_EXPORT
+            exportMenu.Controls("Compatible with OpenOffice").TooltipText = TOOLTIP_EXPORT_OPENOFFICE
+        End If
+    End If
+    
+    ' stop word trying to save changes to this template
+    ThisDocument.Saved = True
+End Sub
+
+Function isDocumentLinkedToCurrentUser() As Boolean
+    Dim currentMendeleyUser As String
+    Dim thisDocumentUser As String
+    
+    currentMendeleyUser = mendeleyApiClient().getUserAccount()
+    thisDocumentUser = fnGetProperty(MENDELEY_USER_ACCOUNT)
+    
+    ' remove server protocol from account string
+    thisDocumentUser = Replace(thisDocumentUser, "http://", "")
+    thisDocumentUser = Replace(thisDocumentUser, "https://", "")
+    
+    If currentMendeleyUser = thisDocumentUser Then
+        isDocumentLinkedToCurrentUser = True
+    Else
+        Dim result ' As VbMsgBoxResult
+        
+        Dim vbCrLf
+        vbCrLf = Chr(13)
+        
+        If thisDocumentUser = "" Then
+            ' if no user currently linked then set without asking user
+            result = MSGBOX_RESULT_YES
+        Else
+            ' ask user if they want to link the document to their account
+            result = MsgBox("This document has been edited by another Mendeley user: " + thisDocumentUser + vbCrLf + vbCrLf + _
+                "Do you wish to enable the Mendeley plugin to edit the citations and bibliography yourself?" + vbCrLf + vbCrLf, _
+                MSGBOX_BUTTONS_YES_NO, "Enable Mendeley plugin for this document?")
+        End If
+
+        If result = MSGBOX_RESULT_YES Then
+            Call subSetProperty(MENDELEY_USER_ACCOUNT, currentMendeleyUser)
+            isDocumentLinkedToCurrentUser = True
+        Else
+            isDocumentLinkedToCurrentUser = False
+        End If
+    End If
+End Function
+
+
+' Returns true if mainString starts with the subString
+Function startsWith(mainString As String, subString As String) As Boolean
+    startsWith = Left(mainString, Len(subString)) = subString
+End Function
+
+Sub applyFormatting(markup As String, mark As field)
+    ' parse range and apply following formatting:
+    ' <i></i> italics
+    ' <b></b> bold
+    ' <u></u> underline
+    ' <sup></sup> superscript
+    ' <sub></sub> subscript
+    ' <span style="font-variant:small-caps;"></span> small-caps
+
+    ' add extra space at start because the Range.Delete function will
+    ' delete the whole field if we attempt to delete the first character
+    ' (it gets deleted later)
+
+    Call subSetMarkText(mark, markup)
+
+    Dim range As range
+    Set range = mark.result
+
+    Dim subRange As range
+    Set subRange = range.Duplicate
+    
+    ' remove currently existing formatting
+    range.bold = False
+    range.italic = False
+    range.underline = False
+    range.Font.superscript = False
+    range.Font.subscript = False
+    
+    Dim startPosition As Long
+    Dim endPosition As Long
+    
+    startPosition = range.Start
+    endPosition = range.End
+    
+    Call applyStyleToTagPairs("i", subRange, startPosition, endPosition)
+    Call applyStyleToTagPairs("b", subRange, startPosition, endPosition)
+    Call applyStyleToTagPairs("u", subRange, startPosition, endPosition)
+    Call applyStyleToTagPairs("sup", subRange, startPosition, endPosition)
+    Call applyStyleToTagPairs("sub", subRange, startPosition, endPosition)
+    
+    If InStr(getMarkText(mark), "second-field-align") > 0 Or InStr(getMarkText(mark), "hanging-indent") Then
+        ' hanging indent
+        range.ParagraphFormat.FirstLineIndent = 0
+        range.ParagraphFormat.LeftIndent = 0
+        range.ParagraphFormat.RightIndent = 0
+    End If
+    
+    Call applyStyleToTagPairs("second-field-align", subRange, startPosition, endPosition)
+    Call applyStyleToTagPairs("hanging-indent", subRange, startPosition, endPosition)
+    
+    ' convert <unicode>$CHARCODE</unicode> tags to corresponding characters
+    ' this is still used by the applyFormatting() test but is not used
+    ' by the plugin itself
+    Call applyStyleToTagPairs("unicode", subRange, startPosition, endPosition)
+
+    ' Add paragraph breaks in place of <p>
+    Call applyStyleToIndividualTags("p", subRange, startPosition, endPosition)
+    
+    Call applyStyleToSpan(subRange, startPosition, endPosition)
+End Sub
+
+Sub applyStyleToSpan(wholeRange As range, startPosition As Long, endPosition As Long)
+    Dim startTag As String
+    Dim endTag As String
+    
+    startTag = "<span style=""font-variant:small-caps;"">"
+    endTag = "</span>"
+    
+    Call applyStyleToTags(startTag, endTag, wholeRange, startPosition, endPosition, "small-caps")
+End Sub
+
+Sub applyStyleToTagPairs(tag As String, wholeRange As range, _
+    startPosition As Long, endPosition As Long)
+    Call applyStyleToTags("<" + tag + ">", "</" + tag + ">", wholeRange, startPosition, endPosition, tag)
+End Sub
+
+Sub applyStyleToTags(startTag As String, endTag As String, wholeRange As range, _
+    startPosition As Long, endPosition As Long, operation As String)
+    
+    Dim thisRange As range
+    Set thisRange = wholeRange.Duplicate
+    
+    ' Maximum number of characters used in the first field
+    ' Used for setting the second-field-align tab stopa
+    Dim maxFirstFieldLength As Long
+    maxFirstFieldLength = 0
+
+    Do While Not (rangeString(thisRange) = "") And Not (InStr(rangeString(thisRange), startTag) = 0)
+        ' find and remove start tag
+        thisRange.Start = startPosition
+        thisRange.End = endPosition
+        
+        Dim startTagPosition As Long
+
+        startTagPosition = InStr(rangeString(thisRange), startTag) - 1
+        thisRange.Start = startPosition + startTagPosition
+        ' Conditional needed to deal with strange VBA behaviour
+        If startTagPosition = 0 Then
+            ' deleting this way when at the start avoids deleting the whole field
+            thisRange.End = thisRange.Start + Len(startTag)
+            thisRange.Text = ""
+            'thisRange.Clear is not deleting
+        Else
+            ' deleting this way when not at the start avoids adding an extra space
+            ' in place of the deleted range (VBA is crazy)
+            thisRange.End = thisRange.Start
+            Call thisRange.Delete(Word.WdUnits.wdCharacter, Len(startTag))
+        End If
+        
+        ' find and remove end tag
+        
+        thisRange.Start = startPosition
+        thisRange.End = endPosition
+
+        Dim endTagPosition As Long
+        
+        endTagPosition = InStr(rangeString(thisRange), endTag) - 1
+        thisRange.Start = startPosition + endTagPosition
+        thisRange.End = thisRange.Start + Len(endTag)
+        thisRange.Text = ""
+        
+        thisRange.Start = startPosition + startTagPosition
+        thisRange.End = startPosition + endTagPosition
+        
+        ' apply style
+        Select Case operation
+            Case "b"
+                thisRange.bold = 1
+            Case "i"
+                thisRange.italic = 1
+            Case "u"
+                thisRange.underline = 1
+            Case "sup"
+                thisRange.Font.superscript = 1
+            Case "sub"
+                thisRange.Font.subscript = 1
+            Case "second-field-align"
+                ' Remove spaces at the end of the range
+                ' (@todo remove this if fixed in Mendeley Desktop)
+                Do While Right(thisRange.Text, 1) = " "
+                    thisRange.Start = startPosition + endTagPosition - 1
+                    thisRange.End = startPosition + endTagPosition
+                    
+                    Call thisRange.Delete
+                    endTagPosition = endTagPosition - 1
+                Loop
+                
+                If endTagPosition - startTagPosition > maxFirstFieldLength Then
+                    maxFirstFieldLength = endTagPosition - startTagPosition
+                End If
+                
+                ' remove subsequent spaces after the range
+                thisRange.Start = startPosition + endTagPosition
+                thisRange.End = startPosition + endTagPosition + 1
+                Do While thisRange.Text = " "
+                    Call thisRange.Delete(Word.WdUnits.wdCharacter, 2)
+                    
+                    thisRange.Start = startPosition + endTagPosition
+                    thisRange.End = startPosition + endTagPosition + 1
+                Loop
+                thisRange.End = startPosition + endTagPosition
+                
+                ' insert tab
+                thisRange.InsertAfter (vbTab)
+                
+            Case "hanging-indent"
+                ' set indent to 1 tab stop for whole range
+                Call setHangingIndent(wholeRange)
+                
+            Case "unicode"
+                Dim characterCode As Long
+                characterCode = thisRange.Text
+                
+                ' Note: an old version of the code used thisRange.Delete(wdCharacter, length)
+                ' to avoid a supposed bug where a space was removed after the range,
+                ' but this introduced bug #17191
+                ' The following line doesn't have any unwanted side-effects I'm aware of
+                thisRange.Text = ""
+                Call thisRange.InsertAfter(ChrW(characterCode))
+                
+            Case "small-caps"
+                thisRange.Font.SmallCaps = True
+        End Select
+
+        thisRange.Start = startPosition
+        thisRange.End = endPosition
+    Loop
+    
+    If startTag = "<second-field-align>" And maxFirstFieldLength > 0 Then
+        ' Create tab stop - the position is calculated approximately
+        ' and works reasonably well for numbered citations
+        Call setHangingIndent(wholeRange, 4 + 6 * maxFirstFieldLength)
+    End If
+    
+End Sub
+
+
+Sub setHangingIndent(range As range, Optional length As Long)
+    If Not (length = 0) Then
+        Call range.ParagraphFormat.TabStops.ClearAll
+        range.ParagraphFormat.TabStops.Add (length)
+    End If
+    range.ParagraphFormat.FirstLineIndent = 0
+    range.ParagraphFormat.LeftIndent = 0
+    range.ParagraphFormat.TabHangingIndent (1)
+End Sub
+
+Function rangeString(range As range) As String
+        rangeString = range.Text
+End Function
+
+Sub applyStyleToIndividualTags(tag As String, wholeRange As range, _
+    startPosition As Long, endPosition As Long)
+
+    Dim startTag As String
+    Dim endTag As String
+    
+    startTag = "<" + tag + ">"
+    endTag = "</" + tag + ">"
+    
+    Dim thisRange As range
+    Set thisRange = wholeRange.Duplicate
+    thisRange.Start = startPosition
+    thisRange.End = endPosition
+
+    Do While Not (rangeString(thisRange) = "") And Not (InStr(rangeString(thisRange), startTag) = 0)
+        ' find and remove start tag
+        Dim startTagPosition As Long
+        
+            startTagPosition = InStr(rangeString(thisRange), startTag) - 1
+            thisRange.Start = startPosition + startTagPosition
+            thisRange.End = thisRange.Start
+            Call thisRange.Delete(Word.WdUnits.wdCharacter, 2 + Len(tag))
+            
+            thisRange.Start = startPosition + startTagPosition
+            thisRange.End = startPosition + startTagPosition
+
+        ' apply formatting
+        Select Case tag
+            Case "p"
+                Call thisRange.InsertParagraph
+        End Select
+        
+            thisRange.Start = startPosition
+            thisRange.End = endPosition
+    Loop
+End Sub
+
+Sub checkForCitationEdit()
+    ' We can't update the document until we've updated the previously
+    ' selected field, so if the user cancels an edit, needUpdate is set
+    ' to true and we UpdateDocument() at the end
+    Dim needUpdate As Boolean
+    needUpdate = False
+    
+    ' TODO: deal with edits of bibliographies
+    Dim objectExists As Boolean
+    objectExists = IsObjectValid(previouslySelectedField)
+    If Not (previouslySelectedField Is Nothing) And Not IsMissing(previouslySelectedField) And Not IsEmpty(previouslySelectedField) And objectExists Then
+        If Not (previouslySelectedField.result.Text = previouslySelectedFieldResultText) Then
+            
+            If Not isMendeleyRunning() Then
+                ' Don't need do anything - this edit will get detected next time the user refreshes
+                Exit Sub
+            End If
+            
+            Dim markName As String
+            markName = getMarkName(previouslySelectedField)
+            
+            Dim displayedText As String
+            displayedText = getMarkText(previouslySelectedField)
+            displayedText = Replace(displayedText, Chr(13), "<p>")
+            
+            Dim newMarkName As String
+            newMarkName = mendeleyApiClient().checkManualFormatAndGetFieldCode(markName, displayedText)
+            
+            If markName <> newMarkName Then
+                Call fnRenameMark(previouslySelectedField, newMarkName)
+                ' Disabled until we can send rich text formatting tags from the displayed
+                ' citations to Mendeley Desktop
+                'Call subSetMarkText(previouslySelectedField, displayedText)
+                needUpdate = True
+            End If
+                        
+        End If
+    End If
+    
+    If needUpdate Then
+        Call refreshDocument
+    End If
+End Sub
+
+Sub beginUndoTransaction(action As String)
+    ' Application.UndoRecord exists in Word 2010 and later
+#If VBA7 Then
+    Application.UndoRecord.StartCustomRecord action
+#End If
+End Sub
+
+Sub endUndoTransaction()
+#If VBA7 Then
+    Application.UndoRecord.EndCustomRecord
+#End If
+End Sub
+
+Function getSaveFileName() As String
+    #If Win32 Then
+        Dim saveAsDialog As FileDialog
+        Set saveAsDialog = Application.FileDialog(FileDialogType:=msoFileDialogSaveAs)
+        
+        ' A return value of -1 indicates that the user clicked 'Save'
+        If saveAsDialog.Show = -1 Then
+            Dim selectedItem As Variant
+            For Each selectedItem In saveAsDialog.SelectedItems
+                getSaveFileName = selectedItem
+                Exit Function
+            Next
+        End If
+    #Else
+        ' The Application.FileDialog API is not present in VBA for Mac Word 2011
+    On Error GoTo noFileSelected:
+        Dim defaultName As String
+        Dim extensionPos As Long
+        extensionPos = InStrRev(ActiveDocument.name, ".")
+        
+        defaultName = "Copy of " & ActiveDocument.name
+        getSaveFileName = MacScript("choose file name with prompt ""Save File As:"" default name """ & defaultName & """")
+        
+        ' If the user removes the extension from the suggested name, use the same
+        ' extension as the current file
+        If InStr(getSaveFileName, ".") = 0 And extensionPos <> 0 Then
+            getSaveFileName = getSaveFileName & Mid$(ActiveDocument.name, extensionPos)
+        End If
+        
+        Exit Function
+    
+noFileSelected:
+        getSaveFileName = ""
+    #End If
+End Function
+
+Function prepareShortcutMessage(message As String) As String
+    ' Also see shortcutKey function
+    Dim shortcutKeys
+    
+    If isWindows() = True Then
+        shortcutKeys = "Alt + M"
+    Else
+        shortcutKeys = "Ctrl + Shift + I"
+    End If
+    
+    shortcutMessage = Replace(message, SHORTCUT, shortcutKeys)
+End Function
+Sub setupShortcut()
+    ' See: http://www.vbaexpress.com/kb/getarticle.php?kb_id=621
+    Dim shortcutKeyCode As Long
+    
+    If isWindows() = True Then
+        shortcutKeyCode = BuildKeyCode(wdKeyAlt, wdKeyM)
+    Else
+        shortcutKeyCode = BuildKeyCode(wdKeyControl, wdKeyShift, wdKeyI)
+    End If
+    
+    With Application
+         ' \\ Do customization in THIS document
+        .CustomizationContext = ThisDocument
+         
+         ' \\ Add keybinding to this document Shorcut: Alt+0
+        .KeyBindings.Add KeyCode:=shortcutKeyCode, _
+        KeyCategory:=wdKeyCategoryCommand, _
+        Command:="insertCitation"
+    End With
+End Sub
+
+Function isWindows() As Boolean
+#If Win32 Then
+        isWindows = True
+#Else
+        isWindows = False
+#End If
+End Function
+
+' ---------------------------
+'    Utility Functions
+' ---------------------------
+
+' Returns the index of item in the array, or -1 if not found
+' (doesn't permit arrays with -ve lower bound)
+Function indexOf(container() As String, item As String) As Long
+    Dim index As Long
+    
+    If LBound(container) < 0 Then
+        MsgBox "indexOf doesn't permit lower bounds < 0"
+        Exit Function
+    End If
+    
+    For index = LBound(container) To UBound(container)
+        If container(index) = item Then
+            indexOf = index
+            Exit Function
+        End If
+    Next
+    
+    ' not found
+    indexOf = -1
+End Function
+
+' Show the citation editor for the active Word document and return
+' the field code for the chosen citation cluster
+Function showCitationEditor(fieldCode As String) As String
+#If VBA7 Then
+    Dim activeWindowId As LongPtr
+#Else
+    Dim activeWindowId As Long
+#End If
+#If Win32 Then
+    activeWindowId = GetActiveWindow()
+#End If
+    showCitationEditor = mendeleyApiClient().getFieldCodeFromCitationEditor(fieldCode, activeWindowId)
+End Function
+
+Attribute VB_Name = "MendeleyRibbon"
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2013 Mendeley Ltd.
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+Option Explicit
+
+#If Win32 Then
+Global Const USE_RIBBON = True
+#Else
+Global Const USE_RIBBON = False
+#End If
+
+Global ribbonCitationButtonState As String
+
+Global Const RIBBON_INSERT_CITATION = "Insert Citation"
+Global Const RIBBON_EDIT_CITATION = "Edit Citation"
+Global Const RIBBON_MERGE_CITATIONS = "Merge Citation"
+Global Const RIBBON_UNDO_CITATION = "Undo Citation"
+
+Global ribbonSelectionWithinCitation As Boolean
+Global ribbonUndoEditVisible As Boolean
+
+' The APIs for adding extensions to the Ribbon are only available under Word for Windows
+#If Win32 Then
+
+#If VBA7 Then
+    Public Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByRef destination As Any, ByRef source As Any, ByVal length As Long)
+#Else
+    Public Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByRef destination As Any, ByRef source As Any, ByVal length As Long)
+#End If
+
+Global ribbonUi As IRibbonUI
+
+Sub mendeleyInitRibbon(ribbon As IRibbonUI)
+    Set ribbonUi = ribbon
+    
+    ' Store pointer to ribbon object in document properties
+    Call SaveSetting("Mendeley Desktop", "Word Plugin", "ribbonUiPointer", ObjPtr(ribbonUi))
+    
+    ribbonSelectionWithinCitation = False
+    ribbonUndoEditVisible = False
+    ribbonCitationButtonState = RIBBON_INSERT_CITATION
+
+    ribbonUi.Invalidate
+
+    ' hide the old skool command bar
+    CommandBars(TOOLBAR).Visible = False
+    
+    Call initialise
+End Sub
+
+Public Sub recoverRibbonUi()
+    If Not ribbonUi Is Nothing Then
+        Exit Sub
+    End If
+
+    ' This creates a RibbonUi object from the pointer we stored in the registry in mendeleyInitRibbon
+    ' the same approach suggested for use in Excel at the following link:
+    ' http://blogs.office.com/b/microsoft-excel/archive/2011/05/19/avoid-losing-the-state-of-the-global-iribbonui-ribbon-object.aspx
+    
+#If VBA7 Then
+    Dim pointer As LongPtr
+#Else
+    Dim pointer As Long
+#End If
+
+    Dim pointerString As String
+    pointerString = GetSetting("Mendeley Desktop", "Word Plugin", "ribbonUiPointer")
+    pointer = pointerString
+
+    Dim objRibbon As Object
+    CopyMemory objRibbon, pointer, LenB(pointer)
+    Set ribbonUi = objRibbon
+    Set objRibbon = Nothing
+    
+    Call initialise
+    
+    ribbonSelectionWithinCitation = False
+    ribbonUndoEditVisible = False
+    ribbonCitationButtonState = RIBBON_INSERT_CITATION
+    
+    ribbonUi.Invalidate
+End Sub
+
+Sub causeError()
+    Application.Documents.item (5)
+End Sub
+
+Sub RibbonInsertCitation(button As IRibbonControl)
+    Call insertCitationButton
+End Sub
+Sub RibbonInsertBibliography(button As IRibbonControl)
+    Call insertBibliography
+End Sub
+Sub RibbonMergeCitations(button As IRibbonControl)
+    Call mergeCitations
+End Sub
+Sub RibbonUndoEdit(button As IRibbonControl)
+    Call undoEdit
+End Sub
+Sub RibbonRefresh(button As IRibbonControl)
+    Call refresh
+End Sub
+Sub RibbonExportOpenOfficeCompatible(button As IRibbonControl)
+    Call exportCompatibleOpenOffice
+End Sub
+Sub RibbonExportWithoutMendeleyFields(button As IRibbonControl)
+    Call exportWithoutMendeleyFields
+End Sub
+
+'Callback for InsertCitationButton getVisible
+Sub RibbonInsertCitationVisible(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = (ribbonCitationButtonState = RIBBON_INSERT_CITATION)
+End Sub
+
+'Callback for EditCitationButton getVisible
+Sub RibbonEditCitationVisible(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = (ribbonCitationButtonState = RIBBON_EDIT_CITATION)
+End Sub
+
+Sub RibbonUndoGetVisible(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = (ribbonCitationButtonState = RIBBON_UNDO_CITATION)
+End Sub
+
+Sub RibbonMergeCitationsVisible(control As IRibbonControl, ByRef returnedVal)
+    returnedVal = (ribbonCitationButtonState = RIBBON_MERGE_CITATIONS)
+End Sub
+
+Sub RibbonGetButtonText(control As IRibbonControl, ByRef returnedVal)
+    If ribbonSelectionWithinCitation Then
+        returnedVal = TOOLBAR_EDIT_CITATION
+    Else
+        returnedVal = TOOLBAR_INSERT_CITATION
+    End If
+End Sub
+
+''Callback for Dropdown getItemCount.
+''Tells Excel how many items in the drop down.
+Sub RibbonStylesItemCount(control As IRibbonControl, ByRef returnedVal)
+    If StyleListModel.count() > 0 Then
+        returnedVal = StyleListModel.count() + 1
+    Else
+        returnedVal = 1
+    End If
+End Sub
+
+''Callback for dropdown getItemLabel.
+''Called once for each item in drop down.
+''If DDItemCount tells Excel there are 10 items in the drop down
+''Excel calls this sub 10 times with an increased "index" argument each time.
+''We use "index" to know which item to return to Excel.
+Sub RibbonStylesListItem(control As IRibbonControl, index As Long, ByRef returnedVal)
+    If index < StyleListModel.count Then
+        returnedVal = StyleListModel.styleNameFromIndex(index + 1)
+    ElseIf index > 0 And index = StyleListModel.count Then
+        returnedVal = "More Styles..."
+    Else
+        returnedVal = "Insert a citation to view the list of styles"
+    End If
+End Sub
+
+
+''Drop down change handler.
+''Called when a drop down item is selected.
+Sub RibbonStylesOnAction(control As IRibbonControl, id As String, index As Long)
+    
+    Call beginUndoTransaction("Change Mendeley Citation Style")
+    
+    Dim citationStyleComboBox As CommandBarComboBox
+    Set citationStyleComboBox = getCitationStyleComboBox()
+    citationStyleComboBox.Text = StyleListModel.styleNameFromIndex(index + 1)
+    citationStyleComboBox.ListIndex = index + 1
+    
+    Call updateStyleFromComboBox
+    Call PullStyles
+    Call refreshDocument
+    
+    Call endUndoTransaction
+    
+    Call ribbonUi.Invalidate
+End Sub
+
+''Returns index of item to display.
+''To display current item after the drop down is invalidated.
+Sub RibbonStylesItemSelectedIndex(control As IRibbonControl, ByRef returnedVal)
+    Dim index As Long
+    index = StyleListModel.indexFromStyleId(getCitationStyleId(returnDefaultIfNotSet:=True)) - 1
+    If index <> -1 Then
+        returnedVal = index
+    Else
+        returnedVal = 0
+    End If
+End Sub
+
+#End If
+
+
+Attribute VB_Name = "MendeleyUnitTests"
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2013 Mendeley Ltd.
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+Option Explicit
+
+#If Mac Then
+Global Const DIR_SEPARATOR = ":"
+#Else
+Global Const DIR_SEPARATOR = "\"
+#End If
+
+Function dirPath(fileName As String) As String
+    Dim dirSepPos As Long
+    dirSepPos = InStrRev(fileName, DIR_SEPARATOR)
+
+    If dirSepPos <> 0 Then
+        dirPath = Left(fileName, dirSepPos - 1)
+    Else
+        dirPath = fileName
+    End If
+End Function
+
+Sub saveActiveDocumentAsText(outputPath As String)
+    Dim alerts As Long
+    alerts = Application.DisplayAlerts
+    Application.DisplayAlerts = wdAlertsNone
+    Call ActiveDocument.SaveAs(outputPath, wdFormatText, LineEnding:=wdCRLF, Encoding:=msoEncodingUTF8)
+    Application.DisplayAlerts = alerts
+End Sub
+
+Sub initTests(testsPath As String, outputPath As String)
+    ' On Windows, ActiveDocument.Path returns the dir name of the document.
+    ' On Mac, ActiveDocument.Path returns the full file path of the document.
+#If Win32 Then
+    testsPath = ActiveDocument.path & "\..\tests\"
+#Else
+    testsPath = dirPath(dirPath(ActiveDocument.path)) & ":tests:"
+#End If
+
+    outputPath = testsPath & "output" & DIR_SEPARATOR
+
+    Call setCitationStyle(DEFAULT_CITATION_STYLE)
+End Sub
+
+Sub runUnitTests()
+    unitTest = True
+    
+    Call testInsertCitation
+    Call testEditCitation
+    Call testMergeCitations
+    Call testChangeCitationStyle
+    Call testInsertBibliography
+    Call testExportOpenOfficeSimple
+    Call testExportWithoutFieldsSimple
+    Call testApplyFormatting
+    Call testRefreshDocument
+    Call testSaveRecentStyles
+    Call testProjectName
+    
+    Call Application.Quit
+End Sub
+
+Function findFilesInDir(dirPath As String, suffix As String) As Collection
+    Set findFilesInDir = New Collection
+
+    Dim fileName
+    
+#If Win32 Then
+    fileName = Dir(dirPath & "*" & suffix)
+    Do While fileName <> ""
+        findFilesInDir.Add fileName
+        fileName = Dir()
+    Loop
+#End If
+
+#If Mac Then
+    fileName = Dir(dirPath)
+    Do While fileName <> ""
+        ' This comparison can fail incorrect on filenames than are longer than 31 chars
+        ' as Dir() returns a filename that is shortened to 31 chars (including the extension).
+        ' This is based on the filename length limit from the HFS file system.
+        If Right(fileName, Len(suffix)) = suffix Then
+            findFilesInDir.Add fileName
+        End If
+        fileName = Dir()
+    Loop
+#End If
+
+End Function
+
+Sub testRefreshDocument()
+    Dim testsPath As String
+    Dim documentName As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+    
+    outputPath = outputPath & "refreshDocument" & DIR_SEPARATOR
+    
+    Dim fileList As Collection
+    Set fileList = findFilesInDir(testsPath, "-win.docx")
+    
+    Dim fileName
+    
+    For Each fileName In fileList
+        documentName = Left(fileName, Len(fileName) - 5)
+        
+        Set theAppEventHandler.App = Nothing
+        Application.Documents.Open (testsPath & documentName & ".docx")
+        
+        ' Export as expected text file
+        Call saveActiveDocumentAsText(outputPath & documentName & "-expected.txt")
+        
+        ' refresh and export actual xml
+        If Not refreshDocument(False) Then
+            ActiveDocument.range.Text = "refreshDocument() failed"
+        End If
+        
+        Call saveActiveDocumentAsText(outputPath & documentName & "-actual.txt")
+        Call ActiveDocument.SaveAs(outputPath & documentName & ".docx", wdFormatXMLDocument)
+        
+        Call ActiveDocument.Close
+    Next
+End Sub
+
+Sub testExportOpenOfficeSimple()
+    Dim testsPath As String
+    Dim documentName As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+    
+    ' uninitialize
+    Set theAppEventHandler.App = Nothing
+
+    ' do test
+    Call exportOpenOfficeAndSave("exportOO", False, outputPath)
+    
+    ' same test with track changes on
+    Call exportOpenOfficeAndSave("exportOO-TC", True, outputPath)
+End Sub
+
+Sub exportOpenOfficeAndSave(testname As String, trackChanges As Boolean, outputPath As String)
+
+    Call Application.Documents.Add
+
+    If trackChanges Then
+        ActiveDocument.TrackRevisions = True
+        ActiveDocument.ShowRevisions = True
+    End If
+
+    ' Add a citation and bibliogrphy
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    ActiveDocument.range.InsertAfter (" some more test" & vbCrLf & "New paragraph." & vbCrLf)
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call insertBibliography
+    
+    ' Export as expected text file
+    Call saveActiveDocumentAsText(outputPath & testname & "-expected.txt")
+    
+    Dim exportedFilename As String
+    exportedFilename = outputPath & testname & "-exported.doc"
+    
+    ' output as oo compatible
+    Application.DisplayAlerts = wdAlertsNone
+    Call privateExportCompatibleOpenOffice(exportedFilename)
+    Application.DisplayAlerts = wdAlertsAll
+    ActiveDocument.Saved = True
+    Call ActiveDocument.Close
+    Application.Documents.Open (outputPath & testname & "-exported.doc")
+    
+    Call saveActiveDocumentAsText(outputPath & testname & "-actual.txt")
+    
+    Call ActiveDocument.Close
+    
+    ' clean up .doc so it's not read when doing the next test
+    ' Note that the Kill() function will fail on Mac if the file name length is > 31 chars
+    Call Kill(outputPath & testname & "-exported.doc")
+End Sub
+
+Sub testExportWithoutFieldsSimple()
+    Dim testsPath As String
+    Dim documentName As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+    
+    ' uninitialize
+    Set theAppEventHandler.App = Nothing
+
+    Call Application.Documents.Add
+    
+    ' Add a citation and bibliogrphy
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    ActiveDocument.range.InsertAfter (" some more test" & vbCrLf & "New paragraph." & vbCrLf)
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call insertBibliography
+    
+    ' Export as expected text file
+    Call saveActiveDocumentAsText(outputPath & "exportWithoutFields-expected.txt")
+    
+    Dim exportedFilename As String
+    exportedFilename = outputPath & "exportWithoutFields-exported.doc"
+    
+    ' output without mendeley fields
+    Call removeMendeleyFields(ActiveDocument())
+    Application.DisplayAlerts = wdAlertsNone
+    Call ActiveDocument.SaveAs(exportedFilename, wdFormatDocument)
+    Application.DisplayAlerts = wdAlertsAll
+    Call ActiveDocument.Close
+    Application.Documents.Open (outputPath & "exportWithoutFields-exported.doc")
+    
+    Call saveActiveDocumentAsText(outputPath & "exportWithoutFields-actual.txt")
+    
+    Call ActiveDocument.Close
+    
+    ' clean up .doc so it's not read when doing the refreshDocuments test
+    Call Kill(outputPath & "exportWithoutFields-exported.doc")
+End Sub
+
+' this would be a better test since it's a real document with more complexity,
+' but currently there's a bug which needs fixing (#17064) so it's disabled
+Sub testExportOpenOfficeFromFile()
+    Dim testsPath As String
+    Dim documentName As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+        
+    ' search for all -win.docx files
+    Dim fileName
+    fileName = Dir(testsPath & "*-win.docx")
+    
+    If fileName = "" Then
+        MsgBox "Whoops, file not found"
+    End If
+    
+    Set theAppEventHandler.App = Nothing
+    Application.Documents.Open (testsPath & fileName)
+    
+    ' refresh and export expected xml
+    If Not refreshDocument(False) Then
+        ActiveDocument.range.Text = "refreshDocument() failed"
+    End If
+    
+    ' Export as expected text file
+    Call saveActiveDocumentAsText(outputPath & "exportOO-expected.txt")
+    
+    Dim exportedFilename As String
+    exportedFilename = outputPath & "exportOO-exported.doc"
+    
+    ' output as oo compatible
+    Call privateExportCompatibleOpenOffice(exportedFilename)
+    Call ActiveDocument.Close
+    Application.Documents.Open (outputPath & "exportOO-exported.doc")
+    
+    Call saveActiveDocumentAsText(outputPath & "exportOO-actual.txt")
+End Sub
+
+Sub testInsertCitation()
+    Dim testsPath As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+
+    ' uninitialize
+    Set theAppEventHandler.App = Nothing
+
+    Call Application.Documents.Add
+    
+    ' Add a citation at start
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    ActiveDocument.range.InsertAfter (" some more test" & vbCrLf & "New paragraph.")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{326b9818-4dcf-4825-91bb-8f1ac8878410}")
+    
+    Call saveActiveDocumentAsText(outputPath & "insertCitation.txt")
+    
+    Call ActiveDocument.Close
+End Sub
+
+Sub testChangeCitationStyle()
+    Dim testsPath As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+
+    ' uninitialize
+    Set theAppEventHandler.App = Nothing
+
+    Call Application.Documents.Add
+    
+    ' Add a citation at start
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    ActiveDocument.range.InsertAfter (" ")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{326b9818-4dcf-4825-91bb-8f1ac8878410}")
+    
+    Call setCitationStyle("http://www.zotero.org/styles/apa")
+    Call refreshDocument(False)
+    Call saveActiveDocumentAsText(outputPath & "changeCitationStyle-APA.txt")
+    
+    Call setCitationStyle("http://www.zotero.org/styles/ieee")
+    Call refreshDocument(False)
+    Call saveActiveDocumentAsText(outputPath & "changeCitationStyle-IEEE.txt")
+    
+    Call ActiveDocument.Close
+End Sub
+
+
+Sub testEditCitation()
+    Dim testsPath As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+
+    ' This creates a citation, selects it, then inserts a new citation over the old one.
+    ' From the VBA code point of view, this is the same code path as when a user selects
+    ' an existing citation, clicks 'Edit Citation', and replaces it with a different one
+
+    ' uninitialize
+    Set theAppEventHandler.App = Nothing
+
+    Call Application.Documents.Add
+    
+    ' Add a citation at start
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    
+    Call saveActiveDocumentAsText(outputPath & "editCitation1.txt")
+    
+    ' Place cursor within the new citation
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseStart)
+    Call Selection.MoveRight(wdCharacter, 1)
+    
+    ' Add new citation within first one (will act as an edit and replace the first one)
+    Call privateInsertCitation(, "{326b9818-4dcf-4825-91bb-8f1ac8878410}")
+    
+    Call saveActiveDocumentAsText(outputPath & "editCitation2.txt")
+    Call ActiveDocument.Close
+End Sub
+
+Sub testMergeCitations()
+    Dim testsPath As String
+    Dim outputPath As String
+    Call initTests(testsPath, outputPath)
+    
+    ' uninitialize
+    Set theAppEventHandler.App = Nothing
+
+    Call Application.Documents.Add
+    
+    ' Merge two citations with a single space gap
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    ActiveDocument.range.InsertAfter (" ")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{326b9818-4dcf-4825-91bb-8f1ac8878410}")
+        
+    Call ActiveDocument.Select
+    Call mergeCitations
+    
+    Call saveActiveDocumentAsText(outputPath & "mergeCitationsSingleGap.txt")
+    
+    ' Merge with no gap
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{2d9023c5-858d-4df5-85dc-5714c5bf5379}")
+    
+    Call ActiveDocument.Select
+    Call mergeCitations
+    
+    Call saveActiveDocumentAsText(outputPath & "mergeCitationsNoGap.txt")
+    
+    ' Merge with multiple characters gap
+    ActiveDocument.range.InsertAfter ("gap")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{37d387ab-0350-4d3d-8e58-6ae30e420c7e}")
+    
+    Call ActiveDocument.Select
+    Call mergeCitations
+    
+    Call saveActiveDocumentAsText(outputPath & "mergeCitationsMultipleCharacterGap.txt")
+    
+    ' Merge four citations
+    ActiveDocument.Select
+    Selection.Delete
+    ActiveDocument.range.InsertAfter ("gap")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    ActiveDocument.range.InsertAfter ("gap")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{326b9818-4dcf-4825-91bb-8f1ac8878410}")
+    ActiveDocument.range.InsertAfter ("gap")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{2d9023c5-858d-4df5-85dc-5714c5bf5379}")
+    ActiveDocument.range.InsertAfter ("gap")
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call privateInsertCitation(, "{37d387ab-0350-4d3d-8e58-6ae30e420c7e}")
+    ActiveDocument.range.InsertAfter ("gap")
+    ActiveDocument.Select
+    
+    Call mergeCitations
+    Call saveActiveDocumentAsText(outputPath & "mergeCitationsFourAtOnce.txt")
+    
+    Call ActiveDocument.Close
+End Sub
+
+Sub testInsertBibliography()
+    Dim testsPath As String
+    Dim outputPath As String
+    Call initTests(testsPath, outputPath)
+    
+    ' uninitialize
+    Set theAppEventHandler.App = Nothing
+
+    Call Application.Documents.Add
+    
+    ' Add a citation at start
+    Call privateInsertCitation(, "{8772559a-8f94-4cb3-9840-47efda9b467d}")
+    ActiveDocument.range.InsertAfter (" some more test" & vbCrLf & "New paragraph." & vbCrLf)
+    Call ActiveDocument.Select
+    Call Selection.Collapse(wdCollapseEnd)
+    Call insertBibliography
+
+    ' Insert another bibliography, using CSL_BIBLIOGRAPHY_OLD
+    Dim thisField
+    Set thisField = fnAddMark(fnSelection(), "ADDIN " & MENDELEY_BIBLIOGRAPHY & " " & CSL_BIBLIOGRAPHY_OLD)
+    Call refreshDocument
+    
+    Call saveActiveDocumentAsText(outputPath & "insertBibliography.txt")
+    Call ActiveDocument.Close
+End Sub
+
+Sub testApplyFormatting()
+    Dim testsPath As String
+    Dim outputPath As String
+    Call initTests(testsPath, outputPath)
+    
+    ' add a field
+    Dim mark As field
+    Dim rangeToAdd
+    
+    Call Application.Documents.Add
+    
+    ' no spaces before and after
+    ActiveDocument.range.InsertAfter ("start")
+    Set rangeToAdd = ActiveDocument.range
+    rangeToAdd.Collapse (wdCollapseEnd)
+    Set mark = fnAddMark(rangeToAdd, "test field 2")
+    ActiveDocument.range.InsertAfter ("end")
+    
+    Call applyFormatting("<unicode>0061</unicode>", mark)
+    
+    ' spaces before and after mark
+    ActiveDocument.range.InsertAfter (vbCrLf & "start ")
+    Set rangeToAdd = ActiveDocument.range
+    rangeToAdd.Collapse (wdCollapseEnd)
+    Set mark = fnAddMark(rangeToAdd, "test field")
+    ActiveDocument.range.InsertAfter (" end")
+    
+    Call applyFormatting("<unicode>0061</unicode>", mark)
+    
+    ' spaces before and after mark and within mark
+    ActiveDocument.range.InsertAfter (vbCrLf & "start ")
+    Set rangeToAdd = ActiveDocument.range
+    rangeToAdd.Collapse (wdCollapseEnd)
+    Set mark = fnAddMark(rangeToAdd, "test field")
+    ActiveDocument.range.InsertAfter (" end")
+    
+    Call applyFormatting(" <unicode>0061</unicode> ", mark)
+    
+    ActiveDocument.range.InsertAfter (vbCrLf & "start ")
+    Set rangeToAdd = ActiveDocument.range
+    rangeToAdd.Collapse (wdCollapseEnd)
+    Set mark = fnAddMark(rangeToAdd, "test field")
+    ActiveDocument.range.InsertAfter (" end")
+    
+    Call applyFormatting(" <b>bold</b> ", mark)
+    
+    Call saveActiveDocumentAsText(outputPath & "applyFormatting.txt")
+   
+    Call ActiveDocument.Close
+End Sub
+
+Sub testSaveRecentStyles()
+    Dim testsPath As String
+    Dim outputPath As String
+    
+    Call initTests(testsPath, outputPath)
+    
+    Dim originalCount As Integer
+    originalCount = StyleListModel.count()
+
+    Call StyleListModel.saveRecentStylesToDocument
+    Call StyleListModel.readRecentStylesFromDocument
+    
+    Debug.Assert (StyleListModel.count() = originalCount)
+End Sub
+
+Sub testProjectName()
+#If Win32 Then
+        Debug.Assert (ThisDocument.VBProject.name = "MendeleyPlugin")
+#End If
+End Sub
+Attribute VB_Name = "StyleComboBoxEventHandler"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+Option Explicit
+
+' Event handlers for style selector combobox in Word for Windows.
+' This is not used on Mac as Mac Word 2011 does not support events for CommandBarComboBox
+Public WithEvents ComboBox As CommandBarComboBox
+Attribute ComboBox.VB_VarHelpID = -1
+
+' Listen for when the user changes the selected style.
+' This event is not available on Mac
+Private Sub ComboBox_Change(ByVal ctrl As CommandBarComboBox)
+    If uiDisabled Then
+        Exit Sub
+    End If
+    If Not DEBUG_MODE Then
+        On Error GoTo EndOfSub
+    End If
+    uiDisabled = True
+
+    Call updateStyleFromComboBox
+    Call refreshDocument
+    
+EndOfSub:
+    uiDisabled = False
+End Sub
+Attribute VB_Name = "StyleListModel"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+' StyleListModel is a model for the recently used style list displayed
+' in the combobox in the Mendeley toolbar/ribbon section.
+
+' Call refreshStyles() to update the list of recently used styles from
+' Mendeley Desktop (if running) or the list saved in the document itself
+' (if there is one)
+
+Private styleIds As Collection
+Private styleNames As Collection
+
+' Fetch the list of recent styles from Mendeley Desktop (if running)
+' or the list of recent styles saved in the active document otherwise
+'
+' If 'fetchStyles' is false, the list of styles is not fetched from
+' Mendeley Desktop even if it is running
+Public Sub refreshStyles(Optional fetchStyles As Boolean = True)
+    If fetchStyles Then
+        ' isMendeleyRunning() may trigger initialization of the Mendeley Word Plugin.
+        ' We avoid this if we have been asked not to fetch styles from Mendeley
+        If isMendeleyRunning() Then
+            Call clearStyles
+            
+            Dim newStyleIds() As String
+            Dim newStyleNames() As String
+            
+            Call mendeleyApiClient().getRecentStyles(newStyleIds, newStyleNames)
+                
+            Dim index As Long
+            For index = LBound(newStyleIds) To UBound(newStyleIds)
+                styleIds.Add newStyleIds(index)
+                styleNames.Add newStyleNames(index)
+            Next
+                
+            Call saveRecentStylesToDocument
+        End If
+    Else
+        Call readRecentStylesFromDocument
+    End If
+End Sub
+
+Private Sub clearStyles()
+    Set styleNames = New Collection
+    Set styleIds = New Collection
+End Sub
+' Save the list of recently used styles in the active document
+Public Sub saveRecentStylesToDocument()
+    Dim index As Long
+    For index = 1 To styleIds.count()
+        Dim id As String
+        Dim name As String
+        id = styleIds(index)
+        name = styleNames(index)
+        Call ZoteroLib.subSetProperty(RECENT_STYLE_ID & " " & index - 1, id)
+        Call ZoteroLib.subSetProperty(RECENT_STYLE_NAME & " " & index - 1, name)
+    Next
+End Sub
+' Read the list of recently used styles from the document's properties
+Public Sub readRecentStylesFromDocument()
+    Call clearStyles
+    
+    Dim index As Long
+    Dim styleId As String
+    Dim styleName As String
+    
+    index = 0
+    
+    While True
+        styleId = fnGetProperty(RECENT_STYLE_ID & " " & index)
+        styleName = fnGetProperty(RECENT_STYLE_NAME & " " & index)
+        
+        If styleId = "" Then
+            Exit Sub
+        Else
+            styleIds.Add styleId
+            styleNames.Add styleName
+        End If
+                
+        index = index + 1
+    Wend
+End Sub
+' Return the name for a given style ID
+Public Function nameForStyle(styleId As String) As String
+    Dim index As Long
+    index = indexFromStyleId(styleId)
+    If index <> 0 Then
+        nameForStyle = styleNames(index)
+    End If
+End Function
+
+' Return the index of a given style ID in the list of recently used styles
+Public Function indexFromStyleId(styleId As String) As Long
+    Dim index As Long
+    For index = 1 To styleIds.count()
+        If styleIds(index) = styleId Then
+            indexFromStyleId = index
+            Exit Function
+        End If
+    Next
+    indexFromStyleId = 0
+End Function
+
+' Returns the style ID for the index'th recently used style.  'index' is 1-based
+Public Function styleIdFromIndex(index As Long) As String
+    If index > 0 And index <= styleIds.count() Then
+        styleIdFromIndex = styleIds(index)
+    Else
+        styleIdFromIndex = ""
+    End If
+End Function
+
+' Returns the style name for the index'th recently used style.  'index' is 1-based.
+Public Function styleNameFromIndex(index As Long) As String
+    If index > 0 And index <= styleIds.count Then
+        styleNameFromIndex = styleNames(index)
+    Else
+        styleNameFromIndex = ""
+    End If
+End Function
+
+' Returns the number of recently used styles
+Public Function count() As String
+    count = styleIds.count()
+End Function
+
+Private Sub Class_Initialize()
+    Call clearStyles
+End Sub
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ZoteroLib"
+' ***** BEGIN LICENSE BLOCK *****
+'
+' Copyright (c) 2009-2013 Mendeley Ltd.
+' Copyright (c) 2006 Center for History and New Media
+'                    George Mason University, Fairfax, Virginia, USA
+'                    http://chnm.gmu.edu
+'
+' Licensed under the Educational Community License, Version 1.0 (the "License");
+' you may not use this file except in compliance with the License.
+' You may obtain a copy of the License at
+'
+' http://www.opensource.org/licenses/ecl1.php
+'
+' Unless required by applicable law or agreed to in writing, software
+' distributed under the License is distributed on an "AS IS" BASIS,
+' WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+' See the License for the specific language governing permissions and
+' limitations under the License.
+'
+' ***** END LICENSE BLOCK *****
+
+' All the following functions were originally copied from the Zotero code base
+' (https://www.zotero.org/svn/integration/ice/trunk/plugin.vb - revision 3444)
+' and have been modified to work properly with the rest of the Mendeley code
+
+' Gets a tag from the document properties
+Function fnGetProperty(sProperty As String) As String
+    Dim sPropertyName As String, i As Long, sPropertyValue As String
+    i = 0
+    
+    On Error GoTo EndOfFunction
+    
+    While (True)
+        i = i + 1
+        sPropertyName = sProperty & "_" & i
+        
+            fnGetProperty = fnGetProperty & ActiveDocument.CustomDocumentProperties(sPropertyName).value
+    Wend
+EndOfFunction:
+    Exit Function
+End Function
+
+' Sets a tag from the document properties
+Function subSetProperty(sProperty As String, ByVal sValue As String) As String
+    Dim nProperties As Long, nIterations As Long, i As Long
+    Dim sPropertyName As String, sPropertyValue As String
+    
+        If Application.Documents.count = 0 Then
+            Exit Function
+        End If
+    
+    If sValue = "" Then
+        nProperties = 0
+    Else
+        ' fake ceil function
+        nProperties = -Int(-Len(sValue) / MAX_PROPERTY_LENGTH)
+        
+        For i = 1 To nProperties
+            sPropertyName = sProperty & "_" & i
+            sPropertyValue = Mid(sValue, (i - 1) * MAX_PROPERTY_LENGTH + 1, MAX_PROPERTY_LENGTH)
+            
+                On Error GoTo AddProperty
+                ActiveDocument.CustomDocumentProperties(sPropertyName).value = sPropertyValue
+                On Error GoTo 0
+        Next
+    End If
+    
+    ' delete extra fields
+    On Error GoTo EndOfFunction
+    While (True)
+        nProperties = nProperties + 1
+        sPropertyName = sProperty & "_" & nProperties
+        
+            ActiveDocument.CustomDocumentProperties(sPropertyName).Delete
+    Wend
+    Exit Function
+AddProperty:
+    ActiveDocument.CustomDocumentProperties.Add name:=sPropertyName, _
+        LinkToContent:=False, value:=sPropertyValue, Type:=msoPropertyTypeString
+    Resume Next
+EndOfFunction:
+End Function
+
+'Returns the current selection
+Function fnSelection()
+        Set fnSelection = Selection.range
+End Function
+
+Function fnOOoObject(oObject) As Object
+    If Not IsNull(oObject.bookmark) And Not IsEmpty(oObject.bookmark) Then
+        fnOOoObject = oObject.bookmark
+    ElseIf Not IsNull(oObject.ReferenceMark) And Not IsEmpty(oObject.ReferenceMark) Then
+        fnOOoObject = oObject.ReferenceMark
+    ElseIf Not IsNull(oObject.TextSection) And Not IsEmpty(oObject.TextSection) Then
+        fnOOoObject = oObject.TextSection
+    End If
+End Function
+
+' Adds a mark (field, bookmark, or reference mark) with name sName at location oRange
+Function fnAddMark(oRange, sName As String) 'As Field
+    Dim i As Long, sBasename As String, oField
+    Dim nOldStoryRange As Long, nOldField As Long
+    Dim nNewStoryRange As Long, nNewField As Long
+    Dim oBookmarks, sMarkText As String
+
+    ActiveDocument.ActiveWindow.View.ShowFieldCodes = False
+    
+    ' Escape if necessary
+    If ZoteroUseBookmarks Then
+        sName = fnSetFullBookmarkName(sName)
+    End If
+    
+    ' Add Zotero mark
+    If InStr(sName, MENDELEY_BIBLIOGRAPHY) > 0 Then
+        sMarkText = BIBLIOGRAPHY_TEXT
+    ElseIf InStr(sName, MENDELEY_CITATION_EDITOR) > 0 Then
+        sMarkText = CITATION_EDIT_TEXT
+        sName = MENDELEY_CITATION
+    Else
+        sMarkText = INSERT_CITATION_TEXT
+    End If
+    
+        If ZoteroUseBookmarks Then
+            Set oBookmarks = ActiveDocument.StoryRanges(oRange.StoryType).Bookmarks
+            oRange.InsertBefore sMarkText
+            'Allow for more than one bibliography by creatig a unique bookmark name.
+            If InStr(sName, "ZOTERO_BIBL") > 0 Then
+                oRange.InsertBefore BIBLIOGRAPHY_TEXT
+                i = 0
+                sBasename = sName
+                While oBookmarks.Exists(sName)
+                   i = i + 1
+                   sName = sBasename & i
+                Wend
+            End If
+            oBookmarks.Add range:=oRange, name:=sName
+            'Under some conditions the following command fails in Word2000
+            'Known condition: only one foot/end note and after 2nd change from note style
+            Set fnAddMark = oBookmarks.item(sName)
+        Else
+            ' For Word fields using the ADDIN field, for which, unfortunately, Microsoft provides
+            ' virtually no documentation. If the field is created directly as an ADDIN, it does not
+            ' always behave as you would expect. It behaves better if you create it as a different
+            ' type of field (the combination 'Type:=wdFieldQuote, text:=" ... "' seems to
+            ' work well), then change the field's Code.text to " ADDIN ... ", and let Word change the
+            ' type to wdFieldAddin.
+            Set oField = ActiveDocument.fields.Add(oRange, Type:=wdFieldQuote, Text:=sMarkText)
+            ' Changing Zotero code here:
+            'oField.Code.Text = " ADDIN " & sName & " "
+            oField.code.Text = sName
+            oField.result.Text = sMarkText
+            Set oRange = oField.code
+            oRange.SetRange Start:=oRange.Start - 1, End:=oRange.End + 1
+            Set fnAddMark = oField
+            oField.result.LanguageID = wdNoProofing
+        End If
+End Function
+
+' Saves sName in document properties, if necessary, then returns the appropriate bookmark name
+Function fnSetFullBookmarkName(sName) As String
+    Dim nStringLength As Long
+    
+    ' Set property
+    fnSetFullBookmarkName = ZOTERO_BOOKMARK_REFERENCE_PROPERTY & "_" & fnGenerateRandomString(BOOKMARK_ID_STRING_LENGTH)
+    Call subSetProperty(fnSetFullBookmarkName, sName)
+End Function
+
+Function fnRenameMark(oMark, sNewname As String)
+        Select Case TypeName(oMark)
+        Case "Field"
+            oMark.code.Text = sNewname
+        Case "Bookmark"
+            If (Left(oMark.name, 11) = "ZOTERO_BREF") Then
+                Call subSetProperty(oMark.name, "")
+            Else
+                sNewname = fnSetFullBookmarkName(sNewname)
+                'Dim nStoryType As Long
+                oMark.Copy sNewname
+                oMark.Delete
+                'Set oMark = ActiveDocument.StoryRanges(nStoryType).Bookmarks.Item(sNewname)
+                Set oMark = ActiveDocument.Bookmarks.item(sNewname)
+            End If
+        End Select
+    Set fnRenameMark = oMark
+End Function
+
+Function getMarkName(mark) As String
+        Select Case TypeName(mark)
+        Case "Field"
+            getMarkName = getMarkContent(mark, "Name")
+        Case "Bookmark"
+            getMarkName = mark.name
+        End Select
+End Function
+
+Function getMarkText(mark) As String
+        Select Case TypeName(mark)
+        Case "Field"
+            getMarkText = getMarkContent(mark, "Text")
+        Case "Bookmark"
+            getMarkText = mark.range.Text
+        End Select
+End Function
+
+' This function is called many times (at least 2 per field). If you change/refactor it
+' please benchmark it with a fairly large document (at least 150 citations) and on Mac
+' and Windows.
+' The 'if' block repetition is to avoid calling a two extra functions which seems a bit
+' slow on VBA Mac.
+Function getMarkContent(mark, content As String) As String
+    Dim markAllCaps As Long
+
+    If content = "Name" Then
+        getMarkContent = mark.code.Text
+        If isAllCaps(mark.code.Text) Then
+            markAllCaps = mark.code.Font.AllCaps
+            mark.code.Font.AllCaps = 0
+            getMarkContent = mark.code.Text
+            mark.code.Font.AllCaps = markAllCaps
+        End If
+    ElseIf content = "Text" Then
+        getMarkContent = mark.result.Text
+        
+        ' Calls isAllCaps(mark.code.Text) and not mark.result.Text
+        ' because on numeric citations would always return true
+        If isAllCaps(mark.code.Text) Then
+            markAllCaps = mark.result.Font.AllCaps
+            mark.result.Font.AllCaps = 0
+            getMarkContent = mark.result.Text
+            mark.result.Font.AllCaps = markAllCaps
+        End If
+    End If
+End Function
+
+
+Function isAllCaps(field) As Boolean
+    For i = 1 To Len(field)
+        Dim ascii As Integer
+        ascii = Asc(Mid(field, i, 1))
+        
+        If ascii >= Asc("a") And ascii <= Asc("z") Then
+            isAllCaps = False
+            Exit Function
+        End If
+    Next
+    isAllCaps = True
+End Function
+
+
+' NOTE: getMarkTextWithFormattingTags() and getTaggedRichTextFromRange() are not being
+'       currently used because they are too slow to use on all citations in a document.
+'       Keeping the code here just in case they can be optimised, or for occassional use
+Function getMarkTextWithFormattingTags(mark) As String
+        Select Case TypeName(mark)
+        Case "Field"
+            getMarkTextWithFormattingTags = getTaggedRichTextFromRange(mark.result)
+        Case "Bookmark"
+            getMarkTextWithFormattingTags = mark.range.Text
+        End Select
+End Function
+
+Function getTaggedRichTextFromRange(inputRange As range) As String
+    Dim outputString As MendeleyDataTypes.DynamicStringType
+    outputString = DynamicStringInit(Len(inputRange.Text))
+    
+    Dim positionInRange As Long
+    Dim duplicateRange As range
+    
+    Set duplicateRange = inputRange.Duplicate
+    
+    ' iterate through range one character at a time, adding tags as appropriate when
+    ' any of the formatting styles are toggled
+    
+    Dim bold As Boolean
+    Dim boldPrev As Boolean
+    Dim italic As Boolean
+    Dim italicPrev As Boolean
+    Dim underline As Boolean
+    Dim underlinePrev As Boolean
+    Dim superscript As Boolean
+    Dim superscriptPrev As Boolean
+    Dim subscript As Boolean
+    Dim subscriptPrev As Boolean
+    
+    For positionInRange = inputRange.Start - 1 To inputRange.End
+        boldPrev = bold
+        italicPrev = italic
+        underlinePrev = underline
+        superscriptPrev = superscript
+        subscriptPrev = subscript
+    
+        ' update values
+    
+        duplicateRange.Start = positionInRange
+        duplicateRange.End = positionInRange + 1
+        
+        bold = duplicateRange.bold
+        italic = duplicateRange.italic
+        underline = duplicateRange.underline
+        
+        ' just checking...
+        If duplicateRange.bold <> duplicateRange.Font.bold Then
+            MsgBox "ASSERT fail: Range.bold <> Range.Font.bold"
+        End If
+        
+        superscript = duplicateRange.Font.superscript
+        subscript = duplicateRange.Font.subscript
+        
+        ' add opening tags where necessary
+        If bold And Not boldPrev Then
+            outputString = DynamicStringAppend(outputString, "<bold>")
+        End If
+        If italic And Not italicPrev Then
+            outputString = DynamicStringAppend(outputString, "<italic>")
+        End If
+        If underline And Not underlinePrev Then
+            outputString = DynamicStringAppend(outputString, "<underline>")
+        End If
+        If superscript And Not superscriptPrev Then
+            outputString = DynamicStringAppend(outputString, "<superscript>")
+        End If
+        If subscript And Not subscriptPrev Then
+            outputString = DynamicStringAppend(outputString, "<subscript>")
+        End If
+        
+        ' add closing tags where necessary
+        If Not subscript And subscriptPrev Then
+            outputString = DynamicStringAppend(outputString, "</subscript>")
+        End If
+        If Not superscript And superscriptPrev Then
+            outputString = DynamicStringAppend(outputString, "</superscript>")
+        End If
+        If Not underline And underlinePrev Then
+            outputString = DynamicStringAppend(outputString, "</underline>")
+        End If
+        If Not italic And italicPrev Then
+            outputString = DynamicStringAppend(outputString, "</italic>")
+        End If
+        If Not bold And boldPrev Then
+            outputString = DynamicStringAppend(outputString, "</bold>")
+        End If
+        
+        ' add character
+        outputString = DynamicStringAppend(outputString, duplicateRange.Text)
+    Next
+    
+    getTaggedRichTextFromRange = DynamicStringGet(outputString)
+End Function
+
+Sub testGetTaggedRichTextFromRange()
+    Dim testRange As range
+    Set testRange = ActiveDocument.range.Duplicate
+    testRange.Collapse (wdCollapseEnd)
+
+    Dim markup As String
+    markup = "<b>test with <i>different</b> formatting</i> options"
+    
+    Dim testField As field
+    Set testField = ActiveDocument.fields.Add(testRange, wdFieldQuote, markup)
+    
+    Call applyFormatting(markup, testField)
+    
+    Dim retreivedMarkup As String
+    
+    Dim i As Integer
+    'For i = 1 To 100
+        retreivedMarkup = getTaggedRichTextFromRange(testField.result)
+    'Next i
+    
+    MsgBox retreivedMarkup
+End Sub
+
+Sub randomizeIfNeccessary()
+    If seedGenerated Then
+        Exit Sub
+    End If
+
+    ' generates a seed between -32500 and 32500
+    Dim longNumber As Long
+    longNumber = 24& * 60 * 60 * Day(Date) + 60& * 60 * Hour(Time()) + 60& * Minute(Time()) + Second(Time())
+    
+    Dim integerSeed As Integer
+    integerSeed = (longNumber Mod 65000) - 32500
+    
+    Call Randomize(integerSeed)
+    
+    seedGenerated = True
+End Sub
+
+' Generates a random string
+Function fnGenerateRandomString(nLength) As String
+    Dim i As Long, nRandom As Long
+    
+    Call randomizeIfNeccessary
+    
+    For i = 1 To nLength
+        ' use alphanumerics
+        nRandom = Int((26 * 2 + 10) * Rnd)
+        If (nRandom < 10) Then
+            nRandom = nRandom + 48
+        ElseIf (nRandom < (26 + 10)) Then
+            nRandom = nRandom + 65 - 10
+        Else
+            nRandom = nRandom + 97 - (26 + 10)
+        End If
+        fnGenerateRandomString = fnGenerateRandomString & Chr(nRandom)
+    Next
+End Function
+
+Function getMarksFromRange(marks As Collection, oStoryRange As Variant, bBookmarks As Boolean)
+    Dim oBookmark As Variant
+    Dim oField As Variant
+
+    For Each oBookmark In oStoryRange.Bookmarks
+        If IsObjectValid(oBookmark) Then
+            If InStr(oBookmark.name, "Mendeley_") > 0 Or InStr(oBookmark.name, CSL_CITATION) Then
+                If bBookmarks Then
+                    marks.Add oBookmark
+                Else
+                    Call fnConvert(oBookmark)
+                End If
+            End If
+        End If
+    Next
+
+    For Each oField In oStoryRange.fields
+            If InStr(oField.code.Text, "Mendeley ") > 0 Or InStr(oField.code.Text, CSL_CITATION) > 0 Then
+                If Not bBookmarks Then
+                    oField.result.LanguageID = wdNoProofing
+                    marks.Add oField
+                Else
+                    marks.Add fnConvert(oField)
+                End If
+        End If
+    Next oField
+End Function
+
+Function fnGetMarks(bBookmarks As Boolean)
+    Dim oStoryRange
+    Dim textFrameStoryRange As Variant
+    Dim marks As Collection
+    Set marks = New Collection
+
+        For Each oStoryRange In ActiveDocument.StoryRanges
+            If oStoryRange.StoryType = wdMainTextStory Or _
+                oStoryRange.StoryType = wdFootnotesStory Or _
+                oStoryRange.StoryType = wdEndnotesStory Then
+                
+                Call getMarksFromRange(marks, oStoryRange, bBookmarks)
+        ElseIf oStoryRange.StoryType = wdTextFrameStory Then
+            Set textFrameStoryRange = oStoryRange
+
+            While textFrameStoryRange Is Nothing = False
+                Call getMarksFromRange(marks, textFrameStoryRange, bBookmarks)
+                Set textFrameStoryRange = textFrameStoryRange.NextStoryRange
+            Wend
+        End If
+    Next
+    
+    Set fnGetMarks = marks
+End Function
+
+Sub subShellSort(mArray)
+    'Based on a routine available from: http://www.oopweb.com/Algorithms/Documents/Sman/Volume/s_vss.txt
+    Dim n As Long, h As Long, i As Long, j As Long, t, Ub As Long, LB As Long
+    Dim nSR As Long, nFN As Long
+    
+    LB = LBound(mArray)
+    Ub = UBound(mArray)
+    
+    ' compute largest increment
+    n = Ub - LB + 1
+    h = 1
+    If n > 14 Then
+        Do While h < n
+            h = 3 * h + 1
+        Loop
+        h = h \ 3
+        h = h \ 3
+    End If
+    Do While h > 0
+    ' sort by insertion in increments of h
+        For i = LB + h To Ub
+            t = mArray(i)
+            For j = i - h To LB Step -h
+                If fnRangeComp(mArray(j), t) Then Exit For
+                mArray(j + h) = mArray(j)
+            Next j
+            mArray(j + h) = t
+        Next i
+        h = h \ 3
+    Loop
+End Sub
+
+Function fnRangeComp(m1, m2) As Boolean
+    'Needed for the sort routine in OOo to get marks in correct order.
+    Dim oR1, oR2, nLT1 As Long, nLT2 As Long
+    
+    Dim currentSelection
+    Dim previousSelection
+    Dim range1TableSelection
+    Dim range2TableSelection
+    
+    Dim beforeRange1
+    Dim beforeRange2
+    
+    oR1 = fnMarkRange(m1)
+    oR2 = fnMarkRange(m2)
+    nLT1 = fnLocationType(oR1)
+    nLT2 = fnLocationType(oR2)
+    
+    currentSelection = ThisComponent.getCurrentController().getViewCursor()
+    ' remember the current selection in-case we have to move it to find a table position
+    previousSelection = currentSelection.getText().createTextCursorByRange(currentSelection)
+    
+    If nLT1 = ZOTERO_TABLE Then
+        ThisComponent.getCurrentController().Select (oR1.TextTable)
+        Call currentSelection.goLeft(1, False)
+        range1TableSelection = currentSelection.getText().createTextCursorByRange(currentSelection)
+    End If
+    
+    If nLT2 = ZOTERO_TABLE Then
+        ThisComponent.getCurrentController().Select (oR2.TextTable)
+        Call currentSelection.goLeft(1, False)
+        range2TableSelection = currentSelection.getText().createTextCursorByRange(currentSelection)
+    End If
+    
+    If nLT1 = ZOTERO_TABLE And nLT2 = ZOTERO_TABLE Then
+        If oR1.TextTable.LinkDisplayName = oR2.TextTable.LinkDisplayName Then
+            If IsEmpty(oR1.Cell) = False And IsEmpty(oR2.Cell) = False Then
+                Dim cellNameCompare As Long
+                cellNameCompare = isCellNameBigger(oR1.Cell.CellName, oR2.Cell.CellName)
+                
+                ' If both in same cell need to compare
+                If cellNameCompare = True Or cellNameCompare = False Then
+                    fnRangeComp = cellNameCompare
+                Else
+                    fnRangeComp = oR1.Cell.Text.compareRegionStarts(oR1, oR2)
+                End If
+            End If
+        Else
+            Dim temp
+        
+            ' Just creating a valid range to use as an argument for calling compareRegionStarts
+            ' Not important that it's the document start
+            Dim docStart
+            docStart = ThisComponent.Text.getStart()
+            
+            ' if compareRegionStarts() throws an exception we know that the table is at the start of the document
+            On Error GoTo Range1AtStart
+            temp = ThisComponent.Text.compareRegionStarts(docStart, range1TableSelection)
+            On Error GoTo Range2AtStart
+            temp = ThisComponent.Text.compareRegionStarts(docStart, range2TableSelection)
+        
+            fnRangeComp = ThisComponent.Text.compareRegionStarts(range1TableSelection, range2TableSelection) > 0
+        End If
+    ElseIf nLT1 = ZOTERO_TABLE And nLT1 <> nLT2 Then
+        On Error GoTo Range1AtStart
+        fnRangeComp = ThisComponent.Text.compareRegionStarts(range1TableSelection, oR2) > 0
+    ElseIf nLT2 = ZOTERO_TABLE And nLT1 <> nLT2 Then
+        On Error GoTo Range2AtStart
+        fnRangeComp = ThisComponent.Text.compareRegionStarts(oR1, range2TableSelection) > 0
+    ElseIf nLT1 > nLT2 Then
+        fnRangeComp = True
+    ElseIf nLT1 < nLT2 Then
+        fnRangeComp = False
+    ElseIf nLT1 = ZOTERO_MAIN Then
+        fnRangeComp = ThisComponent.Text.compareRegionStarts(oR1, oR2) > 0
+    Else
+        fnRangeComp = True
+    End If
+    
+    ThisComponent.getCurrentController().Select (previousSelection)
+    Exit Function
+Range1AtStart:
+        fnRangeComp = True
+        ThisComponent.getCurrentController().Select (previousSelection)
+    Exit Function
+Range2AtStart:
+        fnRangeComp = False
+        ThisComponent.getCurrentController().Select (previousSelection)
+End Function
+
+' Receives things like A3, B6 and returns True if A3 is Bigger than B6
+' (so if it appears later in the document)
+Function isCellNameBigger(Cell1Name As String, Cell2Name As String) As Boolean
+    ' Right now only works with A-Z columns and 0-9 rows
+    isCellNameBigger = Cell1Name < Cell2Name
+End Function
+
+Function fnMarkRange(oMark)
+    Select Case TypeName(oMark)
+    Case "Field"
+        Set fnMarkRange = oMark.result
+    Case "Bookmark"
+        Set fnMarkRange = oMark.range
+    Case "Range"
+        Set fnMarkRange = oMark
+    End Select
+End Function
+
+'Depending on the location of the insertion point returns:
+'  ZOTERO_MAIN (1) if in the main body of the document
+'  ZOTERO_FOOTNOTE (2) if in a Footnote
+'  ZOTERO_ENDNOTE (3) if in an Endnote
+'  ZOTERO_ERROR otherwise
+Function fnLocationType(oRange)
+    Dim nLocation As Long, oText
+        nLocation = oRange.StoryType
+        'Poor form as I should use wdMainTextStory, wdEndnotesStory, wdFootnotesStory
+        If nLocation > 3 Then nLocation = ZOTERO_ERROR
+    fnLocationType = nLocation
+    Exit Function
+InvalidSelection:
+    fnLocationType = ZOTERO_ERROR
+End Function
+
+Sub subSetRangeText(oRange, sReplace As String)
+        oRange.Text = sReplace
+End Sub
+
+' This function, in OpenOffice, doesn't guarantee that the modified oMark is the same that it receives,
+' the callers should do oMark = subSetMarkText(oMark, "test")
+' And yes, right, pass by reference had some other problems :-/
+
+Sub subSetMarkText(oMark, sReplace As String)
+    Dim oDupRange, nLen As Long, oRange, nNextParagraphBreak As Long, nLastParagraphBreak As Long
+   
+
+        Select Case TypeName(oMark)
+        Case "Field"
+            oMark.result.Text = sReplace
+        Case "Bookmark"
+            Set oRange = fnMarkRange(oMark)
+            nLen = Len(oRange.Text)
+            oRange.Collapse
+            oRange.Text = sReplace
+            Set oDupRange = oRange.Duplicate
+            oDupRange.Collapse Direction:=wdCollapseEnd
+            oDupRange.SetRange Start:=oDupRange.End, End:=oDupRange.End + nLen
+            oDupRange.Text = ""
+        End Select
+End Sub
+
+Function fnConvert(oMark)
+    Dim oRange, sMarkName As String
+    Dim markText As String
+    
+    Dim spaceAdded As Boolean
+    spaceAdded = False
+    
+        ' add space after mark
+        If TypeName(oMark) = "Bookmark" And Not ZoteroUseBookmarks Then
+            Call addSpaceAfterBookmark(oMark)
+            spaceAdded = True
+        End If
+    
+    markText = getMarkText(oMark)
+    sMarkName = fnMarkName(oMark)
+    Set oRange = fnMarkRange(oMark)
+    
+        Dim formattingPerCharacter() As String
+        Dim startPosition As Long
+        Dim endPosition As Long
+        Dim rangeLength As Long
+        If ZoteroUseBookmarks Then
+            ' store the formatting so it can be re-applied afterwards
+            ' (couldn't find a simple way to store formatted text in a variable -
+            ' a range duplicate gets cleared when the source is deleted)
+            
+            startPosition = oRange.Start
+            endPosition = oRange.End
+            
+            rangeLength = endPosition - startPosition
+            ReDim formattingPerCharacter(rangeLength)
+            
+            Dim i As Long
+            For i = 0 To rangeLength
+                Dim character As range
+                Set character = oRange.Duplicate
+                character.Start = startPosition + i
+                character.End = startPosition + i + 1
+                
+                If character.bold Then formattingPerCharacter(i) = "b"
+                If character.italic Then formattingPerCharacter(i) = "i"
+                If character.underline Then formattingPerCharacter(i) = "u"
+            Next
+        End If
+    
+    Call subDeleteMark(oMark, True)
+    Set fnConvert = fnAddMark(oRange, sMarkName)
+
+        Call subSetMarkText(fnConvert, markText)
+    
+        If ZoteroUseBookmarks Then
+            're-apply formatting
+            Set oRange = fnMarkRange(fnConvert)
+            oRange.bold = False
+            oRange.italic = False
+            oRange.underline = False
+        oRange.Font.superscript = False
+        oRange.Font.subscript = False
+            
+            i = 0
+            Do While i < rangeLength
+                Set character = oRange.Duplicate
+                character.Start = oRange.Start + i
+                
+                Dim formatStyle As String
+                formatStyle = formattingPerCharacter(i)
+                
+                Do While Not (formatStyle = "") And (formattingPerCharacter(i) = formatStyle)
+                    i = i + 1
+                Loop
+                
+                character.End = oRange.Start + i
+                
+                If formatStyle = "b" Then character.bold = True
+                If formatStyle = "i" Then character.italic = True
+                If formatStyle = "u" Then character.underline = True
+        If formatStyle = "sup" Then character.Font.superscript = True
+        If formatStyle = "sub" Then character.Font.subscript = True
+                i = i + 1
+            Loop
+        End If
+    
+        ' remove space after field
+        If spaceAdded Then
+            Dim rangeToDelete As range
+            Set rangeToDelete = ActiveDocument.range(fnConvert.result.End, fnConvert.result.End)
+            Call rangeToDelete.Delete(Unit:=wdCharacter, count:=1)
+        End If
+End Function
+
+Sub addSpaceAfterBookmark(bookmark)
+    ' adds a space after the bookmark which doesn't become part of either this
+    ' bookmark or a subsequent, adjacent bookmark
+
+    Dim markRange As range
+    Set markRange = fnMarkRange(bookmark)
+    
+    Dim newRange As range
+    Set newRange = ActiveDocument.range(markRange.Start, markRange.End)
+    
+    newRange.InsertAfter (" ")
+    newRange.Collapse Direction:=wdCollapseEnd
+    
+    ' correct extension of subsequent bookmark if necessary
+    If newRange.Bookmarks.count > 0 Then
+        newRange.Bookmarks.item(1).Start = newRange.Bookmarks.item(1).Start + 1
+    End If
+End Sub
+
+' Grabs bookmark name from document properties, if necessary
+Function fnGetFullBookmarkName(sName As String) As String
+    If (Left(sName, Len(ZOTERO_BOOKMARK_REFERENCE_PROPERTY)) = ZOTERO_BOOKMARK_REFERENCE_PROPERTY) Then
+        ' Get property
+        fnGetFullBookmarkName = fnGetProperty(sName)
+    Else
+        fnGetFullBookmarkName = sName
+    End If
+End Function
+
+Function fnMarkName(oMark) As String
+        Select Case TypeName(oMark)
+        Case "Field"
+            'fnMarkName = Trim(Right(oMark.Code.Text, Len(oMark.Code.Text) - 7))
+            fnMarkName = oMark.code.Text
+        Case "Bookmark"
+            fnMarkName = fnGetFullBookmarkName(oMark.name)
+        End Select
+End Function
+
+Function fnPrefix(ByVal sName As String) As String
+    Dim nLoc As Long
+    
+    nLoc = InStr(sName, "MENDELEY_")
+    fnPrefix = Mid(sName, nLoc, 11)
+End Function
+
+Function fnID(sName)
+    Dim nLoc As Long
+    
+    nLoc = InStr(sName, "MENDELEY_")
+    fnID = Mid(sName, nLoc + 12, Len(sName))
+End Function
+
+' Replaces a string with another
+Function fnReplace(sString, sSearch, sReplace) As String
+        fnReplace = Replace(sString, sSearch, sReplace)
+End Function
+
+Function fnOtherTextInNote(oRange) As Boolean
+    'Dim nMarkLength As Long, nNoteLength As Long, oFootnote
+    
+        If oRange.StoryType = wdFootnotesStory Then
+            fnOtherTextInNote = (Len(oRange.Footnotes(1).range.Text) - Len(oRange.Text)) > 0
+        ElseIf oRange.StoryType = wdEndnotesStory Then
+            fnOtherTextInNote = (Len(oRange.Endnotes(1).range.Text) - Len(oRange.Text)) > 0
+        End If
+End Function
+
+Sub subDeleteNote(oRange)
+'       Set oRange = fnMainRange(oRange)
+'        oRange.Text = ""
+End Sub
+
+Sub subDeleteMark(oMark, Optional bDontDeleteNote As Boolean)
+    Dim oRange, oDupRange
+    
+    Set oRange = fnMarkRange(oMark)
+    If Not bDontDeleteNote And fnLocationType(oRange) <> ZOTERO_MAIN Then
+        If Not fnOtherTextInNote(oRange) Then
+            Call subDeleteNote(oRange)
+            Exit Sub
+        End If
+    End If
+    
+        Select Case TypeName(oMark)
+        Case "Field", "Endnote", "Footnote"
+            oMark.Delete
+        Case "Range"
+            Set oDupRange = oMark.Duplicate
+            oDupRange.SetRange Start:=oMark.Start - 1, End:=oMark.End + 1
+            If oDupRange.fields.count = 1 Then
+                oDupRange.fields(1).Delete
+                oDupRange.Text = ""
+            Else
+                oMark.Text = ""
+            End If
+        Case "Bookmark"
+            'Make sure any properties are gone
+            Call subSetProperty(oMark.name, "")
+            'Replacing or deleting the text also deletes the bookmark in MSWD
+            Dim numItems As Long
+            'Delete this way to stop word removing a space from the end of a sentence before the period
+            Dim beforeMark As range
+            Set beforeMark = ActiveDocument.range(oMark.Start, oMark.Start)
+            numItems = beforeMark.Delete(wdCharacter, oMark.End - oMark.Start)
+        End Select
+End Sub
+
+Sub ConvertMendeleyFieldToText(fld As field)
+    If isMendeleyCitationField(fld.code) Or isMendeleyBibliographyField(fld.code) Then
+        fld.Unlink
+    End If
+End Sub
+
+Function isMendeleyCitationField(code As String) As Boolean
+    isMendeleyCitationField = (startsWith(code, MENDELEY_CITATION) And Len(code) > Len(MENDELEY_CITATION)) _
+        Or (startsWith(code, MENDELEY_EDITED_CITATION) And Len(code) > Len(MENDELEY_EDITED_CITATION)) _
+        Or (startsWith(code, MENDELEY_CITATION_MAC) And Len(code) > Len(MENDELEY_CITATION_MAC)) _
+        Or InStr(code, CSL_CITATION) > 0
+End Function
+
+Function isMendeleyBibliographyField(code As String) As Boolean
+    isMendeleyBibliographyField = startsWith(code, MENDELEY_BIBLIOGRAPHY) Or startsWith(code, MENDELEY_BIBLIOGRAPHY_MAC) _
+        Or InStr(code, CSL_BIBLIOGRAPHY) > 0
+End Function
+
+Function activeDocumentPath() As String
+    activeDocumentPath = ActiveDocument.FullName
+End Function
+
+
+
+
+' InQuest injected base64 decoded content
+' { bnX
+' !bzW
+' qbzW
+' Lzw^
+' Lzw^
+' 'njT
+' *'V+"nW
+' V+"nW
+
+INQUEST-PP=macro

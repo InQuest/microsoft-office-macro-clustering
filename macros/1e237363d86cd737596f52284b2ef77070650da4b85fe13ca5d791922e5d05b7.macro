@@ -1,0 +1,1664 @@
+Attribute VB_Name = "COI_CUB_PT"
+' COI_CUB_PT module
+' This module contains Subs/Functions that help us manage CUB files and Pivot Tables with CUB files.
+' It is not aware of GP-isms (like the existing of specific dimension names); for that, see COI_GP_CUB_PT module.
+Function GetVersionInfo_COICUBPT() As String
+    GetVersionInfo_COICUBPT = "COI CUB PT 1.0 7/16/2019"
+End Function
+Sub UpdateConnections()
+    
+    UpdateConnectionsWithMode (False)
+    EnableCalculatedDimensionMembersAllWorksheets
+    
+End Sub
+Sub UpdatePivotTables()
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    Dim updateanswer As String
+    Dim warningmessageanswer As String
+    Dim warningmessage As String
+    Dim oktoupdate As Boolean
+    
+    ' Ask the user if he/she wants to update reports
+    updateanswer = MsgBox("Do you want your reports to re-read their data from the InfoStream?", vbYesNo, "Update data?")
+    ' If yes...
+    If updateanswer = vbYes Then
+        ' Resume even if we can't execute an Update, keep going
+        On Error Resume Next
+        ' Walk through worksheets
+        For Each ws In Application.Worksheets
+            ' MsgBox (ws.Name)
+            ' Check to see if this worksheet has an Update Warning. It will return "" if there's no warning.
+            warningmessage = CheckForUpdateWarning(ws)
+            oktoupdate = False
+            ' If a message is returned, then prompt the user to see if he/she wants to proceed with updating the PTs in this worksheet.
+            If warningmessage = "" Then
+                oktoupdate = True
+            Else
+                ' Pass the message to the user, and see if the user wants to proceed with updating the reports in this worksheet.
+                warningmessageanswer = MsgBox("Worksheet (" + ws.Name + ") says:" + Chr(13) + Chr(13) + warningmessage + Chr(13) + Chr(13) + "Are you sure you want to proceed with updating this worksheet's pivot tables?", vbYesNo, "Update Warning")
+                ' If yes...
+                If warningmessageanswer = vbYes Then
+                    oktoupdate = True
+                Else
+                    oktoupdate = False
+                End If
+            End If
+            
+            ' If we're ok to update, do it
+            If oktoupdate = True Then
+                For Each pt In ws.PivotTables
+                        Application.DisplayStatusBar = True
+                        Application.StatusBar = "Updating [" + ws.Name + "].[" + pt.Name + "] from InfoStream " + GetCubeFileNameFromConnectionString(pt.PivotCache.Connection)
+                        pt.Update
+                        Application.StatusBar = False
+                Next pt
+            End If
+        Next ws
+        
+        Application.StatusBar = False
+        
+    End If
+    
+    BeepMultipleTimes 3, 1
+    
+    
+End Sub
+' This function walks through the 1st 10x10 cells to see if any of them start with "Update Warning:".
+' If it finds such a cell, it returns the warning mesages. Otherwise, it returns ""
+Function CheckForUpdateWarning(ws As Worksheet)
+
+    Dim warningstring As String
+    Dim c As Integer
+    Dim r As Integer
+    
+    CheckForUpdateWarning = ""
+    
+    For c = 1 To 10
+        If CheckForUpdateWarning <> "" Then
+            Exit For
+        End If
+        For r = 1 To 10
+            If InStr(1, ws.Cells(r, c), "Update Warning:") = 1 Then
+                warningstring = ws.Cells(r, c)
+                CheckForUpdateWarning = warningstring
+                Exit For
+            End If
+        Next r
+    Next c
+    
+
+End Function
+Sub EnableCalculatedDimensionMembersAllWorksheets()
+
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    
+    ' Resume even if we can't set the ViewCalculatedMembers option.
+    ' This will happen if there are extraneous non-SSAS pivot tables in the workbook,
+    '   and possibly if there are SSAS pivot tables that have no calc measures.
+    On Error Resume Next
+    For Each ws In Application.Worksheets
+        ' MsgBox (ws.Name)
+        For Each pt In ws.PivotTables
+            EnableCalculatedDimensionMembersOneTable pt
+        Next pt
+    Next ws
+End Sub
+Sub EnableCalculatedDimensionMembersOneTable(pt As PivotTable)
+    On Error Resume Next
+    
+    Application.DisplayStatusBar = True
+    Application.StatusBar = "PivotTable (" + pt.Name + ") Enabling Calculated Members"
+    
+    ' If we can't find the cube file, don't try to update the pivottable properties, because you'll get an error anyway.
+    If CanPTCubeFileBeFound(pt) Then
+        If pt.ViewCalculatedMembers = False Then
+            pt.ViewCalculatedMembers = True
+        End If
+    End If
+
+    Application.StatusBar = False
+
+End Sub
+Function CanPTCubeFileBeFound(pt As PivotTable) As Boolean
+
+    Dim cxString As String
+    
+    cxString = pt.PivotCache.Connection
+    CanPTCubeFileBeFound = CanCxStringCubeFileBeFound(cxString)
+
+End Function
+Function CanCxStringCubeFileBeFound(cxString As String) As Boolean
+    Dim oldCubeFilename As String
+    
+    oldCubeFilename = GetCubeFileNameFromConnectionString(cxString)
+    CanCxStringCubeFileBeFound = DoesFileExist(oldCubeFilename)
+
+End Function
+Function GetCubeFileNameFromConnectionString(cxString As String) As String
+    Dim oldCubeFilename As String
+    Dim cxStringCutPoint1 As Integer
+    Dim cxStringCutPoint2 As Integer
+    cxStringCutPoint1 = InStr(1, cxString, "Data Source=") - 1
+    cxStringCutPoint2 = InStr(cxStringCutPoint1 + 1, cxString, ";")
+    If cxStringCutPoint2 = 0 Then '0 means the string was not found
+        cxStringCutPoint2 = Len(cxString) + 1
+    End If
+    oldCubeFilename = Mid(cxString, cxStringCutPoint1 + 1 + 12, cxStringCutPoint2 - (cxStringCutPoint1 + 1 + 12))
+
+    GetCubeFileNameFromConnectionString = oldCubeFilename
+End Function
+Function CreateNewConnectionStringFromOldWithNewFilename(cxString As String, fileName As String) As String
+    Dim cxStringCutPoint1 As Integer
+    Dim cxStringCutPoint2 As Integer
+    Dim cxStringNew As String
+    cxStringCutPoint1 = InStr(1, cxString, "Data Source=") - 1
+    cxStringCutPoint2 = InStr(cxStringCutPoint1 + 1, cxString, ";")
+    If cxStringCutPoint2 = 0 Then '0 means the string was not found
+        cxStringCutPoint2 = Len(cxString) + 1
+    End If
+
+    cxStringNew = Mid(cxString, 1, cxStringCutPoint1)
+    cxStringNew = cxStringNew & "Data Source=" & fileName
+    cxStringNew = cxStringNew & Mid(cxString, cxStringCutPoint2)
+
+    CreateNewConnectionStringFromOldWithNewFilename = cxStringNew
+End Function
+' silentmode=true -> only prompts for workbooks that don't have a valid cube file.
+Sub UpdateConnectionsWithMode(silentmode As Boolean)
+    Dim wb As Workbook
+    Dim cx As WorkbookConnection
+    Dim cxString As String
+    Dim cxStringNew As String
+    Dim oldCubeFilename As String
+    Dim cxStringCutPoint1 As Integer
+    Dim cxStringCutPoint2 As Integer
+    Dim DataSourcesPath As String
+    Dim fileName As Variant
+    Dim CnxnsFoundCount As Integer
+    
+    ' Assign these when we identify a user-specified replacement that we want to use repeatedly
+    Dim prevCxString As String
+    Dim prevFilename As Variant
+    
+    CnxnsFoundCount = 0
+    
+
+    Set wb = Application.ThisWorkbook
+    
+        'MsgBox ("Workbook: " & wb.Name)
+        For Each cx In wb.Connections
+            'MsgBox ("Connection Name: " & cx.Name)
+            If cx.Type = xlConnectionTypeOLEDB Then
+            
+                CnxnsFoundCount = CnxnsFoundCount + 1
+            
+                cxString = cx.OLEDBConnection.Connection
+                'MsgBox ("Connection Info: " & cxString)
+                'DataSourcesPath = Environ("USERPROFILE") + "\My Documents\My Data Sources"
+                ' GETS the data source directory 'MsgBox (GetAttr(DataSourcesPath))
+                'If GetAttr(DataSourcesPath) And vbDirectory Then
+                '    ChDir DataSourcesPath
+                'End If
+                oldCubeFilename = GetCubeFileNameFromConnectionString(cxString)
+                If (Not CanCxStringCubeFileBeFound(cxString)) Or (Not silentmode) Then
+                    If cxString = prevCxString Then ' If prevCxString = cxString, then let's just reuse the
+                                                    '   replacement values instead of asking the user to re-input it.
+                        fileName = prevFilename
+                    Else
+                        If Not CanCxStringCubeFileBeFound(cxString) Then
+                            MsgBox ("The Cube file (" & oldCubeFilename _
+                                & ") could not be found." & Chr(13) & Chr(13) _
+                                & "In the next dialog box, please select the Cube file you would like to use. " _
+                                & Chr(13) & "(If you do not have a cube file, simply click the Cancel button in the next dialog box to use the report in non-interactive mode.)")
+                        Else
+                            MsgBox ("The next dialog box will let you select a new cube file to use in place of " _
+                                & oldCubeFilename & "." & Chr(13) & Chr(13) _
+                                & "Select the new cube file in the next dialog box." & Chr(13) _
+                                & "(If you would like to continue using " _
+                                & oldCubeFilename & ", then click the Cancel button in the next dialog box.)")
+                        End If
+                        fileName = Application.GetOpenFilename("Local Cube file (*.cub),*.cub", 1, "Select Cube file")
+                    End If
+                    If fileName = False Then
+                        MsgBox ("You did not select a file. No changes will be made.")
+                    Else
+                        'cx.SourceConnectionFile = Filename
+                        cxStringNew = CreateNewConnectionStringFromOldWithNewFilename(cxString, CStr(fileName))
+                        cx.OLEDBConnection.Connection = cxStringNew
+                        ' set these to indicate that the user selected a file, and so that we can reuse them
+                        prevCxString = cxString
+                        prevFilename = fileName
+                        ' Change the AlwaysUseConnectionFile property, or else it will keep going back to the
+                        '   cnxn file and overriding the .Connection setting.
+                        cx.OLEDBConnection.AlwaysUseConnectionFile = False
+                    End If
+                End If
+                
+                
+            End If
+            
+        Next cx
+    
+    If (CnxnsFoundCount = 0) And (Not silentmode) Then
+        MsgBox ("No connections found for update.")
+    End If
+
+End Sub
+' Turns off the MaintainConnection property on our pivot tables.
+' This appears to allow more than 5 connections to the same CUB file.
+' CAVEAT: It makes it slower each time you manipulate the table, because it needs to re-open the connection each time.
+Sub DisableMaintainConnectionOnPivotCaches()
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    Dim pc As PivotCache
+        
+    On Error Resume Next
+    ' Walk through worksheets
+    For Each ws In Application.Worksheets
+        
+        For Each pt In ws.PivotTables
+            pt.PivotCache.MaintainConnection = False
+        Next pt
+    
+    Next ws
+    
+        
+    
+End Sub
+
+
+
+Attribute VB_Name = "COI_GP_CUB_PT"
+' COI_GP_CUB_PT module
+' This module contains functions that are GP-specific.
+' For example, Subs/Functions that manipulate GP-specific pivot-table filters
+
+' 1.0b: Added ability for ChangeYQMDDateFilters to change the Time.Quarter filter, including assumption that if
+'       the mode is set to month, we will figure out the beginning of the quarter for that month and refresh it as a quarterly.
+
+
+Function GetVersionInfo_COIGPCUBPT() As String
+    GetVersionInfo_COIGPCUBPT = "COI GP CUB PT 1.0b 9/4/2019"
+End Function
+Sub ChangeFiltersMQ_MultifilterAutomaticQuarterCount()
+    ChangeFiltersMQ 0
+End Sub
+Sub ChangeFiltersMQ_MultifilterStatedQuarterCount()
+    Dim numOfQs As Integer
+    
+    numOfQs = CInt(InputBox(Prompt:="Enter the number of quarters you want the multi-period-filtered reports to show." & vbCrLf & "(0 means automatic)", _
+                      Title:="Number of Quarters to show in multi-period reports", Default:=0))
+    If numOfQs < 0 Then
+        numOfQs = 0
+    End If
+    
+    ChangeFiltersMQ numOfQs
+End Sub
+Sub ChangeFiltersMQ(numOfQsForMultiFilterReports As Integer)
+    Dim qormval As Integer
+    Dim fnval As Integer
+    Dim datetext As String
+    Dim qm As String
+    
+    fnval = vbNo
+    If GetYQMfromFileName() <> "" Then
+        fnval = MsgBox("Shall I refresh as " & IIf(Left(GetYQMfromFileName(), 1) = "M", "Monthly", IIf(Left(GetYQMfromFileName(), 1) = "Q", "Quarterly", IIf(Left(GetYQMfromFileName(), 1) = "F", "Federal Year", "XXX"))) & " with start date " & Right(GetYQMfromFileName(), 10) & "?", vbYesNo, "Use date?")
+        If fnval = vbYes Then
+            ChangeYQMDDateFilterWithInputs Right(GetYQMfromFileName(), 10), IIf(Left(GetYQMfromFileName(), 1) = "M", "m", IIf(Left(GetYQMfromFileName(), 1) = "Q", "q", IIf(Left(GetYQMfromFileName(), 1) = "F", "nfampy", "XXX"))), numOfQsForMultiFilterReports
+            Exit Sub
+        End If
+    End If
+    
+    ' If user declined the file-extracted default, then prompt
+    If fnval = vbNo Then
+        qormval = MsgBox("This macro lets you set the [Time].[Year -  Quarter -  Month -  Date] filter on all PivotTables in this Workbook to a Quarter or a Month. Click YES for Quarter, NO for Month.", vbYesNoCancel, "Quarter or Month?")
+        If qormval = vbCancel Then
+            Exit Sub
+        End If
+        
+            If qormval = vbYes Then
+                qm = "q"
+            End If
+            If qormval = vbNo Then
+                qm = "m"
+            End If
+    
+                datetext = InputBox(Prompt:="Enter the date of the beginning of the period that you want to set all of your [Time].[Year -  Quarter -  Month -  Date] filters to. (Use the format YYYY-MM-DD)", _
+                          Title:="Date for filter", Default:=GetPriorPeriodStartDate(qm))
+        
+        
+        
+        ChangeYQMDDateFilterWithInputs datetext, qm, numOfQsForMultiFilterReports
+    End If
+    
+End Sub
+Sub ChangeFiltersNFAMPYear()
+    Dim fnval As Integer
+    Dim datetext As String
+    Dim qm As String
+    
+    fnval = vbNo
+    If GetYQMfromFileName() <> "" Then
+        fnval = MsgBox("Shall I refresh as " & IIf(Left(GetYQMfromFileName(), 1) = "M", "Monthly", IIf(Left(GetYQMfromFileName(), 1) = "Q", "Quarterly", IIf(Left(GetYQMfromFileName(), 1) = "F", "Federal Year", "XXX"))) & " with start date " & Right(GetYQMfromFileName(), 10) & "?", vbYesNo, "Use date?")
+        If fnval = vbYes Then
+            ChangeYQMDDateFilterWithInputs Right(GetYQMfromFileName(), 10), IIf(Left(GetYQMfromFileName(), 1) = "M", "m", IIf(Left(GetYQMfromFileName(), 1) = "Q", "q", IIf(Left(GetYQMfromFileName(), 1) = "F", "nfampy", "XXX"))), numOfQsForMultiFilterReports
+            Exit Sub
+        End If
+    End If
+        
+        
+    ' If user declined the file-extracted default, then prompt
+    If fnval = vbNo Then
+        qm = "nfampy"
+
+            datetext = InputBox(Prompt:="Enter the date of the beginning of the period that you want to set all of your [Time].[NFAMP Year -  Quarter -  Month -  Date] filters to. Reminder: for recurring calcs, you want YYYY-10-01 of the previous CALENDAR year. (Use the format YYYY-MM-DD)", _
+                      Title:="Date for filter", Default:=GetPriorPeriodStartDate(qm))
+    
+    
+    
+        ChangeYQMDDateFilterWithInputs datetext, qm, 0
+    End If
+    
+End Sub
+' Returns maximum number of periods to display as directed by INI file (COI.INI, [General] section, maxNumOfMultiPeriodQuarters key
+' Returns zero if no INI found, or no value found in the INI
+Function GetMultiPeriodFilterFromCOIIni_maxNumOfMultiPeriodQuarters() As Integer
+
+    Dim iniFile As String
+    Dim sVal As String
+    iniFile = GetCOIINIfile()
+    Debug.Print ("...getting INI maxNumOfMultiPeriodQuarters")
+    
+    If iniFile = "FileNotFound" Then
+        GetMultiPeriodFilterFromCOIIni_maxNumOfMultiPeriodQuarters = 0
+    Else
+        sVal = GetSetINIparameters(iniRead, "General", "maxNumOfMultiPeriodQuarters", iniFile)
+        If IsNumeric(sVal) Then
+            GetMultiPeriodFilterFromCOIIni_maxNumOfMultiPeriodQuarters = CInt(sVal)
+        Else
+            GetMultiPeriodFilterFromCOIIni_maxNumOfMultiPeriodQuarters = 0
+        End If
+    End If
+        
+End Function
+' Returns maximum number of periods to display as directed by INI file (COI.INI, [General] section, minMultiPeriodQuarter key, stated as yyyyq
+' Returns zero if no INI found, or no value found in the INI
+Function GetMultiPeriodFilterFromCOIIni_minQuarter() As Integer
+
+    Dim iniFile As String
+    Dim sVal As String
+    iniFile = GetCOIINIfile()
+    Debug.Print ("...getting INI minMultiPeriodQuarter")
+    
+    If iniFile = "FileNotFound" Then
+        GetMultiPeriodFilterFromCOIIni_minQuarter = 0
+    Else
+        sVal = GetSetINIparameters(iniRead, "General", "minMultiPeriodQuarter", iniFile)
+        If IsNumeric(sVal) Then
+            GetMultiPeriodFilterFromCOIIni_minQuarter = CInt(sVal)
+        Else
+            GetMultiPeriodFilterFromCOIIni_minQuarter = 0
+        End If
+    End If
+        
+End Function
+' Take in a year and month (as integer), return a date representing the first date of the quarter.
+Function ConvertYMtoBeginningOfQuarterDate(y As Integer, m As Integer) As Date
+    Dim q As Integer ' quarter
+    Dim qm As Integer ' first month of quarter q
+    
+    ' Clean up m
+    If m < 1 Then
+        m = 1
+    End If
+    If m > 12 Then
+        m = 12
+    End If
+    
+    q = 1 + ((m - 1) \ 3)
+    qm = (q * 3) - 2
+    
+    ConvertYMtoBeginningOfQuarterDate = CDate(y & "-" & qm & "-01")
+    
+End Function
+' Take in a year and quarter (as integer), return a date representing the first date of the quarter.)
+Function ConvertYQtoBeginningOfQuarterDate(y As Integer, q As Integer) As Date
+    ConvertYQtoBeginningOfQuarterDate = ConvertYMtoBeginningOfQuarterDate(y, q * 3)
+End Function
+Sub ChangeYQMDDateFilterWithInputs(Optional ByVal datetext As String = "", Optional ByVal qm As String = "", Optional ByVal numOfQsForMultiFilterReports As Integer = 0)
+' datetext: YYYY-MM-DD format, or ""
+' qm: "q" means quarter, "m" means month, "nfampy" means NFAMP Annual
+' numOfQsForMultiFilterReports: >0 means explicitly display this many Qs.
+'                               <=0 means: follow directives from INI file; but if none found, then use as many as are already in the fiter, but adjust dates.
+'
+' Handles normal and NFAMP time hierarchies, monthly and quarterly.
+' If a PivotTable has a YQMD date filter, prompt the user for input, then change it.
+'
+
+'
+    'Dim datetext As String
+    
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    Dim qormtext As String
+    Dim qormNFAMPtext As String
+    Dim ptRefreshed As Boolean
+    Dim y As Integer
+    Dim m As Integer
+    Dim q As Integer
+    Dim datedate As Date
+    Dim quarterdatedate As Date ' The beginning of datedate''s quarter
+    Dim ApplicationStatusBarMessage As String
+    Dim executeRefresh As Boolean
+    Dim vilArrQL As Integer
+    Dim vilArrQU As Integer
+    Dim vilTargetArr() As Variant
+    
+    ' If we get a useless qm value, we will just exit.
+    If qm <> "m" And qm <> "q" And qm <> "nfampy" Then
+        Exit Sub
+    End If
+    
+    ' Set this to false if you do not want to actually execute the pivottable refresh (like if you are testing logic but do not want to wait for tables to refresh)
+    executeRefresh = True
+    
+    
+    If qm <> "" Then
+        If qm = "q" Then
+            qormtext = "Quarter"
+            qormNFAMPtext = "NFAMP Quarter"
+        End If
+        If qm = "m" Then
+            qormtext = "Month"
+            qormNFAMPtext = "Month"
+        End If
+        If qm = "nfampy" Then
+            qormtext = "Year" ' not useful for NFAMP
+            qormNFAMPtext = "NFAMP Year"
+        End If
+        
+        ' convert datetext to real date
+        datedate = CDate(datetext)
+        ' set y/m values from datedate
+        y = Year(datedate)
+        If qm = "q" Then
+            m = Month(datedate) + 2
+        ElseIf qm = "nfampy" Then ' For NFAMP year, we need to add 11 months, which is effectively what this does
+            y = y + 1
+            m = Month(datedate) - 1
+        Else
+            m = Month(datedate)
+        End If
+        
+        ' Compute the quarter number from the month number
+        q = 1 + ((m - 1) \ 3)
+        
+        quarterdatedate = ConvertYMtoBeginningOfQuarterDate(Year(datedate), Month(datedate))
+        
+        ' datetext will be "" if the user clicked cancel, so we bypass the rest.
+        If datetext <> "" Then
+            For Each ws In ActiveWorkbook.Worksheets
+                For Each pt In ws.PivotTables
+                    ptRefreshed = False
+                    Application.DisplayStatusBar = True
+                    ApplicationStatusBarMessage = "Updating [" + ws.Name + "].[" + pt.Name + "] from InfoStream " + GetCubeFileNameFromConnectionString(pt.PivotCache.Connection)
+                    
+                    ' Loop through the PageFields - the filters at the top of the report.
+                    For Each pf In pt.PageFields
+                        ' And (ws.Name = "AMP Period Comparisons" Or ws.Name = "Record Counts")
+                        
+                        ' "Normal" AMP reports
+                        If qm <> "nfampy" And pf.Name = "[Time].[Year -  Quarter -  Month -  Date].[Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating Time filter"
+                            pt.PivotFields( _
+                                "[Time].[Year -  Quarter -  Month -  Date].[Year]").CurrentPageName = _
+                                "[Time].[Year -  Quarter -  Month -  Date].[" & qormtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        ' NFAMP reports
+                        If pf.Name = "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time filter"
+                            pt.PivotFields( _
+                                "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                                "[Time].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        ' NFAMP-P reports
+                        If qm <> "nfampy" And pf.Name = "[NFAMP-P End of First Full Quarter of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP-P Time filter"
+                            pt.PivotFields( _
+                                "[NFAMP-P End of First Full Quarter of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                                "[NFAMP-P End of First Full Quarter of Sales].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        ' NFAMP-T reports
+                        If qm <> "nfampy" And pf.Name = "[NFAMP-T 30th Day of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP-T Time filter"
+                            pt.PivotFields( _
+                                "[NFAMP-T 30th Day of Sales].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                                "[NFAMP-T 30th Day of Sales].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        ' Time.Quarter reports
+                        ' (If the mode is set to month, we will figure out the beginning of the quarter for that month and refresh it as a quarterly
+                        If qm <> "nfampy" And pf.Name = "[Time].[Quarter].[Quarter]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating Time.Quarter filter" + IIf(qm = "m", " - using quarter", "")
+                            pt.PivotFields( _
+                                "[Time].[Quarter].[Quarter]").CurrentPageName = _
+                                "[Time].[Quarter].&[" & Format(CDate(Year(quarterdatedate) & "-" & Month(quarterdatedate) & "-01"), "YYYY-MM-DD") & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+                        
+                        If pf.Name = "[12 Month Filters].[Month].[Month]" And pf.CubeField.EnableMultiplePageItems = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating 12mo filter"
+                            pt.PivotFields( _
+                                "[12 Month Filters].[Month].[Month]").CurrentPageName = _
+                                "[12 Month Filters].[Month].&[" & y & "]&[" & m & "]"
+                            ptRefreshed = True
+                        End If
+                        
+                        ' NFAMP-filter on multi-select filters on quarter or month
+                        ' (If it is set to months, we set it back to quarterly-boundaries.)
+                        If qm <> "nfampy" And pf.Name = "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]" And pf.CubeField.EnableMultiplePageItems = True And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter"
+                            
+                            ' If numOfQsForMultiFilterReports > 0, use it.
+                            If numOfQsForMultiFilterReports > 0 Then
+                                numOfQs = numOfQsForMultiFilterReports
+                            ' If an INI file tells us how many periods (max) to use, use it.
+                            ElseIf GetMultiPeriodFilterFromCOIIni_maxNumOfMultiPeriodQuarters > 0 Then
+                                numOfQs = GetMultiPeriodFilterFromCOIIni_maxNumOfMultiPeriodQuarters()
+                            'Otherwise, count how many periods are in existing report.
+                            Else
+                                numOfQs = getNumberOfQuartersInMultiSelectNFAMP(pt)
+                            End If
+                            
+                            ' If an INI file tells us the minimum quarter to use, adjust numOfQs
+                            If GetMultiPeriodFilterFromCOIIni_minQuarter() > 0 Then
+                                ' Computes the number of quarters from quarterdatedate back to the minimum period
+                                numOfQsBackToMinPeriod = DateDiff("q", ConvertYQtoBeginningOfQuarterDate(GetMultiPeriodFilterFromCOIIni_minQuarter() \ 10, GetMultiPeriodFilterFromCOIIni_minQuarter() Mod 10), quarterdatedate)
+                                ' If that, plus the quarterdatedate quarter is fewer than the numOfQs, then "downgrade" numOfQs
+                                If numOfQsBackToMinPeriod + 1 < numOfQs Then
+                                    numOfQs = numOfQsBackToMinPeriod + 1
+                                End If
+                                
+                            End If
+                            
+                            ' Finally, after all of that numOfQs setting logic, check if numOfQs is <1. (The previous step could make it so.) If it is <1, bump it back up to 1, because <1 does not make sense.
+                            If numOfQs < 1 Then
+                                numOfQs = 1
+                            End If
+                            
+                            
+                            
+                            vilSrcArrQ = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter]").VisibleItemsList
+                            vilArrQL = LBound(vilSrcArrQ)
+                            vilArrQU = vilArrQL + numOfQs - 1
+                            ' NumOfQs should not likely be <= 0, but if it is, then we are just going to skip updating.
+                            If numOfQs > 0 Then
+                                ' Replace items
+                                ReDim vilTargetArr(vilArrQL To vilArrQU)
+                                ' Step through the array, and enter dQates back from the datedate value.
+                                ' While counting quarters [via the getNumberOfQuartersinMultiSelectNFAMP() function] has to count years and convert to quarters,
+                                '   we can seemingly simply set quarters here. (If we were to run getNumberOfQuartersinMultiSelectNFAMP() on the resulting report and the quarters we selected here
+                                '   were to yield a whole year, it would still count after the fact as 1 year + 1 qtr. Peculiar, but it works and makes it easier for us to set here.
+                                For arrPosition = vilArrQU To vilArrQL Step -1
+                                    ' Walks through array and deposits values from the selected quarter backwards
+                                    vilTargetArr(arrPosition) = "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter].&[" & Trim(Format(DateAdd("q", arrPosition - vilArrQU, quarterdatedate), "YYYY-MM-DD")) & "T00:00:00]"
+                                Next arrPosition
+                            End If
+                            
+                            'pt.PivotFields(pf.Name).CubeField.EnableMultiplePageItems = True
+                            
+                            ' Clear year, month filters.
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter - clearing Year"
+                            ClearFilters pt, "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]"
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter - clearing Month"
+                            ClearFilters pt, "[Time].[NFAMP Year -  Quarter -  Month -  Date].[Month]"
+                            
+                            Application.StatusBar = ApplicationStatusBarMessage + " - updating NFAMP Time multi-filter - " + CStr(numOfQs) + " quarters"
+                            pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter]").VisibleItemsList = vilTargetArr
+                            'pt.PivotFields( _
+                            '    "[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").CurrentPageName = _
+                            '    "[Time].[NFAMP Year -  Quarter -  Month -  Date].[" & qormNFAMPtext & "].&[" & Trim(datetext) & "T00:00:00]"
+                            ptRefreshed = True
+                        End If
+
+                        
+                        
+                    Next pf
+                    
+                    ' If no PageField filter was found, loop through PivotFields to look for Time filters that we want to handle.
+                    For Each pf In pt.PivotFields
+                        ' Look for reports with a single quarter filter on the rows or columns.
+                        ' EnableMultiplePageItems does not appear to be a useful thing to look at when looking at row/column filters.
+                        ' one extra condition here: We check to see if ptRefreshed is false. If it is true, we do not want to do anything here because the top-of-report filter [already refreshed when ptRefreshed = True] is probably the one we wanted.
+                        If qm <> "nfampy" And pf.Name = "[Time].[Year -  Quarter -  Month -  Date].[Quarter]" And (pf.Orientation = xlColumnField Or pf.Orientation = xlRowField) And ptRefreshed = False And executeRefresh = True Then
+                            ' Runtime error 1004 probably means that you supplied an invalid date (or date format)
+                            vilSrcArrQ = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Quarter]").VisibleItemsList
+                            vilSrcArrM = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Month]").VisibleItemsList
+                            vilSrcArrY = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Year]").VisibleItemsList
+                            vilSrcArrD = pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Date]").VisibleItemsList
+                            If UBound(vilSrcArrQ) = LBound(vilSrcArrQ) And UBound(vilSrcArrM) = LBound(vilSrcArrM) And UBound(vilSrcArrY) = LBound(vilSrcArrY) And UBound(vilSrcArrD) = LBound(vilSrcArrD) Then
+                                Application.StatusBar = ApplicationStatusBarMessage + " - updating inline filter"
+                                ' When in monthly mode and only the month filter has a value, update that filter
+                                If qm = "m" And vilSrcArrQ(LBound(vilSrcArrQ)) = "" And vilSrcArrM(LBound(vilSrcArrM)) <> "" And vilSrcArrY(LBound(vilSrcArrY)) = "" And vilSrcArrD(LBound(vilSrcArrD)) = "" Then
+                                    ' update month
+                                    ReDim vilTargetArr(LBound(vilSrcArrM) To LBound(vilSrcArrM))
+                                    vilSrcArrM(LBound(vilSrcArrM)) = "[Time].[Year -  Quarter -  Month -  Date].[Month].&[" & Trim(datetext) & "T00:00:00]"
+                                    pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Month]").VisibleItemsList = vilSrcArrM
+                                    ptRefreshed = True
+                                End If
+                                ' When quarterly mode and only the quarter filter has a value, update that filter
+                                If qm = "q" And vilSrcArrQ(LBound(vilSrcArrQ)) <> "" And vilSrcArrM(LBound(vilSrcArrM)) = "" And vilSrcArrY(LBound(vilSrcArrY)) = "" And vilSrcArrD(LBound(vilSrcArrD)) = "" Then
+                                    ' update quarter
+                                    ReDim vilTargetArr(LBound(vilSrcArrQ) To LBound(vilSrcArrQ))
+                                    vilSrcArrM(LBound(vilSrcArrQ)) = "[Time].[Year -  Quarter -  Month -  Date].[Quarter].&[" & Trim(datetext) & "T00:00:00]"
+                                    pt.PivotFields("[Time].[Year -  Quarter -  Month -  Date].[Quarter]").VisibleItemsList = vilSrcArrM
+                                    ptRefreshed = True
+                                End If
+                                
+                            End If
+                        End If
+
+                    Next pf
+                    
+                    ' If no PageField nor PivotField filter was found, then just refresh the PT without updating any filters.
+                    If ptRefreshed = False And executeRefresh = True Then
+                        Application.StatusBar = ApplicationStatusBarMessage + " - refreshing without filter change"
+                        pt.Update
+                        ptRefreshed = True
+                    End If
+                    
+                    Application.StatusBar = False
+                    
+                    ' Allow for other events to be processed after each pivot table is updated
+                    DoEvents
+                
+                Next pt
+            Next ws
+        End If
+    End If
+    Application.StatusBar = False
+    
+    BeepMultipleTimes 3, 1
+
+
+End Sub
+Function getNumberOfQuartersInMultiSelectNFAMP(pt As PivotTable)
+    
+    Dim vilArrML As Integer
+    Dim vilArrMU As Integer
+    Dim vilArrQL As Integer
+    Dim vilArrQU As Integer
+    Dim vilArrYL As Integer
+    Dim vilArrYU As Integer
+    
+    Dim numOfQs As Integer
+    
+    numOfQs = 0
+
+    vilSrcArrM = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[Month]").VisibleItemsList
+    vilSrcArrQ = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Quarter]").VisibleItemsList
+    vilSrcArrY = pt.PivotFields("[Time].[NFAMP Year -  Quarter -  Month -  Date].[NFAMP Year]").VisibleItemsList
+    vilArrMU = UBound(vilSrcArrM)
+    vilArrML = LBound(vilSrcArrM)
+    vilArrQU = UBound(vilSrcArrQ)
+    vilArrQL = LBound(vilSrcArrQ)
+    vilArrYU = UBound(vilSrcArrY)
+    vilArrYL = LBound(vilSrcArrY)
+    ' VisibleItems list is the list of filtered items.
+    ' When there are useful values in this list, it will either be of length 1 with a non-"" value in the one entry, or it will have >1 entry.
+    ' And we want to create an identically-structured array with new values.
+    
+    ' Why do we count quarters, then years * 4 - and why does that not double-count?
+    ' Because if a whole year is selected, the individual Quarters in those years do not appear in vilSrcA
+    If vilArrQU - vilArrQL >= 0 Then
+        If (vilSrcArrQ(vilArrQL) <> "") Then
+            numOfQs = numOfQs + vilArrQU - vilArrQL + 1
+        End If
+    End If
+    If vilArrYU - vilArrYL >= 0 Then
+        If (vilSrcArrY(vilArrYL) <> "") Then
+            numOfQs = numOfQs + ((vilArrYU - vilArrYL + 1) * 4)
+        End If
+    End If
+    If vilArrMU - vilArrML >= 0 Then
+        If (vilSrcArrM(vilArrML) <> "") Then
+            If (vilArrMU - vilArrML + 1) < 4 Then ' outer IFs imply that there is at least one valid item
+                numOfQs = numOfQs + 1 ' If there are 1-3 months, we will count that as 1 quarter
+            Else
+                numOfQs = numOfQs + 2 ' If there are 4 months, we will count that as 2 quarters.
+            End If ' In theory, there should not be more than 4 months, because there can only be 2 months each flanking the selected years/quarters before the flanking months would get rolled into an already-counted quarter, assuming selections are sequential (which is a fair assumption for our use case of multi-select in GP reports)
+        End If
+    End If
+    
+    getNumberOfQuartersInMultiSelectNFAMP = numOfQs
+
+End Function
+Sub ClearFilters(pt As PivotTable, dimensionName As String)
+    ' If we just set the filter to nothing, it actually executes a query.
+    ' So this function checks first to see if the filter is already set to nothing (i.e. 1-length array with a empty string) so we can avoid unnecessary queries.
+    Dim villArrU As Integer
+    Dim villArrL As Integer
+    
+    vilSrcArr = pt.PivotFields(dimensionName).VisibleItemsList
+    vilArrU = UBound(vilSrcArr)
+    vilArrL = LBound(vilSrcArr)
+    
+    ' When there are useful values in this list, it will either be of length 1 with a non-"" value in the one entry, or it will have >1 entry.
+    ' And we want to create an identically-structured array with new values.
+    If vilArrU - vilArrL >= 0 Then
+        If (vilSrcArr(vilArrL) <> "") Then ' Clear the filter if it is not already clear.
+            pt.PivotFields(dimensionName).VisibleItemsList = Array("")
+        End If
+    End If
+    
+    
+End Sub
+Attribute VB_Name = "COI_General_Utility"
+' COI_General_Utility module
+' This module is for functions here that are truly general in utility - i.e. no Pivot-Table-specific modules, no assumption of existing of CUB file, etc.
+
+' 1.0bc: Moved the GetVersionInfo_XXX function so it is at the top.
+' 1.0bd: Added SetStatusBarTrimmed sub.
+
+' This function allows us to set a string array to empty. (You cannot otherwise define a zero-length array...)
+' Found this here: https://stackoverflow.com/questions/43005454/vba-create-empty-array
+#If VBA7 Then
+Private Declare PtrSafe Function EmptyStringArray Lib "oleaut32" Alias "SafeArrayCreateVector" (Optional ByVal vt As VbVarType = vbString, Optional ByVal lLow As Long = 0, Optional ByVal lCount As Long = 0) As String()
+#Else
+Private Declare Function EmptyStringArray Lib "oleaut32" Alias "SafeArrayCreateVector" (Optional ByVal vt As VbVarType = vbString, Optional ByVal lLow As Long = 0, Optional ByVal lCount As Long = 0) As String()
+#End If
+
+Function GetVersionInfo_COIGeneralUtility() As String
+    GetVersionInfo_COIGeneralUtility = "COI General Utility 1.0bd 7/18/2019"
+End Function
+' Displays version info by:
+' - Hunts for all macros whose names begin with "GetVersionInfo"
+' - Executes them
+' - Displays their results
+' "Anyone" who wants to display a verison number can write a function of the form GetVersionInfo_XXXX() as string.
+' Convention: return a word/phrase that indicates what you are versioning, a version number, and a date.
+' Convention: make XXXX the name of what you are versioning.
+' Caution: If two modules have such a function of the same name, you will surely get a runtime error. So observe the previous Convention.
+' Caveat: When run for the first time in a given workbook, the macro displays no results. Run it a 2nd time, and it is fine.
+'         (If you run it successfully then save the workbook, you will not have the problem on subsequent runs.)
+'         We have tried making a wrapper function that invokes this twice - but it just yielded two blanks.
+'         So there is something about explicitly invoking it that post-first time that makes it work.
+'         GK is considering this to be acceptable collateral damage, because in most situations, we will have run it first and saved before giving it to anybody.
+'         And in situations where it has not been run before, the person who runs it is likely to then save the workbook.
+Sub DisplayVersionInfo()
+    
+    ' The AddLib is a hack/workaround I found to needing to access the VBIDE library, but without:
+    ' - needing to manually add a reference via Tools->References
+    ' - needing to set some developer settings
+    
+    On Error GoTo TrapAddLibError
+    Call AddLib("VBIDE", "{0002E157-0000-0000-C000-000000000046}", 5, 3)
+    
+    GoTo PostAddLib
+    
+
+TrapAddLibError:
+    ''handle runtime error(s) here.
+    'Raise Err.Number '"rethrow" / "bubble up"
+    'Err.Raise Err.Number
+    MsgBox Err.Number & ": " & Err.Description & vbCrLf & vbCrLf & "This macro requires Trust Access to the VBA programming/project object model." & vbCrLf & vbCrLf & "When you dismiss this dialog box, Excel will attempt to bring up the proper window where you can enable it." & vbCrLf & "You may need to exit and restart Excel after enabling setting." & vbCrLf & vbCrLf & "If that fails please Google ""how to enable programmatic access to visual basic project"".", vbExclamation + vbOKOnly
+    On Error Resume Next
+    Application.CommandBars("Macro").Controls("Security...").Execute
+    MsgBox "If you changed any settings, please exit and restart Excel.", vbInformation + vbOKOnly
+    
+    
+    Err.Clear
+    
+    Exit Sub
+
+    
+PostAddLib:
+    
+    On Error Resume Next ' If any of this function returns an error, we want to ignore. At worst, the sub does nothing...
+    
+    'Dim VBAEditor As VBIDE.VBE
+    Dim VBAEditor As Object
+    
+    Dim allFunctionNames() As String
+    Dim versionFunctionNames() As String
+    
+    allFunctionNames = EmptyStringArray()
+    versionFunctionNames = EmptyStringArray()
+    
+    Set VBAEditor = Application.VBE
+    If VBAEditor Is Nothing Then
+        Set VBAEditor = CreateObject("VBIDE.VBE")
+    End If
+
+    iall = 0
+    iversion = 0
+    
+    If Not VBAEditor Is Nothing Then ' if for some reason VBAEditor could not be initialized, we will skip the hunting.
+        For Each vbc In ThisWorkbook.VBProject.VBComponents
+            ' Found at: https://docs.microsoft.com/en-us/office/troubleshoot/office-developer/retrieve-macro-name-in-excel-using-vb
+            ' Scan through the code module, looking for procedures.
+            ILine = 1
+            Do While ILine < vbc.CodeModule.CountOfLines
+                sProcName = vbc.CodeModule.ProcOfLine(ILine, vbext_pk_Proc)
+                If sProcName <> "" Then
+                    ' Found a procedure.
+                    ' If it is a Version macro, add its details to array.
+                    ' Either way, skip
+                    ' to the end of the procedure.
+                    ReDim Preserve allFunctionNames(0 To iall)
+                    allFunctionNames(iall) = sProcName
+                    iall = iall + 1
+                    If InStr(sProcName, "GetVersionInfo") = 1 Then
+                        ReDim Preserve versionFunctionNames(0 To iversion)
+                        versionFunctionNames(iversion) = sProcName
+                        iversion = iversion + 1
+                    End If
+                    ILine = ILine + vbc.CodeModule.ProcCountLines(sProcName, vbext_pk_Proc)
+                Else
+                    ' This line has no procedure, so go to the next line.
+                    ILine = ILine + 1
+                End If
+            Loop
+        Next vbc
+    End If
+    
+    ' Display list of functions
+    'd = ""
+    '    For Each fn In allFunctionNames
+    ''        d = d & vbCrLf & fn
+    '    Next fn
+    
+    'd = d & vbCrLf
+    
+    '    For Each fn In versionFunctionNames
+    '        d = d & vbCrLf & fn
+    '    Next fn
+    
+    'MsgBox d, vbOKOnly
+    
+    d = ""
+    On Error Resume Next ' If any of the "GetVersionInfo" macros return a bad value, we want to ignore the error.
+    For Each fn In versionFunctionNames
+        d = d & Application.Run(fn) & vbCrLf
+    Next fn
+
+    If d = "" Then
+        MsgBox "No versions to be reported. If this is your first time running this macro, please try a second time. On some versions of Excel, it works the second time!", vbOKOnly
+    Else
+        MsgBox d, vbOKOnly
+    End If
+End Sub
+    ' The AddLib is a hack/workaround I found to needing to access the VBIDE library, but without:
+    ' - needing to manually add a reference via Tools->References
+    ' - needing to set some developer settings
+    ' It should, in theory, work with other libraries, but accessing VBIDE was my use case.
+'******************************************************************************
+'AddLib: Adds a library reference to this script programmatically, so that
+'        libraries do not need to be added manually.
+' Found at https://stackoverflow.com/questions/29688683/late-binding-vbide-vbe-in-excel
+'******************************************************************************
+Private Function AddLib(libName As String, guid As String, major As Long, minor As Long)
+
+    Dim exObj As Object: Set exObj = GetObject(, "Excel.Application")
+    Dim vbProj As Object: Set vbProj = exObj.ActiveWorkbook.VBProject
+    Dim chkRef As Object
+    
+    
+    
+    ' Check if the library has already been added
+    For Each chkRef In vbProj.References
+        If chkRef.Name = libName Then
+            GoTo CleanUp
+        End If
+    Next
+
+    vbProj.References.AddFromGuid guid, major, minor
+
+
+
+CleanUp:
+    Set vbProj = Nothing
+End Function
+Sub BeepMultipleTimes(numberOfTimes As Integer, numberOfSecondsToPauseBetweenEach As Integer)
+    For I = 1 To numberOfTimes
+        Beep
+        For j = 1 To numberOfSecondsToPauseBetweenEach
+            Application.Wait (Now + TimeValue("0:00:01"))
+        Next j
+        DoEvents
+    Next I
+    
+End Sub
+
+Function DoesFileExist(filePathAndName As String) As Boolean
+
+    Set FSO = CreateObject("Scripting.FileSystemObject")
+    DoesFileExist = FSO.fileExists(filePathAndName)
+End Function
+Function GetPriorPeriodStartDate(qm As String)
+    ' This function gets the default date to use, based on today''s date.
+    ' Acceptable values for qm: "m" (month), "q" (quarter), "nfampy" (nfamp year)
+    ' This function will return the start date of the previous period type specified in "qm".
+    ' Example: if qm = "m", it will return last month''s start date.
+    ' Example: if "q", it will return last quarter''s start date.
+    ' Example: if "nfampy", it will return last federal-fiscal year start date.
+    If qm = "m" Then
+        GetPriorPeriodStartDate = Format(DateAdd("m", -1, CDate(Year(Now()) & "-" & Right("00" & Month(Now()), 2) & "-01")), "YYYY-MM-DD")
+    End If
+    If qm = "q" Then
+        GetPriorPeriodStartDate = Format(DateAdd("q", -1, CDate(Year(Now()) & "-" & Right("00" & 1 + 3 * ((Month(Now()) - 1) \ 3), 2) & "-01")), "YYYY-MM-DD")
+    End If
+    If qm = "nfampy" Then ' Fiscal year starts 10/1 of previous calendar year
+        If Month(Now()) >= 10 Then ' If we are in Q4, we probably want to run fiscal year that just ended, which starts 10/1 last year.
+            GetPriorPeriodStartDate = Format(CDate(Year(Now()) - 1 & "-10-01"), "YYYY-MM-DD")
+        Else ' If we are not in Q4, we probably want to run fiscal year that ended last 10/1, which started current calendar year minus 2
+            GetPriorPeriodStartDate = Format(CDate(Year(Now()) - 2 & "-10-01"), "YYYY-MM-DD")
+        End If
+    End If
+
+End Function
+Function GetYQMfromFileName() As String
+' Hunts filename andlooks for pattern at end of filename (after "." suffix is stripped)
+' Returns value of the form N##/##/####, where N is a "M","Q",or "F" (federal year) to indicate what kind of period is represented in the filename, and a date.
+' Returns "" if no period-type/date can be parsed.
+    Dim outstr As String
+    outstr = ""
+    workbookNameWithoutExtension = Left(ThisWorkbook.Name, (InStrRev(ThisWorkbook.Name, ".", -1, vbTextCompare) - 1))
+    If Right(workbookNameWithoutExtension, 7) Like "####M##" Then
+        outstr = "M" & Left(Right(workbookNameWithoutExtension, 7), 4) & "-" & Right(workbookNameWithoutExtension, 2) & "-01"
+    End If
+    If Right(workbookNameWithoutExtension, 6) Like "####Q#" Then
+        outstr = "Q" & Left(Right(workbookNameWithoutExtension, 6), 4) & "-" & Format((CInt(Right(workbookNameWithoutExtension, 1)) * 3) - 2, "00") & "-01"
+    End If
+    If workbookNameWithoutExtension Like "*NFAMP*####" Then
+        outstr = "F" & CStr(CInt(Right(workbookNameWithoutExtension, 4)) - 1) & "-10-01"
+    End If
+    
+    GetYQMfromFileName = outstr
+    
+    
+    
+End Function
+' Trims status bar before trying to display it.
+' (If you otherwise try to pass a too-large value, it may silently fail to update, or it may explicitly fail with error.
+' Assumes that input string is valid.
+' Assumes that Application StatusBar is already enabled.
+Sub SetStatusBarTrimmed(msg As String)
+    Application.StatusBar = Left(msg, 255)
+End Sub
+
+Attribute VB_Name = "COI_INI"
+'*******************************************************************************
+' Declaration for Reading and Wrting to an INI file.
+'*******************************************************************************
+
+'++++++++++++++++++++++++++++++++++++++++++++++++++++
+' API Functions for Reading and Writing to INI File
+'++++++++++++++++++++++++++++++++++++++++++++++++++++
+#If VBA7 Then
+Private Declare PtrSafe Function GetPrivateProfileString Lib "kernel32" Alias "GetPrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpDefault As String, ByVal lpReturnedString As String, ByVal nSize As Long, ByVal lpFileName As String) As Long
+#Else
+Private Declare Function GetPrivateProfileString Lib "kernel32" Alias "GetPrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpDefault As String, ByVal lpReturnedString As String, ByVal nSize As Long, ByVal lpFileName As String) As Long
+#End If
+
+#If VBA7 Then
+' Declare for writing INI files.
+Private Declare PtrSafe Function WritePrivateProfileString Lib "kernel32" Alias "WritePrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpString As Any, ByVal lpFileName As String) As Long
+#Else
+Private Declare Function WritePrivateProfileString Lib "kernel32" Alias "WritePrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpString As Any, ByVal lpFileName As String) As Long
+#End If
+
+
+'++++++++++++++++++++++++++++++++++++++++++++++++++++
+' Enumeration for GetSetINIparameters funtion
+'++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Enum iniAction
+    iniRead = 1
+    iniWrite = 2
+End Enum
+'*******************************************************************************
+' End INI file declaratin Section.
+'*******************************************************************************
+
+
+
+'*******************************************************************************
+' Locate INI file and return path to be used to read/write INI settings
+'*******************************************************************************
+
+Function GetINIfile()
+
+'*******************************************************************************
+'Get this worbooks path and look for ini in the same folder
+'Note: CurDir function retrieves path of system default path and not workbook path.
+'Retreive INI file in wellknown location(s) if no INI in current directory?
+'What about multiple INI files? E.g. master root INI, customer INI, report INI?
+'*******************************************************************************
+
+Dim path As String
+Dim sINI_FILE As String
+Dim filePathAndName As String
+Dim FSO: Set FSO = CreateObject("Scripting.FileSystemObject")
+Dim fileName As String
+Dim iniFileName As String
+
+'Get current path of macro workbook
+path = ThisWorkbook.path
+fileName = FSO.GetBaseName(ThisWorkbook.Name)
+iniFileName = fileName & ".ini"
+
+'Places to look:
+    'this workbooks directory
+    'current directory (system default) on user machine
+    'btsync wellknown directory
+    'each users defined root cube directory (hard coded in here?)
+    
+'Path = "\\DTRUE-WORK\Users\Dan\Sync"
+'Debug.Print "Path: " & Path
+'Build a full path to check if folder/file exist
+'TTD: Create an array of multiple paths here?
+
+filePathAndName = FSO.BuildPath(path, iniFileName)
+
+'Check if file exists
+fileExists = DoesFileExist(filePathAndName)
+
+'If file exists set INI file to the file and path name
+If fileExists = True Then
+    sINI_FILE = filePathAndName
+        Debug.Print ("...loading " & sINI_FILE)
+'TTD: how to determine if we expect ini or if this is a end user...or can we
+'If we can't find a file let the user know.
+'If this file doesn't exist where else do we want to check?
+'Shoud we exit, continue, other process flow options?
+'For now I'm setting to FileNotFound to use elsewhere
+Else:
+        Debug.Print ("INI file doesn't exist")
+        sINI_FILE = "FileNotFound"
+End If
+
+GetINIfile = sINI_FILE
+
+End Function
+
+
+Function GetSetINIparameters(inAction As iniAction, sSection As String, sKey As String, sIniFile As String, Optional sValue As String) As String
+'*******************************************************************************
+' Description:  This reads an INI file section/key combination and
+'               returns the read value as a string.
+'
+' Author:       Scott Lyerly
+' Contact:      scott_lyerly@tjx.com, or scott.c.lyerly@gmail.com
+'
+' Notes:        Requires "Private Declare Function GetPrivateProfileString" and
+'               "WritePrivateProfileString" to be added in the declarations
+'               at the top of the module.
+'
+' Name:                 Date:           Init:   Modification:
+' GetSetINIparameters   26-Nov-2013     SCL     Original development
+'
+' Arguments:    inAction    The action to take in the funciton, reading or writing to
+'                           to the INI file. Uses the enumeration iniAction in the
+'                           declarations section.
+'               sSection    The seciton of the INI file to search
+'               sKey        The key of the INI from which to retrieve a value
+'               sIniFile    The name and directory location of the INI file
+'               sValue      The value to be written to the INI file (if writing - optional)
+'
+' Returns:      string      The return string is one of three things:
+'                           1) The value being sought from the INI file.
+'                           2) The value being written to the INI file (should match
+'                              the sValue parameter).
+'                           3) The word "Error". This can be changed to whatever makes
+'                              the most sense to the programmer using it.
+'*******************************************************************************
+
+On Error GoTo Err_ManageSectionEntry
+
+' Variable declarations.
+Dim sRetBuf         As String
+Dim iLenBuf         As Integer
+Dim sFileName       As String
+Dim sReturnValue    As String
+Dim lRetVal         As Long
+    
+    ' Based on the inAction parameter, take action.
+    If inAction = iniRead Then  ' If reading from the INI file.
+
+        ' Set the return buffer to by 256 spaces. This should be enough to
+        ' hold the value being returned from the INI file, but if not,
+        ' increase the value.
+        sRetBuf = Space(256)
+
+        ' Get the size of the return buffer.
+        iLenBuf = Len(sRetBuf)
+
+        ' Read the INI Section/Key value into the return variable.
+        sReturnValue = GetPrivateProfileString(sSection, _
+                                               sKey, _
+                                               "", _
+                                               sRetBuf, _
+                                               iLenBuf, _
+                                               sIniFile)
+
+        ' Trim the excess garbage that comes through with the variable.
+        sReturnValue = Trim(Left(sRetBuf, sReturnValue))
+
+        ' If we get a value returned, pass it back as the argument.
+        ' Else pass "False".
+        If Len(sReturnValue) > 0 Then
+            GetSetINIparameters = sReturnValue
+        Else
+            GetSetINIparameters = "Error"
+        End If
+ElseIf inAction = iniWrite Then ' If writing to the INI file.
+
+        ' Check to see if a value was passed in the sValue parameter.
+        If Len(sValue) = 0 Then
+            GetSetINIparameters = "Error"
+
+        Else
+            
+            ' Write to the INI file and capture the value returned
+            ' in the API function.
+            lRetVal = WritePrivateProfileString(sSection, _
+                                               sKey, _
+                                               sValue, _
+                                               sIniFile)
+
+            ' Check to see if we had an error wrting to the INI file.
+            If lRetVal = 0 Then GetSetINIparameters = "Error"
+
+        End If
+End If
+    
+Exit_Clean:
+    Exit Function
+    
+Err_ManageSectionEntry:
+    MsgBox Err.Number & ": " & Err.Description
+    Resume Exit_Clean
+
+End Function
+'*******************************************************************************
+'If available, retrieve the refreshMode parameter setting in the INI file
+'*******************************************************************************
+Function getINIrefreshMode(iniFile As String)
+
+    Debug.Print ("...getting INI refresh Mode")
+    Dim sRefreshMode As String
+    
+    If iniFile = "FileNotFound" Then
+        sRefreshMode = "FileNotFound"
+    Else
+        sRefreshMode = GetSetINIparameters(iniRead, "General", "refreshMode", iniFile)
+    End If
+    
+    'Debug.Print "refreshMode: " & sRefreshMode
+    'If there is an INI without a refreshMode parameter lets take the user through the normal prompts.
+    If sRefreshMode = "" Then
+        sRefreshMode = "prompt"
+    End If
+    getINIrefreshMode = sRefreshMode
+    
+End Function
+'*******************************************************************************
+'Get the workbook's current connection string as we use this in multiple places
+'TTD: Remove any overlap from UpdateConnectionsWithMode
+'*******************************************************************************
+Function GetCurrentConnectionString()
+
+    Dim cxString As String
+    Dim wb As Workbook
+    Dim ws As Worksheet
+    Dim pt As PivotTable
+    Dim cx As WorkbookConnection
+    Dim cxnsFoundCount As Integer
+
+    Debug.Print ("...running GetCurrentConnection")
+    Set wb = Application.ThisWorkbook
+
+        'MsgBox ("Workbook: " & wb.Name)
+        'TTD: Can there be more than one xlConnectionTypeOLEDB??
+        For Each cx In wb.Connections
+            'MsgBox ("Connection Name: " & cx.Name)
+            If cx.Type = xlConnectionTypeOLEDB Then
+
+                cxnsFoundCount = cxnsFoundCount + 1
+                'MsgBox ("Conn count: " & cxnsFoundCount)
+                cxString = cx.OLEDBConnection.Connection
+
+            Else
+                Debug.Print ("Found Non OLEDB Connection")
+            End If
+        Next cx
+    
+    'TTD: For now just warn if we have more than one OLEDB connection.  Is this even possible?
+    If cxnsFoundCount = 1 Then
+        GetCurrentConnectionString = cxString
+    Else
+       MsgBox ("System found " & cxnsFoundCount & " connections.  Using the last OLEDB connetion")
+        GetCurrentConnectionString = cxString
+    End If
+    
+End Function
+'*******************************************************************************
+'Determine which cube file to use based on current connection / possible INI file
+'*******************************************************************************
+Function GetFinalCubeFileConnectionString(iniFile As String)
+    
+    Dim cx As WorkbookConnection
+    Dim iniLocalCubeFilePath As String
+    Dim iniNetworkCubeFilePath As String
+    Dim iniCxString As String
+    Dim currentCnxString As String
+    Dim currentCubeFilePath As String
+    Dim foundCubeCount As Integer
+    Dim listOfCubeCxStrings As Object 'Declare a generic Object reference to hold list of Cube connection strings
+    
+    'Late Binding of the Dictionary
+    Set listOfCubeCxStrings = CreateObject("Scripting.Dictionary")
+     
+     
+    Debug.Print ("...running GetCandidateCubeFiles")
+        
+    'Get current cube info
+    currentCnxString = GetCurrentConnectionString
+    currentCubeFilePath = GetCubeFileNameFromConnectionString(currentCnxString)
+    currentCubeFound = DoesFileExist(currentCubeFilePath)
+    If currentCubeFound Then
+        currentCubeDate = FileDateTime(currentCubeFilePath)
+        Debug.Print ("...currentCubeDate: " & currentCubeDate)
+    End If
+    Debug.Print ("...currentCubeFilePath: " & currentCubeFilePath)
+    Debug.Print ("...currentCubeFound: " & currentCubeFound)
+    
+    'Get local cube info
+    iniLocalCubeFilePath = GetSetINIparameters(iniRead, "General", "localCubePath", iniFile)
+    localCubeFound = DoesFileExist(iniLocalCubeFilePath)
+    If localCubeFound Then
+        localCubeDate = FileDateTime(iniLocalCubeFilePath)
+        Debug.Print ("...localCubeDate: " & localCubeDate)
+    End If
+    Debug.Print ("...iniLocalCubeFilePath: " & iniLocalCubeFilePath)
+    Debug.Print ("...localCubeFound: " & localCubeFound)
+
+    
+    'Get network cube info
+    iniNetworkCubeFilePath = GetSetINIparameters(iniRead, "General", "networkCubePath", iniFile)
+    networkCubeFound = DoesFileExist(iniNetworkCubeFilePath)
+    If networkCubeFound Then
+        networkCubeDate = FileDateTime(iniNetworkCubeFilePath)
+        Debug.Print ("...networkCubeDate: " & networkCubeDate)
+    End If
+    Debug.Print ("...iniNetworkCubeFilePath: " & iniNetworkCubeFilePath)
+    Debug.Print ("...networkCubeFound: " & networkCubeFound)
+
+
+
+    
+
+   'TTD: rules for determing?  Most recent, pecking order, some combination?
+
+   If currentCubeFound Then
+     finalCxString = currentCnxString
+     If Not listOfCubeCxStrings.Exists(currentCubeDate) Then
+        listOfCubeCxStrings.Add currentCubeDate, finalCxString
+     End If
+   End If
+   
+   If localCubeFound Then
+    If Not listOfCubeCxStrings.Exists(localCubeDate) Then
+        finalCxString = CreateNewConnectionStringFromOldWithNewFilename(currentCnxString, iniLocalCubeFilePath)
+         listOfCubeCxStrings.Add localCubeDate, finalCxString
+     End If
+   End If
+   
+   If networkCubeFound Then
+    If Not listOfCubeCxStrings.Exists(networkCubeDate) Then
+        finalCxString = CreateNewConnectionStringFromOldWithNewFilename(currentCnxString, iniNetworkCubeFilePath)
+         listOfCubeCxStrings.Add networkCubeDate, finalCxString
+     End If
+    End If
+    
+    foundCubeCount = listOfCubeCxStrings.Count
+    Debug.Print ("...Found " & foundCubeCount & " cube file(s)")
+ 
+    'Return the most recent cube
+    mostRecentDate = ""
+    For Each key In listOfCubeCxStrings.Keys
+        If mostRecentDate = "" Then
+            mostRecentDate = key
+        Else
+            If key > mostRecentDate Then
+            mostRecentDate = key
+            End If
+        End If
+    Next
+    
+    'Check how old the most recent cube file is...
+    If foundCubeCount > 1 Then
+        If mostRecentDate > Now() - 1 Then
+            mostRecentCubeCxString = listOfCubeCxStrings.Item(mostRecentDate)
+            Debug.Print ("Less than a day old")
+            Debug.Print (mostRecentDate)
+            Debug.Print ("minus a day: " & Now() - 1)
+        Else
+            Debug.Print ("Older than a day old")
+            Debug.Print (mostRecentDate)
+            Debug.Print ("minus a day: " & Now() - 1)
+            oldCubeAnswer = MsgBox("Continue with cube generated more than 1 day ago? " & mostRecentDate & vbCrLf & GetCubeFileNameFromConnectionString(listOfCubeCxStrings.Item(mostRecentDate)), vbYesNo, "Use date?")
+            
+            If oldCubeAnswer = vbYes Then
+                mostRecentCubeCxString = listOfCubeCxStrings.Item(mostRecentDate)
+            Else
+                'TTD: currrently the UpdateConnectionsWithMode will re-find the existing cube connection so we need to fix this.
+                'basically remove the cube connetion string so it will prompt in Update Connections to have user pick a new cube.
+                mostRecentCubeCxString = ""
+            End If
+        End If
+    ElseIf foundCubeCount = 1 Then
+        'Debug.Print ("Found exactly one cube")
+        mostRecentCubeCxString = listOfCubeCxStrings.Item(mostRecentDate)
+    Else
+        'Didn't find a cube
+        mostRecentCubeCxString = ""
+    End If
+    
+    Debug.Print ("...Most recent cube date: " & mostRecentDate)
+    Debug.Print ("...Most recent cube cxn string index: " & mostRecentCubeCxString)
+    
+    
+    'Dispose of VBA Dictionary
+    Set listOfCubeCxStrings = Nothing
+    
+    GetFinalCubeFileConnectionString = mostRecentCubeCxString
+    
+
+End Function
+Attribute VB_Name = "COI_INI_tempoverlay"
+#If VBA7 Then
+Private Declare PtrSafe Function GetPrivateProfileString Lib "kernel32" Alias "GetPrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpDefault As String, ByVal lpReturnedString As String, ByVal nSize As Long, ByVal lpFileName As String) As Long
+#Else
+Private Declare Function GetPrivateProfileString Lib "kernel32" Alias "GetPrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpDefault As String, ByVal lpReturnedString As String, ByVal nSize As Long, ByVal lpFileName As String) As Long
+#End If
+
+#If VBA7 Then
+' Declare for writing INI files.
+Private Declare PtrSafe Function WritePrivateProfileString Lib "kernel32" Alias "WritePrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpString As Any, ByVal lpFileName As String) As Long
+#Else
+Private Declare Function WritePrivateProfileString Lib "kernel32" Alias "WritePrivateProfileStringA" _
+(ByVal lpApplicationName As String, ByVal lpKeyName As Any, ByVal lpString As Any, ByVal lpFileName As String) As Long
+#End If
+
+
+' TTD:
+' Ability to have it read from hierarchy of INI files
+' Ability to read from INI file regardless of section
+
+' GK note: Copied GetINIfile, and changed 2 lines - 1 to retrieve a COI.ini instead of <thisfilename>.ini, 1 to reflect return variable name due to function name change
+Function GetCOIINIfile()
+
+'*******************************************************************************
+'Get this worbooks path and look for ini in the same folder
+'Note: CurDir function retrieves path of system default path and not workbook path.
+'Retreive INI file in wellknown location(s) if no INI in current directory?
+'What about multiple INI files? E.g. master root INI, customer INI, report INI?
+'*******************************************************************************
+
+Dim path As String
+Dim sINI_FILE As String
+Dim filePathAndName As String
+Dim FSO: Set FSO = CreateObject("Scripting.FileSystemObject")
+Dim fileName As String
+Dim iniFileName As String
+
+'Get current path of macro workbook
+path = ThisWorkbook.path
+fileName = "COI"
+iniFileName = fileName & ".ini"
+
+'Places to look:
+    'this workbooks directory
+    'current directory (system default) on user machine
+    'btsync wellknown directory
+    'each users defined root cube directory (hard coded in here?)
+    
+'Path = "\\DTRUE-WORK\Users\Dan\Sync"
+'Debug.Print "Path: " & Path
+'Build a full path to check if folder/file exist
+'TTD: Create an array of multiple paths here?
+
+filePathAndName = FSO.BuildPath(path, iniFileName)
+
+'Check if file exists
+fileExists = DoesFileExist(filePathAndName)
+
+'If file exists set INI file to the file and path name
+If fileExists = True Then
+    sINI_FILE = filePathAndName
+        Debug.Print ("...loading " & sINI_FILE)
+'TTD: how to determine if we expect ini or if this is a end user...or can we
+'If we can't find a file let the user know.
+'If this file doesn't exist where else do we want to check?
+'Shoud we exit, continue, other process flow options?
+'For now I'm setting to FileNotFound to use elsewhere
+Else:
+        Debug.Print ("INI file doesn't exist")
+        sINI_FILE = "FileNotFound"
+End If
+
+GetCOIINIfile = sINI_FILE
+
+End Function
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet10"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet11"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet12"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet13"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet14"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet15"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet16"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet17"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet18"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet19"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet20"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet8"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet9"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+    
+    UpdateConnectionsWithMode (True)
+    EnableCalculatedDimensionMembersAllWorksheets
+    UpdatePivotTables
+    DisableMaintainConnectionOnPivotCaches
+    
+End Sub
+
+Private Sub Workbook_PivotTableOpenConnection(ByVal Target As PivotTable)
+    EnableCalculatedDimensionMembersOneTable Target
+End Sub
+
+
+
+
+' InQuest injected base64 decoded content
+' ]Z+a5
+' ,x*'
+' Z+a"zn
+
+INQUEST-PP=macro

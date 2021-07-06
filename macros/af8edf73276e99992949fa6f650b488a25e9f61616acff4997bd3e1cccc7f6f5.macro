@@ -1,0 +1,738 @@
+Attribute VB_Name = "Custom_Fields_Code"
+
+
+
+
+
+
+
+'
+' General constants
+'
+
+Const cInvalidRow As Integer = -1
+Const cInvalidExpTypeIndex As Integer = -1
+Const cInvalidFieldIndex As Integer = -1
+Const cMaxContSens As Integer = 15
+Const cMinContSens As Integer = 0
+Const cDropDownTypeName As String = "DropDown"
+Const cDefaultDropDownLinkCellValue As Integer = 1
+Const cCheckBoxTypeName As String = "CheckBox"
+Const cTextTypeName As String = "Text"
+Const cDefaultCheckBoxLinkCellValue As Boolean = False
+Const cERCellRefForColor As String = "A1"
+
+'
+' Constants for Expense Report Sheet
+'
+
+Const cERFirstReceiptRow As Integer = 9
+Const cERExpTypeCol As Integer = 10
+Const cERObjOffset As Integer = 1
+Const cERContSensColTotalWidth As Integer = 2
+Const cERMaxCol As Integer = 30    ' max number of columns allowed
+
+
+'
+' Constants for Expense Types Sheet
+'
+
+Const cETInfoNameRowStart As Integer = 3
+Const cETInfoNameCol As Integer = 1
+Const cETInfoPromptColStart As Integer = 2
+Const cETInfoSpecialObjOffset As Integer = 1
+Const cETInfoTotalOffset As Integer = 2
+
+'
+' Constants for Custom Field Links
+'
+
+Const cCFInfoRowStart As Integer = 3
+Const cCFInfoLinkOffset As Integer = 0
+Const cCFInfoObjTypeOffset As Integer = 1
+Const cCFInfoObjNameOffset As Integer = 2
+Const cCFInfoTotalOffset As Integer = 3
+
+'
+' Constants for Prompts worksheet
+'
+Const cPromptsDialogCaption = "AP_WEB_SS_DIALOG_CAPTION"
+Const cPromptsDialogMessage = "AP_WEB_DISCON_SS_DIALOG"
+Const cPromptsDialogCBCaption = "AP_WEB_SS_DIALOG_CB_CAPTION"
+Const cPromptsDialogOKButtonCaption = "AP_WEB_SS_DIALOG_OK_CAPTION"
+Const cPromptsContextSensitiveCode As String = "AP_WEB_ADDITIONAL_INFO"
+Const cPromptsInfoRowStart As Integer = 1
+Const cPromptsCodeCol As Integer = 1
+
+'
+' Global variables
+'
+
+Dim iNumOfExpTypes As Integer
+Dim iMaxNumOfCustFields As Integer
+Dim lngERBackgroundRGB As Long
+
+Dim vntETInfoPromptArray() As Variant
+Dim vntETInfoInputTypeArray() As Variant
+Dim bETInfoInitFlag As Boolean
+Dim bReminder As Boolean
+Dim iFirst As Integer
+
+'
+' Main Handler when expense type changes
+'
+
+Sub RecompileExpTypes()
+Attribute RecompileExpTypes.VB_ProcData.VB_Invoke_Func = " \n14"
+    bETInfoInitFlag = False
+'    MsgBox "recompiled"
+End Sub
+
+Sub ChangeExpenseType()
+Attribute ChangeExpenseType.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim iCallerRow As Integer
+    Dim iExpTypeIndex As Integer
+    Dim iReceiptIndex As Integer
+    
+    Dim wksExpTypes As Worksheet
+    Dim wksActive As Worksheet
+    Dim wksCustomFieldLinks As Worksheet
+    Dim rRange As Range
+    
+    Set wksExpTypes = Worksheets("Expense Types")
+    Set wksActive = ActiveSheet
+    Set wksCustomFieldLinks = Worksheets("Custom Field Links")
+        
+    ' initialize structure information, if not already done
+    If Not bETInfoInitFlag Then
+        Dim iERContSensColStart As Integer
+        iERContSensColStart = getContextSensitiveCol
+        iNumOfExpTypes = CalcNumOfExpTypes(wksExpTypes)
+        iMaxNumOfCustFields = CalcNumOfCustFields(wksExpTypes, iNumOfExpTypes)
+        iERContSensColEnd = iERContSensColStart + iMaxNumOfCustFields * 2 - 1
+        lngERBackgroundRGB = wksActive.Range(cERCellRefForColor).Interior.Color
+        
+        wksExpTypes.OnSheetDeactivate = ActiveWorkbook.Name & "!RecompileExpTypes"
+        
+        ' check the number of expense types and custom fields
+        If iNumOfExpTypes < 0 Or iMaxNumOfCustFields < 0 Then
+            Exit Sub
+        End If
+        
+        ' collect information about the expense type's prompts and special inputs
+        PopulateCustomPromptsAndInputType wksExpTypes, wksActive, iNumOfExpTypes
+        
+        'Inititalzie Information Dialog
+        initInfoDialog
+       
+        bETInfoInitFlag = True
+    End If
+
+    ' calculate caller, receipt info
+    iCallerRow = wksActive.DropDowns(Application.Caller).TopLeftCell.Row
+    iReceiptIndex = ConvertERRowToReceiptIndex(iCallerRow)
+'    iExpTypeIndex = ConvertETRowToExpTypeIndex(ConvertETExpTypeToRow(wksExpTypes, wksActive.Cells(iCallerRow, cERExpTypeCol)))
+    
+    ' THe reason for minus 2 is:
+    ' 1. Dropdown Index is 1 based while the array of expense is 0-base.
+    ' 2. Blank is excluded.
+    iExpTypeIndex = wksActive.DropDowns(Application.Caller).Value - 2
+        
+    ' display prompts
+    Application.ScreenUpdating = False
+    wksActive.Unprotect
+    Dim bAdditionalInfo As Boolean
+    DrawFields wksActive, wksCustomFieldLinks, wksExpTypes, iMaxNumOfCustFields, iReceiptIndex, iExpTypeIndex, lngERBackgroundRGB, bAdditionalInfo
+    wksActive.Protect
+    Application.ScreenUpdating = True
+    
+    'Display reminder Dialog
+    If (iFirst <> 99) Then
+        iFirst = 99
+        bReminder = True
+    End If
+    
+    ' Display reminder only if there is more infor
+    If (bAdditionalInfo) Then
+        If (bReminder) Then
+            Dim wb As Workbook
+            Dim ds As DialogSheet
+            Set wb = ActiveWorkbook
+            Set ds = wb.Sheets("InfoDialog")
+                        
+            'Set the default value as unchecked
+            ds.CheckBoxes(1).Value = 0
+            ds.Show
+            If (ds.CheckBoxes(1).Value = 1) Then
+                bReminder = False
+            End If
+        End If
+    End If
+    
+
+End Sub
+
+'
+' Initialize the prompts and special objects data for each expense type
+'
+Sub PopulateCustomPromptsAndInputType(wksExpTypes As Worksheet, wksActive As Worksheet, iNumOfExpType As Integer)
+Attribute PopulateCustomPromptsAndInputType.VB_ProcData.VB_Invoke_Func = " \n14"
+
+    Dim iExpTypeRow As Integer
+    Dim vntExpTypeInfoPrompts(cMaxContSens) As String, vntExpTypeInfoType(cMaxContSens) As String, vntExpTypeInfoRequired(cMaxContSens) As String
+    Dim iExpTypeInfoNumPrompts As Integer
+    Dim iExpTypeInfoPromptCol As Integer
+    
+    Dim iExpTypeIndex As Integer
+    Dim iFieldIndex As Integer
+    Dim aryPrompts, aryInputTypes As Variant
+    Dim strPrompts As String
+    
+    Dim ddSrc, cbSrc As Variant
+    Dim iRow As Integer
+    
+    ' allocate enough space in
+    ReDim vntETInfoPromptArray(iNumOfExpType)
+    ReDim vntETInfoInputTypeArray(iNumOfExpType)
+    
+    ' process each expense type prompt
+    For iExpTypeIndex = 0 To iNumOfExpType - 1
+    
+        ' check whether there is at least one context sensitive fields, if so then create an array to store prompt/input info
+        ' otherwise no array will be created for those without context sensitive fields
+        iRow = ConvertETExpTypeIndexToRow(iExpTypeIndex)
+        If wksExpTypes.Cells(iRow, cETInfoPromptColStart) <> "" Then
+        
+            ' allocate space for prompts and input types for the expense type
+            aryPrompts = Array(Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty)
+            aryInputTypes = Array(Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty, Empty)
+            
+            For iFieldIndex = 0 To cMaxContSens - 1
+                
+                strPrompts = wksExpTypes.Cells(iRow, ConvertETFieldIndexToCol(iFieldIndex))
+                strDefaults = wksExpTypes.Cells(iRow, ConvertETFieldInputIndexToCol(iFieldIndex))
+                If strPrompts = "" Then Exit For
+                aryPrompts(iFieldIndex) = strPrompts
+                If strDefaults <> "" Then
+                    aryInputTypes(iFieldIndex) = strDefaults
+                End If
+            
+            Next
+        
+            vntETInfoPromptArray(iExpTypeIndex) = aryPrompts
+            vntETInfoInputTypeArray(iExpTypeIndex) = aryInputTypes
+        End If
+    
+    Next
+    
+    ' process each expense type input type by going through dropdowns
+    For Each ddSrc In wksExpTypes.DropDowns
+        ' determine row and column on which it resides
+        iExpTypeIndex = ConvertETRowToExpTypeIndex(ddSrc.TopLeftCell.Row)
+        iFieldIndex = ConvertETColToFieldIndex(ddSrc.TopLeftCell.Column - cETInfoSpecialObjOffset)
+        
+        ' insert into aryInputTypes only if associated prompts for that expense type have been entered
+        If iExpTypeIndex <> cInvalidExpTypeIndex And iFieldIndex <> cInvalidFieldIndex Then
+            If vntETInfoPromptArray(iExpTypeIndex)(iFieldIndex) <> "" Then
+               Set vntETInfoInputTypeArray(iExpTypeIndex)(iFieldIndex) = ddSrc
+            End If
+        End If
+    Next
+    
+    ' process each expense type input type by going through checkboxes
+    For Each cbSrc In wksExpTypes.CheckBoxes
+        ' determine row and column on which it resides
+        iExpTypeIndex = ConvertETRowToExpTypeIndex(cbSrc.TopLeftCell.Row)
+        iFieldIndex = ConvertETColToFieldIndex(cbSrc.TopLeftCell.Column - cETInfoSpecialObjOffset)
+                
+        If iExpTypeIndex <> cInvalidExpTypeIndex And iFieldIndex <> cInvalidFieldIndex Then
+            If vntETInfoPromptArray(iExpTypeIndex)(iFieldIndex) <> "" Then
+               Set vntETInfoInputTypeArray(iExpTypeIndex)(iFieldIndex) = cbSrc
+            End If
+        End If
+    Next
+    
+End Sub
+
+Sub DrawFields(wksActive As Worksheet, wksCustomFieldLinks As Worksheet, wksExpTypes As Worksheet, iMaxNumOfCustFields As Integer, iReceiptIndex As Integer, iExpTypeIndex As Integer, lngERBackgroundRGB As Long, bAdditionalInfo As Boolean)
+Attribute DrawFields.VB_ProcData.VB_Invoke_Func = " \n14"
+    
+    Dim iFieldIndex As Integer
+    Dim strPrompt As String
+    
+    bAdditionalInfo = False
+    
+    ' clear cells
+    ClearFields wksActive, wksCustomFieldLinks, iReceiptIndex, iMaxNumOfCustFields, lngERBackgroundRGB
+    
+    ' does not require furthur processing if no expense type given
+    If iExpTypeIndex = cInvalidExpTypeIndex Then
+        Exit Sub
+    End If
+    
+    iFieldIndex = 0
+    If Not (IsEmpty(vntETInfoPromptArray(iExpTypeIndex))) Then
+        
+        For iFieldIndex = 0 To cMaxContSens - 1
+                    
+            If Not IsEmpty(vntETInfoPromptArray(iExpTypeIndex)(iFieldIndex)) Then
+                strPrompt = vntETInfoPromptArray(iExpTypeIndex)(iFieldIndex)
+                
+                If strPrompt <> "" Then
+                    DrawPrompt wksActive, iReceiptIndex, iFieldIndex, strPrompt
+                    DrawInputObj wksActive, wksCustomFieldLinks, wksExpTypes, iReceiptIndex, iFieldIndex, vntETInfoInputTypeArray(iExpTypeIndex)(iFieldIndex), lngERBackgroundRGB
+                End If
+            Else
+                Exit For
+            End If
+            
+        Next
+        bAdditionalInfo = True
+    End If
+        
+End Sub
+
+Sub ClearFields(wksActive As Worksheet, wksCustomFieldLinks As Worksheet, iReceiptIndex As Integer, iMaxNumOfCustFields As Integer, lngERBackgroundRGB As Long)
+Attribute ClearFields.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim iRow As Integer, iColumn As Integer
+    Dim iFieldIndex As Integer
+    Dim vntObject As Variant
+    Dim iActiveRow As Integer, iContSensColEnd As Integer
+    Dim strObjType As String
+    Dim iNumFieldsOccupied As Integer
+    Dim iERContSensColStart As Integer
+    
+    ' get corresponding row in custom field links
+    iRow = ConvertCFReceiptIndexToRow(iReceiptIndex)
+    
+    ' go through expense type objects and delete by name
+    iNumFieldsOccupied = 0
+    For iFieldIndex = 0 To cMaxContSens - 1
+    
+        iColumn = ConvertCFFieldIndexToCol(iFieldIndex)
+        strObjType = wksCustomFieldLinks.Cells(iRow, iColumn + cCFInfoObjTypeOffset)
+        If strObjType <> "" Then
+            DeleteObj wksActive, strObjType, wksCustomFieldLinks.Cells(iRow, iColumn + cCFInfoObjNameOffset).Value
+            iNumFieldsOccupied = iNumFieldsOccupied + 1
+        Else
+            Exit For
+        End If
+    Next
+    
+    ' clear out contents in custom field links
+    wksCustomFieldLinks.Range(Cells(iRow, ConvertCFFieldIndexToCol(0)).Address & ":" & Cells(iRow, ConvertCFFieldIndexToCol(cMaxContSens - 1) + cCFInfoTotalOffset).Address).Clear
+    
+    If iNumFieldsOccupied > 0 Then
+        ' clear out contents in expense reports
+        iActiveRow = ConvertERReceiptIndexToRow(iReceiptIndex)
+        iContSensColEnd = ConvertERFieldIndexToCol(iNumFieldsOccupied - 1) + cERContSensColTotalWidth - 1
+    
+        iERContSensColStart = getContextSensitiveCol
+        With wksActive.Range(Cells(iActiveRow, iERContSensColStart), Cells(iActiveRow, iContSensColEnd))
+            .Value = ""
+            .Interior.Color = lngERBackgroundRGB
+            .Borders.LineStyle = xlNone
+            .Locked = True
+        End With
+    End If
+End Sub
+
+Sub DeleteObj(wksActive As Worksheet, strType As String, strName As String)
+Attribute DeleteObj.VB_ProcData.VB_Invoke_Func = " \n14"
+    On Error GoTo ErrorHandler
+    Select Case strType
+    Case cDropDownTypeName
+        Set vntObject = wksActive.DropDowns(strName)
+        vntObject.Delete
+    Case cCheckBoxTypeName
+        Set vntObject = wksActive.CheckBoxes(strName)
+        vntObject.Delete
+    End Select
+    Exit Sub
+ErrorHandler:
+    MsgBox "debug: object not found"
+    Exit Sub
+End Sub
+
+Sub DrawPrompt(wksActive As Worksheet, iReceiptIndex As Integer, iFieldIndex As Integer, strPrompt As String)
+Attribute DrawPrompt.VB_ProcData.VB_Invoke_Func = " \n14"
+    
+    Dim iRow As Integer, iColumn As Integer
+    
+    iRow = ConvertERReceiptIndexToRow(iReceiptIndex)
+    iColumn = ConvertERFieldIndexToCol(iFieldIndex)
+    
+    With wksActive.Cells(iRow, iColumn)
+        .Font.Bold = False
+        .HorizontalAlignment = xlRight
+        .Value = strPrompt
+    End With
+    
+End Sub
+
+Sub DrawInputObj(wksActive As Worksheet, wksCustomFieldLinks As Worksheet, wksExpTypes As Worksheet, iReceiptIndex As Integer, iFieldIndex As Integer, vntInput As Variant, lngERBackgroundRGB As Long)
+Attribute DrawInputObj.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim ddDest As DropDown
+    Dim cbDest As CheckBox
+    Dim rRange As Range
+    Dim iRow As Integer, iColumn As Integer
+        
+    If iReceiptIndex < 0 Then
+        Exit Sub
+    End If
+    
+    iRow = ConvertERReceiptIndexToRow(iReceiptIndex)
+    iColumn = ConvertERFieldIndexToCol(iFieldIndex) + cERObjOffset
+    
+    ' target row and column in custom field links to store info
+    iCFRow = ConvertCFReceiptIndexToRow(iReceiptIndex)
+    iCFColumn = ConvertCFFieldIndexToCol(iFieldIndex)
+    
+    If TypeName(vntInput) = "DropDown" Then
+    
+        ' paste onto the spreadsheet
+        Set rRange = wksActive.Cells(iRow, iColumn)
+
+        ' set properties of destination dropdown
+        Set ddDest = wksActive.DropDowns.Add(rRange.Left, rRange.Top, vntInput.Width, vntInput.Height)
+        With ddDest
+            .LinkedCell = wksCustomFieldLinks.Cells(iCFRow, iCFColumn + cCFLinkOffset).Address(external:=True)
+            If vntInput.ListFillRange <> "" Then
+                .ListFillRange = wksExpTypes.Range(vntInput.ListFillRange).Address(external:=True)
+                .Value = vntInput.Value
+            End If
+        End With
+        
+        ' set formula below sheet
+        ' Bug 2586748
+        '  rRange.Formula = "=INDEX(" + ddDest.ListFillRange + "," + ddDest.LinkedCell + ")"
+          rRange.Formula = "=IF(INDEX(" + ddDest.ListFillRange + "," + ddDest.LinkedCell + ")=" + Chr(34) + Chr(34) + "," + Chr(34) + Chr(34) + ",INDEX(" + ddDest.ListFillRange + "," + ddDest.LinkedCell + "))"
+          
+       ' set value in link, object type, object name
+       wksCustomFieldLinks.Cells(iCFRow, iCFColumn + cCFInfoObjTypeOffset) = cDropDownTypeName
+       wksCustomFieldLinks.Cells(iCFRow, iCFColumn + cCFInfoObjNameOffset) = ddDest.Name
+       
+    ElseIf TypeName(vntInput) = "CheckBox" Then
+    
+        ' paste onto the spreadsheet
+        Set rRange = wksActive.Cells(iRow, iColumn)
+                
+        Set cbDest = wksActive.CheckBoxes.Add(rRange.Left, rRange.Top, vntInput.Width, vntInput.Height)
+        With cbDest
+            .LinkedCell = wksCustomFieldLinks.Cells(iCFRow, iCFColumn + cCFLinkOffset).Address(external:=True)
+            .Text = ""
+            .Display3DShading = True
+            .Value = vntInput.Value
+        End With
+        
+        ' set formula below sheet
+        With rRange
+            .Formula = "=IF(" + cbDest.LinkedCell + "=TRUE," + Chr(34) + "Y" + Chr(34) + "," + Chr(34) + "N" + Chr(34) + ")"
+            .Font.Color = lngERBackgroundRGB ' this is so that the "x" is not visible
+        End With
+        
+       ' set value in link, object type, object name
+       wksCustomFieldLinks.Cells(iCFRow, iCFColumn + cCFInfoObjTypeOffset) = cCheckBoxTypeName
+       wksCustomFieldLinks.Cells(iCFRow, iCFColumn + cCFInfoObjNameOffset) = cbDest.Name
+   
+    Else  'Text Field
+    
+       With wksActive.Cells(iRow, iColumn)
+           .BorderAround Color:=RGB(0, 0, 0), Weight:=xlThin
+           .Interior.Color = RGB(255, 255, 255)
+           .Font.ColorIndex = xlAutomatic
+           .Value = vntInput
+           .Locked = False
+       End With
+       wksCustomFieldLinks.Cells(iCFRow, iCFColumn + cCFInfoObjTypeOffset) = cTextTypeName
+        
+    End If
+        
+
+End Sub
+
+Sub FillInNonUsedContSensCell(iNumContSens As Integer, iRow As Integer)
+Attribute FillInNonUsedContSensCell.VB_ProcData.VB_Invoke_Func = " \n14"
+  If iNumContSens < cMaxContSens Then
+      ActiveSheet.Range(Cells(iRow, cContSensColStart + iNumContSens * 2), Cells(iRow, iContSensColEnd)).Interior.Color = RGB(105, 255, 255)
+  End If
+End Sub
+
+
+Function CalcNumOfExpTypes(wksExpenseTypes As Worksheet) As Integer
+Attribute CalcNumOfExpTypes.VB_ProcData.VB_Invoke_Func = " \n14"
+'
+' Determine number of expense types defined and custom fields
+'
+    Dim iIndex As Integer
+    Dim strExpenseType As String
+        
+    ' Expense types must be contiguous
+    iIndex = -1
+    Do
+        iIndex = iIndex + 1
+        strExpenseType = wksExpenseTypes.Cells(cETInfoNameRowStart + iIndex, cETInfoNameCol)
+    Loop While strExpenseType <> ""
+    
+    CalcNumOfExpTypes = iIndex
+End Function
+
+Function CalcNumOfCustFields(wksExpTypes As Worksheet, iNumOfExpTypes As Integer)
+Attribute CalcNumOfCustFields.VB_ProcData.VB_Invoke_Func = " \n14"
+'
+' Determine number of max custom fields over all expense types
+'
+    Dim iRow As Integer
+    Dim iMaxCustomFields As Integer
+    Dim iFieldIndex As Integer
+    Dim strPrompt As String
+        
+    ' Custom fields for expense types must be contiguous
+    iMaxCustomFields = 0
+    For iRow = cETInfoNameRowStart To cETInfoNameRowStart + iNumOfExpTypes - 1
+        iFieldIndex = 0
+        For iCol = cETInfoPromptColStart To cETInfoPromptColStart + (cMaxContSens - 1) * cETInfoTotalOffset Step cETInfoTotalOffset
+            strPrompt = wksExpTypes.Cells(iRow, iCol)
+            If strPrompt = "" Then Exit For
+            iFieldIndex = iFieldIndex + 1
+        Next
+        
+        ' Check if num of custom fields is larger than the max
+        If iFieldIndex > iMaxCustomFields Then
+            iMaxCustomFields = iFieldIndex
+        End If
+    Next
+    
+    CalcNumOfCustFields = iMaxCustomFields
+
+End Function
+
+'
+' Conversion routines
+'
+
+Function ConvertETExpTypeIndexToRow(iExpTypeIndex As Integer) As Integer
+Attribute ConvertETExpTypeIndexToRow.VB_ProcData.VB_Invoke_Func = " \n14"
+    ConvertETExpTypeIndexToRow = iExpTypeIndex + cETInfoNameRowStart
+End Function
+
+Function ConvertETFieldIndexToCol(iFieldIndex As Integer) As Integer
+Attribute ConvertETFieldIndexToCol.VB_ProcData.VB_Invoke_Func = " \n14"
+    ConvertETFieldIndexToCol = cETInfoPromptColStart + iFieldIndex * cETInfoTotalOffset
+End Function
+Function ConvertETFieldInputIndexToCol(iFieldIndex As Integer) As Integer
+Attribute ConvertETFieldInputIndexToCol.VB_ProcData.VB_Invoke_Func = " \n14"
+    ConvertETFieldInputIndexToCol = cETInfoPromptColStart + iFieldIndex * cETInfoTotalOffset + 1
+End Function
+Function ConvertETRowToExpTypeIndex(iRow As Integer) As Integer
+Attribute ConvertETRowToExpTypeIndex.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim iAns As Integer
+    
+    iAns = iRow - cETInfoNameRowStart
+    
+    If iAns < 0 Or iAns >= iNumOfExpTypes Then
+        iAns = cInvalidExpTypeIndex
+    End If
+    
+    ConvertETRowToExpTypeIndex = iAns
+End Function
+
+Function ConvertETColToFieldIndex(iCol As Integer) As Integer
+Attribute ConvertETColToFieldIndex.VB_ProcData.VB_Invoke_Func = " \n14"
+
+    Dim iAns As Integer
+    
+    iAns = (iCol - cETInfoPromptColStart) / cETInfoTotalOffset
+    
+    If iAns < 0 Or iAns >= cMaxContSens Then
+        iAns = cInvalidFieldIndex
+    End If
+    
+    ConvertETColToFieldIndex = iAns
+End Function
+
+Function ConvertERRowToReceiptIndex(iCallerRow As Integer) As Integer
+Attribute ConvertERRowToReceiptIndex.VB_ProcData.VB_Invoke_Func = " \n14"
+    ConvertERRowToReceiptIndex = iCallerRow - cERFirstReceiptRow
+End Function
+
+Function ConvertETExpTypeToRow(wksExpTypes As Worksheet, strExpType As String) As Integer
+Attribute ConvertETExpTypeToRow.VB_ProcData.VB_Invoke_Func = " \n14"
+
+    Dim iExpTypeRow As Integer
+    Dim strExpTypeCheck As String
+    
+    iExpTypeRow = cETInfoNameRowStart
+    strExpTypeCheck = wksExpTypes.Cells(iExpTypeRow, cETInfoNameCol)
+    
+    Do While strExpTypeCheck <> ""
+        If strExpTypeCheck = strExpType Then
+            ConvertETExpTypeToRow = iExpTypeRow
+            Exit Function
+        End If
+        iExpTypeRow = iExpTypeRow + 1
+        strExpTypeCheck = wksExpTypes.Cells(iExpTypeRow, cETInfoNameCol)
+    Loop
+
+    ' clear custom fields if expense type does not match
+    ConvertETExpTypeToRow = cInvalidRow
+    
+End Function
+
+Function ConvertERFieldIndexToCol(iFieldIndex As Integer) As Integer
+Attribute ConvertERFieldIndexToCol.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim iERContSensColStart As Integer
+    
+    iERContSensColStart = getContextSensitiveCol
+    ConvertERFieldIndexToCol = iERContSensColStart + iFieldIndex * cERContSensColTotalWidth
+End Function
+Function ConvertERReceiptIndexToRow(iReceiptIndex As Integer) As Integer
+Attribute ConvertERReceiptIndexToRow.VB_ProcData.VB_Invoke_Func = " \n14"
+    ConvertERReceiptIndexToRow = cERFirstReceiptRow + iReceiptIndex
+End Function
+
+Function ConvertCFReceiptIndexToRow(iReceiptIndex As Integer) As Integer
+Attribute ConvertCFReceiptIndexToRow.VB_ProcData.VB_Invoke_Func = " \n14"
+    ConvertCFReceiptIndexToRow = iReceiptIndex + cCFInfoRowStart
+End Function
+Function ConvertCFFieldIndexToCol(iFieldIndex As Integer) As Integer
+Attribute ConvertCFFieldIndexToCol.VB_ProcData.VB_Invoke_Func = " \n14"
+     ConvertCFFieldIndexToCol = iFieldIndex * cCFInfoTotalOffset + 1
+End Function
+
+Function getContextSensitiveCol()
+Attribute getContextSensitiveCol.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim wksPrompts As Worksheet
+    Dim wksExpenseReport As Worksheet
+    Set wksExpenseReport = Worksheets("Expense Report")
+    Set wksPrompts = Worksheets("Prompts")
+    Dim strPrompt As String
+    Dim iIndex As Integer
+    
+    getContextSensitiveCol = -1
+    
+    'Get the prompt for the context sensitive column
+    strPrompt = getPrompt(cPromptsContextSensitiveCode)
+    
+    'Determine the context sensitive column
+    If (strPrompt <> "") Then
+        iIndex = 1
+        Do While (wksExpenseReport.Cells(cERFirstReceiptRow - 1, iIndex) <> strPrompt And iIndex <= cERMaxCol)
+            iIndex = iIndex + 1
+        Loop
+        If (iIndex <= cERMaxCol) Then
+            getContextSensitiveCol = iIndex
+        End If
+    End If
+End Function
+
+' This function return a prompt from the Prompts sheet given an ID
+Function getPrompt(strPromptID As String) As String
+Attribute getPrompt.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim wksPrompts As Worksheet
+    Set wksPrompts = Worksheets("Prompts")
+    Dim strValue As String
+    Dim iIndex As Integer
+    
+    'Get the prompt for the context sensitive column
+    iIndex = cPromptsInfoRowStart - 1
+    Do
+        iIndex = iIndex + 1
+        strValue = wksPrompts.Cells(cPromptsInfoRowStart + iIndex, cPromptsCodeCol)
+    Loop While (strValue <> "" And strValue <> strPromptID)
+    
+    If (strValue <> "") Then
+        getPrompt = wksPrompts.Cells(cPromptsInfoRowStart + iIndex, cPromptsCodeCol + 1)
+    Else
+        getPrompt = ""
+    End If
+End Function
+
+Sub initInfoDialog()
+Attribute initInfoDialog.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim wb As Workbook
+    Dim ds As DialogSheet
+    Set wb = ActiveWorkbook
+    Set ds = wb.Sheets("InfoDialog")
+            
+            ' Set the Dialog Caption
+    ds.DialogFrame.Caption = getPrompt(cPromptsDialogCaption)
+            
+            'Set the message Text
+    ds.Labels(1).Text = getPrompt(cPromptsDialogMessage)
+            
+            'Set the check-box text
+    ds.CheckBoxes(1).Caption = getPrompt(cPromptsDialogCBCaption)
+            
+            'Set the caption for OK button
+    ds.Buttons(1).Caption = getPrompt(cPromptsDialogOKButtonCaption)
+End Sub
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' {Rz{
+' Rz{"
+' LiO*^"w
+' DLLiO*^"w^
+' DL*%N
+' bzWH
+' z*m"w^
+' z*m"w^
+
+INQUEST-PP=macro

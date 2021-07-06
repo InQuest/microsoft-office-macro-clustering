@@ -1,0 +1,1671 @@
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
+
+    Select Case Sh.Name
+    Case "Todesf|fffd|lle mit HS", "Zusammenfassung", "Grundlagen"
+        bl_|fffd|nderung = True
+    End Select
+
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    If bl_|fffd|nderung = False Then ThisWorkbook.Close False
+End Sub
+
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+'Datei (nur)  im xlsm-Format speichern
+Dim Datei As Variant
+
+    If SaveAsUI = True And Not UCase(Environ("username")) = "U0005617" Then
+
+        Datei = Application.GetSaveAsFilename(FileFilter:="Excel-Arbeitsmappe mit Makros (*.xlsm), *.xlsm", Title:="Speichern unter")
+
+        If Datei <> False Then
+
+            ActiveWorkbook.SaveAs Filename:=Datei, FileFormat:= _
+            xlOpenXMLWorkbookMacroEnabled, CreateBackup:=False
+
+        End If
+
+        Cancel = True
+
+    End If
+
+End Sub
+
+
+Attribute VB_Name = "ExternesSQL"
+Option Explicit
+Function ExterneDaten_filtern(ByVal sVerzeichnis As String, ByVal sFAB As String, ByVal sFALL As String, ByVal sICD As String, ByVal sOPS As String, ByVal mModus As Modus)
+Dim oCN, oCNIntern As Object
+Dim oRS1 As Object
+Dim oRS2 As Object
+Dim oRS3 As Object
+Dim oRS4 As Object
+Dim oRS5 As Object
+Dim oRS6 As Object
+Dim sCS, sCSIntern As String
+Dim sSQL0, sSQL1, sSQL2, sSQL3, sSQL4, sSQL5, sSQL6, sSQL7 As String
+Dim iAnzahlDS, iAnzahlVorhandeneDS, iBeginnNeuerBereich, iAnzahlDuplikate, i As Integer
+Dim sMeldungFiltern, sErrNumber, sErrDescription As String
+Dim msgStyle As VbMsgBoxStyle
+Dim r As ListRow
+
+Dim strDiagnosen() As String
+ReDim Preserve strDiagnosen(0 To 1)
+
+Dim strKIs() As String
+ReDim Preserve strKIs(0 To 1)
+
+Set oCN = CreateObject("ADODB.CONNECTION")
+Set oCNIntern = CreateObject("ADODB.CONNECTION")
+Set oRS1 = CreateObject("ADODB.RECORDSET")
+Set oRS2 = CreateObject("ADODB.RECORDSET")
+Set oRS3 = CreateObject("ADODB.RECORDSET")
+Set oRS4 = CreateObject("ADODB.RECORDSET")
+Set oRS5 = CreateObject("ADODB.RECORDSET")
+Set oRS6 = CreateObject("ADODB.RECORDSET")
+
+'On Error GoTo Fehler
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Pr|fffd|fen, ob der Dateiaufbau korrekt ist und alle Felder enthalten sind
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    If Pr|fffd|fen_Dateiaufbau(sVerzeichnis & "\", sFAB, "FAB") = False Then Exit Function
+    If Pr|fffd|fen_Dateiaufbau(sVerzeichnis & "\", sFALL, "FALL") = False Then Exit Function
+    If Pr|fffd|fen_Dateiaufbau(sVerzeichnis & "\", sICD, "ICD") = False Then Exit Function
+    If Pr|fffd|fen_Dateiaufbau(sVerzeichnis & "\", sOPS, "OPS") = False Then Exit Function
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Tempor|fffd|re Dateien erstellen (die nach erfolgreichem Filtern gel|fffd|scht werden):
+'- FAB mit Namen (FAB_Namen.csv)
+'- Filter ICD-Kodes mit Hinweis aus Hirnsch|fffd|digung (bak_icd.csv)
+'- Filter Kontraindikationen (bak_ki.csv)
+'- Schema-Datei mit Angaben f|fffd|r den Connection-String (schema.ini)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    Erstellen_FAB_Namen_csv sVerzeichnis
+    Erstellen_bak_icd_csv sVerzeichnis
+    Erstellen_ki_csv sVerzeichnis
+    Erstellen_schema_ini sVerzeichnis, sFAB, sFALL, sICD, sOPS
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Connection-String bei .xlsm-Dateien:
+'sCS = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" & sPfad & ";Extended Properties=""Excel 12.0 Macro;HDR=YES"";"
+'sCS = "DRIVER={Excel Files}; DBQ=" & ThisWorkbook.FullName
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    sCS = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" & sVerzeichnis & ";Extended Properties=""text;HDR=Yes;FMT=Delimited()"";"
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'SQL-Abfragen erstellen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+'Alle F|fffd|lle mit Entlassungsgrund = TOD (079) ermitteln und bereits 'FAB' zuordnen
+    sSQL0 = "SELECT temp.[KH-internes-Kennzeichen], temp.[Entlassender-Standort], temp.Geschlecht, temp.Entlassungsdatum, DateSerial(Left(temp![Entlassungsdatum],4),Mid(temp![Entlassungsdatum],5,2),Mid(temp![Entlassungsdatum],7,2)) AS [Entlassung Datum], TimeSerial(Mid(temp![Entlassungsdatum],9,2),Mid(temp![Entlassungsdatum],11,2),0) AS [Entlassung Uhrzeit], temp.Alter, temp.Beatmungsstunden, temp.Patientennummer, extFAB.[FAB], Left(extFAB.[FAB],4) & ""00"" AS FABtemp FROM (SELECT extFALL.[KH-internes-Kennzeichen], extFALL.[Entlassender-Standort], extFALL.Geschlecht, extFALL.Geburtsjahr, extFALL.Entlassungsdatum, extFALL.Entlassungsgrund, Round(extFALL.Beatmungsstunden/24,3) AS [Beatmungsstunden], extFALL.Patientennummer," & _
+            "IIf(IsNull([Alter-in-Jahren-am-Aufnahmetag]) And CInt([Alter-in-Tagen-am-Aufnahmetag])>0,0,[Alter-in-Jahren-am-Aufnahmetag]) AS [Alter] FROM [" & sFALL & "] as extFALL WHERE (((extFALL.Entlassungsgrund)=079))) AS temp INNER JOIN [" & sFAB & "] as extFAB ON (temp.Entlassungsdatum = extFAB.[FAB-Entlassungsdatum]) AND (temp.[KH-internes-Kennzeichen] = extFAB.[KH-internes-Kennzeichen])"
+            
+'Allen Todesf|fffd|llen die Bezeichnung der Haupt-FAB zuordnen
+    sSQL1 = "SELECT temp1.[KH-internes-Kennzeichen], temp1.[Entlassender-Standort], temp1.Geschlecht, temp1.Entlassungsdatum, temp1.[Entlassung Datum], temp1.[Entlassung Uhrzeit], temp1.Alter, temp1.Beatmungsstunden, temp1.Patientennummer, temp1.[FAB] & "" - "" & extFABNamen.[FAB-Bezeichnung] as [FAB], 1 as [Zuordnung] FROM (" & sSQL0 & ") AS temp1 INNER JOIN ([FAB_Namen.csv] as extFABNamen) ON temp1.FABtemp = extFABNamen.[FAB]"
+    
+'Alle Todesf|fffd|lle mit mindestens einem ICD-Kode mit Hinweis auf Hirnsch|fffd|digung (gem. 'ICD-Filter')
+    sSQL2 = "SELECT temp2.[Zuordnung], extICD.[KH-internes-Kennzeichen], temp2.[Entlassender-Standort], temp2.Geschlecht, temp2.[Entlassung Datum], temp2.[Entlassung Uhrzeit], temp2.Alter, temp2.Beatmungsstunden, temp2.Patientennummer, temp2.FAB, Count(extICD.[ICD-Kode]) AS HD, 1 as ND, 1 as [OPS-Kode], 1 as [KI-Diagnose], 1 as [KI] FROM (" & sSQL1 & ") as temp2 INNER JOIN ([" & sICD & "] as extICD INNER JOIN [bak_icd.csv] as extICDFilter ON extICD.[ICD-Kode] = extICDFilter.[ICD-Filter]) ON temp2.[KH-internes-Kennzeichen] = extICD.[KH-internes-Kennzeichen] GROUP BY [Zuordnung], extICD.[KH-internes-Kennzeichen], temp2.[Entlassender-Standort], temp2.Geschlecht, temp2.[Entlassung Datum], temp2.[Entlassung Uhrzeit], temp2.Alter, temp2.Beatmungsstunden, temp2.Patientennummer, temp2.Alter, temp2.FAB"
+    
+'Zu allen Todesf|fffd|llen aus sSQL2 s|fffd|mtliche Diagnosen aus 'ICD' auflisten
+    sSQL3 = "SELECT temp3.[KH-internes-Kennzeichen], extICD.[Diagnoseart], extICD.[ICD-Kode] FROM (" & sSQL2 & ") as temp3 LEFT JOIN [" & sICD & "] as extICD ON temp3.[KH-internes-Kennzeichen] = extICD.[KH-internes-Kennzeichen] ORDER BY temp3.[KH-internes-Kennzeichen], extICD.[Diagnoseart]"
+    
+'Zu allen Todesf|fffd|llen aus sSQL2 s|fffd|mtliche OPS-Kodes ermitteln
+    sSQL4 = "SELECT extOPS.[KH-internes-Kennzeichen], extOPS.[OPS-Kode] FROM (" & sSQL2 & ") as temp4 INNER JOIN [" & sOPS & "] as extOPS ON temp4.[KH-internes-Kennzeichen] = extOPS.[KH-internes-Kennzeichen]"
+    
+'Bei allen Todesf|fffd|llen mit s|fffd|mtlichen Diagnosen aus sSQL3 die Diagnosen ermitteln, die als Kontraindikation 'KI' definiert sind
+    sSQL5 = "SELECT temp5.[KH-internes-Kennzeichen], extKIFilter.[KI-Filter] as [KI-Kode], extKIFilter.[KI-Art] FROM (" & sSQL3 & ") as temp5 INNER JOIN [bak_ki.csv] as extKIFilter ON temp5.[ICD-Kode] = extKIFilter.[KI-Filter]"
+
+'Alle Todesf|fffd|lle mit einem ICD-Kode mit Hinweis auf Hirnsch|fffd|digung (gem. 'ICD-Filter') als HAUPTDIAGNOSE
+    sSQL6 = sSQL2 & ", extICD.[Diagnoseart] HAVING (((extICD.[Diagnoseart])=""HD""))"
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'SQL-Abfragen aufrufen und in die Recordsets schreiben
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    oCN.Open sCS
+    
+    With oRS1
+        .Source = sSQL2
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+
+    With oRS2
+        .Source = sSQL3
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+
+    With oRS3
+        .Source = sSQL4
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+    
+    With oRS4
+        .Source = sSQL5
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+
+    With oRS5
+        .Source = sSQL6
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Tabelle 'tbl_Organspender' anpassen, das Recordset oRS1 in Tabelle 'Todesf|fffd|lle mit HS' ausgeben/anf|fffd|gen
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    With Worksheets("Todesf|fffd|lle mit HS")
+        
+        .Unprotect strPWBlattschutz
+        iAnzahlDS = oRS1.RecordCount
+        iAnzahlVorhandeneDS = AnzahlDatensaetzeTodesfaelleMitHS
+        
+        If mModus = NeuErstellen Or iAnzahlVorhandeneDS = 0 Then
+            With .ListObjects("tbl_Organspender")
+                .DataBodyRange.Interior.Pattern = xlNone
+                .DataBodyRange.ClearContents
+                If iAnzahlDS = 0 Then
+                    .Resize Range("A1:O3")
+                    GoTo Sprungmarke
+                ElseIf iAnzahlDS = 1 Then
+                    .Resize Range("A1:O3")
+                Else:
+                    .Resize Range("A1:O" & 1 + iAnzahlDS)
+                End If
+                iBeginnNeuerBereich = 1
+            End With
+        Else:
+            With .Range("A" & .ListObjects("tbl_Organspender").ListRows.Count + 2 & ":O" & .ListObjects("tbl_Organspender").ListRows.Count + 2 + iAnzahlDS)
+                .Interior.Pattern = xlNone
+                .ClearContents
+            End With
+            With .ListObjects("tbl_Organspender")
+                iBeginnNeuerBereich = .ListRows.Count + 1
+                If iAnzahlDS = 0 Then
+                    GoTo Sprungmarke
+                ElseIf iAnzahlDS = 1 Then
+                    .Resize Range("A1:O" & .ListRows.Count + 2)
+                Else:
+                    .Resize Range("A1:O" & 1 + .ListRows.Count + iAnzahlDS)
+                End If
+            End With
+        End If
+    
+        .Range("A" & 1 + iBeginnNeuerBereich).CopyFromRecordset oRS1
+    
+        
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Duplikate in der Tabelle 'Todesf|fffd|lle mit HS' filtern, wenn der Modus=Anfuegen ausgew|fffd|hlt wurde
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+        
+    sCSIntern = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" & ThisWorkbook.FullName & ";Extended Properties=""Excel 12.0 Macro;HDR=YES"";"""
+    sSQL7 = "SELECT [KH-internes-Kennzeichen], Count([KH-internes-Kennzeichen]) as Anzahl FROM [Todesf|fffd|lle mit HS$] GROUP BY [KH-internes-Kennzeichen] HAVING (((Count([KH-internes-Kennzeichen]))>1))"
+        
+    oCNIntern.Open sCSIntern
+        
+    With oRS6
+        .Source = sSQL7
+        .ActiveConnection = oCNIntern
+        .CursorType = adOpenStatic
+        .Open
+    End With
+        
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Die Spalte 'tbl_Organspender[Zuordnung]' als G|fffd|ltigkeitsliste einrichten
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+        
+        With .Range("tbl_Organspender[Zuordnung]").Validation
+            .Delete
+            .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, Operator:= _
+            xlBetween, Formula1:="Absolute Kontraindikation,0-Beatmungsstunden,Kontaktaufnahme DSO (A2-B2),Organspender (B3),Einzelfallanalyse"
+            .IgnoreBlank = True
+            .InCellDropdown = True
+            .InputTitle = ""
+            .ErrorTitle = ""
+            .InputMessage = ""
+            .ErrorMessage = ""
+            .ShowInput = True
+            .ShowError = True
+        End With
+    
+    
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Jede/n Zeile/Fall erg|fffd|nzen um Haupt- und Nebendiagnosen, OPS-Kodes, Kontraindikationen (relativ=gelb / absolut=rot),
+'Zuordnungen f|fffd|r absolute Kontraindikationen und 0-Beatmungsstunden zuweisen, Formatieren von Hauptdiagnosen mit Hinweis auf HS=gr|fffd|n
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+        For Each r In .ListObjects("tbl_Organspender").ListRows
+            If Not .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 2).Value = "" And r.Index >= iBeginnNeuerBereich Then
+                
+                strDiagnosen = HD_ND_zuordnen(oRS2, .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 2).Value)
+                .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 11) = strDiagnosen(0)
+                .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 12) = strDiagnosen(1)
+                
+                .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 13) = OPSKodes_zuordnen(oRS3, .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 2).Value)
+                
+                strKIs = KIs_zuordnen(oRS4, .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 2).Value)
+                .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 14) = strKIs(0)
+                .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 15) = strKIs(1)
+                If strKIs(1) = "absolut" Then
+                    .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 15).Interior.Color = 255
+                ElseIf strKIs(1) = "relativ" Then
+                    .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 15).Interior.Color = 65535
+                Else:
+                    .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 15).Interior.Pattern = xlNone
+                End If
+                
+                
+                If .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 15).Value = "absolut" Then
+                    .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 1).Value = "Absolute Kontraindikation"
+                ElseIf .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 8).Value = 0 Then
+                    .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 1).Value = "0-Beatmungsstunden"
+                Else:
+                    .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 1).Value = ""
+                End If
+                
+                If HirnschaedigungAlsHD_pr|fffd|fen(oRS5, .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 2).Value) = True Then
+                    .ListObjects("tbl_Organspender").DataBodyRange(r.Index, 11).Interior.Color = 5296274
+                End If
+                
+            End If
+        Next r
+        
+        
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'[Entlassung Datum], [Entlassung Uhrzeit] formatieren, Spaltenausrichtung und - breite, Zeilenh|fffd|he einstellen und Focus auf Zelle [A1] setzen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+        
+        .ListObjects("tbl_Organspender").ListColumns(5).DataBodyRange.NumberFormat = "dd.mm.yyyy;@"
+        .ListObjects("tbl_Organspender").ListColumns(6).DataBodyRange.NumberFormat = "hh:mm;@"
+        .ListObjects("tbl_Organspender").ListColumns(8).DataBodyRange.NumberFormat = "d""d"" h""h"";;h""h"""
+        .Range("tbl_Organspender[KH-internes-Kennzeichen]").HorizontalAlignment = xlLeft
+        .Range("tbl_Organspender[[Geschlecht]:[Beatmungs-dauer]]").HorizontalAlignment = xlCenter
+        .Range("tbl_Organspender[[Patienten-nummer]:[KI]]").HorizontalAlignment = xlLeft
+        
+        .Columns("C:C").EntireColumn.AutoFit
+        .Columns("J:O").EntireColumn.AutoFit
+        .Columns("M:M").ColumnWidth = .Columns("L:L").ColumnWidth
+        .Cells.EntireRow.AutoFit
+        
+        
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Bei Modus=Anfuegen die neuen Datens|fffd|tze pr|fffd|fen, ob der Fall bereits bei den alten Datens|fffd|tzen vorhanden ist und entsprechend l|fffd|schen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+        
+        If mModus = Anfuegen Then
+            For i = iBeginnNeuerBereich To .ListObjects("tbl_Organspender").ListRows.Count
+                If DuplikateFinden(oRS6, .ListObjects("tbl_Organspender").DataBodyRange(i, 2).Value) = True Then
+                    If .ListObjects("tbl_Organspender").ListRows.Count > 2 Then
+                        .Rows(i + 1).Delete Shift:=xlUp
+                        i = i - 1
+                    Else:
+                        .Rows(i + 1).ClearContents
+                    End If
+                        iAnzahlDuplikate = iAnzahlDuplikate + 1
+                End If
+            Next i
+        End If
+        
+        
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Sprungmarke, falls keine Datens|fffd|tze selektiert werden k|fffd|nnen
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Sprungmarke:
+                
+        Application.ScreenUpdating = False
+        .Activate
+        .Range("A1").Select
+        ActiveWindow.ScrollRow = 1
+        ActiveWindow.ScrollColumn = 1
+        .Protect Password:=strPWBlattschutz, DrawingObjects:=True, Contents:=True, Scenarios:=True _
+        , AllowFormattingColumns:=True, AllowInsertingRows:=True, AllowSorting:=True, AllowFiltering:=True
+        Application.ScreenUpdating = True
+        
+    End With
+    
+    
+''''''''''''''''''''''''''''''''''''''''''''''
+'Recordsets und Connection schlie|fffd|en
+''''''''''''''''''''''''''''''''''''''''''''''
+    
+    oRS1.Close
+    oRS2.Close
+    oRS3.Close
+    oRS4.Close
+    oRS5.Close
+    If oRS6 Is Nothing Then
+        oRS6.Close
+        oCNIntern.Close
+    End If
+    oCN.Close
+        
+'''''''''''''''''''''''''''''''''''''''''''''
+'Tempor|fffd|re Dateien wieder l|fffd|schen
+'''''''''''''''''''''''''''''''''''''''''''''
+    
+    L|fffd|schen_tempor|fffd|reDateien sVerzeichnis
+    
+    
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Pivots aktualisieren/Datenschnitte zur|fffd|cksetzen
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    Call TabelleFuerZusammenfassungErstellen
+    ThisWorkbook.SlicerCaches("Datenschnitt_Jahr").ClearManualFilter
+    ThisWorkbook.SlicerCaches("Datenschnitt_Monatsname").ClearManualFilter
+    
+    
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Ausgabe Info |fffd|ber erfolgreiche Filterung und Hinweis bei gefundenen Duplikaten
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    msgStyle = vbInformation
+    If mModus = NeuErstellen Then
+        If iAnzahlDS = 1 Then sMeldungFiltern = "1 Datensatz wurde ermittelt!" Else sMeldungFiltern = iAnzahlDS & " Datens|fffd|tze wurden ermittelt!"
+    ElseIf mModus = Anfuegen Then
+        If iAnzahlDuplikate = 0 Then
+            If iAnzahlDS = 1 Then sMeldungFiltern = "1 Datensatz wurde hinzugef|fffd|gt!" Else sMeldungFiltern = iAnzahlDS & " Datens|fffd|tze wurden hinzugef|fffd|gt!"
+        Else:
+            sMeldungFiltern = "Anzahl ermittelte Datens|fffd|tze:                   " & iAnzahlDS & vbCr & _
+                           "- davon bereits vorhanden (*):                  " & iAnzahlDuplikate & vbCr & _
+                           "---------------------------------------------------" & vbCr & _
+                           "= HINZUGEF|fffd|GTE DATENS|fffd|TZE:             " & iAnzahlDS - iAnzahlDuplikate & vbCr & vbCr & vbCr & _
+                           "(* Pr|fffd|fung auf Duplikate anhand des Feldes 'KH-internes-Kennzeichen')"
+            msgStyle = vbExclamation
+        End If
+    End If
+
+    MsgBox sMeldungFiltern, msgStyle, "Daten erfolgreich gefiltert"
+
+Set oRS1 = Nothing
+Set oRS2 = Nothing
+Set oRS3 = Nothing
+Set oRS4 = Nothing
+Set oRS5 = Nothing
+Set oRS6 = Nothing
+Set oCN = Nothing
+Set oCNIntern = Nothing
+
+Exit Function
+
+
+'''''''''''''''''''''''''''''''''''''''''''''
+'Fehlerroutine
+'''''''''''''''''''''''''''''''''''''''''''''
+
+Fehler:
+Application.ScreenUpdating = True
+sErrNumber = Err.Number
+sErrDescription = Err.Description
+
+On Error Resume Next
+    
+    oRS1.Close
+    oRS2.Close
+    oRS3.Close
+    oRS4.Close
+    oRS5.Close
+    oRS6.Close
+    oCN.Close
+    oCNIntern.Close
+    
+Set oRS1 = Nothing
+Set oRS2 = Nothing
+Set oRS3 = Nothing
+Set oRS4 = Nothing
+Set oRS5 = Nothing
+Set oRS6 = Nothing
+Set oCN = Nothing
+Set oCNIntern = Nothing
+    
+    L|fffd|schen_tempor|fffd|reDateien (sVerzeichnis)
+                   
+    With Worksheets("Todesf|fffd|lle mit HS")
+        With .ListObjects("tbl_Organspender")
+            .DataBodyRange.Interior.Pattern = xlNone
+            .DataBodyRange.ClearContents
+            .Resize Range("A1:N3")
+        End With
+        .Protect Password:=strPWBlattschutz, DrawingObjects:=True, Contents:=True, Scenarios:=True _
+        , AllowFormattingColumns:=True, AllowInsertingRows:=True, AllowSorting:=True, AllowFiltering:=True
+
+    End With
+    
+    MsgBox "Beim Filtern der Daten ist ein Fehler aufgetreten:" & vbCr & vbCr & sErrNumber & "    " & sErrDescription
+
+End Function
+
+Function HD_ND_zuordnen(ByRef oRs As Object, ByVal sKH_internes_Kennzeichen As String) As String()
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Recordset 'oRS' (oRS2 aus Function ExterneDaten_filtern())  nach |fffd|bergebenem 'sKH_internes_Kennzeichen' filtern,
+'gefilterte Datens|fffd|tze durchlaufen und je nach Diagnoseart in 'strHD' oder 'strND' schreiben.
+'Die Variablen 'strHD', 'strND' an 'strArray' |fffd|bergeben und dem Funktionsergebnis zuweisen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim strHD, strND As String
+Dim strArray() As String
+Dim iZ|fffd|hler As Integer
+ReDim Preserve strArray(0 To 1)
+
+iZ|fffd|hler = 1
+
+    oRs.Filter = "[KH-internes-Kennzeichen] = '" & sKH_internes_Kennzeichen & "'"
+    oRs.MoveFirst
+    While Not oRs.EOF
+        If oRs("Diagnoseart") = "HD" Then
+            strHD = strHD & oRs("ICD-Kode") & ", "
+        ElseIf oRs("Diagnoseart") = "ND" Then
+            strND = strND & oRs("ICD-Kode") & ", "
+            If iZ|fffd|hler Mod 6 = 0 Then strND = strND & Chr(10)
+            iZ|fffd|hler = iZ|fffd|hler + 1
+        End If
+        oRs.MoveNext
+    Wend
+    
+    If Len(strHD) > 0 Then strHD = Left(strHD, Len(strHD) - 2)
+    If Len(strND) > 0 Then
+        strND = Left(strND, Len(strND) - 2)
+        If iZ|fffd|hler Mod 6 = 1 Then strND = Left(strND, Len(strND) - 1)
+    End If
+    
+    strArray(0) = strHD
+    strArray(1) = strND
+    
+    HD_ND_zuordnen = strArray
+    
+    oRs.Filter = 0
+
+End Function
+
+Function OPSKodes_zuordnen(ByRef oRs As Object, ByVal sKH_internes_Kennzeichen As String) As String
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Recordset 'oRS' (oRS3 aus Function ExterneDaten_filtern()) nach |fffd|bergebenem 'sKH_internes_Kennzeichen' filtern,
+'gefilterte Datens|fffd|tze durchlaufen und in 'strOPS' schreiben.
+'Die Variable 'strOPS' dem Funktionsergebnis zuweisen
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim strOPSKodes As String
+Dim iZ|fffd|hler As Integer
+
+iZ|fffd|hler = 1
+
+    oRs.Filter = "[KH-internes-Kennzeichen] = '" & sKH_internes_Kennzeichen & "'"
+    
+    If Not oRs.BOF Then
+        oRs.MoveFirst
+    Else:
+        OPSKodes_zuordnen = ""
+        Exit Function
+    End If
+    
+    While Not oRs.EOF
+        strOPSKodes = strOPSKodes & oRs("OPS-Kode") & ", "
+        If iZ|fffd|hler Mod 6 = 0 Then strOPSKodes = strOPSKodes & Chr(10)
+        iZ|fffd|hler = iZ|fffd|hler + 1
+        oRs.MoveNext
+    Wend
+    
+    If Len(strOPSKodes) > 0 Then
+        strOPSKodes = Left(strOPSKodes, Len(strOPSKodes) - 2)
+        If iZ|fffd|hler Mod 6 = 1 Then strOPSKodes = Left(strOPSKodes, Len(strOPSKodes) - 1)
+    End If
+    
+    OPSKodes_zuordnen = strOPSKodes
+    
+    oRs.Filter = 0
+
+End Function
+
+Function KIs_zuordnen(ByRef oRs As Object, ByVal sKH_internes_Kennzeichen As String) As String()
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Recordset 'oRS' (oRS4 aus Function ExterneDaten_filtern()) nach |fffd|bergebenem 'sKH_internes_Kennzeichen' filtern,
+'gefilterte Datens|fffd|tze durchlaufen und die Kontraindikation(en) in 'strKI_Kode' und 'strKI_Art' schreiben. (Dabei gilt absolut+relativ=absolut)
+'Die Variablen 'strKI_Kode', 'strKI_Art' an 'strArray' |fffd|bergeben und dem Funktionsergebnis zuweisen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim strKI_Kode, strKI_Art As String
+Dim strArray() As String
+ReDim Preserve strArray(0 To 1)
+
+    oRs.Filter = "[KH-internes-Kennzeichen] = '" & sKH_internes_Kennzeichen & "'"
+    
+    If Not oRs.BOF Then
+        oRs.MoveFirst
+    Else:
+        strArray(0) = strKI_Kode
+        strArray(1) = strKI_Art
+        KIs_zuordnen = strArray
+        Exit Function
+    End If
+    
+    While Not oRs.EOF
+            
+            strKI_Kode = strKI_Kode & oRs("KI-Kode") & ", "
+            
+            If oRs("KI-Art") = "absolut" Then
+                strKI_Art = "absolut"
+            ElseIf oRs("KI-Art") = "relativ" Then
+                If Not strKI_Art = "absolut" Then strKI_Art = "relativ"
+            End If
+        
+        oRs.MoveNext
+    Wend
+    
+    If Len(strKI_Kode) > 0 Then strKI_Kode = Left(strKI_Kode, Len(strKI_Kode) - 2)
+
+    strArray(0) = strKI_Kode
+    strArray(1) = strKI_Art
+    
+    KIs_zuordnen = strArray
+    
+    oRs.Filter = 0
+
+End Function
+
+Function HirnschaedigungAlsHD_pr|fffd|fen(ByRef oRs As Object, ByVal sKH_internes_Kennzeichen As String) As Boolean
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Recordset 'oRS' (oRS5 aus Function ExterneDaten_filtern()) nach |fffd|bergebenem 'sKH_internes_Kennzeichen' filtern, ist ein Datensatz vorhanden,
+'bedeutet das, dass die Hauptdiagnose eine Kodierung mit Hinweis auf prim./sek. Hirnsch|fffd|digung ist
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    oRs.Filter = "[KH-internes-Kennzeichen] = '" & sKH_internes_Kennzeichen & "'"
+    
+    If Not oRs.BOF Then
+        HirnschaedigungAlsHD_pr|fffd|fen = True
+    Else:
+        HirnschaedigungAlsHD_pr|fffd|fen = False
+    End If
+    
+    oRs.Filter = 0
+
+End Function
+
+Function AnzahlDatensaetzeTodesfaelleMitHS() As Integer
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Anzahl der Datens|fffd|tze in der Tabelle 'Todesf|fffd|lle mit HS' z|fffd|hlen und zur|fffd|ckgeben
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oCN As Object
+Dim oRS1 As Object
+Dim sCS As String
+Dim sSQL0 As String
+
+Set oCN = CreateObject("ADODB.CONNECTION")
+Set oRS1 = CreateObject("ADODB.RECORDSET")
+
+''''''''''''''''''''''''''''''''''''''''''''''''''
+'Connection-String und SQL-String erstellen
+''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    sCS = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" & ThisWorkbook.FullName & ";Extended Properties=""Excel 12.0 Macro;HDR=YES"";"""
+    
+    sSQL0 = "SELECT Count([Entlassung Datum]) as Anzahl FROM [Todesf|fffd|lle mit HS$] WHERE NOT [Entlassung Datum] IS NULL"
+    
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'SQL-Abfrage aufrufen und Anzahl als Funktionsergebnis ausgeben
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    oCN.Open sCS
+    
+    With oRS1
+        .Source = sSQL0
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+    
+    AnzahlDatensaetzeTodesfaelleMitHS = oRS1!Anzahl
+    
+Set oRS1 = Nothing
+Set oCN = Nothing
+
+End Function
+
+Function DuplikateFinden(ByRef oRs As Object, ByVal sKH_internes_Kennzeichen As String) As Boolean
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Recordset 'oRS' (oRS6 aus Function ExterneDaten_filtern()) nach |fffd|bergebenem 'sKH_internes_Kennzeichen' filtern, ist ein Datensatz vorhanden,
+'bedeutet das, dass das KH-interne-Kennzeichen mehrfach vorkommt
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    oRs.Filter = "[KH-internes-Kennzeichen] = '" & sKH_internes_Kennzeichen & "'"
+    
+    If Not oRs.BOF Then
+        DuplikateFinden = True
+    Else:
+        DuplikateFinden = False
+    End If
+    
+    oRs.Filter = 0
+
+End Function
+Attribute VB_Name = "Funktionen"
+Public bl_|fffd|nderung As Boolean
+
+Public Enum Modus
+    NeuErstellen = 1
+    Anfuegen = 2
+End Enum
+
+Public Const strPWBlattschutz As String = "TXCDSO"
+
+Public Const adOpenForwardOnly = 0
+Public Const adOpenKeyset = 1
+Public Const adOpenDynamic = 2
+Public Const adOpenStatic = 3
+
+Sub Btn_Aufruf_Formular()
+
+    If ThisWorkbook.ReadOnly Then
+        MsgBox "Die Datei ist derzeit schreibgesch|fffd|tzt. Bitte speichern Sie die Datei vorab!"
+        Application.Dialogs(xlDialogSaveAs).Show
+        Exit Sub
+    End If
+
+    uf_Start.Show
+
+End Sub
+
+Public Function Auswahl_Verzeichnis(ByVal sPfad As String) As String
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Dialog zur Auswahl des Verzeichnisses
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim sTitel, sVerzeichnis As String
+
+    sTitel = "Bitte w|fffd|hlen Sie das Verzeichnis aus, in dem sich die Dateien befinden"
+    
+    With Application.FileDialog(msoFileDialogFolderPicker)
+        .Title = sTitel
+        .InitialFileName = sPfad
+        .ButtonName = "Ausw|fffd|hlen"
+       
+        If .Show = -1 Then
+
+            sVerzeichnis = .SelectedItems(1)
+
+            If Len(sVerzeichnis) = 0 Then Exit Function Else Auswahl_Verzeichnis = sVerzeichnis
+
+        End If
+    
+    End With
+
+End Function
+
+Public Function Auswahl_Datei(ByVal sText As String, ByVal sPfad As String) As String
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Dialog zur Auswahl der Datei
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim sTitel, sDatei, t As String
+Dim oFs, oF As Object
+Dim t1 As Boolean
+
+    sTitel = "Bitte w|fffd|hlen Sie die Datei '" & sText & ".csv' aus"
+    
+    With Application.FileDialog(msoFileDialogFilePicker)
+        .Title = sTitel
+        .InitialFileName = sPfad
+        .ButtonName = "Ausw|fffd|hlen"
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Textdatei", "*.csv"
+        
+        If .Show = -1 Then
+
+            sDatei = .SelectedItems(1)
+
+            If Not UCase(Right(sDatei, 4)) = ".CSV" Then
+
+                MsgBox "Bitte w|fffd|hlen Sie eine Textdatei (*.csv) aus", vbExclamation
+
+            ElseIf Len(sDatei) = 0 Then
+                Auswahl_Datei = ""
+                Exit Function
+            Else:
+    
+            Set oFs = CreateObject("Scripting.FileSystemObject")
+            Set oF = oFs.getfile(sDatei)
+            If UCase(oF.ParentFolder) = UCase(sPfad) Then
+                Auswahl_Datei = sDatei
+            Else:
+                MsgBox "Die Datei muss sich in dem unter Schritt 1 angegebenen Verzeichnis befinden!"
+                Auswahl_Datei sText, sPfad
+            End If
+
+            End If
+
+        Else:
+        
+            Auswahl_Datei = ""
+
+        End If
+    
+    End With
+
+
+Set fs = Nothing
+
+End Function
+
+Public Function Pr|fffd|fenVerzeichnis(ByVal Verzeichnis As String) As Boolean
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Pr|fffd|fen, ob das angegebene Verzeichnis existiert
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim fs
+    
+    Set fs = CreateObject("Scripting.FileSystemObject")
+    Pr|fffd|fenVerzeichnis = fs.FolderExists(Verzeichnis)
+
+Set fs = Nothing
+End Function
+
+Public Function Pr|fffd|fenDatei(ByVal Dateipfad As String) As Boolean
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Pr|fffd|fen, ob die angegebene Datei existiert
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim fs
+    
+    Set fs = CreateObject("Scripting.FileSystemObject")
+    Pr|fffd|fenDatei = fs.FileExists(Dateipfad)
+
+Set fs = Nothing
+End Function
+Attribute VB_Name = "InternesSQL"
+Function TabelleFuerZusammenfassungErstellen()
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Einzelne Inhalte der Tabelle 'Todesf|fffd|lle mit HS' selektieren und in die Tabelle 'Grundlagen' kopieren.
+'Diese dient als Basis f|fffd|r die abh|fffd|ngigen Pivottables und die Datenschnitte, die f|fffd|r die Funktion der 'Zusammenfassung' notwendig sind
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oCN As Object
+Dim oRS1 As Object
+Dim sCS As String
+Dim sSQL0 As String
+
+Set oCN = CreateObject("ADODB.CONNECTION")
+Set oRS1 = CreateObject("ADODB.RECORDSET")
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''
+'Connection-String und SQL-String erstellen
+''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    sCS = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" & ThisWorkbook.FullName & ";Extended Properties=""Excel 12.0 Macro;HDR=YES"";"""
+    
+    sSQL0 = "SELECT Zuordnung, [KH-internes-Kennzeichen], [Alter], Year([Entlassung Datum]) AS Jahr, Month([Entlassung Datum]) AS Monat,  Format([Entlassung Datum],""mmmm"") as Monatsname, FAB, [Entlassender Standort] FROM [Todesf|fffd|lle mit HS$] WHERE NOT [Entlassung Datum] IS NULL ORDER BY Year([Entlassung Datum]), Month([Entlassung Datum])"
+    
+    
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'SQL-Abfrag aufrufen, in das Recordset schreiben und in [D2] der Tabelle 'Grundlagen' schreiben
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    oCN.Open sCS
+    
+    With oRS1
+        .Source = sSQL0
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+    
+    With ThisWorkbook.Sheets("Grundlagen")
+        .Range("D2:K" & .Cells(Rows.Count, 7).End(xlUp).Row + 3).ClearContents
+        .Range("D2").CopyFromRecordset oRS1
+    End With
+
+''''''''''''''''''''''''''''''''''''''''''''''''''
+'Pivottables und Datenschnitte aktualisieren
+''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    ThisWorkbook.RefreshAll
+
+Set oRS1 = Nothing
+Set oCN = Nothing
+
+End Function
+
+Attribute VB_Name = "Navigation"
+Sub Zu_Organspender()
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Auf die Tabelle 'Todesf|fffd|lle mit HS' navigieren
+'''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    Sheets("Todesf|fffd|lle mit HS").Select
+    Range("tbl_Organspender[[#Headers],[Zuordnung]]").Select
+
+End Sub
+Sub Zu_Zusammenfassung()
+Attribute Zu_Zusammenfassung.VB_ProcData.VB_Invoke_Func = " \n14"
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+'Auf die Tabelle 'Zusammenfassung' navigieren
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    Sheets("Zusammenfassung").Select
+    ActiveWindow.SmallScroll Down:=-6
+    Range("A5").Select
+
+End Sub
+Sub Zu_Ablauf()
+Attribute Zu_Ablauf.VB_ProcData.VB_Invoke_Func = " \n14"
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+'Auf die Tabelle 'Ablauf' navigieren
+'''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    Sheets("Ablauf").Select
+    Range("A1").Select
+
+End Sub
+
+Attribute VB_Name = "NurFuerEntwicklungUndTest"
+Option Explicit
+
+Private Sub AllesOeffnenFuerEntwicklung()
+
+    With ThisWorkbook
+        .Worksheets("ICD-Filter").Visible = xlSheetVisible
+        .Worksheets("KI-Filter").Visible = xlSheetVisible
+        .Worksheets("FAB-Bezeichnungen").Visible = xlSheetVisible
+        .Worksheets("Grundlagen").Visible = xlSheetVisible
+        .Worksheets("Todesf|fffd|lle mit HS").Unprotect strPWBlattschutz
+        .Worksheets("Zusammenfassung").Unprotect strPWBlattschutz
+        .Worksheets("Ablauf").Unprotect strPWBlattschutz
+    End With
+
+End Sub
+
+Private Sub AllesZur|fffd|cksetzenVorVeroeffentlichung()
+
+Dim ws_alt, ws_neu As Worksheet
+Dim iSpalten, i As Integer
+    
+Set ws_alt = ThisWorkbook.Worksheets("Todesf|fffd|lle mit HS")
+Set ws_neu = Sheets.Add
+    
+    ws_alt.Name = "Todesf|fffd|lle mit HS_alt"
+    ws_neu.Name = "Todesf|fffd|lle mit HS"
+    ws_neu.Move After:=Sheets(2)
+    
+    With ws_alt
+        With .ListObjects("tbl_Organspender")
+            .DataBodyRange.Interior.Pattern = xlNone
+            .DataBodyRange.ClearContents
+            .Resize Range("A1:O3")
+            iSpalten = .ListColumns.Count
+        End With
+        .Range("tbl_Organspender[#All]").Copy
+    End With
+        
+    With ws_neu
+        .Activate
+        Range("A1").Select
+        ActiveSheet.Paste
+        With .Cells
+            .Borders(xlDiagonalDown).LineStyle = xlNone
+            .Borders(xlDiagonalUp).LineStyle = xlNone
+            .Borders(xlEdgeLeft).LineStyle = xlNone
+            .Borders(xlEdgeTop).LineStyle = xlNone
+            .Borders(xlEdgeBottom).LineStyle = xlNone
+            .Borders(xlEdgeRight).LineStyle = xlNone
+            .Borders(xlInsideVertical).LineStyle = xlNone
+            .Borders(xlInsideHorizontal).LineStyle = xlNone
+        End With
+        ActiveWindow.DisplayGridlines = False
+        For i = 1 To iSpalten
+            .Columns(i).ColumnWidth = ws_alt.Columns(i).ColumnWidth
+        Next i
+        .Rows("1:1").EntireRow.AutoFit
+    End With
+        
+    ws_alt.ListObjects("tbl_Organspender").Name = "tbl_Organspender_alt"
+    ws_neu.ListObjects(1).Name = "tbl_Organspender"
+    Application.DisplayAlerts = False
+    ws_alt.Delete
+    Application.DisplayAlerts = True
+
+    With ThisWorkbook
+        .Worksheets("ICD-Filter").Visible = xlSheetVeryHidden
+        .Worksheets("KI-Filter").Visible = xlSheetVeryHidden
+        .Worksheets("FAB-Bezeichnungen").Visible = xlSheetVeryHidden
+        .Worksheets("Grundlagen").Visible = xlSheetVeryHidden
+        
+        .Worksheets("Todesf|fffd|lle mit HS").Activate
+        ActiveSheet.Range("A1").Select
+        ActiveSheet.Protect Password:=strPWBlattschutz, DrawingObjects:=True, Contents:=True, Scenarios:=True _
+        , AllowInsertingRows:=True, AllowSorting:=True, AllowFiltering:=True
+        
+        .Worksheets("Zusammenfassung").Activate
+        ActiveSheet.Range("A1").Select
+        ActiveSheet.Protect strPWBlattschutz
+        
+        .Worksheets("Ablauf").Activate
+        ActiveSheet.Range("A1").Select
+        ActiveSheet.Protect strPWBlattschutz
+    End With
+       
+End Sub
+
+Attribute VB_Name = "Pr|fffd|fung_Dateiaufbau"
+Function Pr|fffd|fenNeuesFormatFALLcsv(ByVal sVerzeichnis, sDatei As String) As Boolean
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Pr|fffd|fen, ob der Datensatz der "FALL.csv" das 2016er-Datenformat hat (Feld: Wohnort) oder noch das vorhergehende Datenformat
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oCN, oRs As Object
+Dim sCS, sSQL As String
+Dim fs, f
+
+Set oCN = CreateObject("ADODB.CONNECTION")
+Set oRs = CreateObject("ADODB.RECORDSET")
+
+    Set fs = CreateObject("Scripting.FileSystemObject")
+    
+    Set f = fs.CreateTextFile(sVerzeichnis & "schema.ini", True)
+    
+    f.Writeline ("[" & sDatei & "]")
+    f.Writeline ("Format=Delimited(;)")
+    f.Close
+  
+sCS = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" & sVerzeichnis & ";Extended Properties=""text;HDR=Yes;FMT=Delimited()"";"
+
+'''''''''''''''''''''''''''''''''''
+'SQL-Abfrage erstellen
+'''''''''''''''''''''''''''''''''''
+
+    sSQL = "SELECT temp.Wohnort FROM [" & sDatei & "] as temp"
+
+On Error GoTo Fehler
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'SQL-Abfrage testweise aufrufen und das Recordset wieder schlie|fffd|en.
+'Bei fehlerfreiem Aufruf dem Functionsergebnis true |fffd|bergeben
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    oCN.Open sCS
+    oRs.Open sSQL, oCN, adOpenStatic
+    
+    oRs.Close
+    oCN.Close
+    
+    Pr|fffd|fenNeuesFormatFALLcsv = True
+    
+    Kill sVerzeichnis & "schema.ini"
+    
+Set oRs = Nothing
+Set oCN = Nothing
+    
+Exit Function
+    
+    
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Bei fehlerhaftem Aufruf der SQl-Abfragen dem Functionsergebnis false |fffd|bergeben
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+Fehler:
+    Pr|fffd|fenNeuesFormatFALLcsv = False
+    Kill sVerzeichnis & "schema.ini"
+    
+Set oRs = Nothing
+Set oCN = Nothing
+
+End Function
+
+Function Pr|fffd|fen_Dateiaufbau(ByVal sVerzeichnis As String, ByVal strDatei As String, ByVal strTyp As String) As Boolean
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Den Dateiaufbau der angegebenen Datei hinsichtlich der notwendigen Felder pr|fffd|fen
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oCN As Object
+Dim oRs As Object
+Dim sCS, sSQL As String
+Dim fs, f
+
+Set oCN = CreateObject("ADODB.CONNECTION")
+Set oRs = CreateObject("ADODB.RECORDSET")
+
+Set fs = CreateObject("Scripting.FileSystemObject")
+    
+Set f = fs.CreateTextFile(sVerzeichnis & "schema.ini", True)
+    
+    f.Writeline ("[" & strDatei & "]")
+    f.Writeline ("Format=Delimited(;)")
+    f.Close
+  
+sCS = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=" & sVerzeichnis & ";Extended Properties=""text;HDR=Yes;FMT=Delimited()"";"
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Je nach 'strTyp' entsprechende SQL-Abfrage erstellen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+    Select Case strTyp
+    Case "FAB"
+        sSQL = "SELECT TOP 1 temp.[FAB], temp.[FAB-Entlassungsdatum],temp.[KH-internes-Kennzeichen] FROM [" & strDatei & "] as temp"
+    Case "FALL"
+        sSQL = "SELECT TOP 1 temp.[KH-internes-Kennzeichen], temp.Geschlecht, temp.Geburtsjahr, temp.[Alter-in-Jahren-am-Aufnahmetag], temp.Entlassungsdatum, temp.Entlassungsgrund, temp.Beatmungsstunden, temp.Patientennummer, temp.Entlassungsgrund FROM [" & strDatei & "] as temp"
+    Case "ICD"
+        sSQL = "SELECT TOP 1 temp.[KH-internes-Kennzeichen], temp.[Diagnoseart], temp.[ICD-Kode] FROM [" & strDatei & "] as temp"
+    Case "OPS"
+        sSQL = "SELECT TOP 1 temp.[KH-internes-Kennzeichen], temp.[OPS-Kode] FROM [" & strDatei & "] as temp"
+    End Select
+
+    oCN.Open sCS
+    
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'SQL-Abfragen testweise aufrufen und das Recordset wieder schlie|fffd|en.
+'Bei fehlerfreiem Aufruf dem Functionsergebnis true |fffd|bergeben
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+On Error GoTo Fehler
+    
+    With oRs
+        .Source = sSQL
+        .ActiveConnection = oCN
+        .CursorType = adOpenStatic
+        .Open
+    End With
+    
+    oRs.Close
+    oCN.Close
+    
+    Pr|fffd|fen_Dateiaufbau = True
+    
+    Kill sVerzeichnis & "schema.ini"
+    
+Set oRs = Nothing
+Set oCN = Nothing
+    
+Exit Function
+    
+    
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Bei fehlerhaftem Aufruf der SQl-Abfragen dem Functionsergebnis false |fffd|bergeben
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+Fehler:
+    Pr|fffd|fen_Dateiaufbau = False
+    MsgBox "Die als '" & strTyp & "'-Datei angegebene Datei '" & strDatei & "' kann nicht verarbeitet werden!" & vbCr & "Bitte pr|fffd|fen Sie den Inhalt und den Aufbau der Datei.", vbExclamation
+    Kill sVerzeichnis & "schema.ini"
+    
+Set oRs = Nothing
+Set oCN = Nothing
+    
+End Function
+
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Tabelle3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Attribute VB_Name = "Tabelle4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Attribute VB_Name = "Tabelle6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+Attribute VB_Name = "Tabelle7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Worksheet_Activate()
+
+On Error GoTo Fehler
+    
+    If bl_|fffd|nderung = True Then
+        Application.ScreenUpdating = False
+        Call TabelleFuerZusammenfassungErstellen
+        Application.Calculation = xlCalculationAutomatic
+        Application.ScreenUpdating = True
+    End If
+
+Exit Sub
+
+Fehler:
+    Application.ScreenUpdating = True
+    MsgBox "Beim Erstellen der Zusammenfassung ist ein Fehler aufgetreten. Bitte pr|fffd|fen Sie die Daten!"
+
+End Sub
+Attribute VB_Name = "TempDateien_erstellen"
+Sub Erstellen_FAB_Namen_csv(ByVal sVerzeichnis As String)
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Datei f|fffd|r die FAB mit Namen (FAB_Namen.csv) anhand der Tabelle 'FAB-Bezeichnungen' erstellen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oFs, oF As Object
+Dim Datei As String
+Dim i As Integer
+
+    Datei = sVerzeichnis & "\FAB_Namen.csv"
+
+    Set oFs = CreateObject("Scripting.FileSystemObject")
+    
+    Set oF = oFs.CreateTextFile(Datei, True)
+    
+    For i = 1 To 38
+    
+        oF.Writeline (ThisWorkbook.Sheets("FAB-Bezeichnungen").Range("A" & i).Value & ";" & ThisWorkbook.Sheets("FAB-Bezeichnungen").Range("B" & i).Value)
+    
+    Next i
+
+    oF.Close
+    
+End Sub
+
+Sub Erstellen_bak_icd_csv(ByVal sVerzeichnis As String)
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Datei f|fffd|r den Filter der ICD-Kodes mit Hinweis aus Hirnsch|fffd|digung (bak_icd.csv) anhand der Tabelle 'ICD-Filter' erstellen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oFs, oF As Object
+Dim Datei As String
+Dim i As Integer
+
+    Datei = sVerzeichnis & "\bak_icd.csv"
+
+    Set oFs = CreateObject("Scripting.FileSystemObject")
+    
+    Set oF = oFs.CreateTextFile(Datei, True)
+    
+    For i = 1 To 357
+    
+        oF.Writeline (ThisWorkbook.Sheets("ICD-Filter").Range("A" & i).Value)
+    
+    Next i
+
+    oF.Close
+    
+End Sub
+
+Sub Erstellen_ki_csv(ByVal sVerzeichnis As String)
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Datei f|fffd|r den Filter der Kontraindikationen (bak_ki.csv) anhand der Tabelle 'KI-Filter' erstellen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oFs, oF As Object
+Dim Datei As String
+Dim i As Integer
+
+    Datei = sVerzeichnis & "\bak_ki.csv"
+
+    Set oFs = CreateObject("Scripting.FileSystemObject")
+    
+    Set oF = oFs.CreateTextFile(Datei, True)
+    
+    For i = 1 To 638
+    
+        oF.Writeline (ThisWorkbook.Sheets("KI-Filter").Range("A" & i).Value & ";" & ThisWorkbook.Sheets("KI-Filter").Range("B" & i).Value)
+    
+    Next i
+
+    oF.Close
+    
+End Sub
+
+Sub Erstellen_schema_ini(ByVal sVerzeichnis As String, ByVal sFAB As String, ByVal sFALL As String, ByVal sICD As String, ByVal sOPS As String)
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Erstellen der Datei 'schema.ini' mit den Format-Eigenschaften der erstellten tempor|fffd|ren Text-Dateien (notwendig f|fffd|r den Microsoft.ACE.OLEDB-Treiber)
+'- FAB mit Namen (FAB_Namen.csv)
+'- Filter ICD-Kodes mit Hinweis aus Hirnsch|fffd|digung (bak_icd.csv)
+'- Filter Kontraindikationen (bak_ki.csv)
+'- Schema-Datei mit Angaben f|fffd|r den Connection-String (schema.ini)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Dim oFs, oF As Object
+Dim Datei As String
+Dim FALLcsv_FormatNeu As Boolean
+
+    FALLcsv_FormatNeu = Pr|fffd|fenNeuesFormatFALLcsv(sVerzeichnis & "\", sFALL)
+
+    Datei = sVerzeichnis & "\schema.ini"
+
+    Set oFs = CreateObject("Scripting.FileSystemObject")
+    
+    Set oF = oFs.CreateTextFile(Datei, True)
+    
+    oF.Writeline ("[" & sFAB & "]")
+    oF.Writeline ("Format=Delimited(;)")
+    oF.Writeline ("Col1=""IK"" Text")
+    oF.Writeline ("Col2=""Entlassender-Standort"" Text")
+    oF.Writeline ("Col3=""Entgeltbereich"" Text")
+    oF.Writeline ("Col4=""KH-internes-Kennzeichen"" Text")
+    oF.Writeline ("Col5=""FAB"" Text")
+    oF.Writeline ("Col6=""FAB-Aufnahmedatum"" Text")
+    oF.Writeline ("Col7=""FAB-Entlassungsdatum"" Text")
+    oF.Writeline
+    oF.Writeline ("[" & sFALL & "]")
+    oF.Writeline ("Format=Delimited(;)")
+    
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Pr|fffd|fen, ob das 2016er-Datenformat der FALL.csv eingelesen wurde, um die Spalten entsprechend zu benennen
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+    
+    If FALLcsv_FormatNeu = True Then
+        oF.Writeline ("Col1=""IK"" Text")
+        oF.Writeline ("Col2=""Entlassender-Standort"" Text")
+        oF.Writeline ("Col3=""Entgeltbereich"" Text")
+        oF.Writeline ("Col4=""KH-internes-Kennzeichen"" Text")
+        oF.Writeline ("Col5=""Versicherten-ID"" Text")
+        oF.Writeline ("Col6=""Vertragskennzeichen-64b-Modellvorhaben"" Text")
+        oF.Writeline ("Col7=""IK-der-Krankenkasse"" Text")
+        oF.Writeline ("Col8=""Geburtsjahr"" Text")
+        oF.Writeline ("Col9=""Geburtsmonat"" Text")
+        oF.Writeline ("Col10=""Geschlecht"" Text")
+        oF.Writeline ("Col11=""PLZ"" Text")
+        oF.Writeline ("Col12=""Wohnort"" Text")
+        oF.Writeline ("Col13=""Aufnahmedatum"" Text")
+        oF.Writeline ("Col14=""Aufnahmeanlass"" Text")
+        oF.Writeline ("Col15=""Aufnahmegrund"" Text")
+        oF.Writeline ("Col16=""Fallzusammenf|fffd|hrung"" Text")
+        oF.Writeline ("Col17=""Fallzusammenf|fffd|hrungsgrund"" Text")
+        oF.Writeline ("Col18=""Aufnahmegewicht"" Text")
+        oF.Writeline ("Col19=""Entlassungsdatum"" Text")
+        oF.Writeline ("Col20=""Entlassungsgrund"" Long")
+        oF.Writeline ("Col21=""Alter-in-Tagen-am-Aufnahmetag"" Long")
+        oF.Writeline ("Col22=""Alter-in-Jahren-am-Aufnahmetag"" Long")
+        oF.Writeline ("Col23=""Patientennummer"" Text")
+        oF.Writeline ("Col24=""interkurrente-Dialysen"" Text")
+        oF.Writeline ("Col25=""Beatmungsstunden"" Long")
+        oF.Writeline ("Col26=""Behandlungsbeginn-vorstation|fffd|r"" Text")
+        oF.Writeline ("Col27=""Behandlungstage-vorstation|fffd|r"" Text")
+        oF.Writeline ("Col28=""Behandlungsende-nachstation|fffd|r"" Text")
+        oF.Writeline ("Col29=""Behandlungstage-nachstation|fffd|r"" Text")
+        oF.Writeline ("Col30=""IK-Verlegungs-KH"" Text")
+        oF.Writeline ("Col31=""Belegungstage-in-anderem-Entgeltbereich"" Text")
+        oF.Writeline ("Col32=""Beurlaubungstage-PSY"" Text")
+        oF.Writeline ("Col32=""Kennung-Besonderer-Fall-Modellvorhaben"" Text")
+    Else:
+        oF.Writeline ("Col1=""IK"" Text")
+        oF.Writeline ("Col2=""Entlassender-Standort"" Text")
+        oF.Writeline ("Col3=""Entgeltbereich"" Text")
+        oF.Writeline ("Col4=""KH-internes-Kennzeichen"" Text")
+        oF.Writeline ("Col5=""Versicherten-ID"" Text")
+        oF.Writeline ("Col6=""Vertragskennzeichen-64b-Modellvorhaben"" Text")
+        oF.Writeline ("Col7=""IK-der-Krankenkasse"" Text")
+        oF.Writeline ("Col8=""Geburtsjahr"" Text")
+        oF.Writeline ("Col9=""Geburtsmonat"" Text")
+        oF.Writeline ("Col10=""Geschlecht"" Text")
+        oF.Writeline ("Col11=""PLZ"" Text")
+        oF.Writeline ("Col12=""Aufnahmedatum"" Text")
+        oF.Writeline ("Col13=""Aufnahmeanlass"" Text")
+        oF.Writeline ("Col14=""Aufnahmegrund"" Text")
+        oF.Writeline ("Col15=""Fallzusammenf|fffd|hrung"" Text")
+        oF.Writeline ("Col16=""Fallzusammenf|fffd|hrungsgrund"" Text")
+        oF.Writeline ("Col17=""Aufnahmegewicht"" Text")
+        oF.Writeline ("Col18=""Entlassungsdatum"" Text")
+        oF.Writeline ("Col19=""Entlassungsgrund"" Long")
+        oF.Writeline ("Col20=""Alter-in-Tagen-am-Aufnahmetag"" Long")
+        oF.Writeline ("Col21=""Alter-in-Jahren-am-Aufnahmetag"" Long")
+        oF.Writeline ("Col22=""Patientennummer"" Text")
+        oF.Writeline ("Col23=""interkurrente-Dialysen"" Text")
+        oF.Writeline ("Col24=""Beatmungsstunden"" Long")
+        oF.Writeline ("Col25=""Behandlungsbeginn-vorstation|fffd|r"" Text")
+        oF.Writeline ("Col26=""Behandlungstage-vorstation|fffd|r"" Text")
+        oF.Writeline ("Col27=""Behandlungsende-nachstation|fffd|r"" Text")
+        oF.Writeline ("Col28=""Behandlungstage-nachstation|fffd|r"" Text")
+        oF.Writeline ("Col29=""IK-Verlegungs-KH"" Text")
+        oF.Writeline ("Col30=""Belegungstage-in-anderem-Entgeltbereich"" Text")
+        oF.Writeline ("Col31=""Beurlaubungstage-PSY"" Text")
+   End If
+    
+    oF.Writeline
+    oF.Writeline ("[" & sICD & "]")
+    oF.Writeline ("Format=Delimited(;)")
+    oF.Writeline ("Col1=""IK"" Text")
+    oF.Writeline ("Col2=""Entlassender-Standort"" Text")
+    oF.Writeline ("Col3=""Entgeltbereich"" Text")
+    oF.Writeline ("Col4=""KH-internes-Kennzeichen"" Text")
+    oF.Writeline ("Col5=""Diagnoseart"" Text")
+    oF.Writeline ("Col6=""ICD-Version"" Text")
+    oF.Writeline ("Col7=""ICD-Kode"" Text")
+    oF.Writeline ("Col8=""Lokalisation"" Text")
+    oF.Writeline ("Col9=""Diagnosensicherheit"" Text")
+    oF.Writeline ("Col10=""Sekund|fffd|r-Kode"" Text")
+    oF.Writeline ("Col11=""Lokalisation2"" Text")
+    oF.Writeline ("Col12=""Diagnosensicherheit2"" Text")
+    oF.Writeline
+    oF.Writeline ("[" & sOPS & "]")
+    oF.Writeline ("Format=Delimited(;)")
+    oF.Writeline ("Col1=""IK"" Text")
+    oF.Writeline ("Col2=""Entlassender-Standort"" Text")
+    oF.Writeline ("Col3=""Entgeltbereich"" Text")
+    oF.Writeline ("Col4=""KH-internes-Kennzeichen"" Text")
+    oF.Writeline ("Col5=""OPS-Version"" Text")
+    oF.Writeline ("Col6=""OPS-Kode"" Text")
+    oF.Writeline ("Col7=""Lokalisation"" Text")
+    oF.Writeline ("Col8=""OPS-Datum"" Text")
+    oF.Writeline ("Col9=""Belegoperateur"" Text")
+    oF.Writeline ("Col10=""Belegan|fffd|sthesist"" Text")
+    oF.Writeline ("Col11=""Beleghebamme"" Text")
+    oF.Writeline
+    oF.Writeline ("[FAB_Namen.csv]")
+    oF.Writeline ("Format=Delimited(;)")
+    oF.Writeline ("Col1=""FAB"" Text")
+    oF.Writeline ("Col2=""FAB-Bezeichnung"" Text")
+    oF.Writeline
+    oF.Writeline ("[bak_icd.csv]")
+    oF.Writeline ("Format=Delimited(;)")
+    oF.Writeline ("Col1=""ICD-Filter"" Text")
+    oF.Writeline
+    oF.Writeline ("[bak_ki.csv]")
+    oF.Writeline ("Format=Delimited(;)")
+    oF.Writeline ("Col1=""KI-Filter"" Text")
+    oF.Writeline ("Col2=""KI-Art"" Text")
+    oF.Close
+    
+End Sub
+
+Sub L|fffd|schen_tempor|fffd|reDateien(ByVal sVerzeichnis As String)
+
+'''''''''''''''''''''''''''''''''''''''''''''
+'Tempor|fffd|r erstellte Dateien l|fffd|schen
+'''''''''''''''''''''''''''''''''''''''''''''
+
+On Error Resume Next
+
+    Kill sVerzeichnis & "\FAB_Namen.csv"
+    Kill sVerzeichnis & "\bak_icd.csv"
+    Kill sVerzeichnis & "\bak_ki.csv"
+    Kill sVerzeichnis & "\schema.ini"
+
+End Sub
+
+
+Attribute VB_Name = "Versionshistorie"
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' |fffd|nderungen TransplantCheck ab Version 1.0
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+
+''''''''''''''''''''''''''
+' Version 1.1            '
+''''''''''''''''''''''''''
+' - Automatische Berechnung bei Zugriff auf Tabelle 'Zusammenfassung' pr|fffd|fen und ggfs. aktivieren
+' - Pr|fffd|fen, ob TXCheck schreibgesch|fffd|tzt ge|fffd|ffnet ist -> "Speichern unter"-Dialog einblenden vor Einlesen der Daten
+' - Bei Fehler und Abbruch des Makros die Tabelle 'Todesf|fffd|lle mit HS' l|fffd|schen/zur|fffd|cksetzen
+' - Nach Pr|fffd|fung der Dateiinhalte die temp-Dateien l|fffd|schen
+' - ICD-10 Kodierungen mit "+" duplizieren und in die temp-Dateien aufnehmen
+' - Neues Datenformat des INEK automatisch pr|fffd|fen und entsprechend die temp-Dateien aufbauen (Fall.csv: Neues Feld "Wohnort")
+
+
+
+''''''''''''''''''''''''''
+' Version 1.1 (2)        '
+''''''''''''''''''''''''''
+' - Altersklassifikation an DSO.isys+ angepasst ("65-74 Jahre" / ">=75 Jahre")
+
+
+
+''''''''''''''''''''''''''
+' Version 1.1 (3)        '
+''''''''''''''''''''''''''
+' - Datenschnitte auf Tabelle 'Zusammenfassung' f|fffd|r Blattschutz entsperren, damit sie genutzt werden k|fffd|nnen
+
+
+
+''''''''''''''''''''''''''
+' Version 1.1 (4)        '
+''''''''''''''''''''''''''
+' - Beim Durchlauf der gefilterten F|fffd|lle (Modul "ExternesSQL") wird gepr|fffd|ft, ob das 'KH-internes-Kennzeichen' nicht leer ist
+'   (Falls nur ein Datensatz selektiert wird, ist die letzte Zeile der Tabelle leer)
+
+
+
+''''''''''''''''''''''''''
+' Version 1.2            '
+''''''''''''''''''''''''''
+' - Das Feld [Entlassender Standort] wurde in der Tabelle 'Todesf|fffd|lle mit HS' und zus|fffd|tzlich als Datenschnitt in der Tabelle 'Zusammenfassung' hinzugef|fffd|gt
+' - In Userform 'uf_Start' kann man |fffd|ber die Optionsgruppe ausw|fffd|hlen, ob man die Auswertung neu erstellt (Standardmodus / Modus=NeuErstellen) oder Datens|fffd|tze
+'   an die vorhandenen anf|fffd|gt (Expertenmodus / Modus=Anfuegen)
+'   Beim Aufbereiten der Tabelle 'Todesf|fffd|lle mit HS' wird gepr|fffd|ft, welcher Modus gew|fffd|hlt wurde und dementsprechend wird die Tabelle aufbereitet bzw. die alten Daten nicht ver|fffd|ndert
+' - Function 'DuplikateFinden' (Modul "ExternesSQL") hinzugef|fffd|gt. Bei Modus=Anfuegen wird jedes [KH-interne-Kennzeichen] der neuen Datens|fffd|tze auf mehrfaches Vorkommen gepr|fffd|ft und
+'   falls ja, der Datensatz wieder gel|fffd|scht.
+' - Die Meldung am Ende des Filtervorgangs wird entprechend des gew|fffd|hlten Modus und ob Duplikate vorhanden waren aufbereitet
+' - In der Tabelle 'Todesf|fffd|lle mit HS' wurde ein Blattschutz erg|fffd|nzt, der ein L|fffd|schen von Zeilen verhindert.
+' - Das Modul 'NurFuerEntwicklungUndTest' hinzugef|fffd|gt, um f|fffd|r die Entwicklung schnell den Blattschutz zu entfernen (Sub 'AllesOeffnenFuerEntwicklung') und die Datei f|fffd|r die Ver|fffd|ffentlichung
+'   zur|fffd|ckzusetzen (Sub 'AllesZur|fffd|cksetzenVorVeroeffentlichung')
+
+
+
+''''''''''''''''''''''''''
+' Version 1.2 (2)        '
+''''''''''''''''''''''''''
+' - Passwort f|fffd|r Blattschutz in den Tabellen 'Ablauf', 'Todesf|fffd|lle mit HS' und 'Zusammenfassung' ge|fffd|ndert in 'TXCDSO'.
+'   (Ebenfalls in VBA ge|fffd|ndert: Const strPWBlattschutz (Modul: Funktionen))
+' - In Function 'ExterneDaten_filtern' (Modul "ExternesSQL") das Freigeben der Variablen 'oRS6' und 'oCNIntern' ge|fffd|ndert.
+'   (Wenn oRS6 keinen einen Datensatz (keine Duplikate gefunden) enth|fffd|lt, dann kommt es eventuell zu einem Laufzeitfehler in einigen Office-Umgebungen)
+' - Tabelle 'Todesf|fffd|lle mit HS' angepasst:
+'       1. Alle Zellen entsperrt (manuelle Eingaben hinter/unter der Tabelle sind dadurch m|fffd|glich)
+'       2. Im Blattschutz das Formatieren von Spalten erlauben (Ausblenden/Breitenanpassung von Spalten m|fffd|glich)
+'       3. Das Aktivieren des Blattschutzes entsprechen Punkt 2. in Function 'ExterneDaten_filtern' angepasst (Modul "ExternesSQL")
+
+Attribute VB_Name = "uf_Start"
+Attribute VB_Base = "0{328C206D-2EE2-4F34-9CA2-B56CD74C9FE0}{898529AB-18C9-4FB8-88B2-7981AB98FC0A}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private Sub UserForm_Activate()
+    Me.txt_Verzeichnis.SetFocus
+End Sub
+
+Private Sub UserForm_Initialize()
+Dim sStandardverzeichnis As String
+    
+    sStandardverzeichnis = ThisWorkbook.Names("Standardverzeichnis").RefersToRange.Value
+    If Len(sStandardverzeichnis) > 0 Then
+        If Pr|fffd|fenVerzeichnis(sStandardverzeichnis) Then
+            Me.txt_Verzeichnis.Value = sStandardverzeichnis
+            Me.txt_Verzeichnis.ControlTipText = sStandardverzeichnis
+            Me.cb_VerzeichnisSpeichern.Value = True
+        Else:
+            Me.txt_Verzeichnis.Value = ""
+            MsgBox "Das angegebene Standardverzeichnis existiert nicht!"
+        End If
+    End If
+End Sub
+
+Private Sub btn_VerzeichnisW|fffd|hlen_Click()
+Dim sVerzeichnis As String
+    
+    sVerzeichnis = Auswahl_Verzeichnis(Me.txt_Verzeichnis.Value)
+    Me.txt_Verzeichnis.Value = sVerzeichnis
+    Me.txt_Verzeichnis.ControlTipText = sVerzeichnis
+    Me.txt_FAB_Datei.Value = ""
+    Me.txt_FALL_Datei.Value = ""
+    Me.txt_ICD_Datei.Value = ""
+    Me.txt_OPS_Datei.Value = ""
+    
+End Sub
+
+Private Sub btn_FAB_Durchsuchen_Click()
+Dim sDatei As String
+
+    sDatei = Auswahl_Datei("FAB", Me.txt_Verzeichnis.Value)
+    If Len(sDatei) > 0 Then
+        Me.txt_FAB_Datei.Value = Dir(sDatei)
+        Me.txt_FAB_Datei.ControlTipText = sDatei
+    End If
+
+End Sub
+
+Private Sub btn_FALL_Durchsuchen_Click()
+Dim sDatei As String
+    
+    sDatei = Auswahl_Datei("FALL", Me.txt_Verzeichnis.Value)
+    If Len(sDatei) > 0 Then
+        Me.txt_FALL_Datei.Value = Dir(sDatei)
+        Me.txt_FALL_Datei.ControlTipText = sDatei
+    End If
+    
+End Sub
+
+Private Sub btn_ICD_Durchsuchen_Click()
+Dim sDatei As String
+    
+    sDatei = Auswahl_Datei("ICD", Me.txt_Verzeichnis.Value)
+    If Len(sDatei) > 0 Then
+        Me.txt_ICD_Datei.Value = Dir(sDatei)
+        Me.txt_ICD_Datei.ControlTipText = sDatei
+    End If
+    
+End Sub
+
+Private Sub btn_OPS_Durchsuchen_Click()
+Dim sDatei As String
+
+    sDatei = Auswahl_Datei("OPS", Me.txt_Verzeichnis.Value)
+    If Len(sDatei) > 0 Then
+        Me.txt_OPS_Datei.Value = Dir(sDatei)
+        Me.txt_OPS_Datei.ControlTipText = sDatei
+    End If
+
+End Sub
+
+
+Private Sub btn_Abbrechen_Click()
+    Me.Hide
+End Sub
+
+Private Sub btn_AuswertungStarten_Click()
+
+    Dim sVerzeichnis, sFAB, sFALL, sICD, sOPS, sMsgBox As String
+    Dim mModus As Modus
+
+    sVerzeichnis = Me.txt_Verzeichnis.Value
+    sFAB = Me.txt_FAB_Datei.Value
+    sFALL = Me.txt_FALL_Datei.Value
+    sICD = Me.txt_ICD_Datei.Value
+    sOPS = Me.txt_OPS_Datei.Value
+    
+    If Me.opt_Anfuegen.Value = True Then mModus = Anfuegen Else mModus = NeuErstellen
+    
+    If Not Pr|fffd|fenVerzeichnis(sVerzeichnis) Then
+        MsgBox "Das in Schritt 1 angegebene Verzeichnis konnte nicht gefunden werden. Bitte w|fffd|hlen Sie ein g|fffd|ltiges Verzeichnis aus!"
+        Exit Sub
+    End If
+
+    If sFAB = "" Or sFALL = "" Or sICD = "" Or sOPS = "" Or _
+        Pr|fffd|fenDatei(sVerzeichnis & "\" & sFAB) = False Or Pr|fffd|fenDatei(sVerzeichnis & "\" & sFALL) = False Or _
+        Pr|fffd|fenDatei(sVerzeichnis & "\" & sICD) = False Or Pr|fffd|fenDatei(sVerzeichnis & "\" & sOPS) = False Then
+        
+        MsgBox "Es wurde nicht alle Dateien angegeben oder es konnten nicht alle Dateien gefunden werden." & vbCr & "Bitte pr|fffd|fen Sie Ihre Eingaben!"
+        Exit Sub
+    End If
+
+    If mModus = Anfuegen Then
+        sMsgBox = "ACHTUNG! Bitte vergewissern Sie sich dass die vorhandenen Datens|fffd|tze und die neuen Datens|fffd|tze zeitlich zusammenpassen, damit Ihnen keine Datenl|fffd|cken entstehen!"
+        If MsgBox(sMsgBox, vbInformation + vbOKCancel, "Expertenmodus - ACHTUNG") = vbCancel Then Exit Sub
+    End If
+
+    If Me.cb_VerzeichnisSpeichern.Value = True Then ThisWorkbook.Names("Standardverzeichnis").RefersToRange.Value = Me.txt_Verzeichnis.Value
+
+    Me.Hide
+    ExterneDaten_filtern sVerzeichnis, sFAB, sFALL, sICD, sOPS, mModus
+
+End Sub
+
+
+' InQuest injected base64 decoded content
+' jKnjX
+
+INQUEST-PP=macro

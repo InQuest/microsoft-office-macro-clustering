@@ -1,0 +1,1035 @@
+Attribute VB_Name = "Calc"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Dim Date_Array          As Variant
+Dim Value_Array         As Variant
+Dim Next_Change_Date    As Date
+Dim Next_Change_Col     As Integer
+Dim Next_Change_Row     As Integer
+Dim Start_Salary        As Double
+
+Dim Tariff_Increase     As Double
+Dim Start_Tariff        As Double
+Dim Current_Tariff      As Double
+Dim Factor_Tariff       As Double
+Dim Factor_Tariff_Over  As Double
+Dim Monthly_Hours       As Double
+'Dim Daily_Hours         As Double
+Dim Weekly_Hours        As Double
+Dim Start_Date          As Date
+Dim End_Date            As Date
+Dim Renewal_Start_Date  As Date
+Dim Renewal_End_Date    As Date
+Dim Factor              As Double
+Dim Factor_SC           As Double
+
+Dim Current_Step        As Integer
+Dim Current_Step_Hours  As Double
+Dim Current_Step_Hours_Max As Double
+Dim New_Step_Hours_Max As Double
+Dim Step_Interrupted    As Boolean
+
+Dim Change_Start_Salary As Boolean
+Dim Has_Valid_EG        As Boolean
+
+Dim IsRenewal           As Boolean
+
+Dim Current_EG9_Value   As Double
+
+Const TARIF_KIND As String = "E19"
+Const ERROR_CELL As String = "D27"
+Const RENEWAL_CELL As String = "M12"
+Const RENEWAL_START_DATE_CELL As String = "M15"
+Const RENEWAL_START_DATE_RANGE As String = "M15:O15"
+Const RENEWAL_END_DATE_CELL As String = "M16"
+Const RENEWAL_END_DATE_RANGE As String = "M16:O16"
+Const START_DATE_CELL As String = "M17"
+Const END_DATE_CELL As String = "M18"
+Const ZONE_CELL As String = "M19"
+Const EG_CELL As String = "M20"
+Const EG_CELL_RANGE As String = "M20:O20"
+Const FACTOR_CELL As String = "M21"
+Const FACTOR_TARIF_CELL As String = "M22"
+Const START_SALARY_CELL As String = "M23"
+Const WEEK_HOURS_CELL As String = "M24"
+'Const VERSION_CELL As String = "Q77"
+Const VERSION_CELL As String = "P60" '13.08.2019
+
+Const STEP_HOURS_COL As String = "M"
+Const POSITION_COL As String = "O"
+
+Private Sub Worksheet_Change(ByVal Target As range)
+     If Target.Row = 20 And Target.Column = 13 Then ' EG Stufe
+        If InStr(1, range(EG_CELL).Value, "EG") = 1 Then
+            ' EG Value changed
+            Change_Start_Salary = True
+            Has_Valid_EG = True
+            Call Start_Calculation
+        End If
+    ElseIf Target.Row = 19 And Target.Column = 5 Then ' Tarifvertragsart
+        If InStr(1, Cells(19, 5).Value, "iGZ") = 1 Then
+            Has_Valid_EG = True
+            Call Modul1.SetRangeLocked(False, range(EG_CELL_RANGE))
+        ElseIf InStr(1, Cells(19, 5).Value, "BAP") = 1 Then
+            Has_Valid_EG = True
+            Call Modul1.SetRangeLocked(False, range(EG_CELL_RANGE))
+        Else
+            'Call Modul1.SetRangeLocked(True, range(EG_CELL_RANGE))
+            'Has_Valid_EG = False
+            
+            'Neuanforderung 6.08.2019: auch bei "Sonstige" sollen EG-Stufen ausw|fffd|hlbar sein.
+            Has_Valid_EG = True
+            Call Modul1.SetRangeLocked(False, range(EG_CELL_RANGE))
+        End If
+    ElseIf Target.Row >= 12 And Target.Row <= 14 And Target.Column = 13 Then ' Verl|fffd|ngerung
+        If Cells(12, 13).Value = "Ja" Then
+            Call Modul1.SetRangeLocked(False, range(RENEWAL_START_DATE_RANGE))
+            Call Modul1.SetRangeLocked(False, range(RENEWAL_END_DATE_RANGE))
+        Else
+            Call Modul1.SetRangeLocked(True, range(RENEWAL_START_DATE_RANGE))
+            Call Modul1.SetRangeLocked(True, range(RENEWAL_END_DATE_RANGE))
+            Call Start_Calculation
+        End If
+    ElseIf Target.Row >= 15 And Target.Row <= 24 And Target.Column = 13 Then ' Verl|fffd|ngerung
+        '2019-08-13 If-Bedingung und Change_Start_Salary eingef|fffd|gt
+        If Target.Row <> 23 Then
+            Change_Start_Salary = True
+        End If
+        
+        
+        Call Start_Calculation
+'    ElseIf Target.Column = 13 And Target.Row >= 17 Then
+        ' Renewal changed
+'        call Start_Calculation
+    End If
+End Sub
+
+Private Sub Start_Calculation()
+    ActiveSheet.Unprotect (Sys_Password)
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    On Error GoTo er
+    range(VERSION_CELL).Value = SHEET_VERSION
+    Call Calculate_Data
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Call Protect_Sheet
+    Exit Sub
+er:
+    range(ERROR_CELL).Value = "Es ist ein fehler aufgetreten. Bitte |fffd|berpr|fffd|fen Sie die eingegebenen Daten."
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Call Protect_Sheet
+End Sub
+
+Private Sub Calculate_Data()
+    Dim Current_Row         As Integer
+    Dim Current_Start_Date  As Date
+    Dim Current_End_Date    As Date
+    Dim tempMonthTime As Double
+
+    Dim Sur_Charges_Percent As Double
+    Dim Sur_Charges         As Double
+    Dim Step_Text           As String
+    Dim Current_EG_Salary   As Double
+    Dim SecondRun           As Boolean
+    Dim LeftDaysInStep      As Long
+    
+    Step_Interrupted = False
+    
+    range("D30:O46").Interior.Color = RGB(255, 255, 255)
+    
+    If InStr(range(EG_CELL).Value, "EG") > 0 Then Has_Valid_EG = True
+
+    'Tariff = 0
+    range(ERROR_CELL).Value = vbNullString
+    range(START_DATE_CELL).Interior.Color = RGB(146, 205, 220)
+    range(END_DATE_CELL).Interior.Color = RGB(146, 205, 220)
+    range(EG_CELL).Interior.Color = RGB(146, 205, 220)
+    range(FACTOR_CELL).Interior.Color = RGB(146, 205, 220)
+    'Range(FACTOR_BRANCH_CELL).Interior.Color = RGB(146, 205, 220)
+    'range(FACTOR_TARIF_CELL).Interior.Color = RGB(146, 205, 220)
+    'range(FACTOR_UBER_CELL).Interior.Color = RGB(146, 205, 220)
+    range(START_SALARY_CELL).Interior.Color = RGB(146, 205, 220)
+
+    Call Clear_Table
+
+    '-- Check if all mandatory fields are filled before calculating
+    If Len(range(START_DATE_CELL)) = 0 Then
+        range(ERROR_CELL).Value = "Bitte das Feld 'Anfangsdatum' ausf|fffd|llen"
+        range(START_DATE_CELL).Interior.Color = RGB(255, 0, 0)
+        Exit Sub
+    ElseIf Len(range(END_DATE_CELL)) = 0 Then
+        range(ERROR_CELL).Value = "Bitte das Feld 'Enddatum' ausf|fffd|llen"
+        range(END_DATE_CELL).Interior.Color = RGB(255, 0, 0)
+        Exit Sub
+    ElseIf Len(range(EG_CELL)) = 0 Then '--- EG Step
+        range(ERROR_CELL).Value = "Bitte w|fffd|hlen Sie eine 'EG-Stufe' aus"
+        range(EG_CELL).Interior.Color = RGB(255, 0, 0)
+        Exit Sub
+    ElseIf Len(range(FACTOR_CELL)) = 0 Then
+        range(ERROR_CELL).Value = "Bitte das Feld 'Faktor' ausf|fffd|llen"
+        range(FACTOR_CELL).Interior.Color = RGB(255, 0, 0)
+        Exit Sub
+'    ElseIf Len(Range(FACTOR_BRANCH_CELL)) = 0 Then
+'        Range(ERROR_CELL).Value = "Bitte das Feld 'Faktor BZ' ausf|fffd|llen"
+'        Range(FACTOR_BRANCH_CELL).Interior.Color = RGB(255, 0, 0)
+'        Exit Sub
+'    ElseIf Len(range(FACTOR_TARIF_CELL)) = 0 Then
+'        range(ERROR_CELL).Value = "Bitte das Feld 'Faktor Tarif' ausf|fffd|llen"
+'        range(FACTOR_TARIF_CELL).Interior.Color = RGB(255, 0, 0)
+'        Exit Sub
+'    ElseIf Len(range(FACTOR_UBER_CELL)) = 0 Then
+'        range(ERROR_CELL).Value = "Bitte das Feld 'Faktor |fffd|bertarifliche Zulage' ausf|fffd|llen"
+'        range(FACTOR_UBER_CELL).Interior.Color = RGB(255, 0, 0)
+'        Exit Sub
+    ElseIf Change_Start_Salary = False And Len(range(START_SALARY_CELL)) = 0 Then 'If the start salary will get set automatically this check is not needed
+        range(ERROR_CELL).Value = "Bitte das Feld 'Mitarbeiterentgelt' ausf|fffd|llen"
+        range(START_SALARY_CELL).Interior.Color = RGB(255, 0, 0)
+        Exit Sub
+    End If
+
+    '-- Check if all mandatory fields have the correct type
+    If Not IsNumeric(range(FACTOR_CELL).Value) Then
+        range(ERROR_CELL).Value = "Bitte in das Feld 'Faktor' eine Zahl eintragen."
+        Exit Sub
+'    ElseIf Not IsNumeric(Range(FACTOR_BRANCH_CELL).Value) Then
+'        Range(ERROR_CELL).Value = "Bitte in das Feld 'Faktor BZ' eine Zahl eintragen."
+'        Exit Sub
+'    ElseIf Not IsNumeric(range(FACTOR_TARIF_CELL).Value) Then
+'        range(ERROR_CELL).Value = "Bitte in das Feld 'Faktor Tarif' eine Zahl eintragen."
+'        Exit Sub
+'    ElseIf Not IsNumeric(range(FACTOR_UBER_CELL).Value) Then
+'        range(ERROR_CELL).Value = "Bitte in das Feld 'Faktor |fffd|bertarifliche Zulage' eine Zahl eintragen."
+'        Exit Sub
+    ElseIf Not IsNumeric(range(START_SALARY_CELL).Value) Then
+        range(ERROR_CELL).Value = "Bitte in das Feld 'Mitarbeiterentgelt' eine Zahl eintragen."
+        Exit Sub
+    ElseIf Not IsDate(range(START_DATE_CELL).Value) Then
+        range(ERROR_CELL).Value = "Bitte in das Feld 'Startdatum' ein Datum eintragen."
+        Exit Sub
+    ElseIf Not IsDate(range(END_DATE_CELL).Value) Then
+        range(ERROR_CELL).Value = "Bitte in das Feld 'Enddatum' ein Datum eintragen."
+        Exit Sub
+    End If
+    
+    ' Check Renewal
+    If range(RENEWAL_CELL).Value = "Ja" Then
+        range(RENEWAL_START_DATE_CELL).Interior.Color = RGB(146, 205, 220)
+        range(RENEWAL_END_DATE_CELL).Interior.Color = RGB(146, 205, 220)
+        IsRenewal = True
+    Else
+        range(RENEWAL_START_DATE_CELL).Interior.Color = RGB(242, 242, 242)
+        range(RENEWAL_END_DATE_CELL).Interior.Color = RGB(242, 242, 242)
+        IsRenewal = False
+    End If
+    If IsRenewal Then
+        ' start date
+        If Len(range(RENEWAL_START_DATE_CELL)) = 0 Then
+            range(ERROR_CELL).Value = "Bitte das Start Datumsfeld bei 'Verl|fffd|ngerung' ausf|fffd|llen"
+            range(RENEWAL_START_DATE_CELL).Interior.Color = RGB(255, 0, 0)
+            Exit Sub
+        End If
+        If Not IsDate(range(RENEWAL_START_DATE_CELL).Value) Then
+            range(ERROR_CELL).Value = "Bitte in das Start Datumsfeld bei 'Verl|fffd|ngerung' ein Datum eintragen."
+            range(RENEWAL_START_DATE_CELL).Interior.Color = RGB(255, 0, 0)
+            Exit Sub
+        End If
+        Renewal_Start_Date = range(START_DATE_CELL).Value
+        
+        ' end date
+        If Len(range(RENEWAL_END_DATE_CELL)) = 0 Then
+            range(ERROR_CELL).Value = "Bitte das Ende Datumsfeld bei 'Verl|fffd|ngerung' ausf|fffd|llen"
+            range(RENEWAL_END_DATE_CELL).Interior.Color = RGB(255, 0, 0)
+            Exit Sub
+        End If
+        If Not IsDate(range(RENEWAL_END_DATE_CELL).Value) Then
+            range(ERROR_CELL).Value = "Bitte in das Ende Datumsfeld bei 'Verl|fffd|ngerung' ein Datum eintragen."
+            range(RENEWAL_END_DATE_CELL).Interior.Color = RGB(255, 0, 0)
+            Exit Sub
+        End If
+        Renewal_End_Date = range(RENEWAL_END_DATE_CELL).Value
+    End If
+
+    Call Init_Global_Data
+    
+    ' Validate Start Salary
+    If Has_Valid_EG = True Then
+        If Start_Salary < Current_Tariff Then
+            range(ERROR_CELL).Value = "Bitte in das Feld 'Mitarbeiterentgelt' einen Wert >= der EG-Stufe eingeben."
+            range(START_SALARY_CELL).Interior.Color = RGB(255, 0, 0)
+            Exit Sub
+        End If
+    End If
+
+    '---- Initialize values for the loop
+    Current_Start_Date = Start_Date     '-- The date on the left of the table
+    Current_Row = 30                    '-- Row where the table begins
+    Current_Step = 1                    '-- The step the calculation is in
+    
+    Dim isFirstLoop As Boolean
+    Dim daysBetweenRenewal As Long
+    
+    '1.10 eingef|fffd|gt
+    Dim ignoreCheck As Boolean
+    ignoreCheck = False
+    
+    If IsRenewal Then
+        SecondRun = True
+        End_Date = Renewal_End_Date
+        daysBetweenRenewal = DateDiff("d", Renewal_End_Date, range(START_DATE_CELL).Value)
+    Else
+        SecondRun = False
+    End If
+    
+LoopAgain:
+    isFirstLoop = True
+    '---- Loop until end date has been reached
+    Do While (Current_End_Date < End_Date Or ignoreCheck)
+        ignoreCheck = False
+
+        '---- if not start date increase left date by 1 day
+        If (isFirstLoop And IsRenewal And Not SecondRun) Then
+            Current_Start_Date = Start_Date
+        ElseIf Current_Step > 1 Then
+            Current_Start_Date = DateAdd("d", 1, Current_End_Date)
+        End If
+
+        '---- set surcharges rate, step text and the right date for the current step
+        If Current_Step = 1 Then
+            '---- steps 1 increases by 41 days (6 weeks - 1 day)
+            If Not (isFirstLoop And IsRenewal And Not SecondRun) Then
+                Current_End_Date = DateAdd("d", 41, Current_Start_Date)
+            End If
+            If (IsRenewal And Not SecondRun) Then
+                Current_End_Date = DateAdd("d", 41 - LeftDaysInStep, Current_Start_Date)
+            End If
+            Sur_Charges_Percent = 0
+            Step_Text = "bis 6 Wochen"
+            Current_Step_Hours = 5.5 * Weekly_Hours
+            
+            'Current_Step_Hours = 5.5 * Weekly_Hours 'Get_DateDiff(Current_Start_Date, Current_End_Date) * Monthly_Hours ' Monthly_Hours * 1.5
+        ElseIf Current_Step = 6 Then
+            '---- steps 6 increases the month by 15
+            If Not (isFirstLoop And IsRenewal And Not SecondRun) Then
+                Current_End_Date = DateSerial(Year(Start_Date), Month(Start_Date) + 15, Day(Start_Date) - 1)
+            End If
+            If (IsRenewal And Not SecondRun) Then
+                Current_End_Date = DateAdd("d", daysBetweenRenewal, DateSerial(Year(range(RENEWAL_START_DATE_CELL).Value), Month(range(RENEWAL_START_DATE_CELL).Value) + 15, Day(range(RENEWAL_START_DATE_CELL).Value) - 1))
+            End If
+            
+            Sur_Charges_Percent = 0.5
+            Step_Text = "ab 10. Monat"
+            Current_Step_Hours_Max = 15 * Monthly_Hours
+            If (Step_Interrupted) Then
+                Current_Step_Hours_Max = New_Step_Hours_Max
+            End If
+            Current_Step_Hours = Application.WorksheetFunction.Min(Get_DateDiff(Current_Start_Date, Current_End_Date) * Monthly_Hours, Current_Step_Hours_Max) ' Monthly_Hours * 6
+        ElseIf Current_Step >= 7 Then
+            '---- steps 7 is the last step (in renewal, it can be continued. 27.08.2019)
+            Current_End_Date = End_Date
+            Sur_Charges_Percent = 0.65
+            Step_Text = "ab 16. Monat"
+        Else
+            '---- steps 2 to 5 increase the month by 2
+            If Not (isFirstLoop And IsRenewal And Not SecondRun) Then
+                Current_End_Date = DateSerial(Year(Start_Date), Month(Start_Date) + (1 + ((Current_Step - 1) * 2)), Day(Start_Date) - 1)
+            End If
+            If (IsRenewal And Not SecondRun) Then
+                Current_End_Date = DateAdd("d", daysBetweenRenewal, DateSerial(Year(range(RENEWAL_START_DATE_CELL).Value), Month(range(RENEWAL_START_DATE_CELL).Value) + (1 + ((Current_Step - 1) * 2)), Day(range(RENEWAL_START_DATE_CELL).Value) - 1))
+            End If
+            Current_Step_Hours_Max = 2 * Monthly_Hours
+            If (Step_Interrupted) Then
+                Current_Step_Hours_Max = New_Step_Hours_Max
+            End If
+            Current_Step_Hours = Application.WorksheetFunction.Min(Get_DateDiff(Current_Start_Date, Current_End_Date) * Monthly_Hours, Current_Step_Hours_Max) ' Monthly_Hours * 2
+            If Current_Step = 2 Then
+                Sur_Charges_Percent = 0.15
+                Step_Text = "ab 7. Woche"
+                Current_Step_Hours = 5.5 * Weekly_Hours
+                'Current_Step_Hours = Get_DateDiff(Current_Start_Date, Current_End_Date) * Monthly_Hours ' Monthly_Hours * 1.5
+            ElseIf Current_Step = 3 Then
+                Sur_Charges_Percent = 0.2
+                Step_Text = "ab 4. Monat"
+            ElseIf Current_Step = 4 Then
+                Sur_Charges_Percent = 0.3
+                Step_Text = "ab 6. Monat"
+            Else
+                Sur_Charges_Percent = 0.45
+                Step_Text = "ab 8. Monat"
+            End If
+        End If
+
+        '---- if right date is higher than end date
+        If Current_End_Date >= End_Date Then
+            LeftDaysInStep = DateDiff("d", End_Date, Current_End_Date)
+            'Dim Work_Days   As Integer
+            'Work_Days = Get_DateDiff(Current_Start_Date, End_Date)  'Application.WorksheetFunction.NetworkDays(Current_Start_Date, End_Date)
+            Current_Step_Hours = Get_DateDiff(Current_Start_Date, End_Date) * Monthly_Hours 'Work_Days * Daily_Hours
+            
+            '2019-10-07 fix fehlende zeile wenn end dates gleich sind
+            If Current_End_Date > End_Date Then
+                Current_End_Date = End_Date
+                Step_Interrupted = True
+                New_Step_Hours_Max = Current_Step_Hours_Max - Current_Step_Hours
+            Else
+                Step_Interrupted = False
+            End If
+        Else
+            Step_Interrupted = False
+        End If
+        
+        '---- if a salary change date has been reached, put a new line inbetween the current step's range
+        '---- and adjust the tariff
+        Do While Has_Valid_EG = True And Next_Change_Date < Current_End_Date
+            Dim Temp_Next_Tariff As Double
+
+            Temp_Next_Tariff = Get_New_Tariff
+            Sur_Charges = Get_SurCharges(Sur_Charges_Percent)
+
+            If Current_Start_Date <> Next_Change_Date And Temp_Next_Tariff <> Current_Tariff Then 'Tariff Increase is inbetween to dates
+                ' special case for step 1 and 2
+                If Current_Step = 1 Or Current_Step = 2 Then
+                    Dim daysToFirstEnd As Long
+                    Dim daysToLastEnd As Long
+                    daysToFirstEnd = GetWorkDaysBetweenDates(Current_Start_Date, Next_Change_Date)
+                    daysToLastEnd = GetWorkDaysBetweenDates(Next_Change_Date, Current_End_Date)
+                    Current_Step_Hours = (CDbl(daysToFirstEnd) / (CDbl(daysToFirstEnd) + CDbl(daysToLastEnd))) * (5.5 * Weekly_Hours)
+                    If (Current_Step_Hours > 0) Then 'kann abgeschnitten sein durch Current_Step_Hours_Max (bei unterbrochenem Step)
+                        Call AddNewLine(Current_Row, Step_Text, Start_Salary, Sur_Charges, Factor, Factor_Tariff, Current_Start_Date, DateAdd("d", -1, Next_Change_Date), True, Sur_Charges_Percent)
+                    End If
+                    Current_Step_Hours = (CDbl(daysToLastEnd) / (CDbl(daysToFirstEnd) + CDbl(daysToLastEnd))) * (5.5 * Weekly_Hours)
+                    Current_Start_Date = Next_Change_Date
+                    Step_Text = "Tariferh|fffd|hung" '-- Text that shows when the salary increased
+                Else
+                    Call AddNewLine(Current_Row, Step_Text, Start_Salary, Sur_Charges, Factor, Factor_Tariff, Current_Start_Date, DateAdd("d", -1, Next_Change_Date), True, Sur_Charges_Percent)
+                    Current_Start_Date = Next_Change_Date
+                    Step_Text = "Tariferh|fffd|hung" '-- Text that shows when the salary increased
+                End If
+            ElseIf Temp_Next_Tariff = Current_Tariff Then 'Tariff is equal to current tariff so do nothing
+                Step_Text = Step_Text
+            Else    'Tariff increase is at the start date so increase and continue normally
+                Step_Text = Step_Text & " " & "(Tariferh|fffd|hung)"
+            End If
+
+            Current_Tariff = Temp_Next_Tariff
+            Tariff_Increase = Current_Tariff - Start_Tariff
+            Call Set_Next_Change_Date(Next_Change_Date, End_Date)
+        Loop
+
+        Sur_Charges = Get_SurCharges(Sur_Charges_Percent)
+        
+        If (Current_Step_Hours > 0) Then 'kann abgeschnitten sein durch Current_Step_Hours_Max (bei unterbrochenem Step)
+            Call AddNewLine(Current_Row, Step_Text, Start_Salary, Sur_Charges, Factor, Factor_Tariff, Current_Start_Date, Current_End_Date, False, Sur_Charges_Percent)
+        End If
+
+        ' Validate Start Salary
+'        If Has_Valid_EG = True Then
+'            If Start_Salary < Current_Tariff Then
+'                range(ERROR_CELL).Value = "Bitte in das Feld 'Mitarbeiterentgelt' einen Wert >= der EG-Stufe eingeben."
+'                range(START_SALARY_CELL).Interior.Color = RGB(255, 0, 0)
+'                Exit Sub
+'            End If
+'        End If
+
+        If SecondRun And IsRenewal Then
+            If LeftDaysInStep = 0& Then
+                Current_Step = Current_Step + 1
+            End If
+        Else
+            Current_Step = Current_Step + 1
+        End If
+        
+        isFirstLoop = False
+    Loop
+    
+    If IsRenewal And SecondRun Then
+        '1.10 eingef|fffd|gt
+        ignoreCheck = True
+        
+        SecondRun = False
+        Start_Date = range(START_DATE_CELL).Value
+        Current_End_Date = DateAdd("d", LeftDaysInStep, Start_Date)
+        End_Date = range(END_DATE_CELL).Value
+        Call Set_Next_Change_Date(Start_Date, End_Date)
+        GoTo LoopAgain
+    End If
+
+    Cells(48, "N").Value = Application.WorksheetFunction.Sum(range("M30:M46"))      'add formula to sum up total value
+    Cells(49, "N").Value = Application.WorksheetFunction.Sum(range("O30:O46"))      'add formula to sum up total value
+
+    '-- Make sure the cells are in the correct format
+    range("E30:F46").NumberFormat = "dd/mm/yyyy;@"
+    range("H30:K46").NumberFormat = "_-* #,##0.00 ""|fffd|""_-;-* #,##0.00 ""|fffd|""_-;_-* ""-""?? ""|fffd|""_-;_-@_-"
+    range("O30:O46").NumberFormat = "_-* #,##0.00 ""|fffd|""_-;-* #,##0.00 ""|fffd|""_-;_-* ""-""?? ""|fffd|""_-;_-@_-"
+End Sub
+
+' Add new Line but only when it should
+Private Sub AddNewLine(ByRef Current_Row As Integer, ByVal Step_Text As String, ByVal Start_Salary As Double, ByVal Sur_Charges As Double, ByVal Factor As Double, ByVal Factor_Tariff As Double, ByVal Start_Date As Date, ByVal End_Date As Date, ByVal Is_Tariff_Increase As Boolean, ByVal Sur_Charges_Percent As Double)
+    If IsRenewal Then
+        If Renewal_Start_Date <= End_Date Then
+            If Renewal_Start_Date > Start_Date Then Start_Date = Renewal_Start_Date
+            Call Fill_Cell(Current_Row, Step_Text, Start_Salary, Sur_Charges, Factor, Factor_Tariff, Start_Date, End_Date, Is_Tariff_Increase, Sur_Charges_Percent)
+            Current_Row = Current_Row + 1
+        End If
+    Else
+        Call Fill_Cell(Current_Row, Step_Text, Start_Salary, Sur_Charges, Factor, Factor_Tariff, Start_Date, End_Date, Is_Tariff_Increase, Sur_Charges_Percent)
+        Current_Row = Current_Row + 1
+    End If
+End Sub
+
+'-- Calculates difference using weeks and month and returns the weeks times 5
+
+'-- Returns the current sur charges
+Private Function Get_SurCharges(ByVal Percent As Double) As Double
+    Dim Temp_Salary As Double
+    'Temp_Salary = Current_Tariff * (Percent)
+    
+    'Debug.Print (Current_Tariff * Percent) & " " & Round(Current_Tariff * (Percent), 2)
+    
+    Temp_Salary = Round(Current_Tariff * (Percent), 2) 'Round Temp_Salary to 2 decimals (changed 2019-06-17 JR)
+    '--If Temp_Salary > Start_Salary Then
+      '--   Get_SurCharges = Temp_Salary - Start_Salary
+     '--Else
+      '--   Get_SurCharges = 0 '-- if the start salary is higher then the calculated salary, the sur charges are 0
+    '-- End If
+    Get_SurCharges = Temp_Salary
+End Function
+
+Private Sub Fill_Cell(ByVal Current_Row As Integer, ByVal Step_Text As String, ByVal Start_Salary As Double, ByVal Sur_Charges As Double, ByVal Factor As Double, ByVal Factor_Tariff As Double, ByVal Start_Date As Date, ByVal End_Date As Date, ByVal Is_Tariff_Increase As Boolean, ByVal Sur_Charges_Percent As Double)
+    Dim Step_Hours  As Double
+    'Dim Work_Days   As Integer
+    Dim Result_Wage As Double
+    Dim SC          As Double
+    Dim Tariff_Over As Double
+    
+    Factor_Tariff_Over = Factor_Tariff
+    Factor_SC = Factor_Tariff
+    
+    'Current_Step_Hours = Get_DateDiff(Start_Date, End_Date) * Monthly_Hours
+
+    Cells(Current_Row, "D").Value = Step_Text                                                           '-- Step
+    Cells(Current_Row, "E").Value = Start_Date                                                          '-- Start Date
+    Cells(Current_Row, "F").Value = End_Date                                                            '-- End Date
+
+    If Has_Valid_EG = True Then
+        'SC = Round(Current_Tariff * (1 + Sur_Charges_Percent), 2) ' RG bei anderer surcharge func wird auch gerundet
+        'Tariff_Over = Start_Salary - SC
+        
+        '2019-09-02 Verkaufsstundensatz ist unterschiedlich zwischen den einzelnen Stufen (wegen kaufm|fffd|nnischer Rundung der Branchenzuschl|fffd|ge
+        SC = Current_Tariff * (1 + Sur_Charges_Percent)
+        Dim SC_Rounded As Double
+        SC_Rounded = Round(SC, 2)
+        Tariff_Over = Round(Start_Salary - SC_Rounded, 2)
+        
+        Dim Difference As Double
+        
+        Difference = Round((Tariff_Over + Sur_Charges + Current_Tariff) - Start_Salary, 2)
+        If Difference > 0 Then
+            'Tariff_Over = Start_Salary - Round(SC, 2) - Difference
+        End If
+        'end 2019-09-02
+
+        If Tariff_Over < 0 Then
+            Tariff_Over = 0
+        End If
+
+        'Cells(Current_Row, "A").Value = Current_Tariff
+        'Cells(Current_Row, "B").Value = Factor_Tariff * Tariff_Increase
+'        Cells(Current_Row, "O").Value = Tariff_Over
+'        Cells(Current_Row, "Q").Value = (Start_Salary * Factor)                                             '-- wage
+'        Cells(Current_Row, "R").Value = ((Sur_Charges) + (Factor_Tariff * Tariff_Increase))     '-- wage surcharge
+
+'        Cells(Current_Row, "H").Value = (Current_Tariff + Sur_Charges)                                      '-- basic hourly wage + surcharge
+'        Cells(Current_Row, "I").Value = Sur_Charges                                                         '-- Surcharges
+        Cells(Current_Row, "H").Value = (Current_Tariff + Sur_Charges)
+        Cells(Current_Row, "I").Value = Application.WorksheetFunction.Max(Start_Salary, (Current_Tariff + Sur_Charges)) 'JR 2019-07-31 'Sur_Charges
+        'Result_Wage = ((Start_Tariff * Factor) + (Sur_Charges * Factor_SC) + (Factor_Tariff * Tariff_Increase) + (Tariff_Over * Factor_Tariff_Over))
+        'Result_Wage = (((Start_Tariff + Tariff_Increase) * Factor) + (Sur_Charges * Factor_SC) + (Tariff_Over * Factor_Tariff_Over)) '(Result_Wage formula changed 2019-06-17 JR: Factor for Tariff_Increase is now equal to Factor for Start_Tariff. Used to be Factor_Tariff.)
+        '2019-09-03
+        '
+        If (Tariff_Over > 0) Then '|fffd|bertarifliche Bezahlung
+            Result_Wage = ((Start_Tariff + Tariff_Increase) * Factor) + ((Start_Salary - Start_Tariff) * Factor_SC)
+        Else 'Bezahlung nach Tarif
+            Result_Wage = ((Start_Tariff + Tariff_Increase) * Factor) + (Sur_Charges * Factor_SC)
+            'Result_Wage = ((Start_Tariff + Tariff_Increase) * Factor) + ((Sur_Charges + Tariff_Over) * Factor_SC)
+        End If
+        'Debug.Print Start_Tariff & " " & Tariff_Increase & " " & Factor & " " & Sur_Charges & " " & Factor_SC & " " & Tariff_Over & " " & Factor_Tariff_Over
+        
+        Cells(Current_Row, "J").Value = Result_Wage                                                         '-- resulting wage
+    Else
+        Cells(Current_Row, "I").Value = Start_Salary     '-- Surcharges
+'        Cells(Current_Row, "O").Value = 0
+        Cells(Current_Row, "H").Value = (Start_Salary)
+        Cells(Current_Row, "J").Value = (Start_Salary * Factor)
+    End If
+    
+    ' alles gelb
+    If CDbl(Start_Salary) > CDbl(Current_EG9_Value + Round(Current_EG9_Value * (0.65), 2)) Then
+        range("D30:O46").Interior.Color = RGB(255, 255, 0)
+        '6.08.2019 Zellzwischenr|fffd|ume nicht gelb f|fffd|rben (G30:G46, L30:L46, N30:N46 Standard-Farbe)
+        range("G30:G46").Interior.Color = RGB(255, 255, 255)
+        range("L30:L46").Interior.Color = RGB(255, 255, 255)
+        range("N30:N46").Interior.Color = RGB(255, 255, 255)
+    End If
+
+    If Is_Tariff_Increase = True And (Current_Step <> 1 And Current_Step <> 2) Then
+        'Work_Days = Get_DateDiff(Start_Date, End_Date) 'Application.WorksheetFunction.NetworkDays(Start_Date, End_Date)
+'        If Work_Days < 5 Then
+        Step_Hours = Get_DateDiff(Start_Date, End_Date) * Monthly_Hours 'Work_Days * Daily_Hours
+'        Else
+'            Step_Hours = Work_Days * Daily_Hours 'Monthly_Hours * (Work_Days / 5 / 4)
+'        End If
+        Current_Step_Hours = Current_Step_Hours - Step_Hours
+    Else
+        Step_Hours = Current_Step_Hours
+    End If
+
+    '2019-09-04: Rundungen eingef|fffd|hrt.
+    Cells(Current_Row, STEP_HOURS_COL).Value = Round(Step_Hours, 0)                                                          '-- hours this step
+    Cells(Current_Row, POSITION_COL).Value = Round(Result_Wage, 2) * Round(Step_Hours, 0)                                            '-- total wage this step
+End Sub
+
+Private Sub Init_Global_Data()
+    Dim EG_Step     As Double
+    Dim Region      As String
+    Dim Test_Array  As Variant
+    Dim i           As Long
+    Dim Temp_Date   As Date
+
+    If Not IsRenewal Then
+        Start_Date = range(START_DATE_CELL).Value
+    Else
+        Start_Date = range(RENEWAL_START_DATE_CELL).Value
+    End If
+    
+    End_Date = range(END_DATE_CELL).Value
+    Factor = range(FACTOR_CELL).Value
+'    Factor_SC = range(FACTOR_BRANCH_CELL).Value
+    Factor_Tariff = range(FACTOR_TARIF_CELL).Value
+    Start_Salary = range(START_SALARY_CELL).Value
+'    Factor_Tariff_Over = range(FACTOR_UBER_CELL).Value
+    Region = range(ZONE_CELL).Value
+    Weekly_Hours = range(WEEK_HOURS_CELL).Value
+    Date_Array = modData.Get_Date_Array(Region)
+    Value_Array = modData.Get_Value_Array(Region)
+
+    ' get eg9 value
+    For i = LBound(Date_Array, 2) To UBound(Date_Array, 2)
+        Temp_Date = Date_Array(1, i) 'Startdatum des n|fffd|chsten Tarifvertrags (Spalten in Sheet "Data")
+        If ((Not IsEmpty(Temp_Date) And Temp_Date > Start_Date) Or Temp_Date = CDate("00:00:00")) And (i - 1) > 0 Then
+            Current_EG9_Value = Value_Array(9, i - 1)
+            Exit For
+        End If
+ '       If (i - 1) > 0 Then
+ '           Current_EG9_Value = Value_Array(9, i - 1)
+ '       End If
+ '       If IsEmpty(Temp_Date) Or Temp_Date >= Start_Date Then
+ '           Exit For
+ '       End If
+    Next i
+
+    If Has_Valid_EG = True Then
+        Next_Change_Row = Val(Replace(range(EG_CELL).Value, "EG", ""))
+    End If
+
+    Monthly_Hours = CDbl(Weekly_Hours * 44) / CDbl(12)
+    'Daily_Hours = Monthly_Hours / 4 / 5 'Weekly_Hours / CDbl(5)
+
+    '-- Init tariff values
+    If Has_Valid_EG = True Then
+        Tariff_Increase = 0
+        For i = LBound(Date_Array, 2) To UBound(Date_Array, 2)
+            Temp_Date = Date_Array(1, i)
+            If (((Not IsEmpty(Temp_Date) And Temp_Date > Start_Date) Or Temp_Date = CDate("00:00:00")) And (i - 1) > 0) Then
+                Start_Tariff = Value_Array(Next_Change_Row, i - 1)
+                Current_Tariff = Start_Tariff
+                If Change_Start_Salary = True Then
+                    range(START_SALARY_CELL).Value = Start_Tariff
+                    Start_Salary = Start_Tariff
+                    Change_Start_Salary = False
+                End If
+                Exit For
+            End If
+'            If (i - 1) > 0 Then
+'                Start_Tariff = Value_Array(Next_Change_Row, i - 1)
+'                Current_Tariff = Start_Tariff
+'                If Change_Start_Salary = True Then
+'                    range(START_SALARY_CELL).Value = Start_Tariff
+'                    Start_Salary = Start_Tariff
+'                    Change_Start_Salary = False
+'                End If
+'            End If
+'            If IsEmpty(Temp_Date) Or Temp_Date >= Start_Date Then
+'                Exit For
+'            End If
+        
+        Next i
+    End If
+    
+    Call Set_Next_Change_Date(Start_Date, End_Date)
+End Sub
+
+'Sub DeleteRowsBelow()
+'    Rows(50 & ":" & Rows.Count).Delete
+'End Sub
+
+Private Sub Clear_Table()
+    Dim i                  As Integer
+    Dim Value_Array        As Variant
+
+    range("D30:O46").ClearContents
+'    For i = LBound(Value_Array, 1) To UBound(Value_Array, 1)
+'        If IsEmpty(Value_Array(i, 1)) Then
+'            range("D30:O" & (30 + i)).ClearContents
+'            Exit For
+'        End If
+'    Next i
+    
+    range("D30:O46").Interior.Color = vbWhite
+
+    Cells(48, "N").Value = 0
+    Cells(49, "N").Value = 0    '
+End Sub
+
+'---- Routine to check if there is a salary increasing date inbetween the provided dates
+Private Sub Set_Next_Change_Date(ByVal Start_Date As Date, ByVal End_Date As Date)
+    Dim i               As Integer
+    Dim Temp_Date       As Variant
+
+    Next_Change_Date = DateValue("01.01.3000") '---- reset the change date to a non reachable date because the loop only changes the date if the condition is met
+    Next_Change_Col = -1
+
+    For i = LBound(Date_Array, 2) To UBound(Date_Array, 2)
+        Temp_Date = Date_Array(1, i)
+        If Not IsEmpty(Temp_Date) And Temp_Date > Start_Date And Temp_Date < End_Date Then
+            Next_Change_Date = Temp_Date
+            Next_Change_Col = i
+            Exit For
+        End If
+'        If Not IsEmpty(Temp_Date) And Temp_Date > Start_Date And Temp_Date <= End_Date Then
+'            Next_Change_Date = Temp_Date
+'            Next_Change_Col = i
+'             Exit For
+'        End If
+    Next i
+End Sub
+
+Private Function Get_New_Tariff() As Double
+    If Next_Change_Col > 0 And Next_Change_Row > 0 Then
+        Get_New_Tariff = Value_Array(Next_Change_Row, Next_Change_Col)
+    Else
+        Get_New_Tariff = 0
+    End If
+End Function
+
+'-----------------------------------------------------
+'-----------        PDF     --------------------------
+
+'Public Sub Clear_PDF()
+'    ThisWorkbook.Sheets("PDF").range("E6:E14").Value = vbNullString
+'    ThisWorkbook.Sheets("PDF").range("E18").Value = vbNullString
+'    ThisWorkbook.Sheets("PDF").range("C22:F38").ClearContents
+'    ThisWorkbook.Sheets("PDF").range("E40").Value = vbNullString
+'End Sub
+'
+'Public Sub Create_PDF()
+'    ThisWorkbook.Sheets("PDF").range("F43").Value = SHEET_VERSION
+'    ThisWorkbook.Sheets("PDF").range("E6").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E4").Value
+'    ThisWorkbook.Sheets("PDF").range("E7").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E5").Value
+'    ThisWorkbook.Sheets("PDF").range("E8").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E6").Value
+'    ThisWorkbook.Sheets("PDF").range("E9").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E7").Value
+'    ThisWorkbook.Sheets("PDF").range("E10").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E8").Value
+'    ThisWorkbook.Sheets("PDF").range("E12").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E10").Value
+'    ThisWorkbook.Sheets("PDF").range("E13").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E11").Value
+'    ThisWorkbook.Sheets("PDF").range("E14").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E12").Value
+'    ThisWorkbook.Sheets("PDF").range("E18").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("E16").Value
+'    ThisWorkbook.Sheets("PDF").range("E40").Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").range("W30").Value
+'
+'    Dim i As Integer
+'    For i = 6 To 22
+'        ThisWorkbook.Sheets("PDF").Cells(i + 16, 3).Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").Cells(i + 5, 11).Value
+'        ThisWorkbook.Sheets("PDF").Cells(i + 16, 4).Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").Cells(i + 5, 12).Value
+'        ThisWorkbook.Sheets("PDF").Cells(i + 16, 6).Value = ThisWorkbook.Sheets("AN|fffd|-Kalkulator").Cells(i + 5, 23).Value
+'    Next i
+'End Sub
+
+Public Sub Save_Pdf()
+    Dim dialog      As FileDialog
+    Dim NamePDF     As String
+    Dim i           As Integer
+    Dim objFolders  As Object
+
+    Set objFolders = CreateObject("WScript.Shell").SpecialFolders
+
+    Set dialog = Application.FileDialog(msoFileDialogSaveAs)
+    With dialog
+        .InitialView = msoFileDialogViewList
+        
+        .InitialFileName = objFolders("mydocuments") & "\AN|fffd|-Angebotsvorlage.pdf"
+
+        For i = 1 To .Filters.Count
+            If .Filters(i).Description = "PDF" Then
+                .FilterIndex = i
+                Exit For
+            End If
+        Next
+
+        '.FilterIndex = 26 'PDF Format
+        If .Show = -1 Then
+            On Error GoTo erpdf
+            NamePDF = .SelectedItems(1)
+            Application.ScreenUpdating = False
+'            ThisWorkbook.Sheets("AN|fffd|-Kalkulator").Unprotect (Sys_Password)
+'            ThisWorkbook.Sheets("PDF").Visible = xlSheetVisible
+'            Call Clear_PDF
+'            Call Create_PDF
+            range("B1:P61").Select
+            ThisWorkbook.Sheets("AN|fffd|-Kalkulator").ExportAsFixedFormat _
+                Type:=xlTypePDF, _
+                Filename:=NamePDF, _
+                Quality:=xlQualityStandard, _
+                Includedocproperties:=False, _
+                Ignoreprintareas:=False, _
+                From:=1, _
+                To:=1, _
+                OpenafterPublish:=True
+'            ThisWorkbook.Sheets("PDF").Visible = xlSheetHidden
+'            Call Protect_Sheet
+'            ThisWorkbook.Sheets("AN|fffd|-Kalkulator").Activate
+'            Call Clear_PDF
+            Application.ScreenUpdating = True
+            Exit Sub
+        Else
+'            Call Clear_PDF
+            Exit Sub
+        End If
+    End With
+
+erpdf:
+    ThisWorkbook.Sheets("AN|fffd|-Kalkulator").Activate
+    MsgBox ("Bitte schlie|fffd|en Sie die zuvor erstellte PDF um eine neue auszugeben.")
+'    ThisWorkbook.Sheets("PDF").Visible = xlSheetHidden
+    Call Protect_Sheet
+    Application.ScreenUpdating = True
+End Sub
+
+Attribute VB_Name = "Data"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Worksheet_Change(ByVal Target As range)
+    Call modData.Read_Data
+End Sub
+Attribute VB_Name = "Modul1"
+Option Explicit
+
+Public Const Sys_Password      As String = "$Daimler2017$"
+
+Public Sub SetRangeLocked(ByVal locked As Boolean, ByRef range As range)
+    ActiveSheet.Unprotect (Sys_Password)
+    'range.Value = vbNullString '6.08.2019
+    range.locked = locked
+    
+    If locked Then
+        range.Value = vbNullString '6.08.2019
+        With range.Interior
+            .Pattern = xlSolid
+            .PatternColorIndex = xlAutomatic
+            .ThemeColor = xlThemeColorDark1
+            .TintAndShade = -0.249946592608417
+            .PatternTintAndShade = 0
+        End With
+    Else
+        With range.Interior
+            .Pattern = xlSolid
+            .PatternColorIndex = xlAutomatic
+            .Color = 9305903
+            .TintAndShade = 0
+            .PatternTintAndShade = 0
+        End With
+    End If
+    Call Protect_Sheet
+End Sub
+
+Public Sub Protect_Sheet()
+     ThisWorkbook.Sheets("AN|fffd|-Kalkulator").Protect Password:=Sys_Password, _
+                                            DrawingObjects:=False, _
+                                            Contents:=True, _
+                                            Scenarios:=True, _
+                                            AllowFormattingCells:=False, _
+                                            AllowFormattingColumns:=False, _
+                                            AllowFormattingRows:=False, _
+                                            AllowInsertingHyperlinks:=True, _
+                                            AllowFiltering:=True, _
+                                            UserInterfaceOnly:=True
+End Sub
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Workbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_Open()
+    Call modData.Read_Data
+    ThisWorkbook.Sheets(SETTINGS_SHEET).Visible = xlSheetVeryHidden
+    ThisWorkbook.Sheets("Data").Visible = 0
+End Sub
+Attribute VB_Name = "modData"
+Option Explicit
+
+Public Const SHEET_VERSION As String = "Version 1.10" '08.10.2019
+
+Public Const SETTINGS_SHEET As String = "Settings"
+
+Public Const DATEDIF_START_CELL As String = "L2"
+Public Const DATEDIF_END_CELL As String = "M2"
+
+Dim East_Date_Array  As Variant
+Dim West_Date_Array  As Variant
+
+Dim East_Value_Array  As Variant
+Dim West_Value_Array  As Variant
+
+
+Public Sub Read_Data()
+    'Application.ScreenUpdating = False
+    'ThisWorkbook.Sheets("Data").Visible = xlSheetVisible
+    West_Date_Array = Worksheets("Data").range("B1:AAA1").Value
+    East_Date_Array = Worksheets("Data").range("B12:AAA12").Value
+
+    West_Value_Array = Worksheets("Data").range("B2:AAA10").Value
+    East_Value_Array = Worksheets("Data").range("B13:AAA21").Value
+    'ThisWorkbook.Sheets("Data").Visible = xlSheetHidden
+    'Application.ScreenUpdating = True
+End Sub
+
+Public Function Get_Date_Array(ByVal Region As String) As Variant
+    If IsEmpty(West_Date_Array) Then
+        Call Read_Data
+    End If
+
+    If Region = "West" Then
+        Get_Date_Array = West_Date_Array
+    Else
+        Get_Date_Array = East_Date_Array
+    End If
+End Function
+
+Public Function Get_Value_Array(ByVal Region As String) As Variant
+    If IsEmpty(West_Date_Array) Then
+        Call Read_Data
+    End If
+
+    If Region = "West" Then
+        Get_Value_Array = West_Value_Array
+    Else
+        Get_Value_Array = East_Value_Array
+    End If
+End Function
+
+' get date difference in double months
+Public Function Get_DateDiff(ByVal Start_Date As Date, ByVal End_Date As Date) As Double
+    Dim months As Double
+    Dim formula As String
+    Dim divisor As Double
+    Dim tempval As Double
+    
+    Sheets(SETTINGS_SHEET).range(DATEDIF_START_CELL).Value = DateAdd("d", -1, Start_Date)
+    Sheets(SETTINGS_SHEET).range(DATEDIF_START_CELL).NumberFormat = "dd.mm.yyyy"
+    Sheets(SETTINGS_SHEET).range(DATEDIF_END_CELL).Value = End_Date
+    Sheets(SETTINGS_SHEET).range(DATEDIF_END_CELL).NumberFormat = "dd.mm.yyyy"
+    
+    ' get month days
+    formula = "DATEDIF(" & SETTINGS_SHEET & "!" & DATEDIF_START_CELL & "," & SETTINGS_SHEET & "!" & DATEDIF_END_CELL & ",""MD"")"
+    divisor = 30#
+    If (Month(End_Date) = "2") Then
+        divisor = 29#
+    End If
+    tempval = CDbl(Evaluate(formula))
+    months = tempval / divisor
+    If tempval < 3 Then
+        months = 0#
+    End If
+    
+    
+    ' get months
+    formula = "DATEDIF(" & SETTINGS_SHEET & "!" & DATEDIF_START_CELL & "," & SETTINGS_SHEET & "!" & DATEDIF_END_CELL & ",""M"")"
+    months = months + CDbl(Evaluate(formula))
+    
+    Get_DateDiff = Math.Round(months, 1) 'CLng(CDbl(Application.WorksheetFunction.NetworkDays(Start_Date, End_Date))) '* (CDbl(220) / CDbl(260)))
+Exit Function
+'    Dim Result      As Long
+'    Dim Months      As Long
+'    Dim Weeks       As Long
+'    'Dim Days        As Long
+'    'Days = DateDiff("d", Start_Date, End_Date)
+'    Weeks = DateDiff("ww", Start_Date, End_Date, vbMonday)
+'    Months = DateDiff("m", Start_Date, End_Date, vbMonday)
+'
+'    If (Months < (Weeks / 4)) Then
+'        If (((Months + 1) * 4) < Weeks) Then
+'            Result = (Months + 1) * 4
+'        Else
+'            Result = Weeks
+'        End If
+'    Else
+'        Result = Weeks
+'    End If
+'
+'    If Weeks < 1 Then
+'        Get_DateDiff = Application.WorksheetFunction.NetworkDays(Start_Date, End_Date)
+'    Else
+'        Get_DateDiff = Result * 5
+'    End If
+End Function
+
+Public Function GetWorkDaysBetweenDates(ByVal Start_Date As Date, ByVal End_Date As Date) As Long
+    GetWorkDaysBetweenDates = CLng(Application.WorksheetFunction.NetworkDays(Start_Date, End_Date))
+End Function
+
+
+INQUEST-PP=macro

@@ -1,0 +1,5156 @@
+Attribute VB_Name = "CommentTools"
+'
+'
+'|fffd| 3M 2001.
+'BPChart is intended solely for internal use within 3M.
+'No further reproduction or distribution of this software,
+'or results obtained by using the software, is permitted
+'without the express written permission of 3M|fffd| 3M 2001.
+'
+'
+Option Explicit
+Dim myClassModule As New EventClassModule
+Global MyChartObject As ChartObject
+Global MyChart As Chart
+Global MySeries As Series
+Global myRange As Range
+Global MyCategoryWidth As Double
+Global MyExtractYPhysicalSuccessful, MyPointNumber As Integer
+Global continueWithMessageOrExclude As Boolean
+Global excludeThisPoint As Boolean
+Global messageBuffer As String
+
+Public blnRestoreIsVisible As Boolean '%%02-12-01+ To keep track of visible state of butRestoreButtons on I Chart
+                                      '(Cannot reference visible property)
+
+
+
+Sub InitializeChart()
+
+    Dim myApplicationScreenUpdating As Integer, i
+    
+    userChangedMessages = True
+    Sheets("I Chart").Buttons("butRestoreButtons").Visible = True
+    blnRestoreIsVisible = True '%%02-12-01+
+    Sheets("I Chart").TextBoxes("textboxComments").Visible = True
+    
+    myApplicationScreenUpdating = Application.ScreenUpdating
+
+    If Range("DisplayComments").Value = True Then
+        i = mycount(Range("DataxC"))
+        If i > 0 Then
+            myScreenUpdating (False)
+            Set myClassModule.myChartClass = MyChart
+        
+            'Range("A1").Select 'this deactivates chart and seems unnecessary 102698
+             MyChartObject.Activate
+             MySeries.Select
+             Application.ScreenUpdating = myApplicationScreenUpdating
+        Else
+            MsgBox "Can't add comments - there is no valid data in the current database column", Title:=ThisWorkbook.Name
+        End If
+    Else
+        i = MsgBox("Display of comments is disabled.  Do you want to display comments?", vbYesNo, Title:=ThisWorkbook.Name)
+        If i = vbYes Then
+            myScreenUpdating (False)
+            Range("DisplayComments").Value = True
+            GetComments
+            InitializeChart
+            myScreenUpdating (True)
+        End If
+    End If
+End Sub
+
+
+Public Function yValueRealWorld(yValuePhysical As Double) As Double
+
+    Dim FractionAboveAxis As Double
+    Dim pa As PlotArea
+    Dim ya As Axis
+    
+    With MyChart
+        Set pa = .PlotArea
+        Set ya = .Axes(xlValue)
+    End With
+
+    FractionAboveAxis = (pa.InsideHeight + pa.InsideTop - yValuePhysical) / pa.InsideHeight
+    yValueRealWorld = ya.MinimumScale + (ya.MaximumScale - ya.MinimumScale) * FractionAboveAxis
+    
+End Function
+
+Public Function yValuePhysical(yValueRealWorld As Double) As Double
+
+    Dim FractionAboveAxis As Double
+    Dim pa As PlotArea
+    Dim ya As Axis
+    
+    With MyChart
+        Set pa = .PlotArea
+        Set ya = .Axes(xlValue)
+    End With
+    
+    FractionAboveAxis = (yValueRealWorld - ya.MinimumScale) / (ya.MaximumScale - ya.MinimumScale)
+    yValuePhysical = pa.InsideHeight + pa.InsideTop - FractionAboveAxis * pa.InsideHeight
+        
+End Function
+
+Public Function xRelativeMoved(LeftDifference As Double) As String
+
+    'Dim NumberOfCategories As Integer
+    'Dim CategoryWidth As Double
+    Dim xRelativeCategoryPosition As Double
+    
+    'Set pa = MyChart.PlotArea
+    
+    'NumberOfCategories = UBound(MySeries.Values)
+    'CategoryWidth = pa.Width / NumberOfCategories
+
+    xRelativeCategoryPosition = LeftDifference / MyCategoryWidth
+    xRelativeMoved = Format(xRelativeCategoryPosition, "#0.000")
+    
+End Function
+
+Public Sub MessagesToComments()
+    
+    Dim j As Integer
+    Dim MessageWithPosition As String
+    Dim MyDelimiter As String
+    Dim ActualXmoved As Double
+    Dim xRelativeMovedString As String
+    Dim yValueRealWorldString As String
+    Dim myApplicationScreenUpdating As Integer
+    
+    If Not userChangedMessages Then
+        Exit Sub
+    End If
+    
+    MyDelimiter = "|"
+ '   myApplicationScreenUpdating = Application.ScreenUpdating
+  '  SetScreenUpdating (False)
+
+    CheckMyCategoryWidth
+    setMyRange
+    For j = 1 To MySeries.Points.Count
+        
+        myRange.Cells(j).ClearComments
+        
+        If MySeriesPointsHasDataLabel(j) Then
+        
+            yValueRealWorldString = Trim(Str(MyFix(yValueRealWorld(MySeries.Points(j).DataLabel.Top))))
+            ActualXmoved = MySeries.Points(j).DataLabel.Left - MySeries.Points(j).Explosion
+            xRelativeMovedString = xRelativeMoved(ActualXmoved)
+                        
+            MessageWithPosition = MySeries.Points(j).DataLabel.Text & MyDelimiter & xRelativeMovedString & MyDelimiter & yValueRealWorldString & MyDelimiter
+            
+            myRange.Cells(j).AddComment
+            myRange.Cells(j).Comment.Visible = False
+            myRange.Cells(j).Comment.Text Text:=MessageWithPosition
+        
+        Else ' bill added this else
+        
+        myRange.Cells(j).AddComment
+        myRange.Cells(j).Comment.Delete
+        
+        End If
+        
+    Next j
+    
+   ' SetScreenUpdating (myApplicationScreenUpdating)
+
+End Sub
+Public Sub CommentsToMessages()
+
+    Dim j As Integer
+    Dim myApplicationScreenUpdating As Integer
+    Dim temp As Double
+    
+'    myApplicationScreenUpdating = Application.ScreenUpdating
+ '   SetScreenUpdating (False)
+    userChangedMessages = False
+   ' MsgBox "commentstoMessages"
+   
+    '%%NOTE 02-12-01 possible code to fix the error 91 that
+    '           happens now & then ... I'm not sure if this will work???
+    'If MySeries Is Nothing Then Call setMyStuff("I Chart", "IChart", 4)
+    
+    MySeries.ApplyDataLabels
+    MySeries.DataLabels.Delete
+    MySeries.ApplyDataLabels
+    calculateMyCategoryWidth
+    MySeries.DataLabels.Delete
+    
+    setMyRange
+
+    For j = 1 To MySeries.Points.Count
+        
+        If CellHasNoteText(j) And Not (IsEmpty(myRange.Cells(j)) Or Application.IsNA(myRange.Cells(j))) Then
+
+            With MySeries.Points(j)
+                .ApplyDataLabels Type:=xlDataLabelsShowValue
+                .Explosion = .DataLabel.Left
+                .DataLabel.Characters.Text = ExtractMessage(myRange.Cells(j).NoteText)
+            End With
+            
+            With MySeries.Points(j).DataLabel.Border
+                .ColorIndex = 1
+                .Weight = xlThin
+                .LineStyle = xlContinuous
+            End With
+            
+            With MySeries.Points(j).DataLabel
+                .Shadow = False
+                .Interior.ColorIndex = 36
+                .Interior.PatternColorIndex = 2
+                .Interior.Pattern = xlSolid
+            End With
+            
+            With MySeries.Points(j)
+                .DataLabel.Left = .Explosion + ExtractXtoMove(myRange.Cells(j).NoteText)
+                temp = ExtractYvaluePhysical(myRange.Cells(j).NoteText)
+                If MyExtractYPhysicalSuccessful Then
+                    .DataLabel.Top = temp
+                End If
+            End With
+            
+        'MsgBox "Y: asked for " & temp & Chr$(13) & "got " & MySeries.Points(j).DataLabel.Top
+            'MsgBox "X: Excel wanted " & MySeries.Points(j).Explosion & Chr$(13) & _
+                   "X: asked for move of  " & ExtractXtoMove(MyRange.Cells(j).NoteText) & Chr$(13) & _
+                   "got " & MySeries.Points(j).DataLabel.Left
+        
+        End If
+                
+    
+    Next j
+    
+  '  SetScreenUpdating (myApplicationScreenUpdating)
+    
+End Sub
+
+
+Public Function ExtractMessage(Comment As String) As String
+
+    Dim p As Integer
+    Dim MyDelimiter As String
+    
+    ExtractMessage = Comment
+    
+On Error GoTo ErrorExtractMessage
+
+    MyDelimiter = "|"
+    p = InStr(Comment, MyDelimiter)
+    If p = 0 Then GoTo ErrorExtractMessage
+    
+    ExtractMessage = Left(Comment, p - 1)
+    Exit Function
+    
+ErrorExtractMessage:
+
+   ' MsgBox "Error extracting message."
+    
+End Function
+
+Public Function ExtractXtoMove(Comment As String) As Integer
+
+    Dim p As Integer
+    Dim q As Integer
+    Dim MyDelimiter As String
+    Dim temp As String
+    ExtractXtoMove = 0
+
+On Error GoTo ErrorExtractXtoMove
+
+    MyDelimiter = "|"
+    p = InStr(Comment, MyDelimiter)
+    If p = 0 Then GoTo ErrorExtractXtoMove
+    
+    
+    q = InStr(p + 1, Comment, MyDelimiter)
+    If q = 0 Then GoTo ErrorExtractXtoMove
+    
+    temp = Mid(Comment, p + 1, q - p - 1)
+    
+    ExtractXtoMove = Int(Val(temp) * MyCategoryWidth + 0.5)
+
+    Exit Function
+    
+ErrorExtractXtoMove:
+
+    'MsgBox "Error extracting x position for message." & Chr$(13) & "Position set to default."
+    
+End Function
+
+
+Public Function ExtractYvaluePhysical(Comment As String) As Integer
+
+    Dim p As Integer
+    Dim q As Integer
+    Dim MyDelimiter As String
+    Dim temp As String
+    
+    MyExtractYPhysicalSuccessful = False
+    
+On Error GoTo ErrorExtractYvaluePhysical
+    
+    MyDelimiter = "|"
+    p = InStr(Comment, MyDelimiter)
+    If p = 0 Then GoTo ErrorExtractYvaluePhysical
+    
+    p = InStr(p + 1, Comment, MyDelimiter)
+    If p = 0 Then GoTo ErrorExtractYvaluePhysical
+    
+    q = InStr(p + 1, Comment, MyDelimiter)
+    If q = 0 Then GoTo ErrorExtractYvaluePhysical
+
+    temp = Mid(Comment, p + 1, q - p - 1)
+    
+    ExtractYvaluePhysical = Int(yValuePhysical(Val(temp)) + 0.5)
+    MyExtractYPhysicalSuccessful = True
+    
+    Exit Function
+    
+ErrorExtractYvaluePhysical:
+
+   ' MsgBox "Error extracting y position for message." & Chr$(13) & "Position set to default."
+    
+    
+End Function
+
+Public Sub setMyRange()
+
+    Dim temp As String
+    Dim myRangeName As String
+    Dim p As Integer
+    Dim q As Integer
+
+    temp = MySeries.Formula
+'=SERIES(,'[Chart Event Example.xls]Sheet1'!$A$2:$A$6,'[Chart Event Example.xls]Sheet1'!$B$2:$B$6,1)
+    
+    p = InStr(1, temp, ",") + 1
+    p = InStr(p, temp, ",") + 1
+    q = InStr(p, temp, ",") - 1
+
+    myRangeName = Mid(temp, p, q - p + 1)
+    Set myRange = Range(myRangeName)
+    
+
+End Sub
+
+Public Function CellHasNoteText(j As Integer) As Integer
+
+    CellHasNoteText = False
+    On Error GoTo EndIt
+    
+    If Not IsNull(myRange.Cells(j).NoteText) And myRange.Cells(j).NoteText <> "" Then
+        CellHasNoteText = True
+    End If
+EndIt:
+
+End Function
+
+Public Sub setMyStuff(WhichSheet As Variant, WhichChartObject As Variant, WhichSeries As Variant)
+
+    Set MyChartObject = Sheets(WhichSheet).ChartObjects(WhichChartObject)
+    
+    Set MyChart = MyChartObject.Chart
+    
+    Set MySeries = MyChart.SeriesCollection(WhichSeries)
+    
+    Set myClassModule.myChartClass = MyChart
+
+End Sub
+
+Public Function MySeriesPointsHasDataLabel(j As Integer) As Integer
+
+    MySeriesPointsHasDataLabel = False
+    
+    On Error GoTo EndMySeriesPointsHasDataLabel
+
+    If MySeries.Points(j).HasDataLabel Then
+        MySeriesPointsHasDataLabel = True
+    End If
+    
+EndMySeriesPointsHasDataLabel:
+
+End Function
+
+Public Sub test_setup()
+
+    Call setMyStuff("Sheet1", 1, 1)
+    
+End Sub
+
+Public Sub calculateMyCategoryWidth()
+    Dim NumberOfCategories As Integer
+    Dim pa As PlotArea
+    
+    On Error GoTo ErrorCalculateMyCategoryWidth
+    MyCategoryWidth = MySeries.Points(2).DataLabel.Left - MySeries.Points(1).DataLabel.Left
+    Exit Sub
+    
+ErrorCalculateMyCategoryWidth:
+    Set pa = MyChart.PlotArea
+    
+    NumberOfCategories = UBound(MySeries.Values)
+    MyCategoryWidth = pa.Width / NumberOfCategories
+
+End Sub
+
+Public Sub CheckMyCategoryWidth()
+    
+    If MyCategoryWidth = 0 Then
+    
+        With MyChart.SeriesCollection(1)
+            .ApplyDataLabels
+            MyCategoryWidth = .Points(2).DataLabel.Left - .Points(1).DataLabel.Left
+            .DataLabels.Delete
+        End With
+        
+    End If
+
+End Sub
+
+Public Sub SetScreenUpdating(toWhat As Integer)
+
+    If Application.ScreenUpdating <> toWhat Then
+        Application.ScreenUpdating = toWhat
+    End If
+    
+End Sub
+
+Public Function MyFix(x As Double) As Double
+
+    Dim MySgn As Integer
+    Dim power As Integer
+    Dim factor As Double
+    Dim zeroes As String
+    Dim temp As String
+    
+    If x = 0 Then
+        MyFix = 0
+        Exit Function
+    End If
+
+    MySgn = Sgn(x)
+    x = Abs(x)
+    
+    If x < 1 Then
+        power = 3 - Int(Log10(x))
+    Else
+        power = 4
+    End If
+    
+    factor = 10 ^ power
+    
+    x = Int(x * factor + 0.5)
+    
+    zeroes = Trim(Str(factor))
+    zeroes = Right(zeroes, Len(zeroes) - 1)
+    
+    temp = zeroes & Trim(Str(x))
+    temp = Left(temp, Len(temp) - power) & "." & Right(temp, power)
+    
+    MyFix = MySgn * Val(temp)
+
+End Function
+Attribute VB_Name = "EventClassModule"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = True
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'
+'
+'|fffd| 3M 2001.
+'BPChart is intended solely for internal use within 3M.
+'No further reproduction or distribution of this software,
+'or results obtained by using the software, is permitted
+'without the express written permission of 3M|fffd| 3M 2001.
+'
+'
+Public WithEvents myChartClass As Chart
+Attribute myChartClass.VB_VarHelpID = -1
+
+Private Sub myChartClass_BeforeDoubleClick(ByVal ElementID As Long, _
+        ByVal Arg1 As Long, ByVal Arg2 As Long, Cancel As Boolean)
+    Cancel = True
+End Sub
+
+Private Sub myChartClass_BeforeRightClick(Cancel As Boolean)
+    Cancel = True
+End Sub
+
+Private Sub myChartClass_Deactivate()
+    Dim myworkbook, myworksheet
+    
+    myScreenUpdating (False)
+    Application.Calculation = xlCalculationManual
+    Set myworkbook = ActiveWorkbook
+    Set myworksheet = ActiveSheet
+    
+    If myworkbook.Name <> ThisWorkbook.Name Then
+        ThisWorkbook.Activate
+        myExit = 9876
+    End If
+    
+    With Sheets("I Chart")
+      .Buttons("butRestoreButtons").Visible = False
+      blnRestoreIsVisible = False '%%02-12-01+
+      .TextBoxes("textboxComments").Visible = False
+    End With
+    
+    StoreComments (False)
+    Application.Calculation = xlCalculationAutomatic
+        Update_Axes_and_Comments ("I Chart")
+
+    '%%12-20-00+ There are issues with these 5 lines of code........
+    '%%12-20-00+ an endless loop is created on occasion
+    '%%12-20-00+ the if...then I added might work as a fix
+    If myworkbook.Name <> ThisWorkbook.Name Then
+        myworkbook.Activate
+    Else
+        If ActiveSheet.Name <> myworksheet.Name Then '%%12-20-00+
+          myworksheet.Activate
+        End If '%%12-20-00+
+    End If
+        
+    myScreenUpdating (True)
+End Sub
+
+Private Sub myChartClass_MouseDown(ByVal Button As Long, ByVal Shift As Long, ByVal x As Long, ByVal Y As Long)
+'MsgBox ("button=" & Button & " shift=" & Shift & " X=" & x & " Y=" & Y)
+    'If Sheets("I Chart").Buttons("butRestoreButtons").Visible = False Then InitializeChart '%%02-12-01-
+    
+    If blnRestoreIsVisible = False Then InitializeChart  '%%02-12-01+
+
+End Sub
+
+Private Sub myChartClass_Select(ByVal ElementID As Long, ByVal Arg1 As Long, ByVal Arg2 As Long)
+    If ElementID = xlSeries Then
+        If Arg2 <> -1 Then
+            MyPointNumber = Arg2
+            'MsgBox "This is Series = " & Arg1 & ", Point = " & Arg2
+            setDataLabel
+    
+        End If
+ '   Else
+  '      If ElementID <> xlDataLabel Then
+   '
+    '    ActiveChart.Deselect
+     '   End If
+    End If
+End Sub
+Sub setDataLabel()
+
+    Dim mycell
+    Dim myHasDataLabel As Boolean
+    
+On Error GoTo Err_setDataLabel
+
+    myHasDataLabel = Selection.HasDataLabel
+    
+    UserFormMessagesAndExclude.Show
+
+    If Not continueWithMessageOrExclude Then
+        Exit Sub
+    End If
+    
+    If Not IsNull(messageBuffer) And Len(messageBuffer) > 0 Then
+        myScreenUpdating (False)
+        If Selection.HasDataLabel Then
+            Selection.DataLabel.Characters.Text = messageBuffer
+        Else
+            Selection.ApplyDataLabels Type:=xlDataLabelsShowValue
+            Selection.Explosion = Selection.DataLabel.Left
+        
+            Selection.DataLabel.Characters.Text = messageBuffer
+            With Selection.DataLabel.Border
+                .ColorIndex = 1
+                .Weight = xlThin
+                .LineStyle = xlContinuous
+            End With
+            Selection.DataLabel.Shadow = False
+            With Selection.DataLabel.Interior
+                .ColorIndex = 36
+                .PatternColorIndex = 2
+                .Pattern = xlSolid
+            End With
+        End If
+        myHasDataLabel = True
+    End If
+    
+    If excludeThisPoint Then
+        'the following code excludes the selected point
+        'mycell is added as a local variable
+        'MyPointNumber is added as a global and set in Sub myChartClass_Select
+        myScreenUpdating (False)
+        
+        If myHasDataLabel Then
+            MessagesToComments
+            StoreComments (True)
+        End If
+        
+        Set mycell = Range("FirstData").Offset(Range("chart").Row - 17 + MyPointNumber, Range("Database_Column").Value - 1)
+            'If Application.IsNumber(mycell.Value) Then
+                mycell.Value = "!_" & mycell.Formula
+                mycell.Interior.ColorIndex = 3
+                
+                Range("DataToPlotc").Cells(MyPointNumber).ClearContents
+                
+                Application.Calculation = xlAutomatic
+            'End If
+       ' myScreenUpdating (True)
+    End If
+        
+    myScreenUpdating (True)
+   Exit Sub
+
+Err_setDataLabel:
+
+    MsgBox Error$, Title:=ThisWorkbook.Name
+    
+
+End Sub
+
+Attribute VB_Name = "MacroSheet"
+'
+'
+'|fffd| 3M 2001.
+'BPChart is intended solely for internal use within 3M.
+'No further reproduction or distribution of this software,
+'or results obtained by using the software, is permitted
+'without the express written permission of 3M|fffd| 3M 2001.
+'
+'
+Option Explicit
+Option Base 1
+Option Compare Text
+Global mytimer(50)
+Global FormSegTop, FormSegLeft
+Global userChangedMessages, didIChartPlotAreaResize, didRunChartPlotAreaResize As Boolean
+Global MajorUnit, Scalemax, Scalemin, myChartmax, myChartmin, myActiveCell, myOldFooter
+Global mXRAction, mYRAction, mOlddata, myshowlast, myactivate, myLastN, myFirstRow, myLastRow, myprintlayout, myCreate, myCopyCurrent, myauto, myCreateMessage As Integer
+Global myLastSheet, myFocus, myfilename As Variant, myFullScreen, myDontDoFooters, myShowPrinterDriverDialog As Boolean
+Global showicharts, showmrcharts, showruncharts, showlayouts, showdatabase As Variant
+Global myWorkSheetMenuNr, myStandardToolbarNr, mySaveToolbarButtonNr, myFileMenuNr, myStandardText, mySaveText, myFileText
+Global gapp As Application, myExit As Integer   '2.0
+Global myCurColHasSeasData, myGaveTooManyWarning As Boolean  '03-20-01
+Private gbytSeasonsDefault As Byte '%%12-22-00+ Default for seasons (can be changed by user during session)
+'
+
+'' Auto Open
+' Macro recorded 5/24/94 by Statistical Consulting
+' Sets up to run DatabaseChanged when "Database" is deactivated
+Sub Auto_Open()
+Attribute Auto_Open.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim mysize
+    Set gapp = Application '2.0 - Done to improve performance
+    gapp.ScreenUpdating = False
+    [optseasons] = True
+    myCurColHasSeasData = False '03-20-01
+    FindToolbars
+    BPChartParameters (False)
+    Range("dontshowagain").Value = Not myShowPrinterDriverDialog
+    HandlePrinterDriver (False)
+    didIChartPlotAreaResize = False
+    didRunChartPlotAreaResize = False
+    Sheets("Database").OnSheetDeactivate = "Update_Analysis"
+    Sheets("Database").OnSheetActivate = "QuestOnDatabaseActivate" '2.0
+    Windows(ThisWorkbook.Name).OnWindow = "DatabaseSetup"      '2.0
+    Sheets("MR Chart").OnSheetDeactivate = "DatabaseSetup"
+    Sheets("Run Chart").OnSheetDeactivate = "LeaveRunChart"
+    Sheets("Run Chart").OnSheetActivate = "EnterRunChart"
+    Sheets("Layout").OnSheetDeactivate = "DatabaseSetup"
+    Sheets("Analysis").OnSheetDeactivate = "DatabaseSetup"
+    Sheets("About...").OnSheetDeactivate = "DatabaseSetup"  '2.0.2
+    Sheets("I Chart").OnSheetDeactivate = "DatabaseSetup"
+    Sheets("I Chart").OnSheetActivate = "EnterIChart"
+    Sheets("I Chart").OnEntry = "Enter_DB_Column"
+    Sheets("What's New").OnSheetDeactivate = "HideWhatsNew"
+    myStandardText = Range("TextStandard").Value
+    mySaveText = Range("TextSave").Value
+    myFileText = Range("TextFile").Value2
+    
+    Call setMyStuff("I Chart", "IChart", 4)
+    myfilename = "Temp.XLS"
+    myOldFooter = "BPChart |fffd| 3M"
+    Range("foottext").Value = myOldFooter
+    mOlddata = 0
+    Sheets(Array("I Chart", "MR Chart", "Run Chart", "Layout", "Analysis", _
+        "About...")).Select
+    Sheets("Layout").Activate
+    mysize = Int(100 * mymin(gapp.UsableWidth / Range("I_Chart_Print_Range").Width, gapp.UsableHeight / Range("I_Chart_Print_Range").Height))
+    If gapp.DisplayFormulaBar = True Then mysize = 0.98 * mysize
+    If gapp.DisplayStatusBar = True Then mysize = 0.98 * mysize
+    ActiveWindow.Zoom = Int(mysize)
+    Sheets("Layout").Select
+    ActiveWindow.Zoom = Int(100 * mymin(gapp.UsableWidth / gapp.InchesToPoints(9.5), gapp.UsableHeight / gapp.InchesToPoints(7)))
+    Sheets("About...").Select
+    If Application.Calculation <> xlAutomatic Then Application.Calculation = xlAutomatic
+    If Sheets("Database").Range("b1").Value = "Quest" Then Enter_DB_Column
+    myLastSheet = ""
+    modifyMenus
+    gapp.ScreenUpdating = True
+    gapp.Cursor = xlDefault '%%03-16-01+ make sure cursor is arrow
+End Sub
+'
+'
+Sub Auto_Close()
+
+    On Error GoTo AutoCloseErr
+    RestoreMenu
+    If (ThisWorkbook.Sheets("Database").Range("b1").Value = "Quest") Then
+        Call QuestExit(sMode:="Close")
+    End If
+    Exit Sub
+AutoCloseErr:
+    MsgBox Prompt:="Error while closing BP Chart" & Chr(13) & _
+                    Err & ": " & Error(), _
+          Buttons:=vbExclamation, _
+            Title:=ThisWorkbook.Name
+            
+    Exit Sub
+End Sub
+
+
+Sub QuestOnDatabaseActivate()
+Attribute QuestOnDatabaseActivate.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim nRes As Integer
+    If gapp Is Nothing Then Set gapp = Application '2.2
+    If (ThisWorkbook.Worksheets("Database").Range("B1").Value = "Quest") Then
+        ''Uncomment this call to QuestExit, (and remove msgbox) to allow user
+        ''to Return to Quest by activating the Database sheet
+
+        ''Call QuestExit(sMode:="Database")
+        nRes = MsgBox(Prompt:="WARNING: Changing the Database sheet directly may cause your Quest Reportable to be incompatible with BP Chart" & Chr(13) & Chr(13) & _
+                              "Changes to the data should be done on the Reportable" & Chr(13) & _
+                              "Changes to BP Chart settings should be done on the I Chart" & Chr(13) & Chr(13) & _
+                              "Continue to Database Sheet?", _
+                     Buttons:=vbYesNo + vbDefaultButton2, _
+                       Title:="BP Chart - Quest")
+        If nRes = vbYes Then
+            gapp.GoTo reference:=ThisWorkbook.Worksheets("Database").Cells(14, 3)
+        Else
+            gapp.GoTo reference:=ThisWorkbook.Worksheets("I Chart").Cells(1, 1)
+        End If
+    End If
+End Sub
+
+Sub QuestExit(sMode As String)
+Attribute QuestExit.VB_ProcData.VB_Invoke_Func = " \n14"
+''This routine called 3 Modes:
+''    Close    - User is closing BP Chart
+''    Database - User is activating Database sheet
+''    Window   - User is windowing back to Quest Reportable
+Dim nRes As Integer, bChg As Integer, bClose As Integer
+Dim sMsg As String
+
+    If gapp Is Nothing Then Set gapp = Application '2.0.2
+    gapp.ScreenUpdating = False
+    
+    ''If Quest workbook has been closed, then exit
+    On Error Resume Next
+    gapp.GoTo Range(ThisWorkbook.Names("QuestBPChartLayouts").RefersTo)
+    If Err Then
+        GoTo QuestExitSuccess
+    End If
+    
+    On Error GoTo QuestExitErr
+    bChg = QuestBPSettingsChanged()
+    'No changes found
+    If Not bChg Then
+        If (sMode = "Close") Then 'User closing workbook
+            GoTo closeBPChart
+        Else
+            If (sMode = "Database") Then 'User activating Database sheet
+                GoTo giveDatabaseWarning
+            Else  'User Windowing back to Reportable
+                If (sMode = "Window") Then 'User activating Database sheet
+                    GoTo returnToQuest
+                Else
+                    MsgBox Title:="BP Chart - Quest", _
+                          Prompt:="Contact Quest Support - invalid mode (" & sMode & ") " & _
+                                  "passed to QuestExit routine in BPCHART.XLS" & Chr(13) & _
+                                  "Expected Close, Database, or Window"
+                    GoTo QuestExitSuccess
+                End If
+            End If
+        End If
+    End If
+    'Changes found - show dialog to confirm saving changes
+    With ThisWorkbook.DialogSheets("dlgQuest")
+        'Save settings is the default
+        .OptionButtons("optSaveSettings").Value = xlOn
+        'Show the 'Goto' options only if user is trying to Goto the Database Sheet
+        If (sMode = "Database") Then
+            .OptionButtons("optGoToDatabase").Visible = True
+            .OptionButtons("optGoToIChart").Visible = True
+        Else
+            .OptionButtons("optGoToDatabase").Visible = False
+            .OptionButtons("optGoToIChart").Visible = False
+        End If
+        .Show
+        If (.OptionButtons("optSaveSettings").Value = xlOn) Then
+            gapp.GoTo ThisWorkbook.Worksheets("I Chart").Cells(1, 1)
+            Call QuestSaveSettings
+        ElseIf (.OptionButtons("optGoToIChart").Value = xlOn) Then
+            gapp.GoTo reference:=ThisWorkbook.Worksheets("I Chart").Cells(1, 1)
+            GoTo QuestExitSuccess
+        ElseIf (.OptionButtons("optGoToDatabase").Value = xlOn) Then
+            GoTo giveDatabaseWarning
+        End If
+    End With
+closeBPChart:
+    If (sMode = "Close") Then
+        gapp.Calculate            'Let Excel think it needs to save
+        ThisWorkbook.Saved = True 'Tell Excel it doesn't have to save
+        gapp.DisplayFullScreen = False
+        GoTo QuestExitSuccess
+    End If
+returnToQuest:
+    'Select I Chart so we are ready when the user returns to BP Chart
+    gapp.GoTo ThisWorkbook.Worksheets("I Chart").Cells(1, 1)
+    gapp.GoTo Range("QuestBPChartData")
+    gapp.DisplayFullScreen = False
+    GoTo QuestExitSuccess
+giveDatabaseWarning:
+    sMsg = "WARNING: Changing the Database sheet directly may cause Reportable to be incompatible with BP Chart" & Chr(13) & Chr(13)
+    sMsg = sMsg & "Changes to the data should be done on the Reportable" & Chr(13)
+    sMsg = sMsg & "Changes to BP Chart Settings should be done on the 'I Chart'" & Chr(13)
+    sMsg = sMsg & Chr(13) & "Continue to Database Sheet?"
+    nRes = MsgBox(sMsg, vbYesNo + vbDefaultButton2, "BP Chart - Quest")
+    If nRes = vbYes Then
+        gapp.GoTo reference:=ThisWorkbook.Worksheets("Database").Cells(14, 3)
+        GoTo QuestExitSuccess
+    Else
+        gapp.GoTo reference:=ThisWorkbook.Worksheets("I Chart").Cells(1, 1)
+        GoTo QuestExitSuccess
+    End If
+QuestExitSuccess:
+ ''   RestoreQuestCommandbar '%%02-07-01-
+    gapp.ScreenUpdating = False
+    Exit Sub
+QuestExitErr:
+    MsgBox Prompt:="Error while leaving BP Chart to return to Quest Reportable" & Chr(13) & _
+                    Err & ": " & Error(), _
+           Title:="BP Chart - Quest"
+    Resume QuestExitSuccess
+End Sub
+
+Sub QuestSaveSettings()
+Attribute QuestSaveSettings.VB_ProcData.VB_Invoke_Func = " \n14"
+'Copies BP Chart Print Layouts and Chart Options to Quest Reportable
+Dim bProtected As Integer
+Dim sMsg As String
+Dim tb As TextBox
+
+    On Error GoTo QuestSaveSettingsErr
+    If gapp Is Nothing Then Set gapp = Application '2.0.2
+    gapp.ScreenUpdating = False
+    Prepare_for_Save '2.20
+    'Copy Layout Config
+    gapp.GoTo ThisWorkbook.Worksheets("Database").Range("A1:A12")
+    Selection.Copy
+    gapp.GoTo reference:=Range("QuestBPChartLayouts")
+    ActiveSheet.Paste
+    
+    'Copy Options Config for first 200 Columns
+    'We aren't copying all 253 columns because Reportable doesn't have room
+    gapp.GoTo reference:=ThisWorkbook.Worksheets("Database").Range("C1:GT12")
+    Selection.Copy
+    gapp.GoTo reference:=Range("QuestBPChartOptions").Cells(1, 1)
+    ActiveSheet.Paste
+    ''Remove any text boxes in first 12 rows
+    On Error Resume Next
+    With ActiveSheet
+        bProtected = .ProtectDrawingObjects
+        If bProtected Then
+            .Unprotect
+        End If
+        For Each tb In .TextBoxes
+            If tb.TopLeftCell.Row <= 12 Then
+                tb.Delete
+            End If
+        Next tb
+        If bProtected Then
+           .Protect DrawingObjects:=True, Contents:=False, Scenarios:=False
+        End If
+    End With
+    On Error GoTo QuestSaveSettingsErr
+    
+    'Put cursor on beginning of BPChartData
+    gapp.GoTo ThisWorkbook.Worksheets("Database").Range("a1")
+    gapp.GoTo reference:=Range("QuestBPChartData")
+    gapp.CutCopyMode = False
+QuestSaveSettingsExit:
+    gapp.ScreenUpdating = True
+    Exit Sub
+QuestSaveSettingsErr:
+    MsgBox Prompt:="Error while copying BP Chart Settings to Quest Reportable" & Chr(13) & _
+                    Err & ": " & Error(), _
+          Buttons:=vbExclamation, _
+            Title:="BP Chart - Quest"
+    Resume QuestSaveSettingsExit
+End Sub
+
+Function QuestBPSettingsChanged() As Integer
+Attribute QuestBPSettingsChanged.VB_ProcData.VB_Invoke_Func = " \n14"
+''This function checks for a change to BP Chart Layouts or Options
+Dim nRes As Integer
+Dim rng1 As Range, rng2 As Range
+Dim wsDatabase As Worksheet
+
+    On Error GoTo QuestBPSettingsErr
+    
+    ''Look for change to Layouts
+    Set wsDatabase = ThisWorkbook.Worksheets("Database")
+    Set rng1 = wsDatabase.Range("A1:A12")
+    Set rng2 = Range(ThisWorkbook.Names("QuestBPChartLayouts").RefersTo).Resize(12, 1)
+    If QuestCompareRanges(rng1, rng2) <> 0 Then
+        QuestBPSettingsChanged = True
+        Exit Function
+    End If
+    
+    ''Look for change to Options
+    Set rng1 = Nothing
+    Set rng1 = wsDatabase.Range("C1:GT12")
+    Set rng2 = Nothing
+    Set rng2 = Range(ThisWorkbook.Names("QuestBPChartOptions").RefersTo).Resize(12, 200)
+    If QuestCompareRanges(rng1, rng2) <> 0 Then
+        QuestBPSettingsChanged = True
+        Exit Function
+    End If
+    Exit Function
+QuestBPSettingsErr:
+    MsgBox Prompt:="Error while checking for a change to BP Chart Layouts or Options" & Chr(13) & _
+                    Err & ": " & Error(), _
+          Buttons:=vbExclamation, _
+            Title:="BP Chart - Quest"
+    QuestBPSettingsChanged = True 'Assume that settings changed
+    Exit Function
+End Function
+Function QuestCompareRanges(rng1 As Range, rng2 As Range) As Integer
+Attribute QuestCompareRanges.VB_ProcData.VB_Invoke_Func = " \n14"
+'' Rng1 and Rng2 must be the save size
+'' Compares only when column in rng1 is non-blank
+''Returns 1 if a difference is found
+''Returns -1 on error
+''Returns -2 if ranges aren't same size
+Dim nRow As Integer, nCol As Integer, nDif As Integer, bDebug As Integer
+    
+    On Error GoTo QuestCompareRangesErr
+''  MsgBox "Comparing these two ranges" & Chr(13) & _
+           rng1.Address(external:=True) & Chr(13) & _
+           rng2.Address(external:=True)
+    
+    ''EDIT: Ranges must be same size
+    If (rng1.Rows.Count <> rng2.Rows.Count) _
+    Or (rng1.Columns.Count <> rng2.Columns.Count) Then
+        QuestCompareRanges = -2
+        Exit Function
+    End If
+    
+    ''Compare
+    With rng1
+        For nCol = 1 To .Columns.Count
+            If mycounta(.Columns(nCol)) > 0 Then 'if rng1 column is non-blank
+                For nRow = 1 To .Rows.Count
+                    If .Cells(nRow, nCol).Value <> rng2.Cells(nRow, nCol).Value Then
+                        QuestCompareRanges = 1
+                        Exit Function
+                    End If
+                Next nRow
+            End If
+        Next nCol
+    End With
+    Exit Function
+QuestCompareRangesErr:
+    MsgBox Prompt:="Error while comparing these two ranges" & Chr(13) & _
+                    rng1.Address(external:=True) & Chr(13) & _
+                    rng2.Address(external:=True) & Chr(13) & Chr(13) & _
+                    Err & ": " & Error(), _
+          Buttons:=vbExclamation, _
+            Title:="BP Chart - Quest"
+    QuestCompareRanges = -1
+    Exit Function
+End Function
+Sub RestoreQuestCommandbar()
+Attribute RestoreQuestCommandbar.VB_ProcData.VB_Invoke_Func = " \n14"
+'New for Office 97...
+'Rebuilds the Quest Menu Items on the Worksheet Menu Bar.
+'Office 97 uses commandbars to work with menu items, whereas
+'Excel 7 used a menu editor.
+Dim bar
+Dim ctrl
+Dim questbar
+Dim newitem
+Dim newsubitem
+Dim newsubbutton
+Dim QuestFound As Boolean
+
+    Set bar = Application.CommandBars("Worksheet Menu Bar")
+    bar.Reset
+    If bar.Name = "Worksheet Menu Bar" Then
+        Set newitem = bar.Controls.Add(Type:=msoControlPopup)
+        With newitem
+            .BeginGroup = False
+            .Caption = "&Quest"
+            .OnAction = ""
+            .Move before:=10
+        End With
+        
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "Query &Builder..."
+            .FaceId = 0
+            .OnAction = "xldw.xla!mnuQueryBuilder_Click"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlPopup)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "&Querysheet"
+            .OnAction = ""
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "&Refresh..."
+            .OnAction = "xldw.xla!mnuQueryRefresh_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Refresh &All"
+            .OnAction = "xldw.xla!mnuQueryRefreshAll_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Refresh All then Produce All"
+            .OnAction = "xldw.xla!mnuRefreshAndProduceAll"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "&Clear"
+            .OnAction = "xldw.xla!mnuClearQuerySheets_Click"
+        End With
+
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlPopup)
+        With newsubitem
+            .BeginGroup = True
+            .Caption = "&Reportable"
+            .OnAction = ""
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "&Add"
+            .OnAction = "xldw.xla!mnuAddReportable_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "&Duplicate"
+            .OnAction = "xldw.xla!mnuDupReportable_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "&Select Querysheet..."
+            .OnAction = "xldw.xla!mnuQuerySelect_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Produce!"
+            .OnAction = "xldw.xla!mnuProduceReport_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Produce All"
+            .OnAction = "xldw.xla!mnuProduceAll"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Refresh and Produce"
+            .OnAction = "xldw.xla!mnuRefreshAndProduce_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = True
+            .Caption = "&Insert Criteria"
+            .OnAction = "xldw.xla!mnuCriteriaInsert_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Dele&te Criteria"
+            .OnAction = "xldw.xla!mnuCriteriaRemove_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = True
+            .Caption = "&Clean Up"
+            .OnAction = "xldw.xla!mnuCleanup_Click"
+        End With
+
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "Pick &Fields"
+            .FaceId = 0
+            .OnAction = "xldw.xla!mnuPickFields_Click"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "&Produce!"
+            .FaceId = 0
+            .OnAction = "xldw.xla!mnuProduceReport_Click"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlPopup)
+        With newsubitem
+            .BeginGroup = True
+            .Caption = "&Library"
+            .OnAction = ""
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "&Send Copy..."
+            .OnAction = "xldw.xla!mnuLibraryPublish_Click"
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "&Get Copy..."
+            .OnAction = "xldw.xla!mnuLibraryGet_Click"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "SaveWorkbook &As"
+            .FaceId = 0
+            .OnAction = "xldw.xla!saveWorkbookAs"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlPopup)
+        With newsubitem
+            .BeginGroup = True
+            .Caption = "BP Chart"
+            .OnAction = ""
+        End With
+        Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Show Format"
+            .OnAction = "xldw.xla!mnuBPChartShowFormat"
+        End With
+                Set newsubbutton = newsubitem.Controls.Add(Type:=msoControlButton)
+        With newsubbutton
+            .BeginGroup = False
+            .Caption = "Start"
+            .OnAction = "xldw.xla!mnuBPChartStart"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = True
+            .Caption = "Messages"
+            .FaceId = 0
+            .OnAction = "xldw.xla!mnuMessages_Click"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "&Help..."
+            .FaceId = 0
+            .OnAction = "xldw.xla!mnuHints_Click"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "Release Info"
+            .FaceId = 0
+            .OnAction = "xldw.xla!mnuRelInfo_Click"
+        End With
+        Set newsubitem = newitem.Controls.Add(Type:=msoControlButton)
+        With newsubitem
+            .BeginGroup = False
+            .Caption = "A&bout"
+            .FaceId = 0
+            .OnAction = "xldw.xla!mnuAbout_Click"
+        End With
+    End If
+    
+End Sub
+Sub EnterIChart()
+
+If didIChartPlotAreaResize = False Then ' voodoo patch to combat shrinking plot areas
+    '%%12-20-00+ cannot activate a chart object if the active sheet doesn't have one
+    If ActiveSheet.Name Like "*Chart" Then '%%12-20-00+
+      ActiveSheet.ChartObjects(1).Activate
+      ActiveWindow.Visible = False
+      Windows(ThisWorkbook.Name).Activate
+      Range("a1").Select
+      ResizePlotAreas
+      didIChartPlotAreaResize = True
+    End If
+End If
+Range("a1").Select
+End Sub
+Sub EnterRunChart()
+If didRunChartPlotAreaResize = False Then ' voodoo patch to combat shrinking plot areas
+    If ActiveSheet.Name Like ("*Chart") Then
+    ActiveSheet.ChartObjects(1).Activate
+    ActiveWindow.Visible = False
+    Windows(ThisWorkbook.Name).Activate
+    Range("a1").Select
+    ResizePlotAreas
+    didRunChartPlotAreaResize = True
+    End If
+End If
+Range("a1").Select
+
+    Update_Axes_and_Comments ("Run Chart")
+End Sub
+Sub LeaveRunChart()
+    Update_Axes_and_Comments ("I Chart")
+    DatabaseSetup
+End Sub
+
+' Upon Entering Database Sheet
+Sub DatabaseSetup()
+Attribute DatabaseSetup.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim i
+i = vbNo
+If Application.ActiveSheet.Name = "Database" Then
+' only do this macro if coming into Database from within BPChart
+' myLastSheet was set by DatabaseChanged if I left Database and stayed in BPChart
+' this conditional is needed to enable Pasting from another Excel workbook
+    If myLastSheet <> "Database" Then
+        myScreenUpdating (False)
+        
+        If Application.CutCopyMode = False Then
+        Application.Calculation = xlManual
+        Else
+            i = MsgBox("There is data on the clipboard.  Do you want to keep it?", vbYesNo, ThisWorkbook.Name)
+            If i = vbYes Then
+                If Application.Calculation = xlCalculationAutomatic Then
+                    MsgBox "BPChart normally provides scrollbars and uses Manual recalculation mode on the Database worksheet to make editing smoother.  Those settings have not been made this time only so that the clipboard data is retained.", Title:=ThisWorkbook.Name
+                End If
+            Else
+            Application.Calculation = xlCalculationManual
+            End If
+        End If
+        
+        myLastSheet = "Database"
+        If i <> vbYes Then
+          With ActiveWindow
+              .DisplayHorizontalScrollBar = True
+              .DisplayVerticalScrollBar = True
+          End With
+        End If
+        
+        '%%02-12-01+
+        '**************************
+        Names("FirstData").Delete
+        Names("FirstXValue").Delete
+        '**************************
+        
+        Cells(ActiveCell.Row, Range("Database_Column").Value + 2).Select
+    End If
+           
+
+        If i <> vbYes Then modifyMenus
+        myScreenUpdating (True)
+Else
+    If ActiveWorkbook.Name = ThisWorkbook.Name Then
+        If Not (ActiveWindow.Caption Like "*IChart") Then
+            modifyMenus
+            If Application.Calculation = xlManual Then Application.Calculation = xlAutomatic
+        End If
+    Else
+        RestoreMenu
+    End If
+End If
+End Sub
+'
+' butPrint_Click Macro - Chart Sheets "Print"
+' Macro recorded 5/19/94 by Statistical Consulting
+Sub butPrint_Click()
+Attribute butPrint_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim mysize As Integer
+    myScreenUpdating (False)
+    With ActiveSheet.PageSetup
+        mysize = Int(95 * mymin((Application.InchesToPoints(11) - .RightMargin - .LeftMargin) / Range("I_Chart_Print_Range").Width, (Application.InchesToPoints(8.5) - .TopMargin - .BottomMargin) / Range("I_Chart_Print_Range").Height))
+        .Zoom = mysize
+    End With
+    SetFooter
+    ActiveWindow.SelectedSheets.PrintOut Copies:=1
+    myScreenUpdating (True)
+End Sub
+'
+' set footers for all sheets
+Sub SetFooter()
+Attribute SetFooter.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim mysheet, mycollection, mycalc
+mycalc = Application.Calculation
+Application.Calculation = xlManual
+mycollection = Array("I Chart", "MR Chart", "Run Chart", "Layout")
+For Each mysheet In mycollection
+    If myDontDoFooters = False Then
+        With Sheets(mysheet).PageSetup
+                .CenterFooter = ""
+                .LeftFooter = ""
+                .RightFooter = ""
+                If Range("footdate").Value = True Then .CenterFooter = "&10 &D"
+                If Range("footmsg").Value = True Then .RightFooter = "&10 " & Range("foottext").Value
+                If mysheet <> "Layout" And TypeName(Range("data").Cells(1).Value) = "String" Then .LeftFooter = "&10 " & Range("data").Cells(1)
+        End With
+    End If
+Next mysheet
+Application.Calculation = mycalc
+End Sub
+'
+' On Entry on I Chart Sheet - Set Correct Scale
+Sub Enter_DB_Column()
+Attribute Enter_DB_Column.VB_ProcData.VB_Invoke_Func = " \n14"
+Update_Axes_and_Comments (ActiveSheet.Name)
+myScreenUpdating (True)
+'MsgBox "enter DB column"
+End Sub
+'
+Sub Update_Axes_and_Comments(mysheetname)
+  Dim dblOldMinScale As Double '%%12-20-00+ For checking which axes to set first
+  Dim dblOldMaxScale As Double '%%12-20-00+ For checking which axes to set first
+   
+  If mysheetname <> "Run Chart" Then mysheetname = "I Chart"
+  myScreenUpdating (False)
+  
+  With Sheets(mysheetname).ChartObjects(1).Chart.Axes(xlValue)
+    If (.TickLabels.NumberFormat <> Range("database!14:14").Columns(Range("Database_Column").Value + 2).NumberFormat) Then
+        .TickLabels.NumberFormat = Range("database!14:14").Columns(Range("Database_Column").Value + 2).NumberFormat
+    End If
+    
+    dblOldMinScale = .MinimumScale '%%12-20-00+
+    dblOldMaxScale = .MaximumScale '%%12-20-00+
+    
+    GetComments '%%12-20-00+ Moving these lines here from the end of the sub fixed the
+    Calculate   '%%12-20-00+ y axes sizing problems
+
+    myChartmin = Range("Chartmin").Value
+    myChartmax = Range("Chartmax").Value
+
+    Sheets("analysis2").Range("g73").Value = myChartmax
+    Sheets("analysis2").Range("g74").Value = myChartmin
+    
+    If (Range("Auto_Y_min").Value = False) Then myChartmin = Range("Y_Min").Value
+    If (Range("Auto_Y_Max").Value = False) Then myChartmax = Range("Y_Max").Value
+
+    If myChartmin > myChartmax Then '%%12-20-00+
+      MsgBox "The current settings for this chart's Y axes are invalid." & vbCrLf & "Default values will be used.", vbInformation + vbOKOnly, Title:=ThisWorkbook.Name '%%12-20-00+
+      myChartmin = Sheets("analysis2").Range("g73").Value  '%%12-20-00+
+      myChartmax = Sheets("analysis2").Range("g73").Value  '%%12-20-00+
+    End If '%%12-20-00+
+    
+    Call myScale(myChartmin, myChartmax)
+
+    '%%12-20-00- .MaximumScaleIsAuto = True
+    '%%12-20-00- .MajorUnitIsAuto = True
+    '%%12-20-00- .MinimumScaleIsAuto = Range("Auto_Y_min").Value
+    
+    '%%12-20-00+ checking if the old min is less than the new min allows us to decide
+    '%%12-20-00+ whether to set the max or min first
+    If dblOldMinScale < myChartmin Then '%%12-20-00+
+      If (Range("Auto_Y_min").Value = False) Then
+          If (.MinimumScale <> Range("Y_Min").Value) Then
+              .MinimumScale = Range("Y_Min").Value
+          End If
+      Else
+          If .MinimumScale <> Scalemin Then
+              .MinimumScale = Scalemin
+          End If
+      End If
+      ' .MaximumScaleIsAuto = Range("Auto_Y_Max").Value
+      If (Range("Auto_Y_Max").Value = False) Then
+          If (.MaximumScale <> Range("Y_Max").Value) Then
+              .MaximumScale = Range("Y_Max").Value
+          End If
+      Else
+          If (.MaximumScale <> Scalemax) Then
+              .MaximumScale = Scalemax
+          End If
+      End If
+    Else '%%12-20-00+
+      If (Range("Auto_Y_Max").Value = False) Then '%%12-20-00+
+        If (.MaximumScale <> Range("Y_Max").Value) Then '%%12-20-00+
+            .MaximumScale = Range("Y_Max").Value '%%12-20-00+
+        End If '%%12-20-00+
+      Else '%%12-20-00+
+        If (.MaximumScale <> Scalemax) Then '%%12-20-00+
+            .MaximumScale = Scalemax '%%12-20-00+
+        End If '%%12-20-00+
+      End If '%%12-20-00+
+
+      If (Range("Auto_Y_min").Value = False) Then '%%12-20-00+
+        If (.MinimumScale <> Range("Y_Min").Value) Then '%%12-20-00+
+            .MinimumScale = Range("Y_Min").Value '%%12-20-00+
+        End If '%%12-20-00+
+      Else '%%12-20-00+
+        If .MinimumScale <> Scalemin Then '%%12-20-00+
+            .MinimumScale = Scalemin '%%12-20-00+
+        End If '%%12-20-00+
+      End If '%%12-20-00+
+    End If '%%12-20-00+
+    
+    If (Range("Auto_Y_min").Value = True And Range("Auto_Y_Max").Value = True) Then
+      .MajorUnit = MajorUnit
+    Else
+      If .MajorUnitIsAuto = False Then
+          .MajorUnitIsAuto = True
+      End If
+    End If
+  End With
+
+  '%%12-20-00- GetComments
+  '%%12-20-00- Calculate
+  
+  GetComments '%%02-12-01+ Apparently this is needed here as well as earlier in this procedure
+  
+End Sub
+'
+' butNext_Click Macro - Chart Sheets "Next"
+'
+Sub butNext_Click()
+Attribute butNext_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    myScreenUpdating (False)
+    'skip a column if trendtype is custom
+    Application.Calculation = xlManual
+    
+NextAgain:
+        If Range("Trendtype").Value = 3 Then
+        
+            Range("Database_Column").Value = 2 + Range("Database_Column").Value
+        Else
+            Range("Database_Column").Value = 1 + Range("Database_Column").Value
+        End If
+        If Application.Calculation <> xlCalculationAutomatic Then Application.Calculation = xlCalculationAutomatic
+        
+    GetSegmentAndSeasonalData
+
+    If Range("managebyexception").Value = True And Range("last anyflag?").Value = 0 And Range("nsamp").Value > 0 Then GoTo NextAgain
+    Enter_DB_Column
+End Sub
+'
+' butPrev_Click Macro - Chart Sheet "Prev"
+'
+Sub butPrev_Click()
+Attribute butPrev_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    myScreenUpdating (False)
+    Application.Calculation = xlManual
+
+PrevAgain:
+        If (Range("Database_Column").Value > 2) And (Val(Range("DBRef").Offset(9, Range("Database_Column").Value - 2).Value) = 3) Then
+            Range("Database_Column").Value = Range("Database_Column").Value - 2
+        Else
+            If Range("Database_Column").Value > 1 Then
+            Range("Database_Column").Value = Range("Database_Column").Value - 1
+            End If
+        End If
+    If Application.Calculation <> xlCalculationAutomatic Then Application.Calculation = xlCalculationAutomatic
+    
+    GetSegmentAndSeasonalData
+
+    If Range("managebyexception").Value = True And Range("last anyflag?").Value = 0 And Range("Database_Column").Value > 1 Then GoTo PrevAgain
+    Enter_DB_Column
+End Sub
+'
+' butXRange_Click Macro
+' Show Chart Range Dialog
+'
+Sub butXRange_Click()
+Attribute butXRange_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    myScreenUpdating (False)
+    Application.Calculation = xlManual
+    'StoreComments (False)
+    myshowlast = Range("showlast").Value
+    myLastN = Range("LastN").Value
+    myFirstRow = Range("First_Row").Value
+    myLastRow = Range("Last_Row").Value
+    Call Update_Range
+    myactivate = 0
+    myScreenUpdating (True)
+    DialogSheets("dlgXRange").Show
+        If myactivate = 1 Then
+            XRange_Activate
+        Else
+            myScreenUpdating (False)
+            Range("showlast").Value = myshowlast
+            Range("LastN").Value = myLastN
+            Range("First_Row").Value = myFirstRow
+            Range("Last_Row").Value = myLastRow
+        End If
+    
+    GetComments
+    Application.Calculation = xlAutomatic
+    myScreenUpdating (True)
+End Sub
+'
+' butOptions_XRange_Click Macro
+'
+Sub butOptions_XRange_Click()
+Attribute butOptions_XRange_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    mXRAction = 1
+End Sub
+'
+' butXRange_Act_Click Macro - Chart Range "Activate New Selection"
+' Macro recorded 5/20/94 by Statistical Consulting
+'
+Sub butXRange_Act_Click()
+Attribute butXRange_Act_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    myactivate = 1
+End Sub
+
+Sub XRange_Activate()
+Attribute XRange_Activate.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim mystring As String, i, x1, x2 As Integer
+    myScreenUpdating (False)
+    If Range("LastN").Value < 2 Then
+        i = MsgBox("You entered " & Format(Range("LastN").Value) & " for Last N Values, Resetting to 2", vbOKOnly, Title:=ThisWorkbook.Name)
+        Range("LastN").Value = 2
+    End If
+    x1 = Range("First_Row").Value
+    x2 = Range("Last_Row").Value
+    If x2 > Range("Last").Row Then
+        i = MsgBox("Your entry for Last Row exceeds Database range - Resetting to " _
+        & Str(Range("Last").Row - 2), vbOKOnly, Title:=ThisWorkbook.Name)
+        Range("Last_Row").Value = Range("Last").Row
+        x2 = Range("Last_Row").Value '%%03-16-01+
+    End If
+    If x2 < Range("first").Row + 1 Then
+        i = MsgBox("Your entry for Last Row is too small - Resetting to " _
+        & Str(Range("first").Row - 1), vbOKOnly, Title:=ThisWorkbook.Name)
+        Range("Last_Row").Value = Range("first").Row + 1
+        x2 = Range("Last_Row").Value '%%03-16-01+
+    End If
+    If x1 >= x2 Then
+        i = MsgBox("Your entry for First Row " & IIf(x1 = x2, "is equal to", "exceeds") & " Last Row - Resetting to " _
+        & Str(Range("first").Row - 2), vbOKOnly, Title:=ThisWorkbook.Name)
+        Range("First_Row").Value = Range("first").Row
+        x1 = Range("First_Row").Value '%%03-16-01+
+    End If
+    If x1 < Range("first").Row Then
+        i = MsgBox("Your entry for First Row is below Database range - Resetting to " _
+        & Str(Range("first").Row - 2), vbOKOnly, Title:=ThisWorkbook.Name)
+        Range("First_Row").Value = Range("first").Row
+    End If
+    If Range("showlast").Value = 1 Then
+        Range("Last_Row").Value = Range("Last").Row
+        Range("First_Row").Value = mymax(Range("first").Row, (Range("Last").Row - Range("LastN").Value + 1))
+     End If
+    mystring = "=Analysis!R" & Format(Range("First_Row").Value & ":R" & Format(Range("Last_Row").Value))
+    ' note can't add name on protected sheet
+    If ActiveSheet.Name = "About..." Then Sheets("analysis").Select: x1 = "gotoabout"
+    ActiveWorkbook.Names.Add Name:="Chart", RefersToR1C1:=mystring
+    If x1 = "gotoabout" Then Sheets("About...").Select
+    Application.Calculation = xlAutomatic
+  '  Application.Calculation = xlManual
+End Sub
+'
+' Update_Range Macros
+'
+Sub Update_Range()
+Attribute Update_Range.VB_ProcData.VB_Invoke_Func = " \n14"
+    With DialogSheets("dlgXRange")
+        .Spinners("spinLast_Row").Max = Range("Last").Row
+        .EditBoxes("edtLastN").Text = Range("LastN").Value
+        .EditBoxes("edtFirst_Row").Text = Range("First_Row").Value - 2
+        .EditBoxes("edtLast_Row").Text = Range("Last_Row").Value - 2
+        .Labels("lblXTitle").Text = Range("XTitle").Value
+        .Labels("lblFirst_Row").Text = Xformat(Range("X_Value").Cells(Range("First_Row").Value - Range("first").Row + 1, 1).Value)
+        .Labels("lblLast_Row").Text = Xformat(Range("X_Value").Cells(Range("Last_Row").Value - Range("first").Row + 1, 1).Value)
+    End With
+End Sub
+'
+' edtLastN_Change Macro
+'
+Sub edtLastN_Change()
+Attribute edtLastN_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+    Range("LastN").Value = DialogSheets("dlgXRange").EditBoxes("edtLastN").Text
+    Range("showlast").Value = 1
+End Sub
+'
+' spinLastN_Change Macro
+'
+Sub spinLastN_Change()
+Attribute spinLastN_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+    DialogSheets("dlgXRange").EditBoxes("edtLastN").Text = Range("LastN").Value
+    Range("showlast").Value = 1
+End Sub
+'
+' edtFirst_or_Last_Change Macro
+'
+Sub edtFirst_or_Last_Change()
+Attribute edtFirst_or_Last_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+    With DialogSheets("dlgXRange")
+        Range("First_Row").Value = Val(.EditBoxes("edtFirst_Row").Text) + 2
+        Range("Last_Row").Value = Val(.EditBoxes("edtLast_Row").Text) + 2
+    End With
+    Range("showlast").Value = 2
+End Sub
+'
+' Spinner First or Last Change Macro
+'
+Sub spinFirst_or_Last_Change()
+Attribute spinFirst_or_Last_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+    Range("showlast").Value = 2
+    With DialogSheets("dlgXRange")
+        .EditBoxes("edtFirst_Row").Text = Range("First_Row").Value - 2
+        .EditBoxes("edtLast_Row").Text = Range("Last_Row").Value - 2
+        .Labels("lblXTitle").Text = Range("XTitle").Value
+        .Labels("lblFirst_Row").Text = Xformat(Range("X_Value").Cells(Range("First_Row").Value - Range("first").Row + 1, 1))
+        .Labels("lblLast_Row").Text = Xformat(Range("X_Value").Cells(Range("Last_Row").Value - Range("first").Row + 1, 1))
+    End With
+End Sub
+'
+' Update Analysis - make sure analysis includes whole database
+'
+Sub Update_Analysis()
+Attribute Update_Analysis.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim mysheet, mytime
+If Application.ActiveWorkbook.Name = ThisWorkbook.Name Then
+    myScreenUpdating (False)
+    Set mysheet = ActiveSheet
+    Sheets("Database").Select
+    Range("Database_Column").Value = mymax(1, ActiveCell.Column - 2)
+    If Application.Calculation = xlManual Then Application.Calculation = xlAutomatic
+    GetSegmentAndSeasonalData
+
+    mysheet.Select
+    DatabaseChanged
+    Application.Calculation = xlCalculationManual
+    XRange_Activate
+    If Application.Calculation = xlManual Then Application.Calculation = xlAutomatic
+    Enter_DB_Column
+    
+End If
+
+End Sub
+' DatabaseChanged - On Sheet Deactivate "Database"
+' Macro recorded 5/24/94 by Statistical Consulting
+' Resets "Data" and all ranges to match column C of "Database"
+'
+Sub DatabaseChanged()
+Attribute DatabaseChanged.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim DesiredSheet, Mystr As String, FirstRow, LastRow, NRows, NRowsOld, Oldlast, i, j As Integer
+If Application.ActiveWorkbook.Name = ThisWorkbook.Name Then
+    'turn updating off to speed things up
+    myScreenUpdating (False)
+    'remember where to go to
+    Set DesiredSheet = Application.ActiveSheet
+    'change name of myLastSheet to enable Pasting - see Databasesetup macro
+    myLastSheet = DesiredSheet.Name
+    'rename these ranges incase someone moved or deleted the named cells on Database
+    Range("Database!B14").Name = "FirstXValue"
+    Range("Database!C13").Name = "FirstDataTitle"
+    Range("Database!C14").Name = "FirstData"
+    'match analysis sheet Xrange to Database
+    Range("X_Value").NumberFormat = Range("FirstXValue").NumberFormat
+    'set number format for trend label
+    Range("X_Format").Value = Range("X_Value").NumberFormat
+    'test to see if there is a change in the database
+    'find out how many rows are in datbase
+    Sheets("Database").Activate
+    'keep the current cell on database
+    Set myActiveCell = ActiveCell
+    'find current region
+    Range("Database!b13").Select
+    Selection.CurrentRegion.Select
+    LastRow = Selection.Rows.Count + Selection.Row - 1
+    FirstRow = Range("FirstData").Row
+    NRows = LastRow - FirstRow + 1
+    If NRows < 10 Then NRows = 10
+    'reset the current cell on database
+    myActiveCell.Select
+    If NRows <> mOlddata Then
+        mOlddata = NRows
+        Sheets("Analysis").Activate
+        NRowsOld = Range("Last").Row - Range("first").Row + 1
+        Oldlast = Range("Last").Row
+        'Analysis shorter than database
+        If NRowsOld < NRows Then
+            'first move the bottom row down
+            Range("Last").Cut Destination:=Rows(Oldlast + NRows - NRowsOld)
+            Range("Sixth").Copy
+            'then copy formulas into the blank and last row
+            Mystr = Format(Oldlast - 1) & ":" & Format(Oldlast + NRows - NRowsOld)
+            Rows(Mystr).FillDown
+            Application.CutCopyMode = False
+        'Analysis longer than database
+        ElseIf NRowsOld > NRows Then
+            'delete rows
+            Mystr = Format(Range("first").Row + NRows - 1) & ":" & Format(Oldlast - 1)
+            Rows(Mystr).Delete Shift:=xlUp
+            'copy formulas into the last row
+            Range("Sixth").Copy
+            Range("Last").Select
+            ActiveSheet.Paste
+            Application.CutCopyMode = False
+        End If
+        'reset chart ranges
+        Range("First_Row").Value = Range("first").Row
+        'Last_Row is connected to spinLast_Row
+        DialogSheets("dlgXRange").Spinners("spinLast_Row").Max = Range("Last").Row
+        Range("Last_Row").Value = Range("Last").Row
+    End If
+        'see if there are too many data - seasons sheet is limited to 150 rows  '03-20-01
+        If ([last_row] - [first_row] + 1 > [MaxPossible]) And Not myGaveTooManyWarning Then
+        i = MsgBox("The current database has " & [last_row] - [first_row] + 1 & " data points.  The Seasons worksheet only works with a maximum of " & [MaxPossible] & " data points.  If you want to use Seasonal trends, you must shorten your database.", vbExclamation + vbOKOnly, ThisWorkbook.Name)
+        myGaveTooManyWarning = True
+        End If
+        
+        '%%02-12-01+
+        '**********************************
+        For i = 1 To [x_value].Cells.Count
+          [segx_value].Cells(i) = " " & Xformat([x_value].Cells(i))
+        Next i
+        '**********************************
+        
+        'now go on to:
+        DesiredSheet.Select
+        With ActiveWindow
+            .DisplayHorizontalScrollBar = False
+            .DisplayVerticalScrollBar = False
+        End With
+        'Enter_DB_Column
+End If
+DatabaseSetup
+End Sub
+'
+' Show Make Layout Dialog Macro
+'
+Sub butLayout()
+Attribute butLayout.VB_ProcData.VB_Invoke_Func = " \n14"
+    myprintlayout = 0
+    Application.Calculation = xlManual
+    If Range("layouttype").Value = 0 Then
+        If ActiveSheet.Name = "I Chart" Then Range("layouttype").Value = 1
+        If ActiveSheet.Name = "Run Chart" Then Range("layouttype").Value = 2
+    End If
+    ddLayoutType_Change
+    With DialogSheets("dlgLayout")
+        .EditBoxes("edtLayoutTitle").Text = Range("LayoutTitle").Value
+        .Show
+        Range("LayoutTitle").Value = .EditBoxes("edtLayoutTitle").Text
+        If myCreate = 1 Then 'create
+            createlayout
+            .Buttons("but_PrintLayout").DefaultButton = True
+            myCreate = 2
+            butLayout
+            Exit Sub
+        End If
+        If myCreate = 3 Then 'options
+        With DialogSheets("dlgLayoutOptions")
+        .EditBoxes("edtfoot").Text = Range("foottext").Value
+        .Show
+        End With
+        myCreate = 0
+        DialogSheets("dlgLayout").Buttons("but_createlayout").DefaultButton = True
+        butLayout
+        Exit Sub
+        End If
+        If myCreate = 4 Then 'multiple
+        Calculate
+        DialogSheets("dlgManageLayouts").Show
+        myCreate = 0
+        DialogSheets("dlgLayout").Buttons("but_createlayout").DefaultButton = True
+        butLayout
+        End If
+    End With
+    myScreenUpdating (False)
+    LayoutPageSetup
+    DialogSheets("dlgLayout").Buttons("but_createlayout").DefaultButton = True
+    myCreate = 0
+    ResizePlotAreas
+    If Range("layouttype").Value = 2 Then Sheets("Run Chart").Select Else Sheets("I chart").Select
+    Range("a1").Select
+    Update_Axes_and_Comments (ActiveSheet.Name)
+    If Application.Calculation = xlManual Then Application.Calculation = xlAutomatic
+    myScreenUpdating (True)
+End Sub
+'
+'
+Sub ResizePlotAreas()
+Attribute ResizePlotAreas.VB_ProcData.VB_Invoke_Func = " \n14"
+'Dim mysheet   'probably not needed 102698
+'mysheet = activesheet.Name
+'Sheets("I Chart").Select
+'    activesheet.DrawingObjects(1).Select
+'    activesheet.ChartObjects(1).Activate
+'    ActiveChart.PlotArea.Select
+'    ActiveChart.Deselect
+'    ActiveWindow.Visible = False
+'    Range("a1").Select
+
+'%%12-20-00+ Resizing the plot area is a problem in the 2000 version of Excell
+'%%12-20-00+ Any application version with a 9 as the left most digit should be Excell 2000
+If Left(Application.Version, 1) < "9" Then '%%12-20-00+
+    With Sheets("i chart").ChartObjects(1).Chart.PlotArea
+        .Top = 43
+        .Left = 20
+        .Width = 430
+        .Height = 192
+    End With
+'Sheets("run chart").Select
+'    activesheet.DrawingObjects(1).Select
+'    activesheet.ChartObjects(1).Activate
+'    ActiveChart.PlotArea.Select
+'    ActiveChart.Deselect
+'    ActiveWindow.Visible = False
+'    Range("a1").Select
+    With Sheets("run chart").ChartObjects(1).Chart.PlotArea
+        .Top = 39
+        .Left = 20
+        .Width = 430
+        .Height = 185
+    End With
+'Sheets("mr chart").Select
+'    activesheet.DrawingObjects(1).Select
+'    activesheet.ChartObjects(1).Activate
+'    ActiveChart.PlotArea.Select
+'    ActiveChart.Deselect
+'    ActiveWindow.Visible = False
+'    Range("a1").Select
+    With Sheets("mr chart").ChartObjects(1).Chart.PlotArea
+        .Top = 39
+        .Left = 29
+        .Width = 438
+        .Height = 220
+    End With
+    With Sheets("mr chart").ChartObjects(1).Chart.DrawingObjects("Text 3")
+        .Top = 283
+        .Left = 55
+        .Width = 220
+        .Height = 16.5
+    End With
+    With Sheets("mr chart").ChartObjects(1).Chart.DrawingObjects("Text 4")
+        .Top = 266
+        .Left = 89
+        .Width = 220
+        .Height = 16.5
+    End With
+End If
+'Sheets(mysheet).Select
+End Sub
+'
+' Set up Layout PageSetup
+Sub LayoutPageSetup()
+Attribute LayoutPageSetup.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim mysize As Integer
+
+    If myDontDoFooters = False Then
+        With Sheets("Layout").PageSetup
+            Sheets("Layout").Activate
+                mysize = 30 * 68 / ActiveWindow.Zoom
+                .LeftHeader = ""
+                .RightHeader = ""
+                .CenterHeader = "&" & mysize & " " & Range("LayoutTitle").Value
+                mysize = 10 * 68 / ActiveWindow.Zoom
+                If myDontDoFooters = False Then
+                .CenterFooter = ""
+                .LeftFooter = ""
+                .RightFooter = ""
+                If Range("footdate").Value = True Then .CenterFooter = "&" & mysize & " &D"
+                If Range("footmsg").Value = True Then .RightFooter = "&" & mysize & " " & Range("foottext").Value
+                End If
+                .Zoom = False
+                .FitToPagesWide = 1
+                .FitToPagesTall = 1
+                
+        End With
+    End If
+    
+    If (myprintlayout = 1) Then
+                    Sheets("Layout").PrintOut
+                    myprintlayout = 0
+                End If
+
+End Sub
+
+' Macro - Copy One Chart to the Layout Page and Size it
+' Macro recorded 8/19/94 by Statistical Consulting
+' Alternative for Excel97
+Sub Lay1v8(dbcol, VertNr, PLeft, PTop, PHeight, PWidth)
+Dim mheight, mwidth, msize, mytype, MyChart, mychartname
+        mytype = Range("layouttype").Value
+        If mytype = 1 Then
+            Sheets("I Chart").ChartObjects(1).Chart.ChartArea.Copy
+        Else
+            Sheets("Run Chart").ChartObjects(1).Chart.ChartArea.Copy
+        End If
+        If ActiveSheet.Name <> "Layout" Then Sheets("Layout").Select
+    With ActiveSheet
+        .Paste
+           
+      With .ChartObjects(1)
+        mychartname = .Name
+            With .Chart
+                With .Axes(xlCategory, xlSecondary)
+                    .TickLabelPosition = xlNone
+                    If mytype = 1 Then
+                     .AxisTitle.Delete
+                    End If
+                End With
+                .Axes(xlCategory, xlPrimary).AxisTitle.Delete
+                .Axes(xlValue).AxisTitle.Delete
+            End With '.CHART
+        
+        GetComments
+        
+        Application.Calculation = xlCalculationAutomatic
+        
+        mheight = ActiveSheet.Shapes(mychartname).Height '.Height
+'        mwidth = activesheet.Shapes(mychartname).Width '.Width
+            With .Chart.PlotArea
+    '            .Top = 0.14 * mheight
+    '            .Height = 0.85 * mheight
+    '            .Left = 0.05 * mwidth
+    '            .Width = 0.85 * mwidth
+    '
+    
+                .Top = 0.18 * mheight
+                .Height = 0.81 * mheight
+    '
+    '            .Width = 0.85 * mwidth
+    '            .Left = 0.02 * mwidth
+            End With
+        'Stop
+               ' MsgBox "w=" & .Chart.PlotArea.Width & "  l=" & .Chart.PlotArea.Left & "mwidth =" & mwidth
+
+        ActiveSheet.Shapes(mychartname).Height = PHeight * (0.3 * VertNr + Range("Layout_Line_Density_Preference").Value)
+        ActiveSheet.Shapes(mychartname).Width = PWidth * (0.3 * VertNr + Range("Layout_Line_Density_Preference").Value)
+        .CopyPicture Appearance:=xlPrinter, Format:=xlPicture
+      End With '.CHARTOBJECT
+    .Range("b1").Select
+    .Paste
+    .Shapes(mychartname).Delete
+        With .Shapes(.Shapes.Count)
+            .Top = PTop
+            .Left = PLeft
+            .LockAspectRatio = False
+            .Height = PHeight '.ScaleHeight PHeight / .Height, False
+            .Width = PWidth '.ScaleWidth PWidth / .Width, False
+            .Line.Visible = True
+            'If .Width > Sheets("layout").Columns("A:A").Width Then .Width = 0.98 * .Width
+        End With
+    End With 'ACTIVESHEET
+    Application.ScreenUpdating = False
+End Sub
+'
+' Button_Click Macro - Create Layout
+'
+Sub butCreateLayout()
+    Dim i As Integer
+   ' If myCreateMessage = 0 Then  03-20-01-
+   ' myCreateMessage = 1
+   ' i = MsgBox("Note:  This operation may take a lot of time as the charts are created.  Have patience! (This message will appear only once after BPCHART is opened)", vbInformation + vbOKCancel, ThisWorkbook.Name)
+   ' If i = 2 Then Exit Sub
+   ' End If
+    ActiveDialog.Hide
+    myCreate = 1
+End Sub
+'
+Sub createlayout()
+    Dim MaxN, VertNr, HorNr, dbcol, i, x, Y As Integer
+    Dim myLeft, myTop, myHeight, myWidth, myPgH, myPgW As Single
+    Dim mydata1, DrO, mysheetname
+    Application.ScreenUpdating = False
+    If Application.Calculation = xlManual Then Application.Calculation = xlAutomatic
+    Sheets("Layout").Select
+    ActiveSheet.DrawingObjects.Delete
+    MaxN = Range("number_of_charts").Value
+    If MaxN = 0 Then MaxN = 1
+    Range("A1:I9").Select
+        With Selection
+        .ClearContents
+        .Font.Size = 28
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+        End With
+    'VertNr = Application.Index(Range("LeftTop"), MaxN, 3)
+    'HorNr = Application.Index(Range("LeftTop"), MaxN, 4)
+    VertNr = Range("LeftTop").Cells(MaxN, 3).Value
+    HorNr = Range("LeftTop").Cells(MaxN, 4).Value
+    If Range("layouttype").Value = 3 Then
+        If MaxN < 2 Then MaxN = 2
+        If MaxN > 8 Then MaxN = 8
+        VertNr = MaxN
+        HorNr = MaxN
+    End If
+    With ActiveSheet.PageSetup
+        myPgW = (Application.InchesToPoints(11) - .RightMargin - .LeftMargin)
+        myPgH = (Application.InchesToPoints(8.5) - .TopMargin - .BottomMargin)
+    End With
+    Selection.RowHeight = Int(myPgH / (VertNr - (VertNr = 1)))
+    Selection.ColumnWidth = Int(myPgW / HorNr) / (Range("A:A").Width / Range("A:A").ColumnWidth)
+    Selection.ColumnWidth = Int(myPgW / HorNr) / (Range("A:A").Width / Range("A:A").ColumnWidth)
+    myHeight = Selection.RowHeight
+    If VertNr = 1 Then myHeight = myHeight + myHeight
+    myWidth = Range("a:a").Width
+    Rows(VertNr - (VertNr = 1)).RowHeight = 1 + Rows(1).RowHeight
+    Columns(HorNr + (HorNr = 2) + (HorNr = 3)).ColumnWidth = Columns(HorNr).ColumnWidth + 0.2
+If Range("layouttype").Value = 3 Then
+    If MaxN < 2 Then MaxN = 2
+    Selection.RowHeight = 255
+    'size the width twice - excel won't size right first time = roundoff??
+    Selection.ColumnWidth = 255 * Range("A:A").ColumnWidth / Range("A:A").Width
+    Selection.ColumnWidth = 255 * Range("A:A").ColumnWidth / Range("A:A").Width
+        ActiveWindow.Zoom = 90 * ActiveWindow.Height / (MaxN * 255)
+        Range("a1").Select
+        Range("Xvar") = 1
+        Range("a1").Value = Range("Title1").Value
+        For Y = 2 To MaxN
+        Range("Yvar") = Y
+        For x = 1 To Y - 1
+        Range("Xvar") = x
+    mydata1 = "'" & ThisWorkbook.Name & "'!data1C,'" & ThisWorkbook.Name & "'!data2C"
+    ActiveSheet.ChartObjects.Add(255 * (x - 1) + 1, 255 * (Y - 1) + 1, 255, 255).Select
+    With ActiveChart
+      .ChartWizard Source:=Range(mydata1), Gallery:=xlXYScatter, Format _
+        :=1, PlotBy:=xlColumns, CategoryLabels:=1, SeriesLabels:=0, HasLegend:=2
+        .PlotArea.Interior.ColorIndex = xlNone
+        .Parent.Width = 255
+        With .Axes(xlValue)
+        Call myScale(Range("MinData").Cells(1, 2).Value, Range("MaxData").Cells(1, 2).Value)
+        If Scalemin = Scalemax Then Scalemax = Scalemin + 1
+        .MinimumScale = Scalemin
+        .MaximumScale = Scalemax
+        End With
+        With .Axes(xlCategory)
+            Call myScale(Range("MinData").Cells(1, 1).Value, Range("MaxData").Cells(1, 1).Value)
+             ActiveSheet.ChartObjects(ActiveSheet.ChartObjects.Count).Activate
+            .Select
+            Application.ExecuteExcel4Macro ("scale(" & Scalemin & "," & Scalemax & ",,,,,)")
+            ActiveWindow.Visible = False
+        End With
+        With ActiveSheet.ChartObjects(1)
+        .Chart.Axes(xlValue).TickLabels.Font.Size = 20 * Range("Layout_Line_Density_Preference")
+        .Chart.Axes(xlCategory).TickLabels.Font.Size = 20 * Range("Layout_Line_Density_Preference")
+        .Copy
+        End With
+        'convert to a picture
+        ActiveSheet.PasteSpecial Format:="Picture", Link:=False, DisplayAsIcon:=False
+        Application.CutCopyMode = False
+        'locate and clean up left and width
+            With Selection
+            .Left = 255 * (x - 1)
+            .Top = 255 * (Y - 1)
+            .Width = 255
+            .Height = 255
+            End With
+        ActiveSheet.ChartObjects(1).Delete
+     End With
+        Application.ScreenUpdating = True
+        Application.ScreenUpdating = False
+            Next x
+            Range("A1:I19").Cells(Y, Y).Value = Range("Title2").Value
+            Next Y
+Else
+        ActiveWindow.Zoom = Int(100 * mymin(gapp.UsableWidth / gapp.InchesToPoints(9.5), gapp.UsableHeight / gapp.InchesToPoints(7)))
+        
+ '       StoreComments
+        
+   For i = 1 To MaxN
+        dbcol = Range("Data_on_the_Chart").Cells(i, 1).Value
+        If dbcol = 0 Then dbcol = 1
+        Range("Database_Column").Value = dbcol
+        
+        GetSegmentAndSeasonalData
+        
+        If Range("layouttype").Value = 1 Then
+            mysheetname = "I Chart"
+        Else
+            mysheetname = "Run Chart"
+        End If
+        Update_Axes_and_Comments (mysheetname)
+        myLeft = Range("LeftTop").Cells(i, 1).Value * myWidth
+        myTop = Range("LeftTop").Cells(i, 2) * myHeight
+        Call Lay1v8(dbcol, VertNr, myLeft, myTop, myHeight, myWidth)
+        Application.ScreenUpdating = True
+        Range("a1").Select
+        Application.ScreenUpdating = False
+    Next i
+End If
+    Sheets("layout").Select
+    Range("a1").Select
+    Enter_DB_Column
+End Sub
+'
+' butPrintLayout_Click Macro - Print Layout
+' Note - if myprintlayout = 1 then sheet will be printed by
+' Macro butLayout, which initiated the dialog box
+'
+Sub butPrintLayout()
+Attribute butPrintLayout.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i As Integer
+    i = 6
+    If myCreate = 0 Then
+        i = MsgBox("Note:  Create Layout updates the Layout.  Print Layout prints whatever is on the Layout worksheet.  Changes may have been made since the last time Create Layout was selected. Do you really want to Print the current Layout?", vbYesNo, ThisWorkbook.Name)
+    End If
+    If i = 6 Then myprintlayout = 1
+End Sub
+'
+' activate layout options dialog
+'
+Sub butLayoutOptions()
+Attribute butLayoutOptions.VB_ProcData.VB_Invoke_Func = " \n14"
+    myCreate = 3
+    ActiveDialog.Hide
+End Sub
+'
+Sub butLayoutOptionsOK()
+Attribute butLayoutOptionsOK.VB_ProcData.VB_Invoke_Func = " \n14"
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    Range("foottext").Value = DialogSheets("dlgLayoutOptions").EditBoxes("edtfoot").Text
+    SetFooter
+    myScreenUpdating (True)
+    Application.Cursor = xlDefault
+End Sub
+'
+' Database_Column_Select Macro
+' Macro recorded 9/19/94 by Statistical Consulting
+' activated by drop down on dlgOptions
+'
+Sub Database_Column_Select()
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    'StoreComments (False)
+
+    Call StoreSegmentAndSeasonalData '%%12-26-00+
+    
+    Range("Database_Column").Value = Range("OptDatabase_Column").Value
+    
+    '%%02-05-01+
+    If Application.Calculation <> xlCalculationAutomatic Then Application.Calculation = xlCalculationAutomatic
+    
+    GetSegmentAndSeasonalData
+
+    Range("OptValues").Calculate
+    Range("Dhist").Value = Range("OptValues").Value
+    Calculate
+    Call Enter_DB_Column
+    myScreenUpdating (False)
+    Call Set_dlgOptions_Values
+    
+    If Range("OptHist").Value = 2 Then '%%01-03-01+
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+      DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasonshist]
+     [nseasons] = [nseasonshist]
+    Else
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+      DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasons]
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = "nseasons"
+      If myCurColHasSeasData Then '03-20-01
+      [nseasons] = [nseasonshist]
+      Else
+        If gbytSeasonsDefault = 0 Then
+          Select Case [mo_qtr]
+            Case Is = 1
+              gbytSeasonsDefault = 12
+            Case Is = 3
+              gbytSeasonsDefault = 4
+            Case Else
+              gbytSeasonsDefault = 1
+          End Select
+        End If
+        [nseasons] = gbytSeasonsDefault
+       End If
+    End If
+    Calculate
+
+
+
+    myScreenUpdating (True)
+    Application.Cursor = xlDefault
+    
+    Call ConfigureTrendOptions '%%12-22-00+
+End Sub
+'
+' Set_dlgOptions_Values Macro - Set dlgOptions values
+' Macro recorded 9/9/94 by Statistical Consulting
+'
+Sub Set_dlgOptions_Values()
+Attribute Set_dlgOptions_Values.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim mystring As String
+    Range("myGoal").Value = Range("Goal_").Value
+    Range("AutoYMin").Value = Range("Auto_Y_min").Value
+    Range("AutoYMax").Value = Range("Auto_Y_Max").Value
+    With Sheets("I Chart").ChartObjects("IChart").Chart.Axes(xlValue)
+        Range("ymin").Value = .MinimumScale
+        Range("ymax").Value = .MaximumScale
+    End With
+    Range("OptDatabase_Column").Value = Range("Database_Column").Value
+    Range("OptDBCol").Value = Range("Database_Column").Value
+    Range("OptHistValues").Value = Range("HistValues").Value
+    mystring = "=Database!R" & Format(Range("History").Row) & "C" & Format(2 + Range("Database_Column").Value) & ":R" & Format(Range("History").Row + Range("History").Rows.Count - 1) & "C" & Format(2 + Range("Database_Column").Value)
+    ActiveWorkbook.Names.Add Name:="Dhist", RefersToR1C1:=mystring
+    Range("OptIncInHist").Value = Range("IncInHist").Value
+    With DialogSheets("dlgOptions")
+        .EditBoxes("EBSigma").Text = CStr(Range("HistShat").Value)
+        .EditBoxes("EBXbar").Text = CStr(Range("HistC0").Value)
+        .EditBoxes("EBC1").Text = CStr(Range("HistC1").Value)
+        Range("HistInfo").Value = Format(Date & "; " & Xformat(Range("FirstX").Value) & ", " & Xformat(Range("LastX").Value))
+        Range("OptHistInfo").Value = Range("Hist_Info").Value
+        If IsNumeric(Range("OptHistInfo").Value) Then Range("OptHistInfo").Value = "None"
+        Range("OptXbar").Value = Range("HistC0").Value
+        Range("OptC1").Value = Range("HistC1").Value
+        Range("OptStdev").Value = Range("HistShat").Value
+        If Range("OptStdev").Value = 0 Then Range("OptHistInfo").Value = "None"
+        Range("OptHist").Value = Range("Hist").Value + 1
+        Range("OptBase").Value = Range("Base").Value + 1
+        If [trendtype] > 3 And [trendtype] < 8 Then [optsegcl] = True Else [optsegcl] = False
+        If [trendtype] = 5 Then [optsegsigma] = True Else [optsegsigma] = False
+        If [trendtype] > 7 Then [optseasons] = True Else [optseasons] = False
+      
+        Range("OptTrend").Value = Range("Trendtype").Value + 1
+        If [optseasons] = True Then [opttrend] = [opttrend] - 8
+        If [optsegcl] = True Then [opttrend] = 5
+                
+        Range("OptXbarLabel").Calculate
+        Range("OptRateLabel").Calculate
+        Range("OptValues").Calculate
+        .Labels("LabXbar").Text = CStr(Range("OptXbarLabel").Value)
+        .Labels("LabC1").Text = CStr(Range("OptRateLabel").Value)
+        .Labels("LabHistInfo").Text = CStr(Range("OptHistInfo").Value)
+        If Range("OptHist").Value = 1 Then
+            '%%01-02-01+ the following line was changed so that the copycurrent button
+            '          will only be enabled if step change is not selected
+            .Buttons("butCopyCurrent").Enabled = .Labels("CurSigma").Enabled
+            .Labels("CurSigma").Text = CStr(Range("Current_S_Hat").Value)
+            .Labels("CurXbar").Text = CStr(Range("Current_C0").Value)
+            .Labels("Curc1").Text = CStr(Range("Current_C1").Value)
+            
+            '%%01-03-01+
+            'DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+            'DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasons]
+            'DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = "nseasons"
+        Else
+            .Buttons("butCopyCurrent").Enabled = False
+            .Labels("CurSigma").Text = ""
+            .Labels("CurXbar").Text = ""
+            .Labels("Curc1").Text = ""
+            
+            '%%01-03-01+
+            'DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+            'DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasons]
+            'DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = "nseasons"
+        End If
+    End With
+End Sub
+'
+' dlgOptions_Button3_Click Macro - Cancel
+'
+Sub dlgOptions_Button3_Click()
+    Dim i, c
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    Range("Database_Column").Value = Range("OptDBCol").Value
+    GetSegmentAndSeasonalData
+
+    Range("Dhist").Value = Range("OptHistValues").Value
+    For i = 1 To Range("IncInHist").Cells.Count
+        Set c = Sheets("Database").Columns(2 + Range("Database_Column").Value).Rows(13 + i).Cells(1)
+        If (IsError(Range("optIncInHist").Cells(i)) Or (IsEmpty(c.Value))) Then c.Locked = True Else c.Locked = False
+    Next i
+    Call Update_Axes_and_Comments("I Chart")   '%%12-26-00+ This will set the y axis min & max back to the appropriate values
+    Application.Cursor = xlDefault
+End Sub
+'
+' dlgOptions_butOK_Click Macro
+'
+Sub dlgOptions_butOK_Click()
+Attribute dlgOptions_butOK_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    With DialogSheets("dlgOptions")
+        If IsNumeric(CVar(.EditBoxes("EBSigma").Text)) Then Range("OptStdev") = CSng(.EditBoxes("EBSigma").Text) Else Range("OptStdev") = 0
+        If IsNumeric(CVar(.EditBoxes("EBXbar").Text)) Then Range("OptXbar") = CSng(.EditBoxes("EBXbar").Text) Else Range("OptXbar") = 0
+        If IsNumeric(CVar(.EditBoxes("EBC1").Text)) Then Range("OptC1") = CSng(.EditBoxes("EBC1").Text) Else Range("OptC1") = .EditBoxes("EBC1").Text
+    End With
+    Range("Dhist") = Range("OptValues").Value
+    StoreSegmentAndSeasonalData
+    Application.Cursor = xlDefault
+End Sub
+
+Sub Seasons_Click()
+If Range("OptHist").Value = 2 Then '%%01-02-01+
+   MsgBox "Can't change Trend type while Centerline & Limits Based on: History is Selected", vbOKOnly, Title:=ThisWorkbook.Name
+   [optseasons] = Not [optseasons]
+   Exit Sub
+End If
+
+If [optseasons] = True Then
+  If [optsegcl] = True Then [optsegcl] = False
+End If
+
+Call SetSeasonsDropDown '%%12-22-00+
+Trend_Click
+
+End Sub
+
+Sub ShowSeasonsInfo()
+  If [optseasons] = True Then
+      With DialogSheets("dlgoptions")
+        .Labels("label 55").Visible = True
+        .DropDowns("ddseasons").Visible = True
+      
+        .Labels("LabXbar").Text = "n/a" '%%01-17-01+
+        .Labels("LabC1").Text = "n/a" '%%01-17-01+
+        .EditBoxes("EBXbar").Enabled = False '%%01-17-01+
+        .EditBoxes("EBC1").Enabled = False '%%01-17-01+
+      End With
+  Else
+      With DialogSheets("dlgoptions")
+        .Labels("label 55").Visible = False
+        .DropDowns("ddseasons").Visible = False
+      End With
+  End If
+End Sub
+
+Sub DialogFrame1_Show() '%%12-22-00+
+    If Range("OptHist").Value = 2 Then '%%01-02-01+
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+      DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasonshist]
+   Else
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+      DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasons]
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = "nseasons"
+    End If
+    If myCurColHasSeasData Then
+    [nseasons] = [nseasonshist] '03-20-01
+    End If
+  Call ConfigureTrendOptions
+End Sub
+
+Private Sub SetSeasonsDropDown() '%%12-22-00+
+  DialogSheets("dlgOptions").DropDowns("ddseasons").Enabled = True
+  If gbytSeasonsDefault = 0 Then
+    Select Case [mo_qtr]
+      Case Is = 1
+        gbytSeasonsDefault = 12
+      Case Is = 3
+        gbytSeasonsDefault = 4
+      Case Else
+        gbytSeasonsDefault = 1
+    End Select
+  End If
+  DialogSheets("dlgOptions").DropDowns("ddseasons") = gbytSeasonsDefault
+End Sub
+
+Sub ddSeasons_Click() '%%12-22-00+
+
+  If Range("OptHist").Value = 2 Then '%%01-02-01+
+     MsgBox "Can't change Trend type while Centerline & Limits Based on: History is Selected", vbOKOnly, Title:=ThisWorkbook.Name
+     DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasonshist] '%%01-03-01+
+     Exit Sub
+  End If
+
+  If Range("OptHist").Value <> 2 Then
+    gbytSeasonsDefault = DialogSheets("dlgOptions").DropDowns("ddseasons")
+  End If
+  
+  Trend_Click
+End Sub
+
+Sub segmentcl_click()
+  If [optsegcl] = True Then If [optseasons] = True Then [optseasons] = False
+  Trend_Click
+End Sub
+
+Private Sub EnableHistoryGroup(blnEnable As Boolean) '%%01-02-01+
+  'The following lines were added to disable the History Values area when
+  'step change is selected
+  
+  With DialogSheets("dlgOptions")
+      .GroupBoxes("Group Box 19").Enabled = blnEnable
+      .Labels("Label 35").Enabled = blnEnable
+      .Labels("LabHistInfo").Enabled = blnEnable
+      .Labels("Label 20").Enabled = blnEnable
+      .Labels("LabSigma").Enabled = blnEnable
+      .Labels("LabXbar").Enabled = blnEnable
+      .Labels("LabC1").Enabled = blnEnable
+      .Labels("CurSigma").Enabled = blnEnable
+      .Labels("CurXbar").Enabled = blnEnable
+      .Labels("CurC1").Enabled = blnEnable
+      
+      .Buttons("butAcceptEdits").Enabled = blnEnable
+      .Buttons("butCopyCurrent").Enabled = blnEnable
+      
+      .EditBoxes("EBSigma").Enabled = blnEnable
+      .EditBoxes("EBXbar").Enabled = blnEnable
+      .EditBoxes("EBC1").Enabled = blnEnable
+  End With
+End Sub
+
+Sub ConfigureTrendOptions() '%%12-22-00+
+
+  With DialogSheets("dlgOptions")
+    If .OptionButtons("optTrendCusom") = 1 Then
+      Call EnableHistoryGroup(True) '%%01-02-01+
+      .Buttons("butSetupSegments").Visible = False
+      [optseasons] = False
+      .CheckBoxes("chkSeasonalModel").Enabled = False
+    ElseIf .OptionButtons("optTrendStepChange") = 1 Then
+      Call EnableHistoryGroup(False) '%%01-02-01+
+      .Buttons("butSetupSegments").Visible = True
+      [optseasons] = False
+      .CheckBoxes("chkSeasonalModel").Enabled = False
+    Else
+      Call EnableHistoryGroup(True) '%%01-02-01+
+      .Buttons("butSetupSegments").Visible = False
+      .CheckBoxes("chkSeasonalModel").Enabled = True
+    End If
+
+    Call ShowSeasonsInfo
+
+  End With
+End Sub
+'
+' Trend_Click Macro - Select Trend
+'
+Sub Trend_Click(Optional CalledFromSegments) '%%01-03-01+ added the optional parameter
+Attribute Trend_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i As Integer
+    Application.Cursor = xlWait
+    If Range("OptHist").Value = 2 And IsMissing(CalledFromSegments) Then
+        i = MsgBox("Can't change Trend type while Centerline & Limits Based on: History is Selected", vbOKOnly, Title:=ThisWorkbook.Name)
+        If [trendtype] > 3 And [trendtype] < 8 Then [optsegcl] = True Else [optsegcl] = False
+        If [trendtype] = 5 Then [optsegsigma] = True Else [optsegsigma] = False
+        If [trendtype] > 7 Then [optseasons] = True Else [optseasons] = False
+        
+        Range("OptTrend").Value = Range("Trendtype").Value + 1
+        If [optseasons] = True Then [opttrend] = [opttrend] - 8
+        If [optsegcl] = True Then [opttrend] = 5
+    Else
+        '%%01-17-01- If [opttrend] <> 5 Then [optsegsigma] = False '%%01-08-01+ added to clear things up with step change and custom trends
+        Call ConfigureTrendOptions '%%12-22-00+
+        myScreenUpdating (False)
+        Range("OptValues").Calculate
+        Range("Dhist").Value = Range("OptValues").Value
+        Calculate
+        
+        '%%02-07-01+
+        '%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        If ([trendtype] > 7) Or ([opttrend] = 3) Then
+          Worksheets("I Chart").Cells(29, 9).Formula = "=IF(AND(Trendtype>7,NSeasons>COUNT(Data))," & """" & _
+              "Number of Seasons exceeds number of data points!" & """" & _
+              ",IF(OR(Trendtype=2,Trendtype=10),IF(AND(Hist=0,MIN(Data)<=0)," & """" & _
+              "Growth model excludes Non-positive data!" & """" & ",""""),""""))"
+        Else
+          Worksheets("I Chart").Cells(29, 9).Formula = ""
+        End If
+        '%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        
+        Calculate
+        With DialogSheets("dlgOptions")
+            .Labels("LabXbar").Text = CStr(Range("OptXbarLabel").Value)
+            .Labels("LabC1").Text = CStr(Range("OptRateLabel").Value)
+            If Range("OptHist").Value = 1 Then
+                '%%01-02-01+ the following line was changed so that the copycurrent button
+                '          will only be enabled if step change is not selected
+                .Buttons("butCopyCurrent").Enabled = .Labels("CurSigma").Enabled
+                .Labels("CurSigma").Text = CStr(Range("Current_S_Hat").Value)
+                .Labels("CurXbar").Text = CStr(Range("Current_C0").Value)
+                .Labels("Curc1").Text = CStr(Range("Current_C1").Value)
+            Else
+                .Buttons("butCopyCurrent").Enabled = False
+                .Labels("CurSigma").Text = ""
+                .Labels("CurXbar").Text = ""
+                .Labels("Curc1").Text = ""
+            End If
+        End With
+        Enter_DB_Column
+    End If
+    Call ShowSeasonsInfo '%%01-17-01 moved here since it is called so frequently
+    Application.Cursor = xlDefault
+End Sub
+'
+' Macro - Copy Current to History
+'
+Sub butCopyCurrent()
+    Dim c, i
+    Dim bytTrend As Byte
+    Dim bytcounter As Byte
+    
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    
+    '%%01-08-01 to copy current segment info (moved here from the user form)
+    For bytcounter = 1 To 5
+      [segxbarmanual].Cells(bytcounter) = [segmentxbardata].Cells(bytcounter)
+      [segsigmamanual].Cells(bytcounter) = [segmentshatdata].Cells(bytcounter)
+    Next bytcounter
+  
+    Worksheets("Make Layout").Calculate
+    StoreSegmentAndSeasonalData
+
+    GetSegmentAndSeasonalData
+    Worksheets("Make Layout").Calculate
+
+    With DialogSheets("dlgOptions")
+        .EditBoxes("EBSigma").Text = CStr(Range("Current_S_Hat").Value)
+        .EditBoxes("EBXbar").Text = CStr(Range("Current_C0").Value)
+        .EditBoxes("EBC1").Text = CStr(Range("Current_C1").Value)
+    End With
+    myCopyCurrent = 1
+    Range("HistInfo").Value = Format(Date & "; " & Xformat(Range("FirstX").Value) & ", " & Xformat(Range("LastX").Value))
+    For i = 1 To Range("IncInHist").Cells.Count
+        Set c = Sheets("Database").Columns(2 + Range("Database_Column").Value).Rows(13 + i).Cells(1)
+        If ((IsNumeric(c.Value) And Not IsEmpty(c.Value)) And (i + 15 >= Range("First_Row").Value And i + 15 <= Range("Last_Row").Value)) Then
+        c.Locked = False
+        c.Font.Bold = True
+        Else
+        c.Locked = True
+        c.Font.Bold = False
+        End If
+    Next i
+    
+    '%%01-08-01+ store the historical trend type and the method of variation as comments
+    With [DBRef].Offset(8, [Database_Column].Value)
+      .ClearComments
+      .AddComment
+      .Comment.Visible = False
+      .Comment.Text Text:="Base=" & [optbase] & "|Trend=" & Range("Trendtype").Value
+    End With
+    
+    Call EB_Change(True) '%%01-08-01+ added the optional paramater
+    Call ShowSeasonsInfo '%%01-17-01+
+    Application.Cursor = xlDefault
+End Sub
+'
+'  Select History,Base
+'
+Sub Select_History_or_Base_Click()
+Attribute Select_History_or_Base_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i, c
+    Dim bytBase   As Byte
+    Dim bytTrend  As Byte
+    Dim blnSeasons As Boolean
+    Dim blnSegcl  As Boolean
+    Dim strMsg1   As String
+    Dim strMsg2   As String
+    
+    '%%01-08-01+
+    '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    If Range("OptHist").Value = 2 Then
+      If Not ([DBRef].Offset(8, [Database_Column].Value).Comment Is Nothing) Then
+        With [DBRef].Offset(8, [Database_Column].Value)
+          bytBase = Mid$(.Comment.Text, 6, 1)
+          bytTrend = Mid$(.Comment.Text, 14, Len(.Comment.Text) - 12)
+        End With
+        
+        If (bytBase <> [optbase]) Then
+          strMsg1 = "Method of Variation Estimate"
+          strMsg2 = IIf(bytBase = 2, "Average Moving Range", "Median Moving Range")
+        ElseIf (bytTrend <> [trendtype]) Then
+  
+          If (Not (bytTrend = 4 And [trendtype] = 5)) And (Not (bytTrend = 5 And [trendtype] = 4)) Then
+            strMsg1 = "Type of Trend"
+            Select Case bytTrend
+              Case Is = 0
+                strMsg2 = "None (Without Seasonal)"
+              Case Is = 1
+                strMsg2 = "Linear (Without Seasonal)"
+              Case Is = 2
+                strMsg2 = "Growth (Without Seasonal)"
+              Case Is = 3
+                strMsg2 = "Custom"
+              Case Is = 4, 5
+                strMsg2 = "Step Change"
+              Case Is = 8
+                strMsg2 = "None (With Seasonal)"
+              Case Is = 9
+                strMsg2 = "Linear (With Seasonal)"
+              Case Is = 10
+                strMsg2 = "Growth (With Seasonal)"
+            End Select
+          End If
+        End If
+      End If
+      
+      If strMsg1 <> "" Then
+        MsgBox "History was saved with a different " & strMsg1 & " than the current settings." & vbCrLf & vbCrLf _
+            & "Change the " & strMsg1 & " to " & strMsg2 & " before selecting history, or " & vbCrLf _
+            & "use the Copy Current To History and Accept History Edits buttons to set the " _
+            & "history values.", vbInformation, Title:=ThisWorkbook.Name
+        If DialogSheets("dlgOptions").OptionButtons("optCurrentData") = 1 Then
+          DialogSheets("dlgOptions").OptionButtons("optHistoryData") = 1
+        Else
+          DialogSheets("dlgOptions").OptionButtons("optCurrentData") = 1
+        End If
+        Exit Sub
+      End If
+    End If
+    '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    Range("OptValues").Calculate
+    Range("Dhist").Value = Range("OptValues").Value
+    
+    If Range("OptHist").Value = 2 Then '%%01-02-01+
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+      DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasonshist]
+     [nseasons] = [nseasonshist]
+    Else
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = ""
+      DialogSheets("dlgOptions").DropDowns("ddseasons") = [nseasons]
+      DialogSheets("dlgOptions").DropDowns("ddseasons").LinkedCell = "nseasons"
+      If myCurColHasSeasData Then '03-20-01
+      [nseasons] = [nseasonshist]
+      Else
+        If gbytSeasonsDefault = 0 Then
+          Select Case [mo_qtr]
+            Case Is = 1
+              gbytSeasonsDefault = 12
+            Case Is = 3
+              gbytSeasonsDefault = 4
+            Case Else
+              gbytSeasonsDefault = 1
+          End Select
+        End If
+      [nseasons] = gbytSeasonsDefault
+      End If
+    End If
+    
+    Calculate
+    With DialogSheets("dlgOptions")
+        If Range("OptHist").Value = 1 Then
+            '%%01-02-01+ the following line was changed so that the copycurrent button
+                '          will only be enabled if step change is not selected
+            .Buttons("butCopyCurrent").Enabled = .Labels("CurSigma").Enabled
+            .Labels("CurSigma").Text = CStr(Range("Current_S_Hat").Value)
+            .Labels("CurXbar").Text = CStr(Range("Current_C0").Value)
+            .Labels("Curc1").Text = CStr(Range("Current_C1").Value)
+            For i = 1 To Range("IncInHist").Count
+                Sheets("Database").Columns(2 + Range("Database_Column").Value).Rows(13 + i).Locked = True
+            Next i
+        Else
+            .Buttons("butCopyCurrent").Enabled = False
+            .Labels("CurSigma").Text = ""
+            .Labels("CurXbar").Text = ""
+            .Labels("Curc1").Text = ""
+            For i = 1 To Range("IncInHist").Count
+                Set c = Sheets("Database").Columns(2 + Range("Database_Column").Value).Rows(13 + i).Cells(1)
+                If (IsError(Range("optIncInHist").Cells(i)) Or (IsEmpty(c.Value))) Then c.Locked = True Else c.Locked = False
+            Next i
+        End If
+        Calculate
+    End With
+    Enter_DB_Column
+    
+    Application.Cursor = xlDefault
+End Sub
+'
+'  Select Base
+'
+Sub Base_Click()
+Attribute Base_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i As Integer
+    Application.Cursor = xlWait
+    If Range("OptHist") = 2 Then
+        i = MsgBox("Can't change Method of Variation Estimate while Centerline & Limits Based on: History is Selected", vbOKOnly, Title:=ThisWorkbook.Name)
+        '%%12-22-00+ The following code changes the Method Of Variation Estimate back to what it was if
+        '            user was not allowed to change it
+        If DialogSheets("dlgOptions").OptionButtons("optMedianMovingRange") = 1 Then '%%12-22-00+
+          DialogSheets("dlgOptions").OptionButtons("optAverageMovingRange") = 1 '%%12-22-00+
+        Else '%%12-22-00+
+          DialogSheets("dlgOptions").OptionButtons("optMedianMovingRange") = 1 '%%12-22-00+
+        End If '%%12-22-00+
+    Else
+        Select_History_or_Base_Click
+    End If
+    Application.Cursor = xlDefault
+End Sub
+Sub butOptions_Click()
+Do
+If mYRAction = 3 Then
+    Setup_Segments
+    mYRAction = 0
+End If
+If mYRAction = 99 Then
+    mYRAction = 0
+    Exit Do
+End If
+Options
+Loop
+End Sub
+'
+' Options Macro
+' Macro recorded 9/13/94 by Statistical Consulting
+'
+Sub Options()
+Attribute Options.VB_ProcData.VB_Invoke_Func = " \n14"
+    Application.Cursor = xlWait
+    Application.Calculation = xlManual
+    Set_dlgOptions_Values
+    Do
+        mXRAction = 0
+        mYRAction = 0
+        With DialogSheets("dlgOptions")
+        Application.Cursor = xlDefault
+            .Show
+            If mXRAction = 1 Then
+                butXRange_Click
+                Application.Cursor = xlWait
+                    If Range("OptHist").Value = 1 Then
+                      '%%01-02-01+ the following line was changed so that the copycurrent button
+                      '          will only be enabled if step change is not selected
+                      .Buttons("butCopyCurrent").Enabled = .Labels("CurSigma").Enabled
+                      .Labels("CurSigma").Text = CStr(Range("Current_S_Hat").Value)
+                      .Labels("CurXbar").Text = CStr(Range("Current_C0").Value)
+                      .Labels("Curc1").Text = CStr(Range("Current_C1").Value)
+                    Else
+                      .Buttons("butCopyCurrent").Enabled = False
+                      .Labels("CurSigma").Text = ""
+                      .Labels("CurXbar").Text = ""
+                      .Labels("Curc1").Text = ""
+                    End If
+                Application.Cursor = xlDefault
+            ElseIf mYRAction = 1 Then
+                YRange
+            ElseIf mYRAction = 2 Then
+                Goal
+            ElseIf mYRAction = 3 Then
+                myScreenUpdating (False)
+                Exit Do
+            ElseIf mYRAction = 4 Then
+                Structure
+            Else
+                myScreenUpdating (False)
+                mYRAction = 99
+                Exit Do
+            End If
+        End With
+    Loop
+    If mYRAction <> 3 Then
+        If Application.Calculation = xlManual Then Application.Calculation = xlAutomatic
+        myScreenUpdating (True)
+    End If
+End Sub
+'
+' EB_Change Macro
+'
+Sub EB_Change(Optional FromCopyCurrent) '%%01-08-01+ added the optional paramater
+Attribute EB_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i
+    Dim bytBase           As Byte
+    Dim bytTrend          As Byte
+    Dim blnSeasons        As Boolean
+    Dim blnSegcl          As Boolean
+    Dim blnDoNotStore     As Boolean
+    Dim dblEbsigma        As Double
+    
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+
+    
+    '%%02-7-01+
+    '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    'If the user has clicked accept history edits on the options dialog, then we
+    'need to check if the trendtype is different than the historical trendtype.
+    'If different and current is seasonal, then give the user 3 options...use the
+    'historical seasonal values, use the current seasonal values, cancel.
+    
+    'if the trendtype is seasonal and no history seasonal data is set yet...
+    If Not myCurColHasSeasData Then  '03-20-01
+        StoreSegmentAndSeasonalData
+        GetSegmentAndSeasonalData
+    End If
+    
+    If IsMissing(FromCopyCurrent) Then
+      If Range("OptHist").Value = 1 Then
+        If [optseasons] Then
+          If Not ([DBRef].Offset(8, [Database_Column].Value).Comment Is Nothing) Then
+            With [DBRef].Offset(8, [Database_Column].Value)
+              bytTrend = Mid$(.Comment.Text, 14, Len(.Comment.Text) - 12)
+            End With
+ 
+            If Range("OptTrend").Value <> (IIf(bytTrend > 7, bytTrend - 8, bytTrend) + 1) Then
+              myScreenUpdating (True)
+              Application.Cursor = xlDefault
+              Select Case MsgBox("The historical seasonal model was different than the current model." & vbCrLf _
+                  & vbCrLf & "Using the calculations from the historical seasonal model, which were" & vbCrLf _
+                  & "calculated based on a different trend type, with the current model and" & vbCrLf _
+                  & "history edits could cause undesired results.  Would you still like to" & vbCrLf _
+                  & "use the historical calculations with the edits you have made?" & vbCrLf & vbCrLf _
+                  & "Note:" & vbTab & "Yes = Use the historical calculations with the history edits." & vbCrLf _
+                  & vbTab & "No = Use the current calculations with the history edits." & vbCrLf _
+                  & vbTab & "Cancel = Cancel the operation entirely.", vbQuestion + vbYesNoCancel + vbDefaultButton2, Title:=ThisWorkbook.Name)
+                Case Is = vbYes
+                  blnDoNotStore = True
+                Case Is = vbNo
+                  dblEbsigma = IIf(IsNumeric(DialogSheets("dlgOptions").EditBoxes("EBSigma").Text), DialogSheets("dlgOptions").EditBoxes("EBSigma").Text, 0)
+                  Call butCopyCurrent
+                  DialogSheets("dlgOptions").EditBoxes("EBSigma").Text = CStr(dblEbsigma)
+                  Call EB_Change(True)
+                  Exit Sub
+                Case Is = vbCancel
+                  Exit Sub
+              End Select
+            End If
+          End If
+        End If
+      End If
+    End If
+    
+    If Not blnDoNotStore Then
+      'Store the historical trend type and the method of variation as comments
+      With [DBRef].Offset(8, [Database_Column].Value)
+        .ClearComments
+        .AddComment
+        .Comment.Visible = False
+        .Comment.Text Text:="Base=" & [optbase] & "|Trend=" & Range("Trendtype").Value
+      End With
+    End If
+    '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+    
+    
+    With DialogSheets("dlgOptions")
+        If myCopyCurrent = 0 Then
+            Range("HistInfo").Value = Format(Date & "; by Manual Entry")
+            For i = 1 To Range("IncInHist").Cells.Count 'clear history markers
+                Sheets("Database").Columns(2 + Range("Database_Column").Value).Cells(i + 13).Locked = True
+                Sheets("Database").Columns(2 + Range("Database_Column").Value).Cells(i + 13).Font.Bold = False
+            Next i
+        End If
+        myCopyCurrent = 0
+        Range("OptHistInfo") = Range("HistInfo").Value
+        Range("OptIncInHist").Value = Range("IncInHist").Value
+        If IsNumeric(CVar(.EditBoxes("EBSigma").Text)) Then Range("OptStdev") = CSng(.EditBoxes("EBSigma").Text) Else Range("OptStdev") = 0
+        If IsNumeric(CVar(.EditBoxes("EBXbar").Text)) Then Range("OptXbar") = CSng(.EditBoxes("EBXbar").Text) Else Range("OptXbar") = 0
+        If IsNumeric(CVar(.EditBoxes("EBC1").Text)) Then Range("OptC1") = CSng(.EditBoxes("EBC1").Text) Else Range("OptC1") = .EditBoxes("EBC1").Text
+        Range("OptHist") = 2
+        Range("OptValues").Calculate
+        Range("Dhist").Value = Range("OptValues").Value
+        Calculate
+        .Labels("LabHistInfo").Text = Range("OptHistInfo").Value
+        If Range("OptHist").Value = 1 Then
+            '%%01-02-01+ the following line was changed so that the copycurrent button
+            '          will only be enabled if step change is not selected
+            .Buttons("butCopyCurrent").Enabled = .Labels("CurSigma").Enabled
+            .Labels("CurSigma").Text = CStr(Range("Current_S_Hat").Value)
+            .Labels("CurXbar").Text = CStr(Range("Current_C0").Value)
+            .Labels("Curc1").Text = CStr(Range("Current_C1").Value)
+        Else
+            .Buttons("butCopyCurrent").Enabled = False
+            .Labels("CurSigma").Text = ""
+            .Labels("CurXbar").Text = ""
+            .Labels("Curc1").Text = ""
+        End If
+    End With
+    Calculate
+    Enter_DB_Column
+    Application.Cursor = xlDefault
+End Sub
+'
+' Save Database Macro
+' Macro recorded 10/30/94 by Statistical Consulting
+'
+Sub butSaveDatabase()
+Attribute butSaveDatabase.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i As Integer, myCurrentSheet As Variant, myFileIsNew As Boolean
+    Set myCurrentSheet = ActiveSheet
+    myFileIsNew = False
+    'StoreComments (False)
+        If InStr(1, Application.OperatingSystem, "mac", 1) > 0 Then
+    myfilename = Application.GetSaveAsFilename(initialFilename:=myfilename, _
+     Title:="Save Only Database Sheet")
+        Else
+    myfilename = Application.GetSaveAsFilename(initialFilename:=myfilename, _
+     Title:="Save Only Database Sheet", filefilter:="Microsoft Excel Workbook (*.xls),*.xls, All files (*.*),*.*")
+        End If
+            
+    If (myfilename <> False) Then
+        Application.Cursor = xlWait
+        myScreenUpdating (False)
+        Sheets("Database").Select
+        Prepare_for_Save
+        On Error GoTo NoFile
+        myExit = 9876
+        Workbooks.Open filename:=myfilename
+        Sheets(1).Select
+        If Range("b3").Value <> "Auto Y Max" Then
+            i = MsgBox("The first worksheet in the file you specified does not look like a BPChart database worksheet. Are you sure you want to save the data in this file?  If you answer Yes, the BPChart Database worksheet will be copied and will replace the first worksheet in this file.", vbYesNo + vbDefaultButton2, Title:=ThisWorkbook.Name)
+            If i <> 6 Then
+            ' note i=6 means yes
+                i = MsgBox(Error(Err) & " The Database worksheet has not been saved.", vbOKOnly, Title:=ThisWorkbook.Name)
+                GoTo Close_it
+            End If
+        End If
+        ThisWorkbook.Worksheets("Database").Cells.Copy             'ASV 5/21/98
+        Cells.PasteSpecial Paste:=xlAll
+        Cells.PasteSpecial Paste:=xlNotes
+        Range("c14").Select
+        Application.CutCopyMode = False
+        On Error GoTo ErrorRoutine
+       
+        If myFileIsNew Then
+            ActiveWorkbook.SaveAs filename:=myfilename, FileFormat:=xlNormal
+        Else
+            ActiveWorkbook.Save
+        End If
+Close_it:
+        On Error GoTo 0
+        ActiveWindow.Close savechanges:=False
+        myCurrentSheet.Select
+        modifyMenus
+        myScreenUpdating (True)
+        Application.Cursor = xlDefault
+    End If
+    Exit Sub
+ErrorRoutine:
+    i = MsgBox(Error(Err) & " The Database worksheet has not been saved.", vbOKOnly, Title:=ThisWorkbook.Name)
+    Resume Next
+NoFile:
+    On Error GoTo ErrorRoutine
+    Workbooks.Add xlWorksheet
+    Range("b3").Value = "Auto Y Max"
+    myFileIsNew = True
+    
+    Resume Next
+End Sub
+'
+' prep for save
+' sets up footer and parameters information to keep with database
+'
+Sub Prepare_for_Save()
+Attribute Prepare_for_Save.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i
+ ' if foottext was changed, then keep what was entered; otherwise default to filename
+        If shortname(myOldFooter) = shortname(Range("foottext").Value) Then
+            Range("foottext").Value = myfilename
+            myOldFooter = myfilename
+            SetFooter
+        End If
+        Calculate
+' set up layout data
+    For i = 1 To 10
+      Range("Database!a2:a11").Cells(i).Value = Range("LayoutData").Cells(i).Value
+    Next i
+    For i = 11 To 100
+      Range("database!aa1:dz1").Cells(i).NoteText (Range("LayoutData").Cells(i))
+    Next i
+    ' if no layout saved in first 3 places, then keep the current one in place #1
+    If Range("Database!a2").Value = "" And Range("Database!a3").Value = "" And Range("Database!a4").Value = "" Then Range("Database!a2").Value = Range("LayoutPacked").Value
+    ' save all other parameters
+    Range("a1").NoteText Range("ParametersPacked")
+    packshowdata
+End Sub
+'
+' find short file name
+'
+Function shortname(filename)
+Attribute shortname.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim n, pos
+shortname = filename
+For pos = 1 To Len(filename)
+n = InStr(pos, filename, "\")
+    If n = 0 Then
+        If pos > 1 Then shortname = Mid(filename, pos)
+    Exit Function
+    End If
+Next pos
+End Function
+'
+' Open Previously Saved Database Macro
+' Macro recorded 10/30/94 by Statistical Consulting
+'
+Sub butOpenDatabase()
+Attribute butOpenDatabase.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim mycurrentbook2, filetext As String
+    Dim namName  As Name
+    Dim blnFound As Boolean
+    
+    If Left(Application.OperatingSystem, 3) = "Mac" Then
+        myfilename = Application.GetOpenFilename(Title:="Load Database Sheet")
+    Else
+        myfilename = Application.GetOpenFilename(Title:="Load Database Sheet") ', _
+        ' Filefilter:="Excel 5.0 Workbook (*.xls),*.xls")
+    End If
+    If (myfilename = False) Then
+        myfilename = "TEMP.XLS"
+    Else
+        myScreenUpdating (False)
+        Application.Calculation = xlManual
+        Sheets("Database").Select
+        Cells.ClearContents
+        myExit = 9876 ' force thisworkbook deactivate to do nothing
+        Workbooks.Open filename:=myfilename
+        Sheets(1).Cells.Copy
+        mycurrentbook2 = Application.ActiveWorkbook.Name
+        ThisWorkbook.Activate
+        Cells.PasteSpecial Paste:=xlAll
+        Cells.PasteSpecial Paste:=xlNotes
+        myExit = 9876 ' force thisworkbook deactivate to do nothing
+        Windows(mycurrentbook2).Activate
+        Application.CutCopyMode = False
+        ActiveWorkbook.Close
+        myGaveTooManyWarning = False '03-20-01
+        SetupOptions
+        
+        '%%02-12-01+
+        '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        'Range("FirstData").Select '%%02-12-01-
+        For Each namName In ActiveWorkbook.Names
+          If namName = "FirstData" Then
+            Names("FirstData").Delete
+          ElseIf namName = "FirstXValue" Then
+            Names("FirstXValue").Delete
+          End If
+        Next namName
+        '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    End If
+End Sub
+'
+' Quest calls this subroutine:
+'
+Sub DBChanged()
+Attribute DBChanged.VB_ProcData.VB_Invoke_Func = " \n14"
+myfilename = "BPChart |fffd| 3M"
+SetupOptions
+Sheets("I Chart").Select
+Enter_DB_Column
+End Sub
+'
+Sub SetupOptions()
+Attribute SetupOptions.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim i, myformat, mytext
+        ThisWorkbook.Activate
+        myScreenUpdating (False)
+        Application.Calculation = xlManual
+        Sheets("database").Select
+        myformat = Range("b14").NumberFormat
+        Range("Parameters").Value = Range("ParametersDefault").Value
+        Range("foottext") = myfilename
+        'note: detect version prior to 2.0
+        If Range("b2").Value = "Hist Info" Then
+            Range("LayoutCurrent").Value = Range("a2:a19").Value
+                For i = 1 To 16
+                If Not (IsNumeric(Range("Data_on_the_Chart").Cells(i).Value)) Then
+                Range("Data_on_the_Chart").Cells(i).Value = 0
+                End If
+                Next i
+            Range("a2:a12").ClearContents
+            Range("a13:a19").Clear
+            Range("layouttype").Value = 1
+            Calculate
+            Range("a2").Value = Range("LayoutPacked").Value
+        End If
+        'detect version 2.2 and restore parameters
+        DatabaseChanged
+        myScreenUpdating (False)
+        Application.Calculation = xlManual
+        Sheets("database").Select
+        If (Val(Right(Range("b2"), 4)) >= 2 Or Val(Right(Range("b2"), 5)) = 2 Or Range("b1") = "Quest") Then
+            'set up layout data for 100 layouts
+            For i = 1 To 10
+            Range("LayoutData").Cells(i).Value = Range("Database!a2:a11").Cells(i).Value
+            Next i
+            ' note an interim release of version 2.20a had bogus notes in database cells ak1..dv1
+            ' if so, ignore those notes
+            If Range("Database!aa1:dz1").Cells(11).NoteText <> "abcd1" Then
+            ' if not, then the notes contain layout data
+                For i = 11 To 100
+                mytext = Range("Database!aa1:dz1").Cells(i).NoteText
+                    If mytext > "" Then
+                        If mytext = "0050010010010010010000000000000000000000000000000001abc" Then 'another interim bug
+                        Range("LayoutData").Cells(i).Value = ""
+                        Else
+                        Range("LayoutData").Cells(i).Value = mytext
+                        End If
+                    End If
+                Next i
+            End If
+            If Len(Range("a1").NoteText) > 0 Then ' for 2.20 or newer only
+                UnpackShowdata
+                Range("ParametersRetrieved") = Range("a1").NoteText
+                Calculate
+                Range("Parameters").Value = Range("Parameters_to_Paste").Value
+            End If
+        End If
+        XRange_Activate
+        i = 0
+        If Sheets("Database").Range("b1").Value = "Quest" Then i = 1
+        Range("Spl_Labels").Copy
+        Range("Spl_Labels_2").Select
+        Sheets("Database").Paste
+        If i = 1 Then Sheets("Database").Range("b1").Value = "Quest"
+        Range("2:2").Copy
+        Range("1:1").PasteSpecial Paste:=xlFormats
+        Range("B:B").NumberFormat = myformat
+'        Range("FirstData").Select
+        Range("Database_Column").Value = 1
+        GetSegmentAndSeasonalData
+
+        Calculate
+        Range("LayoutCurrent").Value = Range("LayoutParsed").Value
+        myLastSheet = "load"   'force setup - get scrollbars even if load was from another sheet
+        If shortname(Range("foottext").Value) = shortname(myfilename) Then
+            Range("foottext").Value = myfilename
+            myOldFooter = myfilename
+        End If
+        SetFooter
+        DatabaseSetup
+        myScreenUpdating (True)
+End Sub
+'
+' but Goal_Click
+'
+Sub butGoalClick()
+Attribute butGoalClick.VB_ProcData.VB_Invoke_Func = " \n14"
+    mYRAction = 2
+End Sub
+'
+Sub Goal()
+Attribute Goal.VB_ProcData.VB_Invoke_Func = " \n14"
+    With DialogSheets("dlgGoal")
+        .EditBoxes("edtGoal").Text = CStr(Range("myGoal").Value)
+        .Show
+    End With
+End Sub
+'
+' put focus on the edit box - assigned to dialog frame
+Sub goalfocus()
+Attribute goalfocus.VB_ProcData.VB_Invoke_Func = " \n14"
+ActiveDialog.Focus = ActiveDialog.EditBoxes("edtGoal").Name
+End Sub
+'
+'  but GoalOK
+'
+Sub butGoalOK()
+Attribute butGoalOK.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim myvalue
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    With DialogSheets("dlgGoal").EditBoxes("edtGoal") '%%03-16-01+
+      myvalue = IIf(.Text = "", "", myCValue(.Text)) '%%03-16-01+
+    End With '%%03-16-01+
+    Range("myGoal").Value = myvalue
+    Range("DBRef").Offset(-1, Range("Database_Column").Value).Value = myvalue
+    Calculate
+    Enter_DB_Column
+    myScreenUpdating (True)
+    Application.Cursor = xlDefault
+End Sub
+'
+' butYRange_Click Macro on dlgOptions
+'
+Sub butYRange_Click()
+Attribute butYRange_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    mYRAction = 1
+End Sub
+'
+Sub YRange()
+Attribute YRange.VB_ProcData.VB_Invoke_Func = " \n14"
+    With DialogSheets("dlgYRange")
+        .EditBoxes("edtYMin").Text = CStr(Range("ymin").Value)
+        .EditBoxes("edtYMax").Text = CStr(Range("ymax").Value)
+       ' myScreenUpdating (False) '%%03-16-01-
+        .Show
+       ' myScreenUpdating (True)'%%03-16-01-
+    End With
+End Sub
+'
+' butYOK_Click Macro
+'
+Sub butYOK_Click()
+Attribute butYOK_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    'StoreComments (False)
+    Dim i As Integer, myvalue
+    myvalue = myCValue(DialogSheets("dlgYRange").EditBoxes("edtYMin").Text)
+    Range("ymin").Value = myvalue
+    myvalue = myCValue(DialogSheets("dlgYRange").EditBoxes("edtYMax").Text)
+    Range("ymax").Value = myvalue
+    
+    With Sheets("I Chart").ChartObjects("IChart").Chart.Axes(xlValue)
+        If (Range("ymin").Value >= Range("ymax").Value) Then
+                i = _
+            MsgBox("Y Axis Maximum must be greater than Minimum", vbOKOnly, Title:=ThisWorkbook.Name)
+        Else
+            myChartmin = Range("Chartmin").Value
+            myChartmax = Range("Chartmax").Value
+            If (Range("AutoYMin").Value = False) Then myChartmin = Range("ymin").Value
+            If (Range("AutoYMax").Value = False) Then myChartmax = Range("ymax").Value
+            Call myScale(myChartmin, myChartmax)
+            .MaximumScaleIsAuto = True
+            .MajorUnitIsAuto = True
+            .MinimumScaleIsAuto = Range("AutoYMin").Value
+            If (.MinimumScaleIsAuto = False) Then
+                .MinimumScale = Range("ymin").Value
+            Else
+                .MinimumScale = Scalemin
+            End If
+            .MaximumScaleIsAuto = Range("AutoYMax").Value
+            If (.MaximumScaleIsAuto = False) Then
+                .MaximumScale = Range("ymax").Value
+            Else
+                .MaximumScale = Scalemax
+               If (Range("AutoYMin").Value = True) Then .MajorUnit = MajorUnit
+            End If
+            Range("ymin").Value = .MinimumScale
+            Range("ymax").Value = .MaximumScale
+            DialogSheets("dlgYRange").Hide
+        End If
+    End With
+    GetComments
+    Application.Calculation = xlAutomatic
+    myScreenUpdating (True)
+    Application.Cursor = xlDefault
+End Sub
+'
+' edtYMin_Change Macro
+'
+Sub edtYMin_Change()
+Attribute edtYMin_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+    Range("AutoYMin").Value = False
+End Sub
+'
+' edtYMax_Change Macro
+'
+Sub edtYMax_Change()
+Attribute edtYMax_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+    Range("AutoYMax").Value = False
+End Sub
+'
+' Database Column Select Macro
+'
+Sub butddSelect()
+Attribute butddSelect.VB_ProcData.VB_Invoke_Func = " \n14"
+    Application.Calculation = xlManual
+    With DialogSheets("dlgSelectDBColumn")
+        .ListBoxes("lbDBColumn").ListIndex = Range("Database_Column")
+        .Show
+    End With
+    Application.Cursor = xlWait
+    myScreenUpdating (False)
+    'StoreComments (False)
+    Range("Database_Column").Value = Range("Database_Column_1").Value
+
+    If Application.Calculation = xlManual Then Application.Calculation = xlAutomatic
+    GetSegmentAndSeasonalData
+    Enter_DB_Column
+    Application.Cursor = xlDefault
+End Sub
+'
+Function Xformat(x) As String
+Attribute Xformat.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim myformat As String
+    myformat = Range("FirstXValue").NumberFormat
+    If myformat = "General" Then myformat = "0"
+    Xformat = Format(x, myformat)
+End Function
+
+'
+Function myScale(ymin, ymax)
+Attribute myScale.VB_ProcData.VB_Invoke_Func = " \n14"
+    Scalemin = ScaleMin1(ScaleMin1(ymin - (ymax - ymin) / 40, ymax), ymax + (ymax - ymin) / 40)
+End Function
+'
+Function ScaleMin1(ymin, ymax)
+Attribute ScaleMin1.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim x, Y, z, w, t, S
+    If ymin = ymax Then
+        x = 0.8 * Abs(ymin)
+        If x = 0 Then x = 0.8
+        ymax = ymin + x
+        ymin = ymin - x
+    End If
+    x = (ymax - ymin) / 8
+    Y = Log10(x)
+    z = Y - Int(Y)
+    w = Int(Y)
+    If z > Log10(5) Then
+        t = 1
+    ElseIf z > Log10(2) Then
+        t = Log10(5)
+    Else
+        t = Log10(2)
+    End If
+    S = 10 ^ (w + t)
+    ScaleMin1 = S * Int(ymin / S)
+    Scalemax = S * (Int(0.9999999999 + (ymax / S)))
+    If ymin = ymax Then ScaleMin1 = 0
+    MajorUnit = S
+End Function
+'
+Function Log10(x)
+Attribute Log10.VB_ProcData.VB_Invoke_Func = " \n14"
+    Log10 = Log(x) / Log(10#)
+End Function
+'
+' but_AutoOK_Click Macro
+'
+Sub but_AutoOK_Click()
+Attribute but_AutoOK_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i As Integer
+    myauto = 1
+    If Range("FirstAuto").Value > Range("LastAuto").Value Then
+        i = MsgBox("'To:' Column number cannot be less than 'From:' Column Number:", vbOKOnly, Title:=ThisWorkbook.Name)
+        myauto = 3
+    End If
+End Sub
+'
+' but_AutoCancel_Click Macro
+'
+Sub but_AutoCancel_Click()
+Attribute but_AutoCancel_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Range("AutoValues").Value = Range("AutoCancel").Value
+End Sub
+'
+' butAuto_Click Macro
+'
+Sub butAuto_Click()
+Attribute butAuto_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim dbcol As Integer
+    Application.Calculation = xlManual
+    myauto = 0
+    Range("AutoCancel").Value = Range("AutoValues").Value
+    DialogSheets("dlgautotrend").Show
+    If myauto = 3 Then butAuto_Click
+    If myauto = 1 Then
+            'StoreComments (False)
+        For dbcol = Range("FirstAuto").Value To Range("LastAuto").Value
+            Range("Database_Column").Value = dbcol
+            GetSegmentAndSeasonalData
+
+            Calculate
+            Set_dlgOptions_Values
+            '  if autohist =2 (all) or hist = 1 (current)
+            If (Range("AutoHist").Value = 2 Or Range("OptHist").Value = 1) Then
+                Range("OptHist").Value = 1
+                ' if type is not custom
+                If Range("OptTrend").Value <> 4 Then
+                    ' if autotrend = 1 (constant)
+                    If Range("AutoTrend").Value = 1 Then Range("OptTrend").Value = 1
+                   'note otherwise use opttrend per database
+                End If
+                'select trend
+                Trend_Click
+                butCopyCurrent
+                dlgOptions_butOK_Click
+            End If
+            'skip next column if this one is type custom
+            If Range("OptTrend").Value = 4 Then dbcol = dbcol + 1
+        Next dbcol
+    End If
+    Application.Calculation = xlAutomatic
+End Sub
+'
+'Manage Layouts
+'
+Sub butManageOK_Click()
+Attribute butManageOK_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim i
+Application.Cursor = xlWait
+myScreenUpdating (False)
+i = Range("LayoutOperation").Value
+'1=recall
+If i = 1 Then
+    Range("LayoutIndex").Value = Range("LayoutSelected").Value
+    Calculate
+    Range("LayoutCurrent").Value = Range("LayoutParsed").Value
+    Calculate
+End If
+'2=keep
+If i = 2 Then
+    Calculate
+    Range("LayoutData").Cells(Range("LayoutSelected").Value) = Range("LayoutPacked").Value
+End If
+'3=delete
+If i = 3 Then
+    Range("LayoutData").Cells(Range("LayoutSelected").Value).ClearContents
+End If
+Range("LayoutOperation").Value = 1
+Range("LayoutOperation").Value = 0
+DialogSheets("dlgManageLayouts").Focus = DialogSheets("dlgManageLayouts").Buttons("butManageExit").Name
+Calculate
+Application.Calculation = xlManual
+myScreenUpdating (True)
+Application.Cursor = xlDefault
+End Sub
+'
+' but_ManageLayouts_Click Macro
+'
+'
+Sub but_ManageLayouts_Click()
+Attribute but_ManageLayouts_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+myCreate = 4
+ActiveDialog.Hide
+End Sub
+'
+' ddLayoutType_Change Macro
+'
+'
+Sub ddLayoutType_Change()
+Attribute ddLayoutType_Change.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim mytype As Boolean, i As Integer
+mytype = True
+If Range("layouttype").Value = 3 Then mytype = False 'matrix plot
+For i = 9 To 16
+DialogSheets("dlglayout").DropDowns(i).Enabled = mytype
+Next i
+End Sub
+'
+' but_HideMedian_Click
+'
+Sub but_HideMedian_Click()
+Attribute but_HideMedian_Click.VB_ProcData.VB_Invoke_Func = " \n14"
+myScreenUpdating (False)
+    With Sheets("Run Chart").ChartObjects("Chart 2").Chart.SeriesCollection(1).Border
+        If .LineStyle = xlNone Then
+            .LineStyle = xlContinuous
+            .ColorIndex = 32
+            .Weight = xlMedium
+            ActiveSheet.DrawingObjects("but_HideMedian").Characters.Text = "Hide Median"
+        Else
+            .LineStyle = xlNone
+            ActiveSheet.DrawingObjects("but_HideMedian").Characters.Text = "Show Median"
+        End If
+    End With
+myScreenUpdating (True)
+End Sub
+''
+' Create and Save all Layouts in a New Workbook
+' Macro recorded 2/14/97 by Bill Rolfes
+'
+'Pick Charts to Save in a file
+Sub PickTheCharts()
+Attribute PickTheCharts.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim i, x
+Dim doicharts, domrcharts, doruncharts
+Dim mytitle, myname
+    Application.Calculation = xlManual
+' Show the Create and Copy Dialog
+With DialogSheets("dlgCreateAndCopy")
+i = .Show
+End With
+If i = False Then Exit Sub   ' i = True means OK was clicked
+    If Range("CopyLayouts") = True And Range("AllLayout") = 2 Then ' Value of 2 means "Select Some" was picked
+        With DialogSheets("dlgPickLayouts")
+        i = .Show   ' Show the Dialog Box to Select items
+            If i = True Then
+            showlayouts = .ListBoxes("LBLayouts").Selected  ' Capture the Selections
+            End If
+        End With
+    End If
+    If Range("CopyICharts") = True And Range("AllICharts") = 2 Then      'ditto
+        With DialogSheets("dlgPickICharts")
+        i = .Show
+            If i = True Then
+            showicharts = .ListBoxes("LBICharts").Selected
+            End If
+        End With
+    End If
+    If Range("CopyMRCharts") = True And Range("AllMRCharts") = 2 Then     'ditto
+        With DialogSheets("dlgPickMRCharts")
+        i = .Show
+            If i = True Then
+            showmrcharts = .ListBoxes("LBMRCharts").Selected
+            End If
+        End With
+    End If
+    If Range("CopyRunCharts") = True And Range("AllRunCharts") = 2 Then      'ditto
+        With DialogSheets("dlgPickRunCharts")
+        i = .Show
+            If i = True Then
+            showruncharts = .ListBoxes("LBRunCharts").Selected
+            End If
+        End With
+    End If
+        ' Open the Destination Workbook
+    Update_Analysis
+    Application.Calculation = xlCalculationManual
+    
+    myExit = 9876
+    Workbooks.Add (xlWorksheet)
+    myScreenUpdating (False)
+    Application.Calculation = xlCalculationManual
+
+    myname = ActiveWorkbook.Name
+    ThisWorkbook.Activate
+        ' Copy the Database
+    If Range("Pickdatabase") = True Then
+        myScreenUpdating (False)
+        Sheets("Database").Select
+        Prepare_for_Save
+        Range("FirstData").Select
+        myExit = 9876
+        Workbooks(myname).Activate
+        ThisWorkbook.Sheets("Database").Cells.Copy
+        Range("a1").Select
+        Cells.PasteSpecial Paste:=xlAll
+        Cells.PasteSpecial Paste:=xlPasteComments
+        Range("c14").Select
+        ActiveSheet.Name = "Data"
+        Application.CutCopyMode = False
+        myScreenUpdating (True)
+        myScreenUpdating (False)
+        ThisWorkbook.Activate
+    End If
+    If Range("CopyLayouts") = True Then
+        For i = 1 To 100  ' do each layout that is selected
+            If Range("AllLayout") = 2 Then
+                If IsArray(showlayouts) Then
+                    If showlayouts(i) = False Then GoTo Skip1
+                Else
+                    GoTo Skip1
+                End If
+            End If
+            ' do each layout that is defined; if not defined title is "(not in use")
+            mytitle = Range("LayoutTitles").Cells(i).Value
+            If i > 9 Then mytitle = Mid(mytitle, 2, 11)
+            If i > 99 Then mytitle = Mid(mytitle, 2, 10)
+                If Mid(mytitle, 6, 4) <> "(not" Then
+                'recall layout
+                Range("LayoutIndex") = i
+                Calculate
+                Range("LayoutCurrent").Value = Range("LayoutParsed").Value
+                Calculate
+                mytitle = Range("LayoutTitle")
+                'create layout
+                LayoutPageSetup
+                createlayout
+                Application.Calculation = xlManual
+                myScreenUpdating (False)
+                ResizePlotAreas
+                'copy to new book
+                Sheets("Layout").Copy After:=Workbooks(myname).Sheets(Workbooks(myname).Sheets.Count)
+                Application.ActiveSheet.Name = NewName(mytitle)
+        With ActiveSheet.PageSetup
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = 1
+        End With
+                ThisWorkbook.Activate
+            End If
+Skip1:
+            myScreenUpdating (False)
+        Next i
+    End If
+    ThisWorkbook.Activate
+    If (Range("CopyICharts") Or Range("CopyMRCharts") Or Range("CopyRunCharts") = True) Then
+        For i = 1 To 254
+            ' check to see if any charts need to be done
+            doicharts = False
+            If Range("CopyICharts") = True Then
+                If Range("AllICharts") = 1 Then
+                    doicharts = True
+                ElseIf Range("AllICharts") = 2 Then
+                    If IsArray(showicharts) Then doicharts = showicharts(i)
+                End If
+            End If
+            domrcharts = False
+            If Range("CopyMRCharts") = True Then
+                If Range("AllMRCharts") = 1 Then
+                    domrcharts = True
+                ElseIf Range("AllMRCharts") = 2 Then
+                    If IsArray(showmrcharts) Then domrcharts = showmrcharts(i)
+                End If
+            End If
+            doruncharts = False
+            If Range("CopyRunCharts") = True Then
+                If Range("AllRunCharts") = 1 Then
+                    doruncharts = True
+                ElseIf Range("AllRunCharts") = 2 Then
+                    If IsArray(showruncharts) Then doruncharts = showruncharts(i)
+                End If
+            End If
+            If (doicharts Or domrcharts Or doruncharts) = True Then
+                ' if any need to be done, first bring up that column
+                Range("Database_Column") = i
+                Application.Calculation = xlAutomatic
+                GetSegmentAndSeasonalData '03-20-01
+                'Enter_DB_Column
+                myScreenUpdating (False)
+                Application.Calculation = xlManual
+                If Range("NSamp") = 0 Then Exit For 'quit on first column with no current data
+                If doicharts = True Then
+                
+                    Sheets("I Chart").Select
+                    Update_Axes_and_Comments (ActiveSheet.Name)
+                    ActiveSheet.ChartObjects("IChart").Activate
+                    ActiveSheet.ChartObjects("IChart").Chart.CopyPicture
+                    ActiveWindow.Visible = False
+                    Windows(ThisWorkbook.Name).Activate
+                                       
+                    Windows(myname).Activate
+                    myScreenUpdating (False)
+                Application.Calculation = xlManual
+                    Sheets.Add
+                    Format_New_Sheet
+                    With ActiveSheet
+                        .Paste Destination:=Range("a1")
+                        Application.CutCopyMode = False
+                        
+                            If ThisWorkbook.Sheets("Make Layout").Range("ChartOnly") = 1 Then
+                                ThisWorkbook.Sheets("I Chart").Range("A22:K29").Copy
+                            .Range("A22").Select
+                                Selection.PasteSpecial Paste:=xlValues, Operation:=xlNone, _
+                                    SkipBlanks:=False, Transpose:=False
+                                Selection.PasteSpecial Paste:=xlFormats, Operation:=xlNone, _
+                                    SkipBlanks:=False, Transpose:=False
+                            End If
+                        Application.CutCopyMode = False
+                        
+                        .Range("a1").Select
+                        .Name = "I Chart " & i
+                    End With
+                    ThisWorkbook.Activate
+                    'ResizePlotAreas
+                End If
+                    If domrcharts = True Then
+                    
+                    Sheets("MR Chart").Select
+                    Update_Axes_and_Comments (ActiveSheet.Name)
+                    ActiveSheet.ChartObjects(1).Activate
+                    ActiveSheet.ChartObjects(1).Chart.CopyPicture
+                    ActiveWindow.Visible = False
+                    Windows(ThisWorkbook.Name).Activate
+                    
+                    Windows(myname).Activate
+                    myScreenUpdating (False)
+                Application.Calculation = xlManual
+                    Sheets.Add
+                    Format_New_Sheet
+                    ActiveSheet.Paste Destination:=Range("a1")
+                    Application.CutCopyMode = False
+                    Range("a1").Select
+                    ActiveSheet.Name = "MR Chart " & i
+                    ThisWorkbook.Activate
+                    ResizePlotAreas
+                End If
+                If doruncharts = True Then
+                    
+                    Sheets("Run Chart").Select
+                    Update_Axes_and_Comments (ActiveSheet.Name)
+                    ActiveSheet.ChartObjects(1).Activate
+                    ActiveSheet.ChartObjects(1).Chart.CopyPicture
+                    ActiveWindow.Visible = False
+                    Windows(ThisWorkbook.Name).Activate
+             
+                    Windows(myname).Activate
+                    myScreenUpdating (False)
+                Application.Calculation = xlManual
+                    Sheets.Add
+                    Format_New_Sheet
+                    ActiveSheet.Paste Destination:=Range("a1")
+                    
+                    Application.CutCopyMode = False
+                    ThisWorkbook.Sheets("Run Chart").Range("A21:K29").Copy
+                    If ThisWorkbook.Sheets("Make Layout").Range("ChartOnly") = 1 Then
+                        Range("a21").Select
+                        Selection.PasteSpecial Paste:=xlValues, Operation:=xlNone, _
+                            SkipBlanks:=False, Transpose:=False
+                        Selection.PasteSpecial Paste:=xlFormats, Operation:=xlNone, _
+                            SkipBlanks:=False, Transpose:=False
+                    End If
+                    Application.CutCopyMode = False
+                    Range("a1").Select
+                    ActiveSheet.Name = "Run Chart " & i
+                    ThisWorkbook.Activate
+                    ResizePlotAreas
+                End If
+                If ThisWorkbook.Sheets("analysis").Range("Trendtype") = 3 Then i = i + 1
+            End If
+            ThisWorkbook.Activate
+        Next i
+    End If
+    Workbooks(myname).Activate
+    RestoreMenu
+    ' eliminate links to BPChart from copy procedure
+    For Each myname In ActiveWorkbook.Names
+    myname.Delete
+    Next myname
+
+    myScreenUpdating (True)
+    i = MsgBox("The Create and Copy procedure is complete.  All selected items have been placed in the new workbook that is now open.  Use the File/Save As... menu item to save the new workbook.  Use the Window menu to return to BPChart.", vbOKOnly, Title:=ThisWorkbook.Name)
+End Sub
+'
+'
+Function NewName(Title)
+Attribute NewName.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim ws, n, i
+If Len(Title) > 31 Then Title = Left(Title, 31)
+For i = 1 To 7 'filter illegal chars for sheet name
+n = 1
+While n > 0
+    n = InStr(Title, Mid("/\:?*'[", i, 1))
+    If n > 0 Then Title = Left(Title, n - 1) & "_" & Mid(Title, n + 1)
+Wend
+Next i
+n = 1
+For Each ws In ActiveWorkbook.Worksheets 'avoid redundant title
+If ws.Name = Title Then
+    If Left(Right(Title, 2), 1) = "~" Then
+        n = Right(Title, 1) + 1
+        Title = Left(Title, Len(Title) - 2)
+    End If
+    If Len(Title) > 29 Then Title = Left(Title, Len(Title) - 2)
+    Title = Title & "~" & n
+End If
+Next ws
+NewName = Title
+End Function
+'
+'
+Sub Format_New_Sheet()
+Dim i
+                        With ActiveWindow
+                            .DisplayGridlines = False
+                            .DisplayHeadings = False
+                            .DisplayHorizontalScrollBar = False
+                            .DisplayVerticalScrollBar = False
+                        End With
+                        With ActiveSheet
+                        For i = 1 To 11
+                            .Columns(i).ColumnWidth = ThisWorkbook.Sheets("I Chart").Columns(i).ColumnWidth
+                        Next i
+                            .Move After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count)
+                        End With
+                    With ActiveSheet.PageSetup
+                        .LeftHeader = ""
+                        .CenterHeader = ""
+                        .RightHeader = ""
+                        .PrintHeadings = False
+                        .PrintGridlines = False
+                        .CenterHorizontally = True
+                        .CenterVertically = True
+                        .Orientation = xlLandscape
+                        .Zoom = ThisWorkbook.Sheets("I Chart").PageSetup.Zoom
+                        '.FitToPagesWide = 1
+                        '.FitToPagesTall = 1
+                        If myDontDoFooters = False Then
+                        .CenterFooter = ""
+                        .LeftFooter = ""
+                        .RightFooter = ""
+                        If ThisWorkbook.Sheets("Make Layout").Range("footdate") = True Then .CenterFooter = "&10 &D"
+                        If TypeName(ThisWorkbook.Sheets("Analysis").Range("data").Cells(1).Value) = "String" Then
+                            .LeftFooter = "&10 " & ThisWorkbook.Sheets("Analysis").Range("data").Cells(1)
+                        End If
+                        If ThisWorkbook.Sheets("Make Layout").Range("footmsg") = True Then .RightFooter = "&10 " & ThisWorkbook.Sheets("Make Layout").Range("foottext")
+                        End If
+                    End With
+End Sub
+'
+' Pack the data for selecting what to copy to file into cell A1
+' This data is used in the list boxes in dlgPickLayouts, etc..
+'
+Sub packshowdata()
+Attribute packshowdata.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim i, j, x
+Dim packshowdata
+For i = 1 To 254
+x = 65
+If IsArray(showicharts) Then j = showicharts(i) Else j = False
+If j = True Then x = x + 1
+If IsArray(showmrcharts) Then j = showmrcharts(i) Else j = False
+If j = True Then x = x + 2
+If IsArray(showruncharts) Then j = showruncharts(i) Else j = False
+If j = True Then x = x + 4
+If i < 101 Then
+    If IsArray(showlayouts) Then j = showlayouts(i) Else j = False
+    If j = True Then x = x + 8
+End If
+' use 101th position for database page
+If i = 101 Then j = Range("Pickdatabase")
+If j = True Then x = x + 8
+packshowdata = packshowdata + Chr(x)
+Next i
+Sheets("Database").Range("a1") = packshowdata
+End Sub
+'
+' recover the data that was packed
+'
+Sub UnpackShowdata()
+Attribute UnpackShowdata.VB_ProcData.VB_Invoke_Func = " \n14"
+ReDim showlayouts(100), showicharts(254), showmrcharts(254), showruncharts(254)
+Dim Y, i, packshowdata
+packshowdata = Sheets("Database").Range("a1")
+For i = 1 To 254
+Y = Asc(Mid(packshowdata, i, 1)) - 65
+If Y > 7 Then
+    If i < 101 Then showlayouts(i) = True
+    If i = 101 Then showdatabase = True
+    Y = Y - 8
+Else
+    If i < 101 Then showlayouts(i) = False
+    If i = 101 Then showdatabase = True
+End If
+If Y > 3 Then
+    showruncharts(i) = True
+    Y = Y - 4
+Else
+    showruncharts(i) = False
+End If
+If Y > 1 Then
+    showmrcharts(i) = True
+    Y = Y - 2
+Else
+    showmrcharts(i) = False
+End If
+If Y > 0 Then showicharts(i) = True Else showicharts(i) = False
+Next i
+DialogSheets("dlgPickICharts").ListBoxes("LBICharts").Selected = showicharts
+DialogSheets("dlgPickMRCharts").ListBoxes("LBMRCharts").Selected = showmrcharts
+DialogSheets("dlgPickRunCharts").ListBoxes("LBRunCharts").Selected = showruncharts
+DialogSheets("dlgPickLayouts").ListBoxes("LBLayouts").Selected = showlayouts
+Range("Pickdatabase") = showdatabase
+End Sub
+'
+' convert a numeric value to a string beginning with "!_"
+' this will cause the data to be excluded from the charts
+'
+Sub MakeText()
+Attribute MakeText.VB_ProcData.VB_Invoke_Func = " \n14"
+
+If TypeName(Selection) = "Range" Then
+    myScreenUpdating (False)
+    MakeText1
+    myScreenUpdating (True)
+End If
+End Sub
+Sub MakeText1()
+Dim c
+For Each c In Selection
+        If IsNumeric(c.Value) Then
+            c.Value = "!_" & c.Formula
+            c.Interior.ColorIndex = 3
+        End If
+    Next c
+End Sub
+'
+' recover the number or formula set by the above
+'
+Sub MakeNumber()
+Attribute MakeNumber.VB_ProcData.VB_Invoke_Func = " \n14"
+If TypeName(Selection) = "Range" Then
+    myScreenUpdating (False)
+    MakeNumber1
+    myScreenUpdating (True)
+End If
+End Sub
+Sub MakeNumber1()
+Dim c
+    For Each c In Selection
+        If TypeName(c.Value) = "String" Then
+            If Left(c.Value, 2) = "!_" Then
+                c.Formula = Right(c.Value, Len(c.Value) - 2)
+                c.Interior.ColorIndex = xlNone
+            End If
+        End If
+    Next c
+
+End Sub
+
+Sub ExcludePerHistory()
+Dim i, c
+myScreenUpdating (False)
+If ActiveSheet.Name = "Database" Then
+    Range("Database_Column").Value = ActiveCell.Column - 2
+    GetSegmentAndSeasonalData
+End If
+
+'StoreComments (False)
+With Sheets("database")
+For Each c In .Range(.Cells(14, 2 + Range("Database_Column").Value), .Cells(Range("last_row").Value, 2 + Range("Database_Column").Value))
+        If IsNumeric(c.Value) And c.Locked = True Then
+            c.Value = "!_" & c.Formula
+            c.Interior.ColorIndex = 3
+        End If
+Next c
+End With
+Enter_DB_Column
+End Sub
+'
+Sub IncludeAllDataInCurrentColumn()
+Dim c
+myScreenUpdating (False)
+'StoreComments (False)
+If ActiveSheet.Name = "Database" Then
+    Range("Database_Column").Value = ActiveCell.Column - 2
+    GetSegmentAndSeasonalData
+End If
+
+With Sheets("database")
+For Each c In .Range(.Cells(14, 2 + Range("Database_Column").Value), .Cells(Range("last_row").Value, 2 + Range("Database_Column").Value))
+        If TypeName(c.Value) = "String" Then
+            If Left(c.Value, 2) = "!_" Then
+    
+                c.Formula = Right(c.Value, Len(c.Value) - 2)
+                c.Interior.ColorIndex = xlNone
+                
+            End If
+        End If
+Next c
+End With
+    If ActiveSheet.Name = "I Chart" Then
+    Range("DataToPlot").FormulaR1C1 = "=IF(Exclude=0,Data,NA())"
+    Application.Calculation = xlCalculationAutomatic
+    Enter_DB_Column
+    End If
+End Sub
+
+'
+'replaces normal file save menu selection
+Sub ErsatzSave()
+Attribute ErsatzSave.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim i
+i = MsgBox("Please use the Save Database Sheet Only selection on the File menu to save your work.  Use this Save selection only if you want to save the entire workbook (Not recommended!)  Are you sure you want to save the entire workbook?", vbYesNo + vbDefaultButton2, Title:=ThisWorkbook.Name)
+If i <> 6 Then Exit Sub
+' note i=6 means yes
+ActiveWorkbook.Save
+End Sub
+'
+'replaces normal file save as menu selection
+Sub ErsatzSaveas()
+Attribute ErsatzSaveas.VB_ProcData.VB_Invoke_Func = " \n14"
+Dim i
+i = MsgBox("Please use the Save Database Sheet Only selection on the File menu to save your work.  Use this Save as selection only if you want to save the entire workbook (Not recommended!)  Are you sure you want to save the entire workbook?", vbYesNo + vbDefaultButton2, Title:=ThisWorkbook.Name)
+If i <> vbYes Then Exit Sub
+i = Application.GetSaveAsFilename(, , , "Save As")
+If i = False Then Exit Sub
+On Error Resume Next
+ActiveWorkbook.SaveAs (i)
+On Error GoTo 0
+End Sub
+'find standard toolbar, etc
+Sub FindToolbars()
+Dim mycontrol
+myWorkSheetMenuNr = 1 ' worksheet is commandbar index 1 in Excel
+myStandardToolbarNr = 3 ' standard is commandbar index 3 in Excel
+mySaveToolbarButtonNr = 3 ' save button id = 3
+For Each mycontrol In CommandBars(myStandardToolbarNr).Controls
+    If mycontrol.Id = 3 Then
+        mySaveToolbarButtonNr = mycontrol.Index
+        Exit For
+    End If
+Next mycontrol
+myFileMenuNr = 30002 ' file menu id
+For Each mycontrol In CommandBars(myWorkSheetMenuNr).Controls
+    If mycontrol.Id = 30002 Then
+        myFileMenuNr = mycontrol.Index
+        Exit For
+    End If
+Next mycontrol
+
+End Sub
+' Restore the built-in menu
+Sub RestoreMenu()
+Attribute RestoreMenu.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim mycontrol
+    If IsEmpty(myStandardToolbarNr) Then
+    MsgBox "BPChart must re-initialize.  Your data is intact.  This condition may be the result of an unexpected action which caused the macro code to be interrupted.", Title:=ThisWorkbook.Name
+    Auto_Open
+    End If
+    CommandBars(myStandardToolbarNr).Controls(mySaveToolbarButtonNr).OnAction = ""
+    CommandBars(myWorkSheetMenuNr).Controls(myFileMenuNr).Reset
+    For Each mycontrol In CommandBars(myWorkSheetMenuNr).Controls
+        If mycontrol.Caption = ("&Special") Then
+            mycontrol.Delete
+        End If
+    Next mycontrol
+End Sub
+' Modify the menus
+Sub modifyMenus()
+Attribute modifyMenus.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i, MI, myButton, mySaveText2
+    mySaveText2 = "*" & mySaveText & "*"
+    RestoreMenu
+    On Error Resume Next
+        CommandBars(myStandardToolbarNr).Controls(mySaveToolbarButtonNr).OnAction = "ErsatzSave "
+    With CommandBars(myWorkSheetMenuNr) 'worksheet menu
+        With .Controls(myFileMenuNr)
+            ' set i to menu item before which load and save database items will go (like "save")
+            'find first save
+            For Each MI In .Controls
+                If MI.Id = 3 Then  ' &Save
+                i = MI.Index
+                MI.Delete
+                Exit For
+                End If
+            Next MI
+            ' take out any other saves
+            For Each MI In .Controls
+                
+                If MI.Id = 748 Then MI.Delete  ' Save &As
+                If MI.Id = 846 Then MI.Delete  ' Save &Workspace
+            Next MI
+            ' insert new items in reverse order
+            .Controls.Add(Type:=msoControlButton, before:=i).Caption = "Save &As..."
+                .Controls("Save &As...").OnAction = "ErsatzSaveAs"
+            .Controls.Add(Type:=msoControlButton, before:=i).Caption = "&Save"
+                .Controls("&Save").OnAction = "ErsatzSave"
+            .Controls.Add(Type:=msoControlButton, before:=i).Caption = "Save &Database Sheet Only..."
+                .Controls("Save &Database Sheet Only...").OnAction = "butSaveDatabase"
+            .Controls.Add(Type:=msoControlButton, before:=i).Caption = "&Load Database (from prior Save Only)..."
+                .Controls("&Load Database (from prior Save Only)...").OnAction = "butOpenDatabase"
+        End With
+        .Controls.Add(Type:=msoControlPopup, before:=9).Caption = "&Special"
+        With .Controls("Special")
+            .Controls.Add(Type:=msoControlButton).Caption = "On Database Sheet:"
+            .Controls.Add(Type:=msoControlButton).Caption = "     &Exclude Selected Data"
+                .Controls("     &Exclude Selected Data").OnAction = "MakeText"
+            .Controls.Add(Type:=msoControlButton).Caption = "     &Include Selected Data"
+                .Controls("     &Include Selected Data").OnAction = "MakeNumber"
+            .Controls.Add(Type:=msoControlButton).Caption = "For Current Database Column:"
+            .Controls.Add(Type:=msoControlButton).Caption = "     Exclude Data &Just As History"
+                .Controls("     Exclude Data &Just As History").OnAction = "ExcludePerHistory"
+            .Controls.Add(Type:=msoControlButton).Caption = "     Include &All Data"
+                .Controls("     Include &All Data").OnAction = "IncludeAllDataInCurrentColumn"
+            .Controls.Add(Type:=msoControlButton).Caption = "Copy Charts to &File..."
+                .Controls("Copy Charts to &File...").OnAction = "PickTheCharts"
+            .Controls.Add(Type:=msoControlButton).Caption = "Auto &History..."
+                .Controls("Auto &History...").OnAction = "butAuto_Click"
+            .Controls.Add(Type:=msoControlButton).Caption = "&Manage by Exception"
+                .Controls("Manage by Exception").OnAction = "ManageByExceptionToggle"
+                If Range("ManagebyException") = True Then .Controls("Manage by Exception").State = msoButtonDown
+    
+            .Controls.Add(Type:=msoControlButton).Caption = "BPChart &Settings..."
+                .Controls("BPChart &Settings...").OnAction = "bpchartsettings"
+            .Controls("On Database Sheet:").Enabled = False
+            .Controls("     Exclude Selected data").Enabled = False
+            .Controls("     Include Selected data").Enabled = False
+        End With
+        If ActiveSheet.Name = ("Database") Then
+            With CommandBars(myWorkSheetMenuNr).Controls("Special")
+                .Controls("On Database Sheet:").Enabled = True
+                .Controls("     Exclude Selected data").Enabled = True
+                .Controls("     Include Selected data").Enabled = True
+            End With
+            With CommandBars(myWorkSheetMenuNr).Controls(myFileMenuNr)
+                .Controls("Save").Enabled = False
+                .Controls("Save As...").Enabled = False
+            End With
+        End If
+    End With
+    On Error GoTo 0
+End Sub
+'
+Sub ManageByExceptionToggle()
+With CommandBars(myWorkSheetMenuNr).Controls("Special").Controls("Manage by Exception")
+
+If Range("ManagebyException") = False Then
+    Range("ManagebyException") = True
+    .State = msoButtonDown
+    MsgBox "This selection will cause the Next or Prev buttons to skip to the next data column that has a special cause in the most recent time period.", Title:=ThisWorkbook.Name
+    
+Else
+    Range("ManagebyException") = False
+    .State = msoButtonUp
+End If
+
+End With
+End Sub
+
+'
+Sub BPChartSettings()
+UserFormSettings.Show
+If ActiveSheet.Name = "I Chart" Then Enter_DB_Column
+End Sub
+'
+Sub WhatsNew()
+Attribute WhatsNew.VB_ProcData.VB_Invoke_Func = " \n14"
+myScreenUpdating (False)
+Sheets("What's New").Activate
+Sheets("What's New").Visible = True
+        With ActiveWindow
+            .DisplayHorizontalScrollBar = True
+            .DisplayVerticalScrollBar = True
+            Sheets("What's New").ScrollArea = "$A$1:$Q$225" '%%12-28-00+
+            .ScrollColumn = 1 '%%12-28-00+
+            .ScrollRow = 1 '%%12-28-00+
+        End With
+myScreenUpdating (True)
+End Sub
+Sub HideWhatsNew()
+Attribute HideWhatsNew.VB_ProcData.VB_Invoke_Func = " \n14"
+myScreenUpdating (False)
+Sheets("What's New").Visible = False
+        With ActiveWindow
+            .DisplayHorizontalScrollBar = False
+            .DisplayVerticalScrollBar = False
+        End With
+DatabaseSetup
+myScreenUpdating (True)
+End Sub
+'
+Sub GetComments()
+Dim i As Integer, GotAValue, HadNoValues
+    userChangedMessages = False
+    
+    Application.Calculation = xlCalculationManual
+        
+        If mycounta(Range("datatoplotc")) = 0 Then
+            HadNoValues = True
+            Else
+            HadNoValues = False
+        End If
+        If mycounta(Range("datatoplot")) < mycounta(Range("datax")) Then
+            Range("DataToPlot").FormulaR1C1 = "=IF(Exclude=0,Data,NA())"
+            HadNoValues = True
+        End If
+    
+    GotAValue = False
+    
+    For i = 1 To Range("DataToPlot").Cells.Count
+        'note next line once used worksheetfunction isna, but want to avoid worksheet fns for international
+        If IsError(Range("DataToPlot").Cells(i).Value) Then
+            Range("DataToPlot").Cells(i).ClearContents
+        Else
+                
+            GotAValue = True
+        End If
+        If Range("DisplayComments").Value = True Then
+            Range("Datatoplot").Cells(i).NoteText Range("FirstData").Offset(i - 1, Range("Database_Column").Value - 1).NoteText
+        End If
+    Next i
+        
+    If GotAValue Then
+        If HadNoValues Then Sheets("i chart").Calculate 'need this when series is empty otherwise error when going to i chart
+        If Range("DisplayComments").Value = True Then
+           
+            CommentsToMessages
+        Else
+            MySeries.ApplyDataLabels
+            MySeries.DataLabels.Delete
+        End If
+        'If Not HadNoValues Then Sheets("i chart").Calculate
+    End If
+    
+
+End Sub
+'
+Sub StoreComments(Forced As Boolean)
+Dim i, j, mycomment, mycell As Range
+
+    If Forced Or (Range("DisplayComments").Value = True And userChangedMessages) Then
+    
+    Application.Calculation = xlCalculationManual
+    
+    i = mycount(Range("DataxC"))
+        If i > 0 Then
+            Range("DataToPlot").FormulaR1C1 = "=IF(Exclude=0,Data,NA())"
+            MessagesToComments
+            For j = 1 To i
+            Set mycell = Range("FirstData").Offset(Range("Chart").Row - 17 + j, Range("Database_Column").Value - 1)
+            If mycount(mycell) = 1 Then mycell.NoteText "" 'clear if not excluded; count=1 means it is a number
+            Next j
+        End If
+        For Each mycomment In Sheets("analysis").Comments
+            If mycomment.Parent.Column = Range("datatoplot").Column Then
+                i = mycomment.Parent.Row - Range("datatoplot").Row
+                With Range("FirstData").Offset(i, Range("Database_Column").Value - 1)
+                .NoteText mycomment.Text
+                .Comment.Visible = False
+                End With
+                mycomment.Delete
+            End If
+        Next mycomment
+    userChangedMessages = False
+    Application.Calculation = xlCalculationAutomatic
+    
+    End If
+End Sub
+'
+Sub showAllSheets()
+Attribute showAllSheets.VB_ProcData.VB_Invoke_Func = " \n14"
+'Allows you to Unprotect and make Visible WorkSheets, DialogSheets, and Modules
+Dim i
+    On Error Resume Next
+    If (MsgBox("View Worksheets?  (Count: " & Worksheets.Count & ")", vbYesNo) = vbYes) Then
+        For i = 1 To Worksheets.Count
+            If (MsgBox(i & ") " & Worksheets(i).Name, vbYesNo) = vbYes) Then
+                Worksheets(i).Unprotect
+                Worksheets(i).Visible = True
+            End If
+        Next i
+    End If
+    If (MsgBox("View Dialogsheets?  (Count: " & DialogSheets.Count & ")", vbYesNo) = vbYes) Then
+        For i = 1 To DialogSheets.Count
+            If (MsgBox(i & ") " & DialogSheets(i).Name, vbYesNo) = vbYes) Then
+                DialogSheets(i).Unprotect
+                DialogSheets(i).Visible = True
+            End If
+        Next i
+    End If
+    If (MsgBox("View Modules?  (Count: " & Modules.Count & ")", vbYesNo) = vbYes) Then
+        For i = 1 To Modules.Count
+            If (MsgBox(i & ") " & Modules(i).Name, vbYesNo) = vbYes) Then
+                Modules(i).Unprotect
+                Modules(i).Visible = True
+            End If
+        Next i
+    End If
+End Sub
+'
+' sub to test layout print output
+' prints all 16 layout possibilities
+' first must change focus statement in sub createlayout to '
+Sub create_print_examples()
+Attribute create_print_examples.VB_ProcData.VB_Invoke_Func = " \n14"
+    Dim i
+    For i = 1 To 16
+       Range("number_of_charts").Value = i
+        butCreateLayout
+        Sheets("layout").PrintOut
+        If i = 5 Then i = 6
+        If i = 7 Then i = 9
+        If i = 10 Then i = 12
+        If i = 13 Then i = 16
+    Next i
+End Sub
+'
+Sub hidemacrosheet()
+Attribute hidemacrosheet.VB_ProcData.VB_Invoke_Func = " \n14"
+    Sheets(Array("About...", "MacroSheet")).Select
+    Sheets("About...").Activate
+    ActiveWindow.SelectedSheets.Visible = False
+    Sheets("About...").Visible = True
+    Sheets("About...").Activate
+    Range("layouttype") = 0
+    Auto_Open
+End Sub
+
+Public Sub CommentsDoneClick()
+
+End Sub
+
+Public Sub myScreenUpdating(which As Boolean)
+
+    If which Then
+        If Not Application.ScreenUpdating Then
+            Application.ScreenUpdating = True
+        End If
+    Else
+        Application.ScreenUpdating = False
+    End If
+    
+End Sub
+
+Public Function mymin(ParamArray mydata())
+Dim myvalue, myinitialvalue
+    For Each myinitialvalue In mydata
+        If IsNumeric(myinitialvalue) Then
+        mymin = myinitialvalue
+            For Each myvalue In mydata
+                If IsNumeric(myvalue) Then
+                    If myvalue < mymin Then mymin = myvalue
+                End If
+            Next myvalue
+        End If
+    Exit For
+    Next myinitialvalue
+End Function
+Public Function mymax(ParamArray mydata())
+Dim myvalue, myinitialvalue
+    For Each myinitialvalue In mydata
+        If IsNumeric(myinitialvalue) Then
+        mymax = myinitialvalue
+            For Each myvalue In mydata
+                If IsNumeric(myvalue) Then
+                    If myvalue > mymax Then mymax = myvalue
+                End If
+            Next myvalue
+        End If
+    Exit For
+    Next myinitialvalue
+End Function
+
+
+Public Function mycount(myRange As Range)
+Dim mycell
+mycount = 0
+For Each mycell In myRange
+If IsNumeric(mycell) And Not IsEmpty(mycell) Then mycount = mycount + 1
+Next mycell
+End Function
+
+Public Function mycounta(myRange As Range)
+Dim mycell
+mycounta = 0
+For Each mycell In myRange
+If Not IsEmpty(mycell) Then mycounta = mycounta + 1
+Next mycell
+
+End Function
+Sub plotareadiagnosis()
+With Sheets("I Chart").ChartObjects(1).Chart.PlotArea
+MsgBox "L" & .Left & " W" & .Width & " T" & .Top & " H" & .Height
+End With
+End Sub
+
+Public Function myCValue(myvalue)
+If IsNumeric(CVar(myvalue)) Then myCValue = CDbl(myvalue) Else myCValue = 0
+End Function
+
+Public Sub BPChartParameters(ForSave As Boolean)
+  Dim myScreen As Boolean
+  myScreen = Application.ScreenUpdating
+  myScreenUpdating (False)
+  ' Use registry to keep user preferences
+  If ForSave Then
+      SaveSetting Appname:="BPChart", _
+                  Section:="Settings", _
+                  Key:="ShowPrintDialog", _
+                  Setting:=myShowPrinterDriverDialog
+      SaveSetting Appname:="BPChart", _
+                  Section:="Settings", _
+                  Key:="DontDoFooters", _
+                  Setting:=myDontDoFooters
+  Else
+      myShowPrinterDriverDialog = GetSetting(Appname:="BPChart", _
+                                              Section:="Settings", _
+                                              Key:="ShowPrintDialog", _
+                                              Default:=True)
+      myDontDoFooters = GetSetting(Appname:="BPChart", _
+                                              Section:="Settings", _
+                                              Key:="DontDoFooters", _
+                                              Default:=False)
+                                           
+  End If
+End Sub
+
+Public Sub HandlePrinterDriver(Optional Forced As Boolean = True)
+Dim mytime, mymaxtime
+
+    ' Check for a bad printer driver
+    On Error GoTo NoPrinter
+    mytime = Timer
+    ActiveSheet.PageSetup.LeftFooter = ""
+    mytime = Timer - mytime
+    On Error GoTo 0
+    mymaxtime = Val(Range("Database!A12").Value)
+    If mymaxtime = 0 Then mymaxtime = 1
+    If ((mytime > mymaxtime And myShowPrinterDriverDialog = True) Or Forced) Then
+        gapp.ScreenUpdating = True '%%03-16-01+
+        DialogSheets("dlgPrintDriver").Show
+        gapp.ScreenUpdating = False '%%03-16-01+
+        If Range("FooterOption").Value = 2 Then myDontDoFooters = True Else myDontDoFooters = False
+        If Range("FooterOption").Value = 3 Then
+          ActiveWindow.Close '%%03-16-01+
+          HandlePrinterDriver (True) '%%03-16-01+ If the user cancels the close, show dialog again
+          Exit Sub '%%03-16-01+
+        End If
+    End If
+    If Range("dontshowagain").Value = True Then
+        myShowPrinterDriverDialog = False
+    Else
+        myShowPrinterDriverDialog = True
+    End If
+    BPChartParameters (True)
+    Exit Sub
+NoPrinter:
+    MsgBox "BPChart detected a problem with the printer driver or printer on this computer.  " & _
+        "BPChart requires access to a printer driver.  If there is no printer driver installed, please install one now.  " & _
+        "Note that only the software driver is required, not the printer.  " & _
+        "If there is a printer driver installed, the printer may be unavailable because it is in an error state such as no paper, off line, jam, etc.  " & _
+        "BPChart will close now.  Please correct the problem and start BPChart again.  ", Title:=ThisWorkbook.Name
+    ActiveWindow.Close
+End Sub
+Sub dlgPrintDriverButton2_Click()
+'
+' save BPChart parameters when leaving dlgPrintDriver
+BPChartParameters (True)
+End Sub
+
+Public Function DefaultIfEmpty(myRange As Range, myDefault As Boolean)
+    If IsEmpty(myRange.Value) Then
+        DefaultIfEmpty = myDefault
+    Else
+        DefaultIfEmpty = myRange.Value
+        If Not (DefaultIfEmpty = True Or DefaultIfEmpty = False) Then
+        DefaultIfEmpty = myDefault
+        End If
+    End If
+End Function
+Public Function ErrorFilter(myvalue As Variant, myDefault As Variant)
+    If IsError(myvalue) Then
+        ErrorFilter = myDefault
+    
+    ElseIf IsEmpty(myvalue) Then
+        ErrorFilter = myDefault
+    Else
+        ErrorFilter = myvalue
+    End If
+End Function
+Public Function NumberFilter(myvalue As Variant, myDefault As Variant)
+    If IsEmpty(myvalue) Then
+        NumberFilter = myDefault
+    
+    ElseIf IsNumeric(myvalue) Then
+        NumberFilter = myvalue * 1
+    Else
+        NumberFilter = myDefault
+    End If
+End Function
+
+Sub Setup_Segment_Click()
+
+mYRAction = 3
+
+End Sub
+
+
+Sub Setup_Segments()
+Application.Calculation = xlCalculationManual
+Dim i
+    For i = 1 To [x_value].Cells.Count
+      [segx_value].Cells(i) = " " & Xformat([x_value].Cells(i))
+   Next i
+    '[segx_value].Cells(i - 1) = "--"
+Seg_Sort
+Load UserFormSegments
+UserFormSegments.Show
+
+'%%01-02-01- Unload UserFormSegments
+Application.Calculation = xlCalculationAutomatic
+End Sub
+
+
+ Sub Seg_Sort()
+
+[SegInputData].Sort Key1:=[SegSort], Order1:=xlAscending, Header:=xlNo
+
+
+End Sub
+
+
+Sub butOptionsStructure_click()
+mYRAction = 4
+End Sub
+
+
+Sub Structure()
+With DialogSheets("dlgoptions")
+If .DialogFrame.Height > 250 Then
+.DialogFrame.Height = 175
+.Buttons("butOptionsStructure").Text = "Structure"
+Else
+.DialogFrame.Height = 275
+.Buttons("butOptionsStructure").Text = "Hide Structure"
+End If
+End With
+End Sub
+
+
+Sub GetSegmentAndSeasonalData()
+  'segment info
+  With [DBRef].Offset(0, [Database_Column].Value)
+    '%%01-17-01+ changed .notetext to .comment.text because
+    '            notetext only supports 255 characters
+    If Not .Comment Is Nothing Then
+      If (.Comment.Text & "") <> "" Then
+        [SegmentDataRetrieved] = .Comment.Text
+      Else
+        [SegmentDataRetrieved] = [SegmentDataDefault]
+      End If
+    Else
+      [SegmentDataRetrieved] = [SegmentDataDefault]
+    End If
+    Calculate
+    [SegmentDataParsed1].Copy
+    [Seginputdata1].PasteSpecial Paste:=xlValues
+    Application.CutCopyMode = False
+  End With
+  
+  myCurColHasSeasData = False '03-20-01
+  With [DBRef].Offset(1, [Database_Column].Value)
+    '%%01-17-01+ changed .notetext to .comment.text because
+    '            notetext only supports 255 characters
+    If Not .Comment Is Nothing Then
+      If (.Comment.Text & "") <> "" Then
+        [SeasonalDataRetrieved] = .Comment.Text
+        myCurColHasSeasData = True '03-20-01
+      Else
+        [SeasonalDataRetrieved] = [SeasonalDataDefault]
+      End If
+    Else
+      [SeasonalDataRetrieved] = [SeasonalDataDefault]
+    End If
+    
+    If myCurColHasSeasData Then '03-20-01
+    'If Range("OptHist").Value = 2 Then '%%01-02-01+ '03-20-01-
+      [nseasons] = [nseasonshist]
+    Else
+      If gbytSeasonsDefault = 0 Then
+        Select Case [mo_qtr]
+          Case Is = 1
+            gbytSeasonsDefault = 12
+          Case Is = 3
+            gbytSeasonsDefault = 4
+          Case Else
+            gbytSeasonsDefault = 1
+        End Select
+      End If
+      [nseasons] = gbytSeasonsDefault
+    End If
+    '%%12-26-00+ The following line will make sure that the seasonal data on
+    '            Make Layout is actually for the current database column when
+    '            the Database Column, Title dropdown on the Options dialog is used
+    Worksheets("Make layout").Calculate
+  End With
+
+End Sub
+
+Sub StoreSegmentAndSeasonalData()
+
+With [DBRef].Offset(0, [Database_Column].Value)
+    .ClearComments
+    .AddComment
+    .Comment.Visible = False
+    .Comment.Text Text:=[SegmentDataPacked].Value
+End With
+    
+    
+With [DBRef].Offset(1, [Database_Column].Value)
+    .ClearComments
+    .AddComment
+    .Comment.Visible = False
+    .Comment.Text Text:=[SeasonalDataPacked].Value
+End With
+    
+End Sub
+
+Sub EBSigma_Change() '%%01-17-01+
+  With DialogSheets("dlgOptions").EditBoxes("EBSigma")
+    If IsNumeric(.Text) Then
+      If .Text < 0 Then
+        .Text = .Text + (-.Text * 2)
+      End If
+    End If
+  End With
+End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+
+Attribute VB_Name = "Sheet10"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet11"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet12"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "SpinButton1, 153, 0, MSForms, SpinButton"
+
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet8"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "Sheet9"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private blnDoNotShowMsg As Boolean '%%03-16-01+
+
+Private Sub Workbook_Deactivate()
+Dim myworkbook As Workbook
+Dim i
+
+myScreenUpdating (False)
+If myExit = 9876 Then
+    myExit = 0
+    'Sub Auto_Close()
+    On Error GoTo AutoCloseErr
+    RestoreMenu
+
+    If (ThisWorkbook.Sheets("Database").Range("b1").Value = "Quest") Then
+        Call QuestExit(sMode:="Close")
+    End If
+    Exit Sub
+AutoCloseErr:
+    MsgBox Prompt:="Error while closing BP Chart" & Chr(13) & _
+                    Err & ": " & Error(), _
+          Buttons:=vbExclamation, _
+            Title:=ThisWorkbook.Name
+    Exit Sub
+'End Sub
+
+'    Exit Sub
+End If
+Set myworkbook = ActiveWorkbook
+
+ThisWorkbook.Activate
+'StoreComments (False)
+myExit = 9876
+
+'%%03-16-01+
+If Not OtherBPChart("", myworkbook) Then myworkbook.Activate
+'myworkbook.Activate '%%03-16-01-
+
+If Application.CutCopyMode = False Then
+    Application.Calculation = xlAutomatic
+Else
+    If Application.Calculation = xlCalculationManual Then
+        i = MsgBox("There is data on the clipboard. Do you want to keep the data?", vbYesNo, Title:=ThisWorkbook.Name)
+            If i = vbYes Then
+            MsgBox "Note: The current Excel calculation mode is manual.  This mode was retained to allow you to keep the data on the clipboard", Title:=ThisWorkbook.Name
+            Else
+            Application.Calculation = xlAutomatic
+            End If
+    End If
+End If
+
+myScreenUpdating (True)
+
+End Sub
+
+Private Sub Workbook_Open()
+  Call OtherBPChart("open this project anyway?")   '%%03-16-01+
+End Sub
+
+Private Function OtherBPChart(strMsg As String, Optional wkbCheck As Workbook) As Boolean     '%%03-16-01+
+  Dim wbk             As Workbook
+  Dim intCounter      As Integer
+  Dim intCountWbk     As Integer
+  Dim bytDialogCount  As Byte
+  
+  If Not blnDoNotShowMsg Then
+    For intCountWbk = 1 To IIf(wkbCheck Is Nothing, Application.Workbooks.Count, 1)
+      bytDialogCount = 0
+      Set wbk = IIf(wkbCheck Is Nothing, Application.Workbooks.Item(intCountWbk), wkbCheck)
+      If wbk.Name <> Application.ActiveWorkbook.Name Then
+        For intCounter = 1 To wbk.Sheets.Count
+          Select Case wbk.Sheets(intCounter).Name
+            Case Is = "Database", "I Chart", "MR Chart", "Run Chart", "Layout", "Analysis2", _
+                "dlgPrintDriver", "Analysis", "Seasons", "Make Layout", "About...", "What's New", _
+                "Rules", "dlgSelectDBColumn", "dlgXRange", "dlgOptions", "dlgYRange", "dlgGoal", _
+                "dlgLayout", "dlgLayoutOptions", "dlgManageLayouts", "dlgautotrend", "dlgCreateandCopy", _
+                "dlgPickRunCharts", "dlgPickLayouts", "dlgPickMRCharts", "dlgPickICharts", "dlgQuest"
+              bytDialogCount = bytDialogCount + 1
+          End Select
+        Next intCounter
+        If bytDialogCount > 10 Then
+          blnDoNotShowMsg = True
+          If IIf(wkbCheck Is Nothing, vbNo, vbYes) = MsgBox("A copy of the BPChart application, by a " _
+                & "different name, may already be running." & vbCrLf & _
+                vbCrLf & "Problems could occur if more than one BPChart is open at once." & _
+                vbCrLf & "Do you wish to " & IIf(strMsg = "", "close " & wbk.Name & "?", strMsg) _
+                & vbCrLf & vbCrLf & "(This message will appear only once after BPCHART is opened.)", _
+                vbQuestion + vbYesNo + IIf(wkbCheck Is Nothing, vbDefaultButton2, 0), Title:=ThisWorkbook.Name) Then
+            If Not wkbCheck Is Nothing Then
+              wkbCheck.Close
+            Else
+              Application.ActiveWorkbook.Close False
+            End If
+            OtherBPChart = True
+            Exit Function
+          End If
+        Else
+          bytDialogCount = 0
+        End If
+      End If
+    Next intCountWbk
+  End If
+  OtherBPChart = False
+End Function
+
+
+
+
+Attribute VB_Name = "UserFormMessagesAndExclude"
+Attribute VB_Base = "0{7CAECEF6-3378-4A69-98B2-00F6E5AE734A}{C2219987-2D3B-4386-8DC8-89C380B84179}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'
+'
+'|fffd| 3M 2001.
+'BPChart is intended solely for internal use within 3M.
+'No further reproduction or distribution of this software,
+'or results obtained by using the software, is permitted
+'without the express written permission of 3M|fffd| 3M 2001.
+'
+'
+Private Sub Cancel_Click()
+
+    continueWithMessageOrExclude = False
+    Unload Me
+    
+End Sub
+
+Private Sub Done_Click()
+
+    excludeThisPoint = ExcludePoint
+    messageBuffer = MessageValue
+    continueWithMessageOrExclude = True
+    
+    Unload Me
+
+    
+End Sub
+
+Private Sub UserForm_Activate()
+    continueWithMessageOrExclude = False
+    ExcludePoint = False
+    
+    If Selection.HasDataLabel Then
+        MessageValue = Selection.DataLabel.Characters.Text
+    Else
+        MessageValue = ""
+    End If
+
+End Sub
+
+Attribute VB_Name = "UserFormSegments"
+Attribute VB_Base = "0{09EC9EA5-911C-4757-9844-FEA31B3F4E8C}{77199051-A210-4CD6-8040-9253DA13CDB0}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'
+'
+'|fffd| 3M 2001.
+'BPChart is intended solely for internal use within 3M.
+'No further reproduction or distribution of this software,
+'or results obtained by using the software, is permitted
+'without the express written permission of 3M|fffd| 3M 2001.
+'
+'
+Option Explicit
+
+Private Initializing As Boolean
+
+Private Sub SigmaSegEnable(blnEnable As Boolean) '%%01-17-01+
+  Dim bytcounter As Byte
+  Dim lngBackColor As Long
+  
+  If blnEnable Then
+    lngBackColor = -2147483643
+  Else
+    lngBackColor = -2147483637
+  End If
+  
+  For bytcounter = 1 To 5
+    Me.Controls("txtSigmaSeg" & bytcounter).Enabled = blnEnable
+    Me.Controls("txtSigmaSeg" & bytcounter).BackColor = lngBackColor
+  Next bytcounter
+End Sub
+
+Private Sub CheckForNegatives(bytControl As Byte) '%%01-17-01+
+  If Not Me.ActiveControl Is Nothing Then
+    If IsNumeric(Me.Controls("txtSigmaSeg" & bytControl).Text) Then
+      If Me.Controls("txtSigmaSeg" & bytControl).Text < 0 Then
+        Me.Controls("txtSigmaSeg" & bytControl).Text = Me.ActiveControl + (-Me.ActiveControl * 2)
+      End If
+    End If
+  End If
+End Sub
+
+Private Sub txtSigmaSeg1_Change() '%%01-17-01+
+  Call CheckForNegatives(1)
+End Sub
+
+Private Sub txtSigmaSeg2_Change() '%%01-17-01+
+  Call CheckForNegatives(2)
+End Sub
+
+Private Sub txtSigmaSeg3_Change() '%%01-17-01+
+  Call CheckForNegatives(3)
+End Sub
+
+Private Sub txtSigmaSeg4_Change() '%%01-17-01+
+  Call CheckForNegatives(4)
+End Sub
+
+Private Sub txtSigmaSeg5_Change() '%%01-17-01+
+  Call CheckForNegatives(5)
+End Sub
+
+
+
+Private Sub UserForm_Initialize()
+  '%%12-28-00+ everything was moved to a procedure so that it is no longer
+  '            necessary to re-show the form when things change
+  Call SetupUserForm
+End Sub
+
+Private Sub SetupUserForm() '%%12-28-00+
+  Dim myvalue     As Long
+  Dim bytcounter  As Byte
+
+  Initializing = True
+  Application.ScreenUpdating = False
+  
+  SegCopyCurrent.Enabled = (Range("OptHist").Value <> 2) '%%01-08-01+
+  
+  Seg_Sort
+  Calculate
+  Seg_Sort
+  Calculate
+  
+  For bytcounter = 1 To 5
+  
+    If bytcounter <> 1 Then
+      Me.Controls("ComboBoxSeg" & bytcounter).Text = _
+          [segx_value].Cells([segstartindex].Cells(bytcounter) + 1)
+    End If
+    
+    'Current and history XBar values
+    Me.Controls("txtXBarCurrent" & bytcounter).Text = _
+        [segmentxbardata].Cells(bytcounter)
+    Me.Controls("txtXBarSeg" & bytcounter).Text = _
+        [segmentxbardata].Cells(bytcounter + 5)
+        
+    'Current and history Sigma values
+    Me.Controls("txtSigmacurrent" & bytcounter).Text = _
+        [segmentshatdata].Cells(bytcounter)
+    Me.Controls("txtSigmaSeg" & bytcounter).Text = _
+        [segmentshatdata].Cells(bytcounter + 5)
+  Next bytcounter
+  
+  'Me.chkSegmentsForVariation = [optsegsigma] '%%01-17-01-
+  
+  Me.famSegSigma.Controls("opt" & [optsegsigma]) = True '%%01-17-01+
+  Call SigmaSegEnable([optsegsigma]) '%%01-17-01+
+  
+  Application.ScreenUpdating = True
+  Initializing = False
+End Sub
+
+Private Sub Combo_Action(bytIndex As Byte)
+  Dim mycombobox As String
+  Dim mylistindex As Integer
+  Dim bytcounter As Byte
+  
+  'If Range("OptHist").Value = 2 Then '%%01-03-01+
+  '  Initializing = True
+  '  Me.Controls("ComboBoxSeg" & bytIndex).Text = _
+          [segx_value].Cells([segstartindex].Cells(bytIndex) + 1)
+  '  MsgBox "Can't change step starts while Centerline & Limits Based on: History is Selected", vbOKOnly, Title:=ThisWorkbook.Name
+  '  Initializing = False
+  '  Exit Sub
+  'End If
+  
+  mycombobox = "comboboxseg" & bytIndex
+  mylistindex = Me.Controls(mycombobox).ListIndex
+  
+  If mylistindex <> -1 Then
+    For bytcounter = 1 To 5
+      If (Me.Controls(mycombobox).Text = Me.Controls("comboboxseg" & bytcounter).Text) And _
+          (bytIndex <> bytcounter) And (Me.Controls(mycombobox).Text <> "--") Then
+        MsgBox "An existing step already starts at " & Me.Controls(mycombobox).Text _
+            & "." & vbCrLf & "Please make another selection.", vbInformation + vbOKOnly, Title:=ThisWorkbook.Name
+        Initializing = True
+        Me.Controls(mycombobox).Text = [segstartvalue].Cells(bytIndex)
+        Initializing = False
+        Exit Sub
+      End If
+    Next bytcounter
+  End If
+  
+  [segstartindex].Cells(bytIndex) = mylistindex
+  
+  [segstartvalue].Cells(bytIndex) = [segx_value].Cells(mylistindex + 1)
+ 
+  'Me.Controls(mycombobox).Text = [segx_value].Cells(mylistindex + 1)'%%12-28-00-
+  
+  'Unload Me '%%12-28-00-
+  'Calculate '%%12-28-00-
+  'Seg_Sort '%%12-28-00-
+  'UserFormSegments.Show '%%12-28-00-
+
+
+  Call SetupUserForm
+  
+  Application.ScreenUpdating = False
+  Call Update_Axes_and_Comments("I Chart")
+  Application.ScreenUpdating = True
+End Sub
+
+Private Sub butAcceptSegHistory_Click() '%%12-28-00+
+  Dim bytIndex As Byte
+  Dim bytTrend As Byte
+  Dim bytOptTrendBefore As Byte
+  
+  
+   For bytIndex = 1 To 5
+    [segxbarmanual].Cells(bytIndex) = Me.Controls("txtXBarSeg" & bytIndex).Text
+    [segsigmamanual].Cells(bytIndex) = Me.Controls("txtSigmaSeg" & bytIndex).Text
+   Next bytIndex
+  
+  '%%01-17-01  If the other option is used.......
+  'If Not ([DBRef].Offset(8, [Database_Column].Value).Comment Is Nothing) Then
+  '    With [DBRef].Offset(8, [Database_Column].Value)
+   '     bytOptTrendBefore = Mid$(.Comment.Text, 14, Len(.Comment.Text) - 12)
+   '   End With
+   'Else
+  '   bytOptTrendBefore = [trendtype]
+  ' End If
+   
+  Call EB_Change
+  
+  '%%01-17-01- These lines were being used to change the trendtype and method of variation
+  '            back to what they were in history, if they were different
+  '%%01-08-01+
+  '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  'If Not ([DBRef].Offset(8, [Database_Column].Value).Comment Is Nothing) Then
+  '  With [DBRef].Offset(8, [Database_Column].Value)
+  '    bytTrend = Mid$(.Comment.Text, 14, Len(.Comment.Text) - 12)
+  '  End With
+  ' If (bytOptTrendBefore <> 5) And (bytOptTrendBefore <> 4) Then
+  '    Call butDone_Click
+  '  Else
+  '    Call SetupUserForm
+  '  End If
+  'Else
+    Call SetupUserForm
+  'End If
+  '%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  
+  
+End Sub
+
+Private Sub optFalse_Click()
+  If [optsegsigma] = False Then Exit Sub
+  [optsegsigma] = False
+  Call Trend_Click(True)
+  Call SigmaSegEnable(False)
+End Sub
+
+Private Sub optTrue_Click()
+  If [optsegsigma] = True Then Exit Sub
+  [optsegsigma] = True
+  Call Trend_Click(True)
+  Call SigmaSegEnable(True)
+End Sub
+
+Private Sub ComboBoxSeg2_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+' trap a delete, backspace, back arrow
+If Len(ComboBoxSeg2.Text) < 2 Or InStr(1, "46 8 37", KeyCode, 1) > 0 Then
+    Initializing = True
+    ComboBoxSeg2.Text = "--"
+    Initializing = False
+End If
+Combo_Action (2)
+End Sub
+Private Sub ComboBoxSeg3_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+If Len(ComboBoxSeg3.Text) < 2 Or InStr(1, "46 8 37", KeyCode, 1) > 0 Then
+    Initializing = True
+    ComboBoxSeg3.Text = "--"
+    Initializing = False
+End If
+Combo_Action (3)
+End Sub
+Private Sub ComboBoxSeg4_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+If Len(ComboBoxSeg4.Text) < 2 Or InStr(1, "46 8 37", KeyCode, 1) > 0 Then
+    Initializing = True
+    ComboBoxSeg4.Text = "--"
+    Initializing = False
+    '%%01-08-01- Exit Sub
+End If
+Combo_Action (4)
+End Sub
+Private Sub ComboBoxSeg5_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+If Len(ComboBoxSeg5.Text) < 2 Or InStr(1, "46 8 37", KeyCode, 1) > 0 Then
+    Initializing = True
+    ComboBoxSeg5.Text = "--"
+    Initializing = False
+End If
+Combo_Action (5)
+End Sub
+
+Private Sub ComboBoxSeg2_Change()
+  If Initializing Then Exit Sub
+  Combo_Action (2)
+End Sub
+Private Sub ComboBoxSeg3_Change()
+  If Initializing Then Exit Sub
+  Combo_Action (3)
+End Sub
+Private Sub ComboBoxSeg4_Change()
+  If Initializing Then Exit Sub
+  Combo_Action (4)
+End Sub
+Private Sub ComboBoxSeg5_Change()
+  If Initializing Then Exit Sub
+  Combo_Action (5)
+End Sub
+
+Private Sub SegCopyCurrent_Click()
+  Call butCopyCurrent
+  Call SetupUserForm
+End Sub
+
+Private Sub butDone_Click()
+  FormSegTop = Me.Top
+  FormSegLeft = Me.Left
+  Unload Me
+End Sub
+
+
+
+
+
+Attribute VB_Name = "UserFormSettings"
+Attribute VB_Base = "0{7AACB4FC-D1D3-4C9B-AC27-2739E32129C1}{8A81FC9C-E279-4E63-B112-11C09E4B6DF9}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+'
+'
+'|fffd| 3M 2001.
+'BPChart is intended solely for internal use within 3M.
+'No further reproduction or distribution of this software,
+'or results obtained by using the software, is permitted
+'without the express written permission of 3M|fffd| 3M 2001.
+'
+'
+
+Private Sub CheckBox2_AfterUpdate()
+    If Range("Displaycomments").Value Then
+        GetComments
+    Else
+    '!!!need to decide if this is needed
+        'StoreComments (True)
+    End If
+End Sub
+
+Private Sub CommandButton1_Click()
+Unload Me
+End Sub
+
+Private Sub CommandButton2_Click()
+'panic button
+Dim mysheet
+Set mysheet = ActiveSheet
+Unload Me
+Application.Run "Auto_Open"
+
+End Sub
+
+Private Sub CommandButton3_Click()
+HandlePrinterDriver (True)
+gapp.ScreenUpdating = True '%%03-16-01+
+End Sub
+
+
+' InQuest injected base64 decoded content
+' Z+a1
+' jw[j
+
+INQUEST-PP=macro

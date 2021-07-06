@@ -1,0 +1,904 @@
+Attribute VB_Name = "DieseArbeitsmappe"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+    Call Main.Main
+End Sub
+Attribute VB_Name = "Main"
+Option Explicit
+
+'----------------------------------------------
+' Konstanten
+Private Const TAB_PROPERTIES As String = "properties"
+Private Const TAB_EMPLOYEE As String = "employee"
+Private Const TAB_REPORTING As String = "reporting"
+
+'-----------------------------
+' Main Methode
+'-----------------------------
+Public Sub Main()
+Dim objNeuBlatt As Worksheet
+      
+   'Falls die Vorlage aufgemacht wurde, darf kein Makro ausgef|fffd|hrt werden
+    If isRunMacroAllowed() = True Then
+        'Einen neuen Blatt erstellen
+        Set objNeuBlatt = Worksheets.Add(before:=Sheets(1))
+        objNeuBlatt.Name = "reporting"
+        
+        Call checkOptions
+        
+        'Daten kopieren und Auswerten
+        Call Report.createReport(2, 1) 'TODO Erweitern
+               
+    End If
+End Sub
+
+'-----------------------------------------------
+' Pr|fffd|ft, ob dieses Macro ausgef|fffd|hrt werden darf
+'
+' Falls Bl|fffd|ter mit Namen aus Konstanten TAB_PROPERTIES
+' und TAB_REPORTING existieren, dann darf kein Macro
+' mehr ausgef|fffd|hrt werden
+'-----------------------------------------------
+Private Function isRunMacroAllowed() As Boolean
+Dim iIndex As Integer
+isRunMacroAllowed = True
+
+    'Suche alle Bl|fffd|ter durch
+    For iIndex = 1 To Sheets.Count
+        If Sheets(iIndex).Name = TAB_PROPERTIES Or Sheets(iIndex).Name = TAB_REPORTING Then
+            isRunMacroAllowed = False
+            Exit For '=> Abbrechen
+        End If
+    Next iIndex
+
+End Function
+
+'-----------------------------------------------
+'Passt die Einstellungen f|fffd|r Berechnungen und Anzeige an
+'-----------------------------------------------
+Private Sub checkOptions()
+
+    '1904-Datumswerte aktivieren
+    Application.ThisWorkbook.Date1904 = True
+
+End Sub
+
+
+
+
+Attribute VB_Name = "Report"
+Option Explicit
+
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Version 02: Bug behoben, wenn |fffd|brer 65536 Zeilen in Excel benutzt werden.
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Version 03: Bug behoben, die Funktion checkDate hat nicht richtig funktioniert
+
+
+
+
+
+''''''''''''''''''''''''''''
+'Konstanten
+''''''''''''''''''''''''''''
+
+'Spaltenbezeichnungen der Eingangsdaten
+Private Const InputColumnMonth              As String = "date.month"
+Private Const InputColumnDay                As String = "date.day"
+Private Const InputColumnEmpSurname         As String = "employee.surname"
+Private Const InputColumnEmpFirstName       As String = "employee.first name"
+Private Const InputColumnEmpRemainingLeave  As String = "employee.remaining leave"
+Private Const InputColumnBookingType        As String = "booking.type"
+Private Const InputColumnProfileType        As String = "wh prifile.type"
+Private Const InputColumnBookingAccount     As String = "booking.account"
+Private Const InputColumnLeaveValue         As String = "leave.value"
+Private Const InputColumnSubtotalRemainingLeave As String = "subtotal.remaining leave"
+Private Const InputColumnSubtotalLeave      As String = "subtotal.leave"
+
+
+'Positionen
+Private Const IndexOutputColumnEmpSurname           As String = "A"
+Private Const IndexOutputColumnEmpFirstName         As String = "B"
+Private Const IndexOutputColumnEmpJahresurlaub      As String = "D"
+Private Const IndexOutputColumnEmpUrlaubVortrag     As String = "C"
+Private Const IndexOutputColumnEmpGenommen          As String = "E"
+Private Const IndexOutputColumnEmpSaldoHeute        As String = "F"
+Private Const IndexOutputColumnEmpGeplant           As String = "G"
+Private Const IndexOutputColumnEmpVerfuegbar        As String = "H"
+
+Private Const IndexOutputFirstColumn         As String = IndexOutputColumnEmpSurname
+Private Const IndexOutputLastColumn          As String = IndexOutputColumnEmpVerfuegbar
+
+Private Const FlexitimeFormat                As String = "[h]:mm;[Red]-[h]:mm;"
+
+'''''''''''''''''''''
+'Variablen
+'''''''''''''''''''''
+Private m_SummeGeplanterUrlaub As Double
+
+Private m_currDate As Date
+
+Private m_firstMonth As Boolean
+
+Private m_secondMonth As Boolean
+
+Private m_dateToday As Date
+
+Private m_dateCurrMonth As Date
+
+Private m_firstMonthRemainingLeave As Double
+
+Private m_secondMonthRemainingLeave As Double
+
+Private m_secondMonthTakenHoliday As Double
+
+Private m_anualHoliday As Double
+
+'Zeitraumberechnung
+Private m_bZeitraumGesetzt As Boolean
+Private m_bDateFromGesetzt As Boolean
+Private m_dateFrom As Date
+Private m_dateTo As Date
+
+
+'Urlaub
+Private m_Holiday As Double
+
+'Referenz auf den Blatt mit Eingangsdaten
+Private m_whInputSheet As Worksheet
+
+'Referenz auf den Blatt f|fffd|r Reportgenerierung
+Private m_whOutputSheet As Worksheet
+
+'Lesezeiger f|fffd|r die Zeilen
+Private m_lngCurrReadRow As Long
+
+'Schreibzeiger f|fffd|r die Zeilen
+Private m_lngCurrWriteRow As Long
+
+Private m_lastMonthRemainingLeave As Double
+
+'Resturlaub letztes Jahr
+Private m_remainingLeaveLastYear As Double
+
+'Variablen f|fffd|r Y-Koordinate der Spalten in Eingangsdaten-Blatt
+Private m_indexInputColumnMonth             As String
+Private m_indexInputColumnDay               As String
+Private m_indexInputColumnEmpSurname        As String
+Private m_indexInputColumnEmpFirstName      As String
+Private m_indexInputColumnEmpRemainingLeave As String
+Private m_indexInputColumnBookingType       As String
+Private m_indexInputColumnProfileType       As String
+Private m_indexInputColumnBookingAccount    As String
+Private m_indexInputColumnLeaveValue        As String
+Private m_indexInputColumnSubtotalRemainingLeave As String
+Private m_indexInputColumnSubtotalLeave     As String
+
+
+
+'-----------------------------------------------
+' Startet  die Auswertung der Daten
+'-----------------------------------------------
+Public Function createReport(ByVal iInputSheet As Integer, ByVal iOutputSheet As Integer)
+
+Dim strText As String
+
+
+    Set m_whInputSheet = Sheets(iInputSheet)
+    Set m_whOutputSheet = Sheets(iOutputSheet)
+    
+    'setzt das heutige Datum
+    m_dateToday = Date
+    
+    
+    Call initCurrReadRow
+    Call initCurrWriteRow
+    Call readColumnIndices
+        
+    'Header-Zeile erstellen
+    Call createHeader
+
+    'Daten erzeugen
+    While hasNextEmployee()
+        Call nextReadRow
+        Call calculateEmployeeRow
+        
+        While hasNextMonthData()
+            Call nextReadRow
+            Call calculateMonthDataRow
+        
+            While hasNextDataLine()
+                Call nextReadRow
+                Call calculateDataRow
+                
+                While hasNextSubDataLine()
+                    Call nextReadRow
+                    Call calculateSubDataRow
+                Wend
+                
+                Call completeDataRow
+            Wend
+            
+            Call completeMonthDataRow
+        Wend
+        
+        Call completeEmployeeRow
+    Wend
+    
+    'pr|fffd|ft ob ein korrekter Zeitraum ausgewertet wurde.
+    Call checkPeriod
+        
+    'Tabellenkopf schreiben
+    Call writeTableHead
+    
+    Call nextWriteRow
+
+    'Nur noch Selektion auf die erste Zelle setzen und fertig
+    m_whOutputSheet.Select
+    Range("A1").Select
+    
+    m_whOutputSheet.PageSetup.Orientation = xlLandscape
+End Function
+
+'''''''''''''''''''''''''''''''''''''''''''
+'
+' Erstellt und formatiert die Headerzeile
+'
+'''''''''''''''''''''''''''''''''''''''''''
+Private Function createHeader()
+Dim lIndexRow As Long
+    m_whOutputSheet.Select
+    
+    lIndexRow = getCurrWriteRow()
+
+  
+    Range(IndexOutputFirstColumn & lIndexRow & ":" & IndexOutputLastColumn & lIndexRow).Select
+    'Schriftart festlegen
+    With Selection.Font
+            .Name = "Arial"
+            .Size = 10
+            .Strikethrough = False
+            .Superscript = False
+            .Subscript = False
+            .OutlineFont = False
+            .Shadow = False
+            .Underline = xlUnderlineStyleNone
+            .ColorIndex = 1
+            .Bold = True
+    End With
+    
+    'Ramen definieren
+    Selection.Borders(xlDiagonalDown).LineStyle = xlNone
+    Selection.Borders(xlDiagonalUp).LineStyle = xlNone
+    With Selection.Borders(xlEdgeLeft)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeTop)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeBottom)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlEdgeRight)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With Selection.Borders(xlInsideVertical)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+
+    'Spaltengr|fffd||fffd|e festlegen
+    Columns(IndexOutputColumnEmpFirstName & ":" & IndexOutputColumnEmpSurname).ColumnWidth = 19
+    Columns(IndexOutputColumnEmpJahresurlaub & ":" & IndexOutputColumnEmpVerfuegbar).ColumnWidth = 14
+    
+    'Ausf|fffd|hrungsdatum
+    Range(IndexOutputColumnEmpVerfuegbar & lIndexRow - 2).Value = m_dateToday
+    
+End Function
+''''''''''''''''''''''''''''''''''''''
+'Liest die Positonen der Input-Datenspalten
+''''''''''''''''''''''''''''''''''''''
+Private Function readColumnIndices()
+Dim byteCountColumn, byteCurrColumn As Byte
+Dim lngRow As Long
+    
+    lngRow = getCurrReadRow()
+    byteCountColumn = m_whInputSheet.Cells(lngRow, Columns.Count).End(xlToLeft).Column
+    For byteCurrColumn = 1 To byteCountColumn
+    
+    Select Case m_whInputSheet.Cells(lngRow, byteCurrColumn)
+        Case InputColumnMonth
+            m_indexInputColumnMonth = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnDay
+            m_indexInputColumnDay = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnEmpSurname
+            m_indexInputColumnEmpSurname = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnEmpFirstName
+            m_indexInputColumnEmpFirstName = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnEmpRemainingLeave
+            m_indexInputColumnEmpRemainingLeave = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnProfileType
+            m_indexInputColumnProfileType = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnBookingType
+            m_indexInputColumnBookingType = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnBookingAccount
+            m_indexInputColumnBookingAccount = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnLeaveValue
+            m_indexInputColumnLeaveValue = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnSubtotalRemainingLeave
+            m_indexInputColumnSubtotalRemainingLeave = Utils.columnNumberToString(byteCurrColumn)
+        Case InputColumnSubtotalLeave
+            m_indexInputColumnSubtotalLeave = Utils.columnNumberToString(byteCurrColumn)
+            
+        End Select
+    Next byteCurrColumn
+    
+End Function
+
+
+'''''''''''''''''''''''''''''''''''
+'
+' Setzt Lesezeiger auf den Anfang der Datei
+'
+'''''''''''''''''''''''''''''''''''
+Private Function initCurrReadRow() As Long
+    m_lngCurrReadRow = 2
+    initCurrReadRow = m_lngCurrReadRow
+End Function
+'''''''''''''''''''''''''''''''''''
+'
+' Liefert den Wert des Lesezeigers zur|fffd|ck
+'
+'''''''''''''''''''''''''''''''''''
+Private Function getCurrReadRow() As Long
+    getCurrReadRow = m_lngCurrReadRow
+End Function
+''''''''''''''''''''''''''''''''''''
+'
+' Lesezeiger wird auf die n|fffd|chste Zeile gesetzt
+'
+''''''''''''''''''''''''''''''''''''
+Private Function nextReadRow() As Long
+    m_lngCurrReadRow = m_lngCurrReadRow + 1
+    nextReadRow = m_lngCurrReadRow
+End Function
+
+'''''''''''''''''''''''''''''''''''''
+'
+' Pr|fffd|ft, ob die n|fffd|chste Zeile untergeordnete Daten enth|fffd|lt
+'
+'''''''''''''''''''''''''''''''''''''
+Private Function hasNextSubDataLine() As Boolean
+Dim lngRow As Long
+    
+    hasNextSubDataLine = False
+    Call checkChangeover
+    lngRow = getCurrReadRow() + 1
+    
+    'Falls in der Spalte InputColumnMonth kein Zeichen "#" steht
+    'und die Splate InputColumnDay leer ist, dann
+    'handelt es sich um eine untergeordnete Datenzeile
+    
+    If (m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) = "") _
+        And (m_whInputSheet.Range(m_indexInputColumnDay & lngRow) = "") Then
+        hasNextSubDataLine = True
+    End If
+End Function
+
+''''''''''''''''''''''''''''''''''''
+'
+' Pr|fffd|ft, ob die n|fffd|chste Zeile Daten enth|fffd|lt
+'
+''''''''''''''''''''''''''''''''''''
+Private Function hasNextDataLine() As Boolean
+Dim lngRow As Long
+
+    hasNextDataLine = False
+    Call checkChangeover
+    lngRow = getCurrReadRow() + 1
+    
+    'Falls in der Spalte InputColumnMonth kein Zeichen "#" steht
+    'und die Splate InputColumnDay nicht leer ist, dann
+    'handelt es sich um eine Datenzeile
+    If (m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) <> "#") _
+        And (m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) <> "##") _
+        And (m_whInputSheet.Range(m_indexInputColumnDay & lngRow) <> "") Then
+        hasNextDataLine = True
+    End If
+    
+    
+End Function
+''''''''''''''''''''''''''''''''''''
+'
+'Pr|fffd|ft, ob die n|fffd|chste Zeile eine Mitarbeiter-Kopfzeile ist
+'
+''''''''''''''''''''''''''''''''''''
+Private Function hasNextEmployee() As Boolean
+Dim lngRow As Long
+    'Ablauf:
+    'N|fffd|chste Zeile lesen und |fffd|berpr|fffd|fen, ob in der Spalte ColumnMonth Zeicheb '#' steht
+    'Falls dies der Fall ist
+    
+    hasNextEmployee = False
+    Call checkChangeover
+    lngRow = getCurrReadRow() + 1
+        
+    If m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) = "#" Then
+        hasNextEmployee = True
+    End If
+    
+End Function
+
+''''''''''''''''''''''''''''''''''''
+'
+'Pr|fffd|ft, ob die n|fffd|chste Zeile eine Monats-Kopfzeile ist
+'
+''''''''''''''''''''''''''''''''''''
+Private Function hasNextMonthData() As Boolean
+Dim lngRow As Long
+    
+    hasNextMonthData = False
+    Call checkChangeover
+    lngRow = getCurrReadRow() + 1
+        
+    If (m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) <> "#") _
+       And (m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) <> "##") _
+       And (m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) <> "") _
+       And (m_whInputSheet.Range(m_indexInputColumnDay & lngRow) = "") Then
+        hasNextMonthData = True
+    End If
+    
+End Function
+
+
+'''''''''''''''''''''''''''''''''''
+'
+' Setzt Lesezeiger auf den Anfang der Datei
+'
+'''''''''''''''''''''''''''''''''''
+Private Function initCurrWriteRow() As Long
+    m_lngCurrWriteRow = 4
+     initCurrWriteRow = m_lngCurrWriteRow
+End Function
+'''''''''''''''''''''''''''''''''''
+'
+' Liefert den Wert des Lesezeigers zur|fffd|ck
+'
+'''''''''''''''''''''''''''''''''''
+Private Function getCurrWriteRow() As Long
+    getCurrWriteRow = m_lngCurrWriteRow
+End Function
+''''''''''''''''''''''''''''''''''''
+'
+' Lesezeiger wird auf die n|fffd|chste Zeile gesetzt
+'
+''''''''''''''''''''''''''''''''''''
+Private Function nextWriteRow() As Long
+    
+    With m_whOutputSheet.Range _
+    (IndexOutputFirstColumn & m_lngCurrWriteRow & ":" & IndexOutputLastColumn & m_lngCurrWriteRow). _
+    Borders(xlEdgeLeft)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    With m_whOutputSheet.Range _
+    (IndexOutputFirstColumn & m_lngCurrWriteRow & ":" & IndexOutputLastColumn & m_lngCurrWriteRow). _
+    Borders(xlEdgeRight)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    
+    With m_whOutputSheet.Range _
+        (IndexOutputFirstColumn & m_lngCurrWriteRow & ":" & IndexOutputLastColumn & m_lngCurrWriteRow). _
+        Borders(xlInsideVertical)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    
+    With m_whOutputSheet.Range _
+        (IndexOutputFirstColumn & m_lngCurrWriteRow & ":" & IndexOutputLastColumn & m_lngCurrWriteRow). _
+        Borders(xlEdgeTop)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    
+    With m_whOutputSheet.Range _
+        (IndexOutputFirstColumn & m_lngCurrWriteRow & ":" & IndexOutputLastColumn & m_lngCurrWriteRow). _
+        Borders(xlEdgeBottom)
+        .LineStyle = xlDouble
+        .Weight = xlThin
+        .ColorIndex = xlAutomatic
+    End With
+    
+    
+    m_lngCurrWriteRow = m_lngCurrWriteRow + 1
+    nextWriteRow = m_lngCurrWriteRow
+End Function
+
+
+''''''''''''''''''''''''''''''''''''
+'
+' Erstellt Mitarbeiterzeile
+'
+''''''''''''''''''''''''''''''''''''
+Private Function calculateEmployeeRow()
+Dim lWriteIndex, lReadIndex As Long
+
+    lReadIndex = getCurrReadRow()
+    lWriteIndex = nextWriteRow()
+    
+    'Variablen zur|fffd|cksetzten
+    m_SummeGeplanterUrlaub = 0
+    m_firstMonth = True
+    m_secondMonth = True
+    m_firstMonthRemainingLeave = 0
+    m_secondMonthRemainingLeave = 0
+    m_secondMonthTakenHoliday = 0
+    m_anualHoliday = 0
+    m_lastMonthRemainingLeave = 0
+    m_remainingLeaveLastYear = 0
+    m_Holiday = 0
+        
+    'Name
+    m_whInputSheet.Range(m_indexInputColumnEmpSurname & lReadIndex).Copy
+    m_whOutputSheet.Range(IndexOutputColumnEmpSurname & lWriteIndex).PasteSpecial
+    
+    'Vorname
+    m_whInputSheet.Range(m_indexInputColumnEmpFirstName & lReadIndex).Copy
+    m_whOutputSheet.Range(IndexOutputColumnEmpFirstName & lWriteIndex).PasteSpecial
+        
+    'Saldo heute
+    m_whInputSheet.Range(m_indexInputColumnEmpRemainingLeave & lReadIndex).Copy
+    m_whOutputSheet.Range(IndexOutputColumnEmpSaldoHeute & lWriteIndex).PasteSpecial
+    
+    m_whOutputSheet.Range(IndexOutputColumnEmpSaldoHeute & lWriteIndex).NumberFormat = "0.0"
+    
+End Function
+
+''''''''''''''''''''''''''''''''''''
+'
+' Monatswerte Auswerten
+'
+''''''''''''''''''''''''''''''''''''
+Private Function calculateMonthDataRow()
+Dim lReadIndex As Long
+Dim lWriteIndex As Long
+Dim saldo As Double
+Dim monthRemainingLeave As Double
+Dim monthTakenHolidays As Double
+
+    lReadIndex = getCurrReadRow
+    lWriteIndex = getCurrWriteRow
+    
+    monthTakenHolidays = m_whInputSheet.Range(m_indexInputColumnSubtotalLeave & lReadIndex).Value2
+    monthRemainingLeave = m_whInputSheet.Range(m_indexInputColumnSubtotalRemainingLeave & lReadIndex).Value2
+    
+    'die Tage vom Dezember des Vorjahres werden nicht mitgerechnet.
+    If m_firstMonth = False Then
+        m_anualHoliday = m_anualHoliday + (monthRemainingLeave - m_lastMonthRemainingLeave + monthTakenHolidays)
+        m_Holiday = m_Holiday + monthTakenHolidays
+    Else
+        'der Resturlaub aus dem letzten Jahr.
+        m_remainingLeaveLastYear = monthRemainingLeave
+    End If
+    
+    m_firstMonth = False
+    m_lastMonthRemainingLeave = m_whInputSheet.Range(m_indexInputColumnSubtotalRemainingLeave & lReadIndex).Value2
+    m_dateCurrMonth = CDate(m_whInputSheet.Range(m_indexInputColumnMonth & lReadIndex).Value)
+
+End Function
+
+
+''''''''''''''''''''''''''''''''''''
+'
+' Erstellt Datenzeile
+'
+''''''''''''''''''''''''''''''''''''
+Private Function calculateDataRow()
+Dim lWriteIndex, lReadIndex As Long
+Dim iDay As Integer
+
+    lReadIndex = getCurrReadRow()
+
+    iDay = CInt(m_whInputSheet.Range(m_indexInputColumnDay & lReadIndex).Value) - 1
+   
+   'Zeitraum Berechnung
+    If m_bZeitraumGesetzt = False Then
+        If m_bDateFromGesetzt = False Then
+            m_dateFrom = DateAdd("d", m_dateCurrMonth, iDay)
+            m_bDateFromGesetzt = True
+        End If
+        
+        m_dateTo = DateAdd("d", m_dateCurrMonth, iDay)
+    End If
+   
+    
+    m_currDate = DateAdd("d", m_dateCurrMonth, iDay)
+  
+End Function
+
+
+Private Function calculateSubDataRow()
+    Dim lReadIndex As Long
+
+    lReadIndex = getCurrReadRow
+    
+    'Geplanten Urlaub summieren
+    If checkDate(m_currDate) Then
+        If m_whInputSheet.Range(m_indexInputColumnBookingAccount & lReadIndex).Value2 = "HOL" Then
+            If m_whInputSheet.Range(m_indexInputColumnBookingType & lReadIndex).Value2 = "ABWD" Then
+                m_SummeGeplanterUrlaub = m_SummeGeplanterUrlaub + 1
+            End If
+    
+            If m_whInputSheet.Range(m_indexInputColumnBookingType & lReadIndex).Value2 = "ABHD" Then
+                m_SummeGeplanterUrlaub = m_SummeGeplanterUrlaub + 0.5
+            End If
+        End If
+    End If
+    
+End Function
+'''''''''''''''''''''''''''''''''''''
+' Hier k|fffd|nnen Summen f|fffd|r einen Mitarbeiter gebildet werden
+'''''''''''''''''''''''''''''''''''''
+Private Function completeEmployeeRow()
+    Dim lWriteIndex As Long
+    
+    lWriteIndex = getCurrWriteRow
+    
+    'Geplanter Urlaub
+    m_whOutputSheet.Range(IndexOutputColumnEmpGeplant & lWriteIndex).Value = m_SummeGeplanterUrlaub
+  
+    'Genommener Urlaub
+    m_whOutputSheet.Range(IndexOutputColumnEmpGenommen & lWriteIndex).Value = m_Holiday
+    
+    'Verf|fffd|gbarer Urlaub
+    m_whOutputSheet.Range(IndexOutputColumnEmpVerfuegbar & lWriteIndex).Value2 = _
+        m_whOutputSheet.Range(IndexOutputColumnEmpSaldoHeute & lWriteIndex).Value2 - _
+        m_whOutputSheet.Range(IndexOutputColumnEmpGeplant & lWriteIndex).Value2
+        
+    'Urlaub Vortrag
+    m_whOutputSheet.Range(IndexOutputColumnEmpUrlaubVortrag & lWriteIndex).Value2 = _
+        m_remainingLeaveLastYear
+        
+    'JahresUrlaub
+    m_whOutputSheet.Range(IndexOutputColumnEmpJahresurlaub & lWriteIndex).Value2 = _
+        m_anualHoliday
+    
+    
+    'Zeitraum schreiben
+    If m_bZeitraumGesetzt = False Then
+        m_bZeitraumGesetzt = True
+    End If
+    
+    
+    Call nextReadRow
+    
+End Function
+
+Private Function completeMonthDataRow()
+
+End Function
+
+'''''''''''''''''''''''''''''''''''''
+'Hier k|fffd|nnen Zwischensummen gebildet werden
+'''''''''''''''''''''''''''''''''''''
+Private Function completeDataRow()
+    
+End Function
+
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''
+' |fffd|berpr|fffd|ft, ob das |fffd|bergebene Datum nach dem Auswertungszeitraum ist
+'
+'''''''''''''''''''''''''''''''''''''''''''''''
+Private Function checkDate(ByVal dateInput As Date) As Boolean
+    'true wenn das Datum nach dem heutigen datum ist
+    checkDate = False
+    
+    If dateInput > m_dateToday Then
+    
+    
+'    If Month(dateInput) >= Month(m_dateToday) _
+'        And Day(dateInput) >= Day(m_dateToday) _
+'        And Year(dateInput) = Year(m_dateToday) Then
+            checkDate = True
+    End If
+    
+End Function
+
+'''''''''''''''''''''''''''''''''''''''''''''''
+' |fffd|berpr|fffd|ft, ob ein korrekter Zeitraum ausgew|fffd|hlt wurde.
+'
+'''''''''''''''''''''''''''''''''''''''''''''''
+Private Function checkPeriod()
+    
+    Dim text As String
+    
+    If Month(m_dateFrom) = 12 _
+        And Day(m_dateFrom) = 31 _
+        And Year(m_dateFrom) = (Year(m_dateTo) - 1) _
+        And Month(m_dateTo) = 12 _
+        And Day(m_dateTo) = 31 Then
+                    
+            'Call writePeriod
+    
+    Else
+    
+        text = "Es wurde kein g|fffd|ltiger Zeitraum ausgew|fffd|hlt." & vbCrLf _
+               & "Der Zeitraum muss vom 31.12 des Vorjahres" & vbCrLf _
+               & "bis zum 31.12. diesen Jahres gew|fffd|hlt werden." & vbCrLf & vbCrLf _
+               & "Bitte starten Sie die Auswertung erneut mit einem g|fffd|ltigen Zeitraum."
+               
+
+        If MsgBox(text, vbCritical, "Falscher Zeitraum") = vbOK Then
+            Application.DisplayAlerts = False
+            ActiveWorkbook.Close
+        End If
+        
+        
+    
+    End If
+    
+End Function
+
+
+'''''''''''''''''''''''''''''''''''''''''''''''
+' |fffd|berpr|fffd|ft, ob ein korrekter Zeitraum ausgew|fffd|hlt wurde.
+'
+'''''''''''''''''''''''''''''''''''''''''''''''
+Private Function writeTableHead()
+    Dim headerRow As Integer
+    Dim strText As String
+    
+    headerRow = 4
+
+    '|fffd|berschrift
+    m_whOutputSheet.Range(IndexOutputColumnEmpSurname & 1).Value2 = "|fffd|bersicht Jahresurlaub"
+    
+    m_whOutputSheet.Range(IndexOutputColumnEmpSurname & 1).Select
+    'Schriftart festlegen
+    With Selection.Font
+            .Name = "Arial"
+            .Size = 12
+            .Strikethrough = False
+            .Superscript = False
+            .Subscript = False
+            .OutlineFont = False
+            .Shadow = False
+            .Underline = xlUnderlineStyleNone
+            .ColorIndex = 1
+            .Bold = True
+    End With
+    
+    
+
+    'Spaltennamen vergeben
+    Range(IndexOutputColumnEmpSurname & headerRow).Value = "Nachname"
+    Range(IndexOutputColumnEmpFirstName & headerRow).Value = "Vorname"
+    Range(IndexOutputColumnEmpJahresurlaub & headerRow).Value = "Jahresurlaub" & Chr(10) & Year(m_dateTo) & Chr(10) & "(Tage)"
+    Range(IndexOutputColumnEmpUrlaubVortrag & headerRow).Value = "Resturlaub" & Chr(10) & Year(m_dateFrom) & Chr(10) & "(Tage)"
+    Range(IndexOutputColumnEmpGenommen & headerRow).Value = "Genommener" & Chr(10) & "Urlaub" & Chr(10) & "(Tage)"
+    Range(IndexOutputColumnEmpSaldoHeute & headerRow).Value = "Resturlaub" & Chr(10) & m_dateToday & Chr(10) & "(Tage)"
+    Range(IndexOutputColumnEmpGeplant & headerRow).Value = "Geplanter" & Chr(10) & "Urlaub" & Chr(10) & "(Tage)"
+    Range(IndexOutputColumnEmpVerfuegbar & headerRow).Value = "Verf|fffd|gbarer" & Chr(10) & "Urlaub" & Chr(10) & "(Tage)"
+
+    'Zeitraum setzen
+    m_whOutputSheet.Range(IndexOutputColumnEmpSurname & 2).Value2 = "Zeitraum:"
+    
+    strText = Format(m_dateFrom, "dd.mm.yyyy")
+    strText = strText + " - "
+    strText = strText + Format(m_dateTo, "dd.mm.yyyy")
+    
+    m_whOutputSheet.Range(IndexOutputColumnEmpFirstName & 2).NumberFormat = "@"
+    m_whOutputSheet.Range(IndexOutputColumnEmpFirstName & 2).Value2 = strText
+
+End Function
+
+
+Private Function checkChangeover()
+Dim lngRow As Long
+Dim strSheet As String
+
+    lngRow = getCurrReadRow() + 1
+        
+    If (m_whInputSheet.Range(m_indexInputColumnMonth & lngRow) = "changeover") Then
+    'Tabelle wechseln
+        strSheet = m_whInputSheet.Range(m_indexInputColumnDay & lngRow)
+        Set m_whInputSheet = Sheets(Utils.getWorksheetIndexByName(strSheet))
+        m_lngCurrReadRow = 1
+    End If
+End Function
+
+
+
+
+
+
+
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Tabelle2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Utils"
+Option Explicit
+
+''''''''''''''''''''''''''''''''''''
+'
+' Wandelt die Spaltennummer zu dem Namen um
+'
+''''''''''''''''''''''''''''''''''''
+Public Function columnNumberToString(ByVal byteNumber As Byte) As String
+    columnNumberToString = Replace(Cells(1, byteNumber).Address(0, 0), 1, "")
+End Function
+
+Public Function isFindKeyInString(ByVal strInput As String, _
+                                  ByVal strKey As String, _
+                                  Optional separator As String = "/") As Boolean
+Dim vX As Variant, i As Long
+
+    isFindKeyInString = False
+    vX = Split(strInput, separator)
+    For i = 0 To UBound(vX)
+        If vX(i) = strKey Then
+            isFindKeyInString = True
+            Exit For
+        End If
+    Next i
+
+End Function
+
+
+
+''''''''''''''''''''''''''''''''''''''
+'Sucht Worksheet nach Name und liefert Index zur|fffd|ck,
+' oder -1 falls nicht gefunden wurde
+'
+''''''''''''''''''''''''''''''''''''''
+Public Function getWorksheetIndexByName(ByVal strName As String)
+Dim wsh As Worksheet
+   getWorksheetIndexByName = -1
+    For Each wsh In Sheets
+        If wsh.Name = strName Then
+            getWorksheetIndexByName = wsh.Index
+        End If
+    Next
+End Function
+
+
+INQUEST-PP=macro

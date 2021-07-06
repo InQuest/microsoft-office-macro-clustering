@@ -1,0 +1,2680 @@
+Attribute VB_Name = "HelperUtil"
+Option Explicit
+Private Const COMMAND_FEEDMGR As String = "Amazon VAT Feed Manager"
+'Image 1
+Private Const AZLOGO As String = "Amazon Logo"
+Private Const AZLOGO_ICON As String = "icon_amazon_logo"
+'Button 2
+Private Const VALIDATE_BUTTON_EVENT As String = "ValidateTemplateSheet_Click"
+'Button 3
+Private Const NEXTERR_BUTTON_EVENT As String = "GetNextError_Click"
+
+'Button 3
+Private Const CALCCOSTPRICE_BUTTON_EVENT As String = "CalcCostPrice_Click"
+
+'Button 4
+Private Const CLEARERR_BUTTON_EVENT As String = "ClearSheet_Click"
+ 
+'Button 5
+Private Const SAVETAB_BUTTON_EVENT As String = "SaveTabSheet_Click"
+
+'Button 6
+Private Const FILLSUPPUNITS_BUTTON_EVENT As String = "UpdateSuppUnit_Click"
+
+Private m_IsDisabledXLSActions As Boolean
+Private m_IsUnProtected As Boolean
+Public g_oUserStrings As Collection        'Cache of string ids
+Private g_sClipBoardString As String
+Private g_oClipBoardCopyObj As Object
+Private g_oClipBoardPasteObj As Object
+
+Public Sub SaveClipBoard()
+    On Error GoTo ERROR
+    If g_oClipBoardCopyObj Is Nothing Then
+        Set g_oClipBoardCopyObj = New MsForms.DataObject
+    End If
+    g_oClipBoardCopyObj.GetFromClipboard
+    g_sClipBoardString = g_oClipBoardCopyObj.GetText
+    Exit Sub
+ERROR:
+    g_sClipBoardString = ""
+End Sub
+
+Public Sub RestoreClipBoard()
+    On Error Resume Next
+    If g_oClipBoardPasteObj Is Nothing Then
+        Set g_oClipBoardPasteObj = New MsForms.DataObject
+    End If
+    If g_sClipBoardString <> "" Then
+        g_oClipBoardPasteObj.SetText g_sClipBoardString
+        g_oClipBoardPasteObj.PutInClipboard
+    End If
+End Sub
+
+'Called when validation form loads
+'Assumes caller has excel actions disabled such as ScreenUpdate,templatesheet is active/has focus and is unprotected
+Public Sub InitializeTemplateSheet()
+    Dim fStartTime As Double
+    
+    On Error GoTo final
+    'Step 1
+    Call InitializeState
+    
+    'Step 2
+    Call DisableXlsActions
+    
+    'Step 3
+    Call SetUpNewToolBar
+    
+    shTemplate.Range(TEMPLATE_MAX_RNG & shTemplate.UsedRange.Rows.count).Locked = False
+    
+    shTemplate.Buttons("Button 27").Caption = GetLocalizedString("fill-supplementary-unit-button")
+    shTemplate.Buttons("Button 30").Caption = GetLocalizedString("visa-val-validate-template")
+    shTemplate.Buttons("Button 37").Caption = GetLocalizedString("visa-save-tab-delimited")
+    shTemplate.Buttons("Button 34").Caption = GetLocalizedString(CALCULATE_COST_PRICE)
+    'Step 4
+    Call SetConditionalFormattingAndValidations
+    
+    'Step 5
+    Call ActivateSheet(shTemplate)  'VS CHECK both activate and select are performance intensive, do  we need to do this
+    Call shTemplate.Cells(DATA_BEGIN_ROW, ASIN_COL).Select
+    
+final:
+ 'Step 6
+ 
+  Call EnableXlsActions
+End Sub
+
+'Capturing the initial states so we can use to disable when executing macro and restore post completion for performance reasons
+Private Sub InitializeState()
+    
+    With Application
+        g_IsScreenUpdate = .ScreenUpdating
+        g_IsDisplayStatusBar = .DisplayStatusBar
+        g_IsEnableEvents = .EnableEvents
+        g_CalcState = .Calculation
+        g_IsDisplayAlerts = .DisplayAlerts
+        g_CutCopyMode = .CutCopyMode
+    End With
+    
+    On Error Resume Next
+    g_IsTemplateSheetPageBreak = shTemplate.DisplayPageBreaks  ' Only possible line that can likely result in error
+End Sub
+
+'Adds custom add-ins, called during workbookopen
+Private Sub SetUpNewToolBar()
+    
+    Dim oCommandBar As Object 'CommandBar
+    Dim oControl As Object 'CommandBarControl
+    
+    On Error Resume Next
+ 
+    'Debug.Print "CommandBar-1: " & Err.Description
+    'VS CHECK getting error from the nexy call "Can't move focus to the control because it is invisible, not enabled, or of a type that does not accept the focus."
+    'Add an Add-In Bar with custom buttons for validation
+    Call Application.CommandBars(COMMAND_FEEDMGR).Delete
+    'Debug.Print "CommandBar0: " & Err.Description
+    
+    Set oCommandBar = Application.CommandBars.Add(COMMAND_FEEDMGR, 1, False, True)
+    
+    'Add Amazon logo to toolbar:
+    Set oControl = oCommandBar.Controls.Add(msoControlButton)
+    With oControl
+        .BeginGroup = True
+        .Caption = AZLOGO
+        .FaceId = 176
+        .Style = msoButtonIcon
+    End With
+        
+    'Put custom Amazon logo on the Amazon logo toolbar control, Toolbar must be hidden while icon is replaced:
+    If g_CutCopyMode Then
+            'don't mess up user's cut/copy mode.
+    Else
+         
+         shValidValues.Shapes(AZLOGO_ICON).CopyPicture
+         oCommandBar.Controls(AZLOGO).PasteFace
+         'Remove the cut/copy marquee around the cell copied in the previous line:
+         'Application.CutCopyMode = False   'VS CHECK Why are we doing this? Even if we do this we need to reset it back
+         
+    End If
+    
+    'Button Validate
+    Set oControl = oCommandBar.Controls.Add(1) '1=msoControlButton
+    With oControl
+        '.BeginGroup = True
+        .FaceId = 1745
+        .Style = msoButtonIconAndCaption
+        .Caption = GetLocalizedString("visa-val-validate-template")
+        .OnAction = VALIDATE_BUTTON_EVENT
+    End With
+    
+    'Button Next Error
+    Set oControl = oCommandBar.Controls.Add(1) '1=msoControlButton
+    With oControl
+        '.BeginGroup = True
+        .FaceId = 2174
+        .Style = msoButtonIconAndCaption
+        .Caption = GetLocalizedString("visa-val-get-next-error")
+        .OnAction = NEXTERR_BUTTON_EVENT
+    End With
+    
+    'Button Calculate Cost Price
+    Set oControl = oCommandBar.Controls.Add(1) '1=msoControlButton
+    With oControl
+        '.BeginGroup = True
+        .FaceId = 283
+        .Style = msoButtonIconAndCaption
+        .Caption = GetLocalizedString(CALCULATE_COST_PRICE)
+        .OnAction = CALCCOSTPRICE_BUTTON_EVENT
+    End With
+    
+    'Button Clear Error
+    Set oControl = oCommandBar.Controls.Add(1) '1=msoControlButton
+    With oControl
+        '.BeginGroup = True
+        .FaceId = 3875
+        .Style = msoButtonIconAndCaption
+        .Caption = GetLocalizedString("visa-val-clear-errors")
+        .OnAction = CLEARERR_BUTTON_EVENT
+    End With
+    
+    'Save as Tab separated
+    Set oControl = oCommandBar.Controls.Add(1) '1=msoControlButton
+    With oControl
+        '.BeginGroup = True
+        .FaceId = 3876
+        .Style = msoButtonIconAndCaption
+        .Caption = GetLocalizedString("visa-save-tab-delimited")
+        .OnAction = SAVETAB_BUTTON_EVENT
+    End With
+    
+    'fill supp units
+    Set oControl = oCommandBar.Controls.Add(1) '1=msoControlButton
+    With oControl
+        '.BeginGroup = True
+        .FaceId = 3876
+        .Style = msoButtonIconAndCaption
+        .Caption = GetLocalizedString("fill-supplementary-unit-button")
+        .OnAction = FILLSUPPUNITS_BUTTON_EVENT
+    End With
+    
+    oCommandBar.Visible = True  ' Makes the Add-in command bar visible, important to make it true to see the add-in
+    Set oControl = Nothing
+    Set oCommandBar = Nothing
+    'Debug.Print "Finished: " & Err.Description
+    
+    
+End Sub
+
+Private Sub SaveTabSheet_Windows()
+    On Error GoTo final
+    
+    Dim sTxtPath As String
+    Dim oWorkbook As Workbook
+    
+    Dim diaFolder As FileDialog
+    
+    Call DisableXlsActions
+    If Not ActivateSheet(shTemplate) Then
+        'VS CHECK TODO Show message if all fails
+        Call EnableXlsActions
+        Exit Sub
+    End If
+    
+    ' opens Save As box to allow you to enter the path
+    ' select folder to save file to Open the file dialog
+    Set diaFolder = Application.FileDialog(msoFileDialogFolderPicker)
+    diaFolder.AllowMultiSelect = False
+    diaFolder.Show
+    sTxtPath = diaFolder.SelectedItems(1)
+    
+    Call SaveTabSheet(sTxtPath & "\")
+    
+final:
+    Call EnableXlsActions
+End Sub
+
+Private Sub SaveTabSheet(ByVal sTxtPath As String)
+    
+    sTxtPath = sTxtPath & "" & "OTS_" & Format$(Date$, "YYYMMDD") & ".txt"
+    
+    On Error GoTo ErrHandler
+    'Debug.Print "Before PrintToFile"
+    
+    'Call PrintToFile(sTxtPath)  'VS 4/12 commented this as we want tab file in Unicode (UTF-16 LE)
+    'Below lines are excel way to save text file
+    Call ActiveSheet.Copy  'VS 4/12 doing this so that we do the save and not close the original macro file.
+    With ActiveWorkbook
+        Call .SaveAs(FileName:=sTxtPath, FileFormat:=xlUnicodeText) 'Saves in UTF-16 LE with a BOM
+        Call .Close(False)
+    End With
+    Call MsgBox(sTxtPath, vbOKOnly, GetLocalizedString("visa-file-path"))
+    Exit Sub
+
+ErrHandler:
+    Call MsgBox(sTxtPath, vbOKOnly, GetLocalizedString("visa-could-not-save-file"))
+    
+End Sub
+
+Private Sub SaveTabSheet_Mac()
+    On Error GoTo final
+    
+    Dim sTxtPath As String
+    Dim RootFolder As String
+    Dim scriptstr As String
+    
+    'Debug.Print "In SaveTabSheet_Mac"
+    
+    Call DisableXlsActions
+    If Not ActivateSheet(shTemplate) Then
+        'VS CHECK TODO Show message if all fails
+        Call EnableXlsActions
+        Exit Sub
+    End If
+    
+    'Debug.Print "Before root folder"
+     RootFolder = MacScript("return (path to desktop folder) as String")
+    'Or use RootFolder = "Macintosh HD:Users:YourUserName:Desktop:TestMap:"
+    'Note : for a fixed path use : as seperator in 2011 and 2016
+
+    If Val(Application.version) < 15 Then
+        scriptstr = "(choose folder with prompt ""Select the folder""" & _
+            " default location alias """ & RootFolder & """) as string"
+    Else
+        scriptstr = "return posix path of (choose folder with prompt ""Select the folder""" & _
+            " default location alias """ & RootFolder & """) as string"
+    End If
+
+    'Debug.Print "Before MacScript"
+    
+    sTxtPath = MacScript(scriptstr)
+    
+    'Debug.Print sTxtPath
+    
+    Call SaveTabSheet(sTxtPath)
+    
+final:
+    Call EnableXlsActions
+End Sub
+
+'Called directly from the command button Save Tab in the add_in bar is clicked
+Public Sub SaveTabSheet_Click()
+    'Debug.Print "In SaveTabSheet_Click"
+    #If Mac Then
+        'Debug.Print "Is Mac=true"
+        Call SaveTabSheet_Mac
+    #Else
+        Call SaveTabSheet_Windows
+    #End If
+End Sub
+
+'Just prints the file, encoding is what ever local computer encoding is. Normal filestream. Note this is not UTF-8 or UTF-16 atleast in windows.
+Private Sub PrintToFile(ByVal FileName As String, Optional ByVal Delim As String = vbTab)
+    Dim nFileNum As Long
+    Dim sOut As String
+    Dim lRow As Long
+    Dim lCol As Long
+    
+    If Len(FileName) = 0 Then
+        Call MsgBox(GetLocalizedString("visa-missing-file-name"), vbCritical + vbOKOnly, GetLocalizedString("visa-create-text-file"))
+        Exit Sub
+    End If
+    
+    On Error GoTo ErrHandler
+    
+    nFileNum = FreeFile
+    Open FileName For Output As #nFileNum
+    
+    'Print row 1 which is cust
+    With shTemplate
+        sOut = .Cells(1, 1).Value2 & Delim & .Cells(1, 2).Value2 & Delim & .Cells(1, 3).Value2  'Contains locale Info
+        Print #nFileNum, sOut
+        
+        For lRow = 2 To GetLastRow()
+            sOut = .Cells(lRow, ERR_TYPE_COL).Value2
+            For lCol = ASIN_COL To ERR_MSG_COL   'VS CHECK Printing non error columns only to save space
+                sOut = sOut & Delim & shTemplate.Cells(lRow, lCol).Value2
+            Next lCol
+            Print #nFileNum, sOut
+        Next lRow
+    End With
+    
+    Close #nFileNum
+    Exit Sub
+    
+ErrHandler:
+    Close #nFileNum
+    Call MsgBox(GetLocalizedString("visa-could-not-save-file"), vbCritical + vbOKOnly, GetLocalizedString("visa-create-text-file"))
+End Sub
+
+
+'Called directly from the command button ValidateTemplate in add-in bar is clicked
+Public Sub ValidateTemplateSheet_Click()
+    
+    Call DisableXlsActions
+    If Not ActivateSheet(shTemplate) Then
+        'VS CHECK TODO Show message if all fails
+        Call EnableXlsActions
+        Exit Sub
+    End If
+    Call Load(frmValidatePleaseWait)
+    Call frmValidatePleaseWait.Show
+    Call EnableXlsActions
+End Sub
+
+'Called directly from the command button Clear Error in the add_in bar is clicked
+Public Sub ClearSheet_Click()
+    Call DisableXlsActions
+    If Not ActivateSheet(shTemplate) Then
+        'VS CHECK TODO Show message if all fails
+        Call EnableXlsActions
+        Exit Sub
+    End If
+    Call ClearSheet
+    Call EnableXlsActions
+End Sub
+
+'Important: Assumes the caller will unprotect sheet before this function is called and protect it post completion
+'VS CHECK: Name of the function is clearsheet but it just clears comments and border, have a better name
+Public Sub ClearSheet()
+    Dim oTemplateRange As Range
+    Dim rng As Range
+    Dim last_row As Long
+    If shTemplate.UsedRange.Rows.count <= 3 Then Exit Sub
+    
+    last_row = Cells.Find(What:="*", SearchDirection:=xlPrevious).Row 'Last row which has data
+    Set oTemplateRange = shTemplate.Range(TEMPLATE_MAX_RNG & last_row)
+    If oTemplateRange Is Nothing Then Exit Sub
+     
+    On Error GoTo ErrHandler
+    With oTemplateRange
+        .Borders.LineStyle = xlNone   'Note: For this to not error out for a range, the sheet should not be protected.
+        For Each rng In oTemplateRange
+            If rng.Interior.ColorIndex = BG_ERR_COLOR Then     'If cell has format error (colors.TAN background)
+                rng.Interior.ColorIndex = NO_COLOR
+            End If
+        Next
+        Call .ClearComments
+        .Columns(1).ClearContents
+        .Columns(ERR_MSG_COL).Clear
+        .Locked = False
+        .NumberFormat = "@"
+    End With
+    
+    'Application.StatusBar = vbNullString   'VS CHECK are we doing this?
+    
+ErrHandler:
+    Call Err.Clear
+    Set oTemplateRange = Nothing
+End Sub
+
+'Called directly from the command button Calculate Cost Price in the add_in bar is clicked
+Public Sub CalcCostPrice_Click()
+Dim oDataRange As Range
+Dim vDataValues As Variant
+Dim lRowIndex As Long
+Dim bOverrideDecision As Boolean
+Dim bAnswer As String
+Dim lEndRow As Long
+Dim lDataEndRow As Long
+Dim fTemp As Double
+Dim sPercentText As String
+Dim sValidationPrompt As String
+
+On Error GoTo final
+    
+lEndRow = GetLastRow() 'get the last data row based on ASIN / SKU
+If lEndRow = DATA_BEGIN_ROW - 1 Then Exit Sub  'No data exists
+
+'Check with Seller if they want to use this process of defaulting cost price based on list price
+'bAnswer = MsgBox(GetLocalizedString(sUseListPrice), vbYesNo + vbQuestion, GetLocalizedString(sUseListPriceSubject))
+'If bAnswer = vbNo Then Exit Sub
+
+#If Mac Then
+   Do While Not IsWholeNumber(sPercentText, 1, 100)
+        sPercentText = InputBox(GetLocalizedString(ENTER_PERCENTAGE_COST_PRICE) & vbNewLine & vbNewLine & sValidationPrompt, GetLocalizedString(CALCULATE_COST_PRICE), 0)
+        If Len(sPercentText) = 0 Then Exit Sub 'user clicked cancel  'VS 2/21 always use Len and not = ""
+        sValidationPrompt = Replace(GetLocalizedString(INVALID_PERCENT_VALUES), "${hash-get costprice}", sPercentText)
+   Loop
+   If Len(sPercentText) > 0 Then fTemp = Val(sPercentText) / 100
+#Else 'VS 04/27 for some versions of Mac modal popup freezes
+    Call Load(frmInputBoxCP)
+    Call frmInputBoxCP.Show(vbModal)
+    fTemp = frmInputBoxCP.GetPercent()
+    Call Unload(frmInputBoxCP)
+#End If
+
+If fTemp = 0 Then Exit Sub
+
+Set oDataRange = shTemplate.Range(TEMPLATE_MAX_RNG & lEndRow)
+bOverrideDecision = False
+
+vDataValues = oDataRange.Value2
+lDataEndRow = (lEndRow - DATA_BEGIN_ROW + 1)  'Actual data end row for loop (- header rows)
+    
+For lRowIndex = 1 To lDataEndRow
+    If Len(vDataValues(lRowIndex, SELL_PRICE_COL)) > 0 Then 'VS 2/21 Check if there is a value (need this as empty will pass the isnumeric check) to do operations on valid value only
+        If IsNumeric(vDataValues(lRowIndex, SELL_PRICE_COL)) Then 'VS 2/21 Check if the value is a number
+            
+            If Len(vDataValues(lRowIndex, COST_PRICE_COL)) > 0 Then
+                If Not bOverrideDecision Then
+                    bAnswer = MsgBox(GetLocalizedString(OVERWRITE_EXISTING_CELLS_QUESTION), vbYesNo + vbQuestion, GetLocalizedString(OVERWRITE_EXISTING_CELLS_HEADER))
+                    bOverrideDecision = True
+                End If
+                If bAnswer = vbYes Then
+                   vDataValues(lRowIndex, COST_PRICE_COL) = Trim$(str(Round(Val(vDataValues(lRowIndex, SELL_PRICE_COL)) * fTemp, 2)))
+                   If Left$(vDataValues(lRowIndex, COST_PRICE_COL), 1) = "." Then vDataValues(lRowIndex, COST_PRICE_COL) = "0" & vDataValues(lRowIndex, COST_PRICE_COL)
+                   vDataValues(lRowIndex, COST_PRICE_CURRENCY_COL) = vDataValues(lRowIndex, SELL_PRICE_CURRENCY_COL)
+                End If
+            Else
+                vDataValues(lRowIndex, COST_PRICE_COL) = Trim$(str(Round(Val(vDataValues(lRowIndex, SELL_PRICE_COL)) * fTemp, 2)))
+                If Left$(vDataValues(lRowIndex, COST_PRICE_COL), 1) = "." Then vDataValues(lRowIndex, COST_PRICE_COL) = "0" & vDataValues(lRowIndex, COST_PRICE_COL)
+                vDataValues(lRowIndex, COST_PRICE_CURRENCY_COL) = vDataValues(lRowIndex, SELL_PRICE_CURRENCY_COL)
+            End If
+        End If
+    End If
+Next
+Call DisableXlsActions
+oDataRange.Value2 = vDataValues
+final:
+  Call EnableXlsActions
+End Sub
+
+'Called directly from the command button Clear Error in the add_in bar is clicked
+Public Sub GetNextError_Click()
+    Dim lNextErrRow As Long
+    Dim IsSelected As Boolean
+    Dim lRow As Long
+    Dim lCol As Long
+    
+   
+    'Call DisableXlsActions
+    If Not ActivateSheet(shTemplate) Then
+        'VS CHECK TODO Show message if all fails
+        'Call EnableXlsActions
+        Exit Sub
+    End If
+    
+    'VS CHECK TODO Should we first call Validate prior to this function - cases where they have cleared error and then did next error?
+    'Call ValidateTemplateSheet_Click
+    
+    On Error GoTo ErrHandler
+    With ActiveCell
+        'VS CHECK Can ActiveCell be ever empty or nothing
+        lRow = .Row
+        lCol = .Column
+    End With
+      
+    'VS first check if the current row has another
+    If lCol < DATA_END_COL Then IsSelected = SelectErrorCell(lRow, lCol + 1)
+    
+    'Switch to finding the next errored cell in next error row
+    If Not IsSelected Then
+        lNextErrRow = GetNextErrorRow(lRow)
+        If (lNextErrRow = -1) And lRow >= DATA_BEGIN_ROW Then 'There are no error rows after current row, start from begining Row
+            lNextErrRow = GetNextErrorRow(DATA_BEGIN_ROW)
+        End If
+        Call SelectErrorCell(lNextErrRow, DATA_BEGIN_COL)
+    End If
+    
+ErrHandler:
+    Call EnableXlsActions
+
+End Sub
+
+'Assumes user is on Templatesheet and we are maintaining error states in ERR_MSG_COL
+'Returns -1 if there are no error rows in sheet or no error rows after current row
+'Returns the next error row number
+Private Function GetNextErrorRow(ByVal lRow As Long) As Long
+    Dim lTempRow As Long
+    
+    On Error Resume Next
+    With shTemplate
+        lTempRow = .Range(ERR_MSG_COL_NAME & lRow).End(xlDown).Row 'to find the next error row from current row in case there are non-error rows in between
+        If (lTempRow = .Rows.count) Then
+            GetNextErrorRow = -1 'no error row after the current row
+        ElseIf .Range(ERR_MSG_COL_NAME & (lRow + 1)).Value <> vbNullString Then
+            GetNextErrorRow = lRow + 1 'next row also has errors
+        Else
+            GetNextErrorRow = lTempRow  'lTempRow is the next row with error i.e. no errors between the current and next error row
+        End If
+    End With
+    
+End Function
+
+'Assumes sheet is unprotected and excel actions are disabled
+Private Function SelectErrorCell(ByVal lRow As Long, lCol As Long) As Boolean
+    Dim lIndex As Long
+    
+    If lRow < DATA_BEGIN_ROW Then lRow = DATA_BEGIN_ROW
+    If lCol < DATA_BEGIN_COL Then lCol = DATA_BEGIN_COL
+    On Error GoTo ErrHandler
+    With shTemplate
+        For lIndex = lCol To DATA_END_COL
+            If .Cells(lRow, lIndex).Interior.ColorIndex = BG_ERR_COLOR Then
+                .Cells(lRow, lIndex).Select
+                SelectErrorCell = True
+                Exit For
+            End If
+        Next lIndex
+    End With
+
+ErrHandler:
+    'Do Nothing just exit
+End Function
+
+'Builds a collection cache for quick lookup for user facing messages
+Private Sub CreateUserStringCache(ByRef oRange As Variant, Optional ByVal Rebuild As Boolean = False)
+    Dim lTotalRow As Long
+    Dim lRow As Long
+   
+    If Rebuild Then Set g_oUserStrings = Nothing
+    If g_oUserStrings Is Nothing Then Set g_oUserStrings = New Collection
+    lTotalRow = UBound(oRange)
+    
+    On Error Resume Next
+    For lRow = 1 To lTotalRow
+        Call g_oUserStrings.Add(oRange(lRow, TABLE_TRANSLATIONS_STRINGVALUE), oRange(lRow, TABLE_TRANSLATIONS_STRINGID)) 'first col is the key i.e. string id and second col is string
+    Next lRow
+End Sub
+
+'Returns static string, TODO: Support evaluation of string which have paramaters
+Public Function GetLocalizedString(ByVal sStringId As String) As String
+    
+    If g_oUserStrings Is Nothing Then Call CreateUserStringCache(shValidValues.Range(TABLE_TRANSLATIONS).Value2)
+    On Error GoTo ErrHandler
+    GetLocalizedString = g_oUserStrings(sStringId)
+    Exit Function
+
+ErrHandler:
+    'Do Nothing
+End Function
+
+'Assumes Cell is selectable
+'activates a sheet and puts the focus on the cell specified if focus is not that sheet
+Public Function ActivateSheet(ByRef FocusSheet As Worksheet) As Boolean
+        
+    If ActiveSheet Is Nothing Then
+        'VS CHECK TODO Show message if we want to manually select the sheet
+        Exit Function
+    End If
+    If FocusSheet Is Nothing Then
+        'VS CHECK TODO Show message if we want to manually select the sheet
+        Exit Function
+    End If
+    
+    On Error Resume Next
+    If Not (ActiveSheet.Name = FocusSheet.Name) Then
+        Call FocusSheet.Activate
+        If Err.Number > 0 Then
+             'VS CHECK TODO Show message if we want to manually select the sheet
+            Exit Function
+        End If
+    End If
+    ActivateSheet = True
+End Function
+
+'Disables few automatic features of excel during code macro execution - optimization for performance
+Public Sub DisableXlsActions(Optional ForceDisable As Boolean = False)
+      
+    If ForceDisable Then m_IsDisabledXLSActions = False
+    If m_IsDisabledXLSActions Then Exit Sub  ' Already done, don't do it again
+    
+    Call SaveClipBoard
+    With Application
+        .ScreenUpdating = False
+        .EnableEvents = False
+        .Calculation = xlCalculationManual
+        .DisplayStatusBar = False
+        .DisplayAlerts = False
+        '.CutCopyMode = False
+    End With
+    m_IsDisabledXLSActions = True
+    'Call UnProtectTemplateSheet
+    
+    On Error Resume Next
+    shTemplate.DisplayPageBreaks = False
+    On Error GoTo 0
+    'Debug.Print "D" & vbCr 'VS CHECK TODO Remove this
+  
+End Sub
+
+'Restore automatic features of excel post code macro execution - optimization for performance
+Public Sub EnableXlsActions(Optional ForceEnable As Boolean = False)
+    
+    If ForceEnable Then m_IsDisabledXLSActions = True
+        
+    If Not m_IsDisabledXLSActions Then Exit Sub  ' Already done, don't do it again
+    
+    On Error Resume Next
+    shTemplate.DisplayPageBreaks = g_IsTemplateSheetPageBreak  ' this is usually controlled and does not harm
+    On Error GoTo 0
+    
+    With Application
+        'Chances are these will always be true rather than any other state for a user
+        'Took above assumption rather than storing previous state as if there is an error and
+        'the previous state is now incorrect, user will get frustrated
+'      .DisplayStatusBar = g_IsDisplayStatusBar
+'      .DisplayAlerts = g_IsDisplayAlerts
+'      .Calculation = g_CalcState
+'      .CutCopyMode = g_IsCutCopyMode
+'      .EnableEvents = g_IsEnableEvents
+'      .ScreenUpdating = g_IsScreenUpdate
+      .DisplayStatusBar = True
+      .DisplayAlerts = True
+      .Calculation = xlCalculationAutomatic
+      '.CutCopyMode = True
+      .EnableEvents = True
+      .ScreenUpdating = True
+    End With
+    m_IsDisabledXLSActions = False
+    'Call ProtectTemplateSheet
+    'Call RestoreClipBoard
+    'Debug.Print "E" & vbCr   'VS CHECK TODO Remove this
+End Sub
+
+Public Sub UnProtectTemplateSheet()
+    If m_IsUnProtected Then Exit Sub
+    
+    On Error Resume Next
+    Call shTemplate.Unprotect("Amzn123#") 'VS CHECK No password TODO: Add password if required
+    If Err.Number = 0 Then m_IsUnProtected = True
+    On Error GoTo 0
+    
+End Sub
+
+Public Sub ProtectTemplateSheet()
+    If Not m_IsUnProtected Then Exit Sub
+    
+    On Error Resume Next
+    Call shTemplate.Protect("Amzn123#", AllowDeletingRows:=True, AllowFiltering:=True, AllowFormattingColumns:=True, AllowFormattingRows:=True)
+    'VS CHECK No password TODO: Add password if required
+    If Err.Number = 0 Then m_IsUnProtected = False
+    On Error GoTo 0
+    
+End Sub
+
+'Get Column name for a column number. If error occurs this function it returns ""
+Public Function ColumnLetter(ByVal col As Long)
+    col = col - 1
+    If (col >= 0 And col < 26) Then
+        ColumnLetter = Chr$(65 + col)
+    ElseIf (col >= 26) Then
+        ColumnLetter = ColumnLetter(CLng(col \ 26)) _
+                & ColumnLetter(CLng(col Mod 26 + 1))
+    Else
+        ColumnLetter = ""
+    End If
+End Function
+
+'VS CHECK: What is the purpose of this function, what are we achieving - need comments
+Public Function GetLastRow() As Long
+    Dim lASINLastRow As Long
+    Dim lTotalRows As Long
+    
+    With shTemplate
+        lTotalRows = .Rows.count
+        lASINLastRow = .Range(ColumnLetter(ASIN_COL) & lTotalRows).End(xlUp).Row
+        GetLastRow = .Range(ColumnLetter(SKU_COL) & lTotalRows).End(xlUp).Row
+    End With
+    
+    If GetLastRow < lASINLastRow Then GetLastRow = lASINLastRow
+
+End Function
+
+
+Public Sub DisplayValidationProgressBar(ByVal CurrentRow As Long, ByVal EndRow As Long, ByVal StartTime As Double, ByVal TotalErrors As Double, ByVal timeremaining As Double)
+    Dim fPercentComplete As Double
+    
+    If (CurrentRow Mod 100 = 0) Then
+        fPercentComplete = Round((CurrentRow * 100 / EndRow), 0)
+        With frmValidatePleaseWait
+            .percentcomplete.Caption = Replace(GetLocalizedString(PERCENT_COMPLETED), "${hash-get percentprocessed}", fPercentComplete)
+            .lblProgressBar.Width = fPercentComplete * 2.1
+            .runtime.Caption = Replace(Replace(GetLocalizedString(NO_OF_ROWS_PROCESSED), "${hash-get totalcount}", EndRow), "${hash-get processedcount}", CurrentRow)
+            .timeremaining = Replace(GetLocalizedString(SECONDS_REMAINING), "${hash-get timeremaining}", timeremaining)
+        End With
+        DoEvents
+    End If
+End Sub
+Private Sub ImportVBCode()
+Dim directory As String
+Dim version As String
+    
+version = Mid(shTemplate.Cells(1, 2), 9, Len(shTemplate.Cells(1, 2)) - 8)
+
+'Variables
+ActiveWorkbook.VBProject.VBComponents.Remove ActiveWorkbook.VBProject.VBComponents("Variables")
+ActiveWorkbook.VBProject.VBComponents.Import directory & "\Variables.bas"
+
+'ValidationUtil
+ActiveWorkbook.VBProject.VBComponents.Remove ActiveWorkbook.VBProject.VBComponents("ValidationUtil")
+ActiveWorkbook.VBProject.VBComponents.Import directory & "\ValidationUtil.bas"
+
+'ValidateTemplate
+ActiveWorkbook.VBProject.VBComponents.Remove ActiveWorkbook.VBProject.VBComponents("ValidateTemplate")
+ActiveWorkbook.VBProject.VBComponents.Import directory & "\ValidateTemplate.bas"
+
+'HelperUtil
+ActiveWorkbook.VBProject.VBComponents.Remove ActiveWorkbook.VBProject.VBComponents("HelperUtil")
+ActiveWorkbook.VBProject.VBComponents.Import directory & "\HelperUtil.bas"
+
+'SetupValidationAndFormatting
+ActiveWorkbook.VBProject.VBComponents.Remove ActiveWorkbook.VBProject.VBComponents("SetupValidationAndFormatting")
+ActiveWorkbook.VBProject.VBComponents.Import directory & "\SetupValidationAndFormatting.bas"
+
+'TestUtil
+ActiveWorkbook.VBProject.VBComponents.Remove ActiveWorkbook.VBProject.VBComponents("TestUtil")
+ActiveWorkbook.VBProject.VBComponents.Import directory & "\TestUtil.bas"
+
+'shTemplate
+ActiveWorkbook.VBProject.VBComponents.Remove ActiveWorkbook.VBProject.VBComponents("shTemplate")
+ActiveWorkbook.VBProject.VBComponents.Import directory & "\shTemplate.cls"
+
+
+End Sub
+'Private function to open a folder browser dialog. This function is specific to Mac OS
+Private Function GetFolderMac() As String
+    
+    Dim sFolderPath As String
+    Dim sRootFolder As String
+    Dim sScriptStr As String
+
+    On Error Resume Next
+    sRootFolder = MacScript("return (path to desktop folder) as String")
+    'Build an AppleScript as per version of MS Office
+    If Val(Application.version) < OFFICE_VERSION_15 Then
+        sScriptStr = "(choose folder with prompt ""Select the folder""" & _
+            " default location alias """ & sRootFolder & """) as string"
+    Else
+        sScriptStr = "return posix path of (choose folder with prompt ""Select the folder""" & _
+            " default location alias """ & sRootFolder & """) as string"
+    End If
+    'Run the built script
+    sFolderPath = MacScript(sScriptStr)
+    On Error GoTo ErrHandler
+    If sFolderPath <> "" Then
+        GetFolderMac = sFolderPath & ""
+        Exit Function
+    End If
+ErrHandler:
+    GetFolderMac = ""
+End Function
+
+'Internal Function for developers to export source code to file system for CR
+' Excel macro to export all VBA source code in this project to text files for proper source control versioning
+' Requires enabling the Excel setting in Options/Trust Center/Trust Center Settings/Macro Settings/Trust access to the VBA project object model
+' Requires Microsft Scripting Runtime
+Private Sub ExportVisualBasicCode()
+    Const Module = 1
+    Const ClassModule = 2
+    Const Form = 3
+    Const Document = 100
+    Const Padding = 24
+    
+    Dim sFolderPath As String
+    Dim sVersion As String
+    Dim sExtension As String
+    Dim oVBComponent As Object
+    Dim sPath As String
+    Dim iCount As Integer
+    Dim oFso As Object
+    
+    'TODO Lot of magic numbers. They reduce the readibility. Should be changed.
+    sVersion = Mid(shTemplate.Cells(1, 2), 9, Len(shTemplate.Cells(1, 2)) - 8)
+    Debug.Print "export:" & sVersion
+    
+    #If Mac Then
+        sFolderPath = GetFolderMac()
+        If sFolderPath = "" Then
+            Exit Sub
+        End If
+    #Else
+        Set oFso = CreateObject("Scripting.FileSystemObject")
+        sFolderPath = GetFolder() '& version
+        If sFolderPath = "" Then
+            Exit Sub
+        End If
+        If Not oFso.FolderExists(sFolderPath) Then
+            Call oFso.CreateFolder(sFolderPath)
+        End If
+        Set oFso = Nothing
+    #End If
+    
+    For Each oVBComponent In ActiveWorkbook.VBProject.VBComponents
+        Select Case oVBComponent.Type
+            Case ClassModule, Document
+                sExtension = ".cls"
+            Case Form
+                sExtension = ".frm"
+            Case Module
+                sExtension = ".bas"
+            Case Else
+                sExtension = ".txt"
+        End Select
+            
+        On Error Resume Next
+        Err.Clear
+        sPath = sFolderPath & "" & oVBComponent.Name & sExtension
+        Call oVBComponent.Export(sPath)
+        If Err.Number <> 0 Then
+            Call MsgBox("Failed to export " & oVBComponent.Name & " to " & sPath, vbCritical)
+        Else
+            iCount = iCount + 1
+            Debug.Print "Exported " & Left$(oVBComponent.Name & ":" & Space(Padding), Padding) & sPath
+        End If
+        On Error GoTo 0
+    Next
+    
+    shValidValues.Visible = xlSheetVisible
+    shValidValues.Activate
+    Call ActiveSheet.Copy  'VS 4/12 doing this so that we do the save and not close the original macro file.
+    With ActiveWorkbook
+        Call .SaveAs(FileName:=sFolderPath & "ValidValues.csv", FileFormat:=xlCSV)
+        Call .Close(False)
+    End With
+    shTemplate.Activate
+    
+    Call ActiveSheet.Copy  'VS 4/12 doing this so that we do the save and not close the original macro file.
+    With ActiveWorkbook
+        Call .SaveAs(FileName:=sFolderPath & "Template.csv", FileFormat:=xlCSV)
+        Call .Close(False)
+    End With
+End Sub
+
+Public Function UpdateSuppUnit_Click()
+Dim oDataRange As Range
+Dim vDataValues As Variant
+Dim lRowIndex As Long
+Dim lEndRow As Long
+Dim lDataEndRow As Long
+
+
+On Error GoTo final
+'MsgBox "Func start"
+
+lEndRow = GetLastRow() 'get the last data row based on ASIN / SKU
+
+If lEndRow = DATA_BEGIN_ROW - 1 Then Exit Function  'No data exists
+
+Set oDataRange = shTemplate.Range(TEMPLATE_MAX_RNG & lEndRow)
+
+vDataValues = oDataRange.Value2
+lDataEndRow = (lEndRow - DATA_BEGIN_ROW + 1)  'Actual data end row for loop (- header rows)
+For lRowIndex = 1 To lDataEndRow
+    If Len(vDataValues(lRowIndex, COMMODITY_CODE_COL)) > 0 Then 'VS 2/21 Check if there is a value (need this as empty will pass the isnumeric check) to do operations on valid value only
+                Dim suppUnits As String
+                Dim firstSuppUnit As String
+                Dim suppUnitsArray() As String
+                suppUnits = shValidValues.Cells(shValidValues.Range(COMMODITY_CODE_VALID_VALUE_RNG) _
+                     .Find(vDataValues(lRowIndex, COMMODITY_CODE_COL)).Row, SUPP_UNIT_COL_VALID_VALUES).Value
+                If Len(Trim(suppUnits)) > 0 Then
+                    suppUnitsArray = Split(suppUnits, ";")
+                    firstSuppUnit = suppUnitsArray(LBound(suppUnitsArray) + 1)
+                    vDataValues(lRowIndex, SUPP_UNIT_COL) = firstSuppUnit
+                Else
+                    vDataValues(lRowIndex, SUPP_UNIT_COL) = ""
+                End If
+    Else
+        vDataValues(lRowIndex, SUPP_UNIT_COL) = ""
+    End If
+Next
+
+Call DisableXlsActions
+oDataRange.Value2 = vDataValues
+final:
+  Call EnableXlsActions
+End Function
+Sub Button27_Click() 'Fills supplementary units for which commodity codes are there
+    Call UpdateSuppUnit_Click
+End Sub
+
+Sub Button30_Click() 'Validates template
+    Call ValidateTemplateSheet_Click
+End Sub
+Sub Button32_Click() 'Clears error in the sheet
+    Call ClearSheet_Click
+End Sub
+Sub Button33_Click() 'Save as unicode text type file
+    Call SaveTabSheet_Click
+End Sub
+Sub Button34_Click() 'calc cost price
+    Call CalcCostPrice_Click
+End Sub
+
+
+'Private function to open file dialog box to take the directory input from user to export and
+'import the code files
+Private Function GetFolder() As String
+    Dim fldr As FileDialog
+    Dim sItem As String
+    Set fldr = Application.FileDialog(msoFileDialogFolderPicker)
+    With fldr
+        .Title = "Select a Folder"
+        .AllowMultiSelect = False
+        .InitialFileName = Application.DefaultFilePath
+        If .Show <> -1 Then GoTo NextCode
+        sItem = .SelectedItems(1)
+    End With
+NextCode:
+    GetFolder = sItem & "\"
+    Set fldr = Nothing
+End Function
+
+
+Attribute VB_Name = "SetupValidationAndFormatting"
+'Assumes caller has made the template sheet active and disabled any kind of sheet protection and shut the various events off for performance
+Public Sub SetConditionalFormattingAndValidations()
+    Dim fStartTime As Double  'VS CHECK Remove later
+    
+    fStartTime = Timer() 'VS CHECK Remove later
+    
+    'Call SetConditionalFormatRules(shValidValues.Range(TABLE_FIELDS_MANDATORY_OPTIONAL).Value2)
+    Call SetValidationsForColumnsWithEnums
+    
+    'Debug.Print "Time taken to set formatting : " & Str(Timer() - fStartTime) 'VS CHECK Remove later
+End Sub
+
+'Set up possible drop down values where enums are possible
+'Assumes sheet is unprotected
+Public Sub SetValidationsForColumnsWithEnums()
+    
+    Dim sError As String
+    Dim sInvalidCtry As String
+    
+    sError = GetLocalizedString(SELECT_VALID_VALUE)
+        
+    'On Error Resume Next
+    
+    'Delete existing validations
+    'Call shTemplate.Range(ERR_TYPE_COL_NAME & ":" & ERR_MSG_COL_NAME).Validation.Delete
+
+    'Commodity Code
+    Call SetCustomListWithNoErrors(COMMODITY_CODE_COL, LIST_COMMODITY_CODE, GetLocalizedString(INVALID_COMMODITY_CODE), sError)
+
+    'Supplementary Unit
+    Call SetCustomList(SUPP_UNIT_COL, LIST_SUPP_UNIT, GetLocalizedString(INVALID_SUPP_UNIT), sError)
+
+    'CZ Stat Code
+    'Call SetCustomList(CZ_STAT_CODE_COL, LIST_STAT_CODE_CZ, Replace(GetLocalizedString(INVALID_FIELD), """${hash-get fieldname}""", shTemplate.Cells(3, CZ_STAT_CODE_COL)), sError)
+    
+    'FR Stat Code
+    Call SetCustomListWithNoErrors(FR_STAT_CODE_COL, LIST_STAT_CODE_FR, Replace(GetLocalizedString(INVALID_FIELD), """${hash-get fieldname}""", shTemplate.Cells(3, FR_STAT_CODE_COL)), sError)
+    
+    'Currency
+    Call SetCustomList(COST_PRICE_CURRENCY_COL, LIST_CURRENCY_CODE, GetLocalizedString(INVALID_CURRENCY), sError)
+
+    sInvalidCtry = GetLocalizedString(INVALID_COUNTRY)
+    
+    'Country of Manufacture
+    Call SetCustomList(MFG_CNTRY_COL, LIST_COUNTRY, sInvalidCtry, sError)
+    
+    'Mode of Transportation - Inbound
+    Call SetCustomList(TRANSPORT_MODE_INBOUND_COL, LIST_MODE_OF_TRANSPORTATION, GetLocalizedString(INVALID_MODE_OF_TRANSPORTATION), sError)
+
+    'Mode of Transportation - MFN
+    Call SetCustomList(TRANSPORT_MODE_MFN_COL, LIST_MODE_OF_TRANSPORTATION, GetLocalizedString(INVALID_MODE_OF_TRANSPORTATION), sError)
+
+    'MFN Delivery Conditions
+    Call SetCustomList(DELIVERY_COND_MFN_COL, LIST_DELIVERY_CONDITIONS, GetLocalizedString(INVALID_DELIVERY_CONDITION), sError)
+
+End Sub
+
+'Set range to a custom list, assumes sheet is unprotected
+Private Sub SetCustomList(ByVal col As Long, ByVal List As String, ByVal ErrorTitle As String, ByVal ErrorMessage As String)
+    Dim lMaxRow As Long
+    
+    lMaxRow = GetLastRow()
+    If lMaxRow < MAXROW_TP90 Then lMaxRow = MAXROW_TP90
+    
+    With shTemplate.Range(GetRange(col, , False, , DATA_BEGIN_ROW, lMaxRow)).Validation
+        Call .Delete
+        Call .Add(Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+        Operator:=xlBetween, Formula1:="=" & List)
+        .IgnoreBlank = True
+        .InCellDropdown = True
+        .ErrorTitle = ErrorTitle
+        .ErrorMessage = ErrorMessage
+        .ShowError = True
+    End With
+End Sub
+
+'This sub is to set conditional formatting for not required columns based on transaction type.
+'This will be part of template creation and not to be called during workbook open or any other event by Seller
+'Assumes caller has made the template sheet active and disabled any kind of sheet protection and shut the various events off for performance
+Private Sub SetConditionalFormatRules(ByRef oRange As Variant)
+    Dim lTotalRow As Long
+    'Dim lTotalCol As Long
+    Dim lRow As Long
+    Dim lCol As Long
+    Dim sPreStr As String
+    Dim lFormatCnt As Long
+    
+    On Error Resume Next
+    
+    'Delete all conditional formatting rules in sheet
+    shTemplate.Cells.FormatConditions.Delete
+    sPreStr = "=OR($" & TXN_TYPE_COL_NAME & "1="""
+    lTotalRow = UBound(oRange)
+    'lTotalCol = UBound(oRange, 2)
+    
+    On Error Resume Next
+    For lCol = TABLE_FIELDS_MANDATORY_OPTIONAL_DATASTART_COL To TABLE_FIELDS_MANDATORY_OPTIONAL_DATAEND_COL
+        sVal = ""
+        For lRow = 1 To lTotalRow
+            If oRange(lRow, lCol) = 2 Then
+                If Len(sVal) = 0 Then
+                  sVal = sPreStr & oRange(lRow, TABLE_FIELDS_MANDATORY_OPTIONAL_DATAKEY_COL) & """"
+                Else
+                  sVal = sVal & ",$" & TXN_TYPE_COL_NAME & "1=""" & oRange(lRow, TABLE_FIELDS_MANDATORY_OPTIONAL_DATAKEY_COL) & """"
+                End If
+            End If
+            
+        Next lRow
+        If Len(sVal) > 0 Then
+            sVal = sVal & ")"
+            'Make not required cells have black background
+            With shTemplate.Range(GetRange(lCol)).FormatConditions.Add(Type:=xlExpression, Formula1:=sVal)
+                .Interior.Color = NOTREQUIREDCOLOR
+                .StopIfTrue = True
+            End With
+        End If
+    Next lCol
+    
+End Sub
+
+'Constructs a string with range based on input parameters
+Private Function GetRange(ByVal StartCol As Long, Optional isColAbsolute As Boolean = True, Optional isRowAbsolute As Boolean = True, Optional ByVal EndCol As Long, Optional ByVal StartRow As Long, Optional ByVal EndRow As Long)
+    Dim sColDollar As String
+    Dim sRowDollar As String
+    Dim sStartColName As String
+    
+    sStartColName = ColumnLetter(StartCol)
+    If isColAbsolute Then sColDollar = "$"
+    If isRowAbsolute Then sRowDollar = "$"
+    
+    GetRange = sColDollar & sStartColName
+    If StartRow > 0 Then GetRange = GetRange & sRowDollar & StartRow
+    GetRange = GetRange & ":"
+    If EndCol > 0 Then
+        GetRange = GetRange & sColDollar & ColumnLetter(EndCol)
+    Else
+        GetRange = GetRange & sColDollar & sStartColName
+    End If
+    If EndRow > 0 Then GetRange = GetRange & sRowDollar & EndRow
+        
+End Function
+
+
+'Set range to a custom list with no errors, assumes sheet is unprotected
+Private Sub SetCustomListWithNoErrors(ByVal col As Long, ByVal List As String, ByVal ErrorTitle As String, ByVal ErrorMessage As String)
+    Dim lMaxRow As Long
+
+    lMaxRow = GetLastRow()
+    If lMaxRow < MAXROW_TP90 Then lMaxRow = MAXROW_TP90
+
+    With shTemplate.Range(GetRange(col, , False, , DATA_BEGIN_ROW, lMaxRow)).Validation
+        Call .Delete
+        Call .Add(Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+        Operator:=xlBetween, Formula1:="=" & List)
+        .IgnoreBlank = True
+        .InCellDropdown = True
+        .ErrorTitle = ErrorTitle
+        .ErrorMessage = ErrorMessage
+        .ShowError = False
+    End With
+End Sub
+
+
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet10"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet11"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet12"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet13"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet14"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet15"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet16"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet17"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet3"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet8"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet9"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "TestUtil"
+
+
+Sub TestGetAllowedStatCodeForCZ()
+Debug.Print GetAllowedStatCodeForCZ(2)
+Debug.Print GetAllowedStatCodeForCZ(9415)
+
+
+End Sub
+
+Sub TestGetAllowedStatCodeForFR()
+Debug.Print GetAllowedStatCodeForFR(314)
+Debug.Print GetAllowedStatCodeForFR(2202)
+
+
+End Sub
+Sub testGetLocalizedString()
+Debug.Assert GetLocalizedString(SELECT_VALID_SALES_CHANNEL) = "Please select a valid value from the dropdown."
+Debug.Assert GetLocalizedString(SELECT_SUPP_UNIT) = "Supplementary unit is required for  ""${hash-get commoditycode}"" Commodity Code."
+Debug.Assert GetLocalizedString(VALIDATING_TEMPLATE) = "Validating Template"
+End Sub
+
+Sub testAmountValid()
+    Debug.Assert IsNumberValid("123.233", 1, 3)
+    Debug.Assert IsNumberValid("123.2332", 1, 3) = False
+    Debug.Assert IsNumberValid("123.23", 1, 3)
+    Debug.Assert IsNumberValid("-123", 1, 3) = False
+    Debug.Assert IsNumberValid("-123.233", -1, 3)
+    Debug.Assert IsNumberValid("123.233", 0, 3)
+    Debug.Assert IsNumberValid("-123.2323", -1, 3) = False
+    
+End Sub
+
+Sub TestGetAllowedSuppUnit()
+Debug.Print GetAllowedSuppUnit(3663)
+Debug.Print GetAllowedSuppUnit(3664)
+
+
+End Sub
+
+Sub TestGetRange()
+    Debug.Assert GetRange(3, 4, 27, 100) = "$C$4:$AA$100"
+    Debug.Assert GetRange(3, 0, 27, 0) = "$C:$AA"
+End Sub
+
+Sub test1()
+shTemplate.Cells(8, 72).Select
+'MsgBox shTemplate.Cells(8, 72).Borders.Color
+'MsgBox shTemplate.Cells(8, 72).Borders.Weight
+
+'MsgBox shTemplate.Cells(8, 5).Borders.Weight
+
+'Debug.Print IsRequiredOrOptionalField(2, "dwe")
+
+End Sub
+
+Sub testGetNotRequiredConditionStringForTxnType()
+Debug.Assert GetNotRequiredConditionStringForTxnType(30) = "=$C1=""MFN Return"""
+Debug.Assert GetNotRequiredConditionStringForTxnType(2) = "=OR($C1=""Purchase"",$C1=""Stock Movement"")"
+Debug.Assert GetNotRequiredConditionStringForTxnType(38) = "=OR($C1=""Amazon B2B Sale"",$C1=""MFN Return"",$C1=""Non Amazon Credit"",$C1=""Non Amazon Sale"",$C1=""Stock Movement"",$C1=""Amazon B2B Credit"")"
+
+End Sub
+
+Sub testCommodityCodeValid()
+Debug.Print IsCommodityCodeValid("1012910")
+Debug.Print IsCommodityCodeValid("101291012")
+
+
+End Sub
+
+Sub testIsInvoiceDateValid()
+Debug.Assert ValidateDate("01-12-2014")
+Debug.Assert ValidateDate("13-2-2014") = False
+Debug.Assert ValidateDate("13-02-2014")
+Debug.Assert ValidateDate("01-14-2014") = False
+Debug.Assert ValidateDate("28-02-2014")
+Debug.Assert ValidateDate("29-02-2014") = False
+Debug.Assert ValidateDate("29-02-2016")
+
+End Sub
+
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+  
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    Call EnableXlsActions(True)  'Safety check to ensure things have been restored to normal state
+End Sub
+
+Private Sub Workbook_Open()
+    Call InitializeTemplateSheet
+End Sub
+
+
+
+
+Attribute VB_Name = "ValidateTemplate"
+Option Explicit
+Dim filterArray()
+Dim currentFiltRange As String
+
+
+'Is called to make the error visible to user when a cell gets focus (e.g. selection change event in template sheet) and if it has error or when looking for next error
+'Assumes sheet is unprotected and excel actions are disabled
+Public Sub DisplayCellError(ByRef Target As Range)
+    Dim sMsg As String
+    Dim lInteriorColor As Long
+        
+    Application.DisplayCommentIndicator = xlCommentIndicatorOnly  'If comment bubble is visible make it invisible
+    
+    On Error GoTo ErrHandler
+    
+    If (Target.Column > DATA_END_COL) Then Exit Sub
+    
+    With Target
+        lInteriorColor = .Interior.ColorIndex
+        
+        'If (lInteriorColor = ERR_COLOR) And (lBorderColor = ERR_COLOR) Then  'Server based error and could also have format error
+        '    sMsg = GetCellError(.Column, shTemplate.Cells(.Row, ERR_MSG_COL)) & " Server Error"
+        '    If sMsg <> vbNullString Then Call AddCellComment(Target, sMsg)
+        'ElseIf (lInteriorColor = ERR_COLOR) Then  'VS CHECK why we need to handle this case?
+        '    .Comment.Visible = True
+        If (lInteriorColor = BG_ERR_COLOR) Then   'Macro based error only
+            sMsg = GetCellError(.Column, shTemplate.Cells(.Row, ERR_MSG_COL))
+            If sMsg <> vbNullString Then Call AddCellComment(Target, sMsg)
+        End If
+        
+    End With
+    
+ErrHandler:
+   'Do Nothing
+End Sub
+
+'Returns the error from delimited string based on column number. This is added to cell comment when user selects the cell
+'Example of sMsg parameter =  ;1:this is error msg;25:this is second error;
+Public Function GetCellError(ByVal lCol As Long, ByVal ErrorMsg As String) As String
+  Dim lStartPos As Long
+  Dim lEndPos As Long
+  Dim sDelim As String
+  
+  If lCol = ERR_TYPE_COL Then
+    GetCellError = "visa-excel-action-validate-template"
+    Exit Function
+  End If
+  sDelim = DELIM_SEMICOLON & shTemplate.Cells(3, lCol) & DELIM_COLON
+  
+  lStartPos = InStr(1, ErrorMsg, sDelim)
+
+  If lStartPos > 0 Then
+    lStartPos = lStartPos + Len(sDelim)
+    lEndPos = InStr(lStartPos, ErrorMsg, DELIM_SEMICOLON)
+    GetCellError = Mid$(ErrorMsg, lStartPos, lEndPos - lStartPos)
+  Else
+    GetCellError = vbNullString
+  End If
+  
+End Function
+
+'Assumes the caller will unprotect sheet before this function is called and protect it post completion
+Private Sub AddCellComment(ByRef oDataRange As Range, ByRef sMsg As String)
+    
+    If oDataRange Is Nothing Then Exit Sub
+    If oDataRange.count > 1 Then Exit Sub
+    
+    On Error GoTo ErrHandler
+    
+    With oDataRange
+        Call .ClearComments        'Ensures it clears any comment, essential to handle cases for updating an existing comment or adding a new comment
+        Call .AddComment(GetLocalizedString(sMsg))     'Call to work needs the worksheet to be unprotected and range.count should be 1
+        .Comment.Visible = True    'This line ensures the user can see the comment bubble immediately without need to move cursor/mouse
+'        .Comment.Shape.TextFrame.AutoSize = True
+        .Comment.Shape.ScaleWidth 1.5, msoFalse, msoScaleFromTopLeft
+    End With
+    Exit Sub
+ErrHandler:
+    'Do Nothing
+End Sub
+
+'Adds format error by cell to the format error msg column
+'Assumes the caller will unprotect sheet before this function is called and protect it post completion
+Private Function MarkFormatError(ByVal sColHeader As String, ByRef ErrorStringID As String, ByRef oCell As Range)
+    MarkFormatError = sColHeader & DELIM_COLON & ErrorStringID & DELIM_SEMICOLON  'Record the cell format error in the format error msg cell for the row for future ref
+    If Not oCell Is Nothing Then  'Mark the Cell
+        On Error Resume Next
+        '27-Jan(AA) Changed as BorderAround is not working in Mac
+        'Call oCell.BorderAround(Color:=ERR_COLOR)
+        oCell.Interior.ColorIndex = BG_ERR_COLOR
+    End If
+End Function
+
+'Called when validation form loads
+'Assumes caller has excel actions disabled such as ScreenUpdate,templatesheet is active/has focus and is unprotected
+Public Sub ValidateTemplateSheet()
+    Dim lEndRow As Long
+    Dim fStartTime As Double
+    Dim fTimeTaken As Double
+    Dim vDataValues As Variant
+    Dim oDataRange As Range
+    Dim lRowIndex As Long
+    Dim sRowErrMsg As String
+    Dim sSalesChannel As String
+    Dim sTxnType As String
+    Dim lTotalInvoices As Long
+    Dim lDataEndRow As Long
+    
+    Call SaveFilters
+    
+    'First Clear all borders and remove cell comments
+    Call ClearSheet
+    lEndRow = GetLastRow() 'get the last data row based on TXN TYPE and/or SALES CHANNEL
+    If lEndRow = DATA_BEGIN_ROW - 1 Then GoTo final  'No data exists
+   
+    Set oDataRange = shTemplate.Range(TEMPLATE_MAX_RNG & lEndRow)
+    
+    'FYI Below sort will fail if the sheet is protected and disablexlsactions function call earlier unprotects it
+    'Sorts to get all same invoice items together
+    'Call oDataRange.Sort(key1:=Range(SORTKEY1_TXNTYPE & lEndRow), _
+                    order1:=xlAscending, key2:=Range(SORTKEY2_TXNEVENTID & lEndRow), order2:=xlAscending)
+    oDataRange.Locked = False
+    oDataRange.NumberFormat = "@"
+    vDataValues = oDataRange.Value2
+    lDataEndRow = (lEndRow - DATA_BEGIN_ROW + 1)  'Actual data end row for loop (- header rows)
+
+    For lRowIndex = 1 To lDataEndRow
+        fStartTime = Timer
+        'sRowErrMsg = DELIM_SEMICOLON
+        
+        lRowIndex = ValidateRow(vDataValues, oDataRange, lRowIndex, lDataEndRow)
+        lTotalInvoices = lTotalInvoices + 1
+        
+        'VS CHECK we need to handle display of server error
+        
+        fTimeTaken = fTimeTaken + Round((Timer - fStartTime), 4)
+        Call DisplayValidationProgressBar(lRowIndex, lDataEndRow, fStartTime, lTotalInvoices, Round((fTimeTaken / lRowIndex) * (lDataEndRow - lRowIndex), 0))
+
+    Next lRowIndex
+ 
+   oDataRange.Value2 = vDataValues
+   Call RestoreFilters
+   
+final:
+  Call frmValidatePleaseWait.Hide
+  Call Unload(frmValidatePleaseWait)
+  Call EnableXlsActions
+End Sub
+
+'Validates the first line of invoice
+'SKURows is reference to data values; datarange is reference to actual cells in the excel sheet, currrow is the first invoice row, allrows is the last row of the data table
+Private Function ValidateRow(ByRef SKURows As Variant, ByRef DataRange As Range, ByVal CurrRow As Long, ByVal AllRows As Long) As Long
+    Dim lIndex As Long
+    Dim sCurrInvoice As String
+    Dim sTxnType As String
+    Dim sSalesChannel As String
+    Dim sRowError As String
+    Dim sCtry As String
+    Dim sCtryError  As String
+    
+    sRowError = DELIM_SEMICOLON
+    
+    'Country of Manufacture
+    sRowError = sRowError & VerifyCtryCell(SKURows(CurrRow, MFG_CNTRY_COL), CurrRow, MFG_CNTRY_COL, DataRange)
+    
+    'Mode of transportation  - Inbound, MFN
+    sRowError = sRowError & VerifyTransportModeCell(SKURows(CurrRow, TRANSPORT_MODE_INBOUND_COL), CurrRow, TRANSPORT_MODE_INBOUND_COL, DataRange)
+    sRowError = sRowError & VerifyTransportModeCell(SKURows(CurrRow, TRANSPORT_MODE_MFN_COL), CurrRow, TRANSPORT_MODE_MFN_COL, DataRange)
+    
+    'Delivery Condition
+    sRowError = sRowError & VerifyDeliveryCell(SKURows(CurrRow, DELIVERY_COND_MFN_COL), CurrRow, DELIVERY_COND_MFN_COL, DataRange)
+    
+    'Cost Price Currency Code
+    sRowError = sRowError & VerifyCurrencyCodeCell(SKURows(CurrRow, COST_PRICE_CURRENCY_COL), CurrRow, COST_PRICE_CURRENCY_COL, DataRange)
+    
+    'transform .45 to 0.45
+    If InStr(1, SKURows(CurrRow, COST_PRICE_COL), ".") = 1 Then
+        SKURows(CurrRow, COST_PRICE_COL) = "0" & SKURows(CurrRow, COST_PRICE_COL)
+    End If
+    'Cost Price
+    sRowError = sRowError & VerifyPriceCell(SKURows(CurrRow, COST_PRICE_COL), CurrRow, COST_PRICE_COL, DataRange)
+    
+    
+    'Supp Qty
+    'sRowError = sRowError & VerifyQtyCell(SKURows(CurrRow, SUPP_QTY_COL), CurrRow, SUPP_QTY_COL, DataRange)
+    
+    
+    'Country of Manufacture
+    sRowError = sRowError & VerifyCtryCell(SKURows(CurrRow, MFG_CNTRY_COL), CurrRow, MFG_CNTRY_COL, DataRange)
+   
+   'Commodity Code, CZ Stat Code, FR Stat Code, Supplementary Unit
+    sRowError = sRowError & VerifyCommodityCode(SKURows, CurrRow, DataRange)
+    
+    '-------- Validate Invoice row 1 non-invoice level cells END
+    
+    If Len(sRowError) > 1 Then  '> 1 is to account for semicolon
+        SKURows(CurrRow, ERR_TYPE_COL) = ERR_ACTION_STR 'update the error type cell
+        SKURows(CurrRow, ERR_MSG_COL) = sRowError 'update the error msg cell
+         '27-Jan(AA) Changed as BorderAround is not working in Mac
+        'Call DataRange(CurrRow, ERR_TYPE_COL).BorderAround(Color:=ERR_COLOR)
+        DataRange(CurrRow, ERR_TYPE_COL).Interior.ColorIndex = BG_ERR_COLOR
+    End If
+    
+    ValidateRow = CurrRow
+End Function
+
+'Verify commodity code and dependent fields and add error messages for error
+Private Function VerifyCommodityCode(ByRef SKURows As Variant, ByVal CurrRow As Long, ByRef DataRange As Range) As String
+    Dim sCommodityCode As String
+    Dim sAllowedValues As String
+    Dim sValue As String
+    
+    sCommodityCode = SKURows(CurrRow, COMMODITY_CODE_COL)
+    If Len(sCommodityCode) > 0 Then
+        If Not IsCommodityCodeValid(sCommodityCode) Then  'has data but not valid regardless of what the requirement of column is
+            VerifyCommodityCode = MarkFormatError(DataRange(0, COMMODITY_CODE_COL), ENTER_VALID_COMMODITY_CODE, DataRange(CurrRow, COMMODITY_CODE_COL))
+        End If
+        
+        'Check Supp Unit
+        sAllowedValues = GetAllowedSupplUnitbyCommodityCode(sCommodityCode) 'SEMICOLON delimited values
+        If Len(sAllowedValues) > 0 Then
+            sValue = SKURows(CurrRow, SUPP_UNIT_COL)
+            If Len(sValue) > 0 Then 'validate data entered
+                If InStr(1, sAllowedValues, DELIM_SEMICOLON & sValue & DELIM_SEMICOLON) < 1 Then 'value not found
+                    VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, SUPP_UNIT_COL), ENTER_VALID_VALUE, DataRange(CurrRow, SUPP_UNIT_COL))
+                End If
+            Else 'is required when commodity code is present  'VS CHECK this assumption
+                VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, SUPP_UNIT_COL), ENTER_VALID_VALUE, DataRange(CurrRow, SUPP_UNIT_COL))
+            End If
+            VerifyCommodityCode = VerifyCommodityCode & VerifyQtyCell(SKURows(CurrRow, SUPP_QTY_COL), CurrRow, SUPP_QTY_COL, DataRange)
+        ElseIf Len(SKURows(CurrRow, SUPP_UNIT_COL)) > 0 Then 'there is no unit specified for this commodity code  'VS CHECK should we look for any valid supplemental unit as per dropdown if value is present?
+            If Not ValidateSupplUnit(SKURows(CurrRow, SUPP_UNIT_COL)) Then
+                VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, SUPP_UNIT_COL), ENTER_VALID_VALUE, DataRange(CurrRow, SUPP_UNIT_COL))
+            End If
+            VerifyCommodityCode = VerifyCommodityCode & VerifyQtyCell(SKURows(CurrRow, SUPP_QTY_COL), CurrRow, SUPP_QTY_COL, DataRange)
+        ElseIf Len(SKURows(CurrRow, SUPP_QTY_COL)) > 0 Then
+            VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, SUPP_QTY_COL), ENTER_VALID_VALUE, DataRange(CurrRow, SUPP_QTY_COL))
+        End If
+        
+        'Check CZ Stat Code
+        'sAllowedValues = GetAllowedStatCodebyCommodityCode(sCommodityCode, "CZ") 'SEMICOLON delimited values
+        'If Len(sAllowedValues) > 0 Then
+        '    sValue = SKURows(CurrRow, CZ_STAT_CODE_COL)
+        '    If Len(sValue) > 0 Then 'validate data entered
+        '        If InStr(1, sAllowedValues, DELIM_SEMICOLON & sValue & DELIM_SEMICOLON) < 1 Then 'value not found
+        '            VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, CZ_STAT_CODE_COL), ENTER_VALID_VALUE, DataRange(CurrRow, CZ_STAT_CODE_COL))
+        '        End If
+        '    Else 'is required when commodity code is present  'VS CHECK this assumtion
+        '        VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, CZ_STAT_CODE_COL), ENTER_VALID_VALUE, DataRange(CurrRow, CZ_STAT_CODE_COL))
+        '    End If
+        'ElseIf Len(SKURows(CurrRow, CZ_STAT_CODE_COL)) > 0 Then 'there is no code specified for this commodity code  'VS CHECK should we look for any valid code as per dropdown if value is present?
+        '    If Not ValidateStatCode(SKURows(CurrRow, CZ_STAT_CODE_COL), SKURows(CurrRow, CZ_STAT_CODE_COL)) Then
+        '        VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, CZ_STAT_CODE_COL), ENTER_VALID_VALUE, DataRange(CurrRow, CZ_STAT_CODE_COL))
+        '    End If
+        'End If
+        
+        
+        'Check FR Stat Code
+        sAllowedValues = GetAllowedStatCodebyCommodityCode(sCommodityCode, "FR") 'SEMICOLON delimited values
+        If Len(sAllowedValues) > 0 Then
+            sValue = SKURows(CurrRow, FR_STAT_CODE_COL)
+            If Len(sValue) > 0 Then 'validate data entered
+                If InStr(1, sAllowedValues, DELIM_SEMICOLON & sValue & DELIM_SEMICOLON) < 1 Then 'value not found
+                    VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, FR_STAT_CODE_COL), ENTER_VALID_VALUE, DataRange(CurrRow, FR_STAT_CODE_COL))
+                End If
+            Else 'is required when commodity code is present  'VS CHECK this assumtion
+                VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, FR_STAT_CODE_COL), ENTER_VALID_VALUE, DataRange(CurrRow, FR_STAT_CODE_COL))
+            End If
+        ElseIf Len(SKURows(CurrRow, FR_STAT_CODE_COL)) > 0 Then 'there is no code specified for this commodity code  'VS CHECK should we look for any valid code as per dropdown if value is present?
+            If Not ValidateStatCode(SKURows(CurrRow, FR_STAT_CODE_COL), SKURows(CurrRow, FR_STAT_CODE_COL)) Then
+                VerifyCommodityCode = VerifyCommodityCode & MarkFormatError(DataRange(0, FR_STAT_CODE_COL), ENTER_VALID_VALUE, DataRange(CurrRow, FR_STAT_CODE_COL))
+            End If
+        End If
+    
+    Else
+        VerifyCommodityCode = MarkFormatError(DataRange(0, COMMODITY_CODE_COL), ENTER_VALID_COMMODITY_CODE, DataRange(CurrRow, COMMODITY_CODE_COL))
+        
+    End If
+
+End Function
+
+
+'Verify country fields and add error messages for error
+Private Function VerifyCtryCell(ByVal Value As String, ByVal CurrRow As Long, ByVal CurrColumn As Long, ByRef DataRange As Range) As String
+    If Not IsCountryCodeValid(Value) Then  'has data but not valid regardless of what the requirement of column is
+        VerifyCtryCell = MarkFormatError(DataRange(0, CurrColumn), SELECT_VALID_VALUE, DataRange(CurrRow, CurrColumn))
+    End If
+End Function
+
+
+
+'Verify mode of transportation fields and add error messages for error
+Private Function VerifyTransportModeCell(ByVal Value As String, ByVal CurrRow As Long, ByVal CurrColumn As Long, ByRef DataRange As Range) As String
+    If Not IsModeOfTransportationValid(Value) Then  'has data but not valid regardless of what the requirement of column is
+        VerifyTransportModeCell = MarkFormatError(DataRange(0, CurrColumn), SELECT_VALID_VALUE, DataRange(CurrRow, CurrColumn))
+    End If
+End Function
+
+'Verify delivery fields and add error messages for error
+Private Function VerifyDeliveryCell(ByVal Value As String, ByVal CurrRow As Long, ByVal CurrColumn As Long, ByRef DataRange As Range) As String
+    If Not IsDeliveryConditionsValid(Value) Then  'has data but not valid regardless of what the requirement of column is
+        VerifyDeliveryCell = MarkFormatError(DataRange(0, CurrColumn), SELECT_VALID_VALUE, DataRange(CurrRow, CurrColumn))
+    End If
+End Function
+
+'Verify currency fields and add error messages for error
+Private Function VerifyCurrencyCodeCell(ByVal Value As String, ByVal CurrRow As Long, ByVal CurrColumn As Long, ByRef DataRange As Range) As String
+    If Not IsCurrencyCodeValid(Value) Then  'has data but not valid regardless of what the requirement of column is
+        VerifyCurrencyCodeCell = MarkFormatError(DataRange(0, CurrColumn), SELECT_VALID_VALUE, DataRange(CurrRow, CurrColumn))
+    End If
+End Function
+
+'Verify price fields and add error messages for error
+Private Function VerifyPriceCell(ByVal Value As String, ByVal CurrRow As Long, ByVal CurrColumn As Long, ByRef DataRange As Range) As String
+    
+    If Not IsNumberValid(Value, 1, 2) Then 'has data but not valid regardless of what the requirement of column is
+        VerifyPriceCell = MarkFormatError(DataRange(0, CurrColumn), ENTER_VALID_AMOUNT, DataRange(CurrRow, CurrColumn))
+    ElseIf Value = 0 Then
+        VerifyPriceCell = MarkFormatError(DataRange(0, CurrColumn), ENTER_VALID_AMOUNT, DataRange(CurrRow, CurrColumn))
+    End If
+End Function
+
+'Verify qty fields and add error messages for error
+Private Function VerifyQtyCell(ByVal Value As String, ByVal CurrRow As Long, ByVal CurrColumn As Long, ByRef DataRange As Range) As String
+    If Not IsNumberWithTwoDecimals(Value, 0, 99999) Then 'has data but not valid regardless of what the requirement of column is
+        VerifyQtyCell = MarkFormatError(DataRange(0, CurrColumn), VALID_SUPP_UNIT_QTY, DataRange(CurrRow, CurrColumn))
+    End If
+End Function
+
+
+'Save Filters
+Private Sub SaveFilters()
+    On Error GoTo final
+    Dim w As Worksheet
+    Dim col, f As Integer
+    Dim cell As Range
+    Set w = shTemplate
+
+    ' Capture AutoFilter settings
+    With w.AutoFilter
+        currentFiltRange = .Range.Address
+        With .Filters
+            ReDim filterArray(1 To .count, 1 To 3)
+            For f = 1 To .count
+                With .Item(f)
+                    If .On Then
+                        filterArray(f, 1) = .Criteria1
+                        If .Operator Then
+                            filterArray(f, 2) = .Operator
+                            filterArray(f, 3) = .Criteria2 'simply delete this line to make it work in Excel 2010, need to check??
+                        End If
+                    End If
+                End With
+            Next f
+        End With
+    End With
+
+    
+final:
+    On Error Resume Next
+    'Remove AutoFilter
+    w.AutoFilterMode = False
+    'Add filter back with no filter values
+    Set cell = ActiveCell
+    w.Range("$A$3:$" & DATA_END_COL_NAME & "$" & GetLastRow).Select
+    Selection.AutoFilter
+    cell.Select
+End Sub
+
+' Restore Filter settings
+Private Sub RestoreFilters()
+    On Error GoTo ErrHandler
+    Dim w As Worksheet
+    Dim col As Integer
+    Dim cell As Range
+    
+    Set w = shTemplate
+    Set cell = ActiveCell
+    For col = 1 To UBound(filterArray(), 1)
+        If Not IsEmpty(filterArray(col, 1)) Then
+            If filterArray(col, 2) Then
+                w.Range(currentFiltRange).Select
+                Selection.AutoFilter field:=col, _
+                Criteria1:=filterArray(col, 1), _
+                Operator:=filterArray(col, 2), _
+                Criteria2:=filterArray(col, 3)
+            Else
+                w.Range(currentFiltRange).Select
+                Selection.AutoFilter field:=col, _
+                Criteria1:=filterArray(col, 1)
+            End If
+        End If
+    Next col
+    ActiveCell.Select
+ErrHandler:
+    'Do nothing
+End Sub
+
+
+
+Attribute VB_Name = "ValidationUtil"
+Option Explicit
+Public g_sNonAmazonTxnType As String       'Cache Delimited valid value strings  - Non - Amazon related Txn Type
+Public g_sCountryCode As String            'Cache Delimited valid value strings - Country
+Public g_sTransportationMode As String     'Cache Delimited valid value strings - Transportation Mode
+Public g_sDeliveryCondition As String      'Cache Delimited valid value strings - Delivery Condition
+Public g_sCurrencyCode As String           'Cache Delimited valid value strings - Currency Code
+Public g_sStatCode(1 To 2) As String       'Cache Delimited valid value strings - Stat Code FR and CZ
+Public g_sSupplUnit As String              'Cache Delimited valid value strings - Currency Code
+
+Public g_oDataRulesbyTxnType As Collection 'Cache saving required/optional field rules
+Public g_oCommodityCodeRules As Collection 'Cache saving Commodity Codes
+Public g_oTxnType As Collection            'Cache Delimited valid value strings of Txn Type by Sales channel
+
+Private Const COMMODITY_MAP_CZSTAT As Long = 1   'Constant to lookup value in mapping table
+Private Const COMMODITY_MAP_FRSTAT As Long = 2   'Constant to lookup value in mapping table
+Private Const COMMODITY_MAP_SUPPUNIT As Long = 3 'Constant to lookup value in mapping table
+
+'Builds a string cache for quick lookup for dropdown lists
+Private Function CreateStringCache(ByRef oRange As Variant) As String
+    Dim sData() As String
+    Dim lCount As Long
+    Dim lIndex As Long
+         
+    lCount = UBound(oRange)
+    ReDim sData(1 To lCount)
+    
+    On Error GoTo ErrHandler
+    'VS CHECK if we should use for each if it is faster (technically it is faster by few points
+    For lIndex = 1 To lCount
+       sData(lIndex) = oRange(lIndex, 1)
+    Next
+    CreateStringCache = vbTab & UCase$(Join(sData, vbTab)) & vbTab
+    Exit Function
+ErrHandler:
+    'VS CHECK TODO Remove later
+    Call MsgBox("Error building string cache.", vbCritical + vbOKOnly, "Validation")
+End Function
+
+
+'Builds a collection cache for quick lookup for a list - Use it for rows > 2000
+Private Sub CreateCommodityRulesCache(ByRef oRange As Variant, Optional ByVal Rebuild As Boolean = False)
+    Dim sArray() As String
+    Dim lTotalRow As Long
+    'Dim lTotalCol As Long
+    Dim lRow As Long
+    Dim lCol As Long
+    Dim sVal As String
+    
+    If Rebuild Then Set g_oCommodityCodeRules = Nothing
+    If g_oCommodityCodeRules Is Nothing Then Set g_oCommodityCodeRules = New Collection
+    lTotalRow = UBound(oRange)
+    'lTotalCol = UBound(oRange, 2)
+    ReDim sArray(1 To (TABLE_COMMODITY_CODE_MAPPING_DATAEND_COL - 1))
+    
+    On Error Resume Next
+    For lRow = 1 To lTotalRow
+        For lCol = TABLE_COMMODITY_CODE_MAPPING_DATASTART_COL To TABLE_COMMODITY_CODE_MAPPING_DATAEND_COL
+            sArray(lCol - 1) = oRange(lRow, lCol)  'valid values for that commodity code ' arr(1) - StatCodeCZ, arr(2) - StatCodeFR, arr(3) - Supp Unit
+        Next lCol
+        Call g_oCommodityCodeRules.Add(sArray, CStr(oRange(lRow, TABLE_COMMODITY_CODE_MAPPING_DATAKEYCOL))) 'first col is the key i.e. commodity code
+        
+    Next lRow
+    
+End Sub
+
+'Builds a collection cache for quick lookup if a particular column is mandatory or optional based on txn type
+Private Sub CreateRulesCache(ByRef oRange As Variant, Optional ByVal Rebuild As Boolean = False)
+    
+    Dim lTotalRow As Long
+    'Dim lTotalCol As Long
+    Dim lRow As Long
+    Dim lCol As Long
+    Dim sVal As String
+    
+    If Rebuild Then Set g_oDataRulesbyTxnType = Nothing
+    If g_oDataRulesbyTxnType Is Nothing Then Set g_oDataRulesbyTxnType = New Collection
+    lTotalRow = UBound(oRange)
+    'lTotalCol = UBound(oRange, 2)
+    
+    On Error Resume Next
+    For lRow = 1 To lTotalRow
+        sVal = ""
+        For lCol = TABLE_FIELDS_MANDATORY_OPTIONAL_DATASTART_COL To TABLE_FIELDS_MANDATORY_OPTIONAL_DATAEND_COL
+            sVal = sVal & oRange(lRow, lCol) 'Builds a string with each col haveing a value from 0 to 2
+        Next lCol
+        Call g_oDataRulesbyTxnType.Add(sVal, UCase$(oRange(lRow, TABLE_FIELDS_MANDATORY_OPTIONAL_DATAKEY_COL))) 'first col is the key i.e. Transaction type
+    Next lRow
+    
+End Sub
+
+'Builds a collection cache for quick lookup for txn type by Sales Channel
+Private Sub CreateTxnTypeCache(ByRef oRange As Variant, Optional ByVal Rebuild As Boolean = False)
+    Dim lTotalRow As Long
+    Dim lTotalCol As Long
+    Dim lRow As Long
+    Dim lCol As Long
+    Dim sVal As String
+    Dim sAllTxn As String
+    
+    If Rebuild Then Set g_oTxnType = Nothing
+    If g_oTxnType Is Nothing Then Set g_oTxnType = New Collection
+    lTotalRow = UBound(oRange)
+    'lTotalCol = UBound(oRange, 2)
+    
+    On Error Resume Next
+    For lRow = 1 To lTotalRow
+        sVal = ""
+        For lCol = TABLE_SALES_TXN_MAP_DATASTART_COL To TABLE_SALES_TXN_MAP_DATAEND_COL
+            sVal = sVal & UCase$(oRange(lRow, lCol)) 'Semicolon delimited list of txn types by sales channel
+        Next lCol
+        Call g_oTxnType.Add(sVal, UCase$(oRange(lRow, TABLE_SALES_TXN_MAP_DATAKEY_COL))) 'first col is the key i.e. Sales Channel
+        sAllTxn = sVal & vbTab & sAllTxn   'vbTab is to separate various rows for efficieny
+    Next lRow
+    'If g_oTxnType.Count > 1 Then Call g_oTxnType.Add(sAllTxn, "DEFAULT")
+End Sub
+
+
+'Returns 0 if required, 1 if optional, 2 if not required, 3 if transaction type is invalid
+'For faster performance call this function for valid txntype only
+'VS CHECK why do we need 2 - not required? treat it same as optional?
+Public Function RequiredOrOptionalField(ByVal lColumn As Long, ByVal strTxnType As String) As Long
+   
+    If Len(strTxnType) = 0 Then
+        RequiredOrOptionalField = 1 'No transaction type means all fields for the row are optional
+    Else
+        RequiredOrOptionalField = 3 'Means invalid
+    End If
+    If g_oDataRulesbyTxnType Is Nothing Then Call CreateRulesCache(shValidValues.Range(TABLE_FIELDS_MANDATORY_OPTIONAL).Value2)
+    
+    On Error Resume Next
+    RequiredOrOptionalField = CLng(Mid$(g_oDataRulesbyTxnType.Item(UCase$(strTxnType)), lColumn, 1))  'the column lookup is to calculate the difference
+    If Err.Number > 0 Then
+        'VS CHECK TODO in case i want a different treatment in terms of error like - validation in macro failed go get from backend
+        'currently an error can result failure in validation
+        Call MsgBox("Error in getting required/optional value.", vbCritical + vbOKOnly, "Required / Optional Check")
+    End If
+    
+End Function
+
+'Remove
+Public Function IsRequiredOrOptionalField(ByVal lColumn As Long, ByVal strTxnType As String) As Long
+   
+   IsRequiredOrOptionalField = RequiredOrOptionalField(lColumn, strTxnType)
+    
+End Function
+''Returns 0 if required, 1 if optional, 2 if not required, 3 if transaction type is invalid
+'Function IsRequiredOrOptionalFieldN(ByVal iColumn As Long, ByVal strTxnType As String) As Long
+'    Dim iRowNoForTxnType As Long
+'    iRowNoForTxnType = GetRowNoForTxnType(strTxnType)
+'    If iRowNoForTxnType > 0 Then
+'        IsRequiredOrOptionalFieldN = shValidValues.Range(TABLE_FIELDS_MANDATORY_OPTIONAL)(iRowNoForTxnType, iColumn).Value
+'    Else
+'        IsRequiredOrOptionalFieldN = 3
+'    End If
+'End Function
+
+'IS Transaction Event valid for given sales channel. Assumes blank is invalid value
+Public Function IsTxnTypeValid(ByVal strTxnType As String, Optional ByVal strSalesChannel As String = "BLANK") As Boolean
+    Dim sTxn As String
+    
+    If Len(strTxnType) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If g_oTxnType Is Nothing Then Call CreateTxnTypeCache(shValidValues.Range(TABLE_SALES_TXN_MAP).Value2)
+   
+    On Error GoTo ErrHandler
+    sTxn = g_oTxnType.Item(strSalesChannel)
+    If (Len(sTxn) = 0) Then Exit Function
+    IsTxnTypeValid = (InStr(1, sTxn, DELIM_SEMICOLON & UCase$(strTxnType) & DELIM_SEMICOLON) > 0)
+    Exit Function
+ErrHandler:
+    'DO Nothing
+End Function
+
+'IS Sales Channel valid. Assumes blank is invalid value
+Public Function IsSalesChannelValid(ByVal strSalesChannel As String) As Boolean
+    If Len(strSalesChannel) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If g_oTxnType Is Nothing Then Call CreateTxnTypeCache(shValidValues.Range(TABLE_SALES_TXN_MAP).Value2)
+   
+    On Error GoTo ErrHandler
+    If (Len(g_oTxnType.Item(strSalesChannel)) > 0) Then
+        IsSalesChannelValid = True
+        Exit Function
+    End If
+ErrHandler:
+    'DO Nothing
+End Function
+'
+'Function IsSalesChannelValid(ByVal strVal As String) As Boolean
+'On Error Resume Next
+'iArraySize = UBound(arrSalesChannel)
+'If Err.Number <> 0 Then
+'    arrSalesChannel = shValidValues.Range(TABLE_SALES_CHANNEL)
+'End If
+'IsSalesChannelValid = Not (IsError(Application.Match(strVal, arrSalesChannel, 0)))
+'End Function
+
+'lType: -1 for negative, 0 for both, 1 for positive and decimal separator can only be "."
+Public Function IsNumberValid(ByVal sNum As String, ByVal lType As Long, ByVal lDecimals As Long) As Boolean
+    Dim fTemp As Double
+    Dim lDecPos As Long
+    
+    If Len(sNum) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If InStr(1, sNum, ",") > 0 Then Exit Function  'Doesn't allow group separator and numbers having decimal should use only '.' as decimal separator
+    
+    If IsNumeric(sNum) Then  'VS 04/10 - isnumeric check should be preceeded before Val as Val("1.2adsdas") = 1.2
+        fTemp = Val(sNum)    'VS 04/10 - Val assumes number represented as string uses period for decimal separator in any locale. Note: Val ("1,2") = 1 and Val("1.2") = 1.2 in all languages
+    Else
+        Exit Function
+    End If
+    
+    lDecPos = InStr(1, sNum, ".")
+    If lDecPos > 0 Then
+        If (Len(Mid$(sNum, lDecPos + 1)) > lDecimals) Then Exit Function
+    End If
+
+    If (lType = 1) Then 'Positive only
+        IsNumberValid = (fTemp >= 0)
+    ElseIf (lType = -1) Then 'Negative or zero only
+        IsNumberValid = (fTemp <= 0)
+    Else 'Any number
+        IsNumberValid = True
+    End If
+    
+End Function
+
+'Number has to be positive and between 0 and 1 (inclusive) with specified number of decimal places and decimal separator can only be "."
+Public Function IsRateValid(ByVal sNum As String, ByVal lDecimals As Long) As Boolean
+    
+    If IsNumberValid(sNum, 1, lDecimals) Then IsRateValid = (Val(sNum) <= 1)
+    
+End Function
+
+Public Function IsWholeNumber(ByVal sNum As String, ByVal minVal As Long, ByVal maxVal As Long) As Boolean
+    Dim lTemp As Long
+    
+    If Len(sNum) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If InStr(1, sNum, ",") > 0 Then Exit Function
+    If InStr(1, sNum, ".") > 0 Then Exit Function  'VS 04/10 - Will treat "1." as incorrect. Since this should not happen this is ok to not handle
+    
+    If IsNumeric(sNum) Then
+        lTemp = CLng(sNum)
+    Else
+        Exit Function
+    End If
+        
+    If (lTemp >= minVal) And (lTemp <= maxVal) Then IsWholeNumber = True
+    
+End Function
+
+'This function allows numbers to have maximum of 2 decimal places and accept locale specific decimal separator
+Public Function IsLocaleNumberWithTwoDecimals(ByVal sNum As String, ByVal minVal As Double, ByVal maxVal As Double) As Boolean
+    Dim fTemp As Double
+    Dim lDecPos As Long
+    If Len(sNum) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If InStr(1, sNum, Application.International(xlThousandsSeparator)) > 0 Then Exit Function
+    
+    If IsNumeric(sNum) Then  'VS 04/10 - isnumeric check should be preceeded before Val as Val("1.2adsdas") = 1.2
+        fTemp = CDbl(sNum)    'VS 04/10 - Val assumes number represented as string uses period for decimal separator in any locale. Note: Val ("1,2") = 1 and Val("1.2") = 1.2 in all languages
+    Else
+        Exit Function
+    End If
+    
+    IsLocaleNumberWithTwoDecimals = ((fTemp >= minVal) And (fTemp <= maxVal))
+    If Not IsLocaleNumberWithTwoDecimals Then Exit Function
+    'VS 04/10 we can have <=2 decimal places or 2 is a fixed number for number of decimal places
+    lDecPos = InStr(1, sNum, Application.International(xlDecimalSeparator))
+    If lDecPos > 0 Then IsLocaleNumberWithTwoDecimals = ((Mid$(sNum, lDecPos + 3) & "0") <= 0)  'VS - lDecPos+3 so that i get the third digit if it exists. Will always append 0 at end in case it is only 2 digit else it will error out
+    
+End Function
+
+'This function allows numbers to have maximum of 2 decimal places and only consider "." as decimal separator
+Public Function IsNumberWithTwoDecimals(ByVal sNum As String, ByVal minVal As Double, ByVal maxVal As Double) As Boolean
+    Dim fTemp As Double
+    Dim lDecPos As Long
+    If Len(sNum) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If InStr(1, sNum, ",") > 0 Then Exit Function
+    
+    If IsNumeric(sNum) Then  'VS 04/10 - isnumeric check should be preceeded before Val as Val("1.2adsdas") = 1.2
+        fTemp = Val(sNum)    'VS 04/10 - Val assumes number represented as string uses period for decimal separator in any locale. Note: Val ("1,2") = 1 and Val("1.2") = 1.2 in all languages
+    Else
+        Exit Function
+    End If
+    
+    IsNumberWithTwoDecimals = ((fTemp >= minVal) And (fTemp <= maxVal))
+    If Not IsNumberWithTwoDecimals Then Exit Function
+    'VS 04/10 we can have <=2 decimal places or 2 is a fixed number for number of decimal places
+    lDecPos = InStr(1, sNum, ".")
+    If lDecPos > 0 Then IsNumberWithTwoDecimals = ((Mid$(sNum, lDecPos + 3) & "0") <= 0)  'VS - lDecPos+3 so that i get the third digit if it exists. Will always append 0 at end in case it is only 2 digit else it will error out
+    
+End Function
+'
+'Function IsModeOfTransportationValid1(ByRef strVal As String) As Boolean
+'On Error Resume Next
+'iArraySize = UBound(arrModeOfTransportation)
+'If Err.Number <> 0 Then
+'    arrModeOfTransportation = Application.Transpose(shValidValues.Range(TABLE_MODE_OF_TRANSPORTATION).Value)
+'End If
+'    IsModeOfTransportationValid1 = Not (IsError(Application.Match(strVal, arrModeOfTransportation, 0)))
+'End Function
+
+
+'IS Mode of Transportation mode valid. Assumes blank is invalid value
+Public Function IsModeOfTransportationValid(ByVal strVal As String) As Boolean
+    If Len(strVal) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If Len(g_sTransportationMode) = 0 Then g_sTransportationMode = CreateStringCache(shValidValues.Range(TABLE_MODE_OF_TRANSPORTATION).Value2)
+    
+        
+    IsModeOfTransportationValid = (InStr(1, g_sTransportationMode, vbTab & UCase$(strVal) & vbTab) > 0)
+
+End Function
+
+'IS Delivery condition valid. Assumes blank is invalid value
+Public Function IsDeliveryConditionsValid(ByVal strVal As String) As Boolean
+    If Len(strVal) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If Len(g_sDeliveryCondition) = 0 Then g_sDeliveryCondition = CreateStringCache(shValidValues.Range(TABLE_DELIVERY_CONDITIONS).Value2)
+        
+    IsDeliveryConditionsValid = (InStr(1, g_sDeliveryCondition, vbTab & UCase$(strVal) & vbTab) > 0)
+
+End Function
+
+'IS Country Code valid. Assumes blank is invalid value
+Public Function IsCountryCodeValid(ByVal strVal As String) As Boolean
+    If Len(strVal) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If Len(g_sCountryCode) = 0 Then g_sCountryCode = CreateStringCache(shValidValues.Range(TABLE_COUNTRY).Value2)
+        
+    IsCountryCodeValid = (InStr(1, g_sCountryCode, vbTab & UCase$(strVal) & vbTab) > 0)
+
+End Function
+
+'IS Country Code valid for taxable country. Assumes blank is invalid value
+Public Function IsTaxableCountryCodeValid(ByVal strVal As String) As Boolean
+    If Len(strVal) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If Len(g_sTaxableCountryCode) = 0 Then g_sTaxableCountryCode = CreateStringCache(shValidValues.Range(TABLE_TAXABLE_COUNTRY).Value2)
+        
+    IsTaxableCountryCodeValid = (InStr(1, g_sTaxableCountryCode, vbTab & UCase$(strVal) & vbTab) > 0)
+
+End Function
+
+'IS Currency code valid. Assumes blank is invalid value
+Public Function IsCurrencyCodeValid(ByVal strVal As String) As Boolean
+    If Len(strVal) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If Len(g_sCurrencyCode) = 0 Then g_sCurrencyCode = CreateStringCache(shValidValues.Range(TABLE_CURRENCY_CODE).Value2)
+        
+    IsCurrencyCodeValid = (InStr(1, g_sCurrencyCode, vbTab & UCase$(strVal) & vbTab) > 0)
+
+End Function
+
+'IS Commodity code valid. Assumes blank is invalid value
+Public Function IsCommodityCodeValid(ByVal strVal As String) As Boolean
+    If Len(strVal) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If g_oCommodityCodeRules Is Nothing Then Call CreateCommodityRulesCache(shValidValues.Range(TABLE_COMMODITY_CODE_MAPPING).Value2)
+   
+    On Error GoTo ErrHandler
+    If (UBound(g_oCommodityCodeRules.Item(strVal)) > 0) Then IsCommodityCodeValid = True
+    Exit Function
+ErrHandler:
+    'DO Nothing
+End Function
+
+
+'check if VAT number length is correct
+Public Function IsValidVATNbr(ByVal strVal As String, Optional ByVal sCtry As String) As Boolean
+    Dim sVATCtry As String
+    Dim sTemp As String
+    
+    If Len(strVal) = 0 Then Exit Function
+    
+    'VS CHECK TO DO we can replace all spaces to vbnullstring , should we do it -- strVal = Replace$(strVal," ",vbNullstring)
+    'If Not ((Len(strVal) > 2) And (Len(strVal) <= 14)) Then Exit Function  'no point doing this as I am doing it below
+    
+    'VS CHECK TO DO VAT rule says case sensitive - need to check  All letters are case sensitive. Please follow the exact syntax of the VAT number shown.
+    strVal = Trim$(UCase$(strVal))
+    sCtry = Trim$(UCase$(sCtry))
+    sVATCtry = Left$(strVal, 2)
+    
+    If Len(sCtry) <> 2 Then sCtry = sVATCtry
+    If Not IsEnglishLetter(sCtry) Then Exit Function
+    If sCtry = sVATCtry Then strVal = Mid$(strVal, 3, Len(strVal)) 'remove country prefix
+    
+    Select Case UCase$(sCtry)
+        'http://ec.europa.eu/taxation_customs/vies/faq.html#item_11
+        '*:  Format excludes 2 letter alpha prefix  | 9:  A digit | X:  A letter or a digit | S:  A letter; a digit; "+" or "*" | L:  A letter
+        
+        Case "GB"
+          'GB-United Kingdom    GB999999999 or GB999999999999 or GBGD999 or GBHA999
+          sTemp = Left$(strVal, 2)
+          If ((sTemp = "GD") Or (sTemp = "HA")) Then strVal = Mid$(strVal, 3, Len(strVal)) 'remove alpha prefix
+          IsValidVATNbr = (IsNumeric(strVal) And ((Len(strVal) = 9) Or (Len(strVal) = 12)))
+        
+        Case "DE"
+            'DE-Germany  DE999999999
+            IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 9))
+         
+        Case "FR"
+            'FR-France   FRXX 999999999
+            If Not IsNumeric(Right$(strVal, 9)) Then Exit Function
+            sTemp = Left$(strVal, 2)
+            IsValidVATNbr = (IsNumeric(sTemp) Or IsEnglishLetter(sTemp))
+            
+        Case "ES"
+            'ES-Spain    ESX9999999X
+            If Not IsNumeric(Mid$(strVal, 2, 7)) Then Exit Function
+            sTemp = Left$(strVal, 1)
+            If Not (IsNumeric(sTemp) Or IsEnglishLetter(sTemp)) Then Exit Function
+            sTemp = Right$(strVal, 1)
+            IsValidVATNbr = (IsNumeric(sTemp) Or IsEnglishLetter(sTemp))
+            
+        Case "IT"
+            'IT-Italy    IT99999999999
+            IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 11))
+        
+        Case "PL"
+            'PL-Poland   PL9999999999
+            IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 10))
+        
+        Case "CZ"
+            'CZ-Czech Republic    CZ99999999 or CZ999999999 or CZ9999999999
+            If IsNumeric(strVal) Then IsValidVATNbr = ((Len(strVal) >= 8) Or (Len(strVal) <= 10))
+            
+        Case "AT"
+            'AT-Austria  ATU99999999
+            sTemp = Right$(strVal, 8)
+            IsValidVATNbr = (IsNumeric(sTemp) And (Left$(strVal, 1) = "U"))
+          
+        Case "BE"
+            'BE-Belgium  BE0999999999
+            sTemp = Right$(strVal, 9)
+            IsValidVATNbr = (IsNumeric(sTemp) And (Left$(strVal, 1) = "0"))
+            
+        Case "BG"
+            'BG-Bulgaria BG999999999 or BG9999999999
+            If IsNumeric(strVal) Then IsValidVATNbr = ((Len(strVal) = 9) Or (Len(strVal) = 10))
+        
+        Case "BG"
+            'CY-Cyprus   CY99999999L
+            sTemp = Left$(strVal, 8)
+            IsValidVATNbr = (IsNumeric(sTemp) And IsEnglishLetter(Right$(strVal, 1)))
+             
+        Case "EE", "PT"
+            'EE-Estonia  EE999999999 'PT-Portugal PT999999999
+            IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 9))
+        
+        Case "EL", "GR"  'for greece ISO code is GR but VAT prefix is EL
+            'EL-Greece   EL999999999
+            If Left$(strVal, 2) = "EL" Then strVal = Right$(strVal, 9)
+            IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 9))
+            
+        Case "HR", "LV"
+            'HR-Croatia  HR99999999999 'LV-Latvia   LV99999999999
+            IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 11))
+            
+        Case "HU", "LU", "FI", "DK", "MT", "SI"
+            'HU-Hungary  HU99999999  'LU-Luxembourg   LU99999999  'FI-Finland  FI99999999  'DK-Denmark  DK99 99 99 99 'MT-Malta    MT99999999 'SI-Slovenia SI99999999
+            IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 8))
+        
+        Case "IE"
+            'IE-Ireland   IE9S99999L or IE9999999WI
+            If Len(strVal) = 8 Then
+                sTemp = Mid$(strVal, 2, 1)
+                If (Not (IsNumeric(sTemp) Or IsEnglishLetter(sTemp) Or (sTemp = "+") Or (sTemp = "*"))) Then Exit Function
+                sTemp = Left$(strVal, 1) & Mid$(strVal, 3, 5)
+                IsValidVATNbr = (IsNumeric(sTemp) And IsEnglishLetter(Right$(strVal, 1)))
+            ElseIf Len(strVal) = 9 Then
+                sTemp = Left$(strVal, 7)
+                IsValidVATNbr = (IsNumeric(Left$(strVal, 7)) And (Right$(strVal, 2) = "WI"))
+            End If
+        
+        Case "LT"
+            'LT-Lithuania    LT999999999 or LT999999999999
+            If IsNumeric(strVal) Then IsValidVATNbr = ((Len(strVal) = 9) Or (Len(strVal) = 12))
+           
+        Case "NL"
+           'NL-The Netherlands  NL999999999B99
+           sTemp = Mid$(strVal, 1, 9) & Mid$(strVal, 11, 2)
+           IsValidVATNbr = (IsNumeric(sTemp) And (Mid$(strVal, 10, 1) = "B"))
+        
+        Case "RO"
+          'RO-Romania  RO999999999 1 block of minimum 2 digits and maximum 10 digits
+          IsValidVATNbr = (IsNumeric(strVal) And ((Len(strVal) <= 2) Or (Len(strVal) >= 10)))
+          
+        Case "SE"
+          'SE-Sweden   SE999999999999
+          IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 12))
+          
+        Case "SK"
+          'SK-Slovakia SK9999999999
+          IsValidVATNbr = (IsNumeric(strVal) And (Len(strVal) = 10))
+          
+        Case Else
+            'assume valid
+            IsValidVATNbr = True
+    End Select
+    
+    
+End Function
+
+'Validates if it is a correct date and in the DD-MM-YYYY format
+Public Function ValidateDate(ByVal sDate As String) As Boolean
+    If IsDate(sDate) Then
+        If Format$(sDate, "DD-MM-YYYY") = sDate Then
+            ValidateDate = True
+        End If
+    End If
+    
+End Function
+
+'Assumes validated commodity code to lookup corresponding values. Allowed countries are FR and CZ
+Public Function GetAllowedStatCodebyCommodityCode(ByVal strCommodityCode As String, ByVal sCountry As String) As String
+    Dim sArray() As String
+    
+    If Len(strCommodityCode) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If Len(sCountry) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If g_oCommodityCodeRules Is Nothing Then Call CreateCommodityRulesCache(shValidValues.Range(TABLE_COMMODITY_CODE_MAPPING).Value2)
+    
+    On Error GoTo ErrHandler
+    
+    sArray = g_oCommodityCodeRules.Item(strCommodityCode)
+    sCountry = UCase$(sCountry)
+    If sCountry = "FR" Then
+        GetAllowedStatCodebyCommodityCode = sArray(COMMODITY_MAP_FRSTAT)
+    ElseIf sCountry = "CZ" Then
+        GetAllowedStatCodebyCommodityCode = sArray(COMMODITY_MAP_CZSTAT)
+    End If
+    Exit Function
+ErrHandler:
+    'Do Nothing
+End Function
+
+'Assumes validated commodity code to lookup corresponding values in this case Suppl Unit which is third element
+Public Function GetAllowedSupplUnitbyCommodityCode(ByVal strCommodityCode As String) As String
+    Dim sArray() As String
+    
+    If Len(strCommodityCode) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If g_oCommodityCodeRules Is Nothing Then Call CreateCommodityRulesCache(shValidValues.Range(TABLE_COMMODITY_CODE_MAPPING).Value2)
+    
+    On Error GoTo ErrHandler
+    
+    sArray = g_oCommodityCodeRules.Item(strCommodityCode)
+    GetAllowedSupplUnitbyCommodityCode = sArray(COMMODITY_MAP_SUPPUNIT)
+    Exit Function
+    
+ErrHandler:
+    'Do Nothing
+End Function
+
+'No commodity code so just look at valid values. Allowed countries are FR and CZ.
+Public Function ValidateStatCode(ByVal statCode As String, ByVal sCountry As String) As Boolean
+   
+    If Len(statCode) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    sCountry = UCase$(sCountry)
+    If sCountry = "FR" Then
+        If Len(g_sStatCode(COMMODITY_MAP_FRSTAT)) = 0 Then g_sStatCode(COMMODITY_MAP_FRSTAT) = CreateStringCache(shValidValues.Range(TABLE_STAT_CODE_FR).Value2)
+        ValidateStatCode = (InStr(1, g_sStatCode(COMMODITY_MAP_FRSTAT), vbTab & UCase$(statCode) & vbTab) > 0)
+    ElseIf sCountry = "CZ" Then
+        If Len(g_sStatCode(COMMODITY_MAP_CZSTAT)) = 0 Then g_sStatCode(COMMODITY_MAP_CZSTAT) = CreateStringCache(shValidValues.Range(TABLE_STAT_CODE_CZ).Value2)
+        ValidateStatCode = (InStr(1, g_sStatCode(COMMODITY_MAP_CZSTAT), vbTab & UCase$(statCode) & vbTab) > 0)
+    End If
+    
+End Function
+
+'No commodity code so just look at valid values.
+Public Function ValidateSupplUnit(ByVal suppUnit As String) As Boolean
+   
+    If Len(suppUnit) = 0 Then Exit Function 'VS CHECK SHOULD WE ASSUME THIS IN THIS FUNCTION
+    If Len(g_sSupplUnit) = 0 Then g_sSupplUnit = CreateStringCache(shValidValues.Range(TABLE_COMMODITY_CODE_SUPP_UNIT).Value2)
+    
+    ValidateSupplUnit = (InStr(1, g_sSupplUnit, vbTab & UCase$(suppUnit) & vbTab) > 0)
+   
+End Function
+
+'checks if string contains only letters from A to Z
+Public Function IsEnglishLetter(ByVal strValue As String) As Boolean
+    Dim lPos As Long
+    
+    If Len(strValue) < 1 Then Exit Function
+    strValue = UCase$(strValue)
+    For lPos = 1 To Len(strValue)
+        Select Case Asc(Mid$(strValue, lPos, 1))
+            Case 97 To 122 'A to Z
+                IsEnglishLetter = True
+            Case Else
+                Exit For
+        End Select
+    Next lPos
+    
+End Function
+
+Attribute VB_Name = "Variables"
+Option Explicit
+'--- variables initialized when workbook is opened
+Public g_IsScreenUpdate As Boolean
+Public g_IsDisplayStatusBar As Boolean
+Public g_IsEnableEvents As Boolean
+Public g_CalcState As XlCalculation
+Public g_IsDisplayAlerts As Boolean
+Public g_CutCopyMode As XlCutCopyMode
+Public g_IsTemplateSheetPageBreak As Boolean 'for templatesheet only
+'--- variables initialized when workbook is opened
+
+Public Const DELIM_SEMICOLON As String = ";"  'Used for error msg column
+Public Const DELIM_COLON As String = ":"      'Used for error msg column and range separator
+
+'--- Data Column Numbers in Template Sheet
+Public Const ERR_TYPE_COL As Long = 1
+Public Const ERR_TYPE_COL_NAME As String = "A"
+Public Const ASIN_COL As Long = 2
+Public Const SKU_COL As Long = 3
+Public Const ITEM_NAME_COL As Long = 4
+Public Const COST_PRICE_COL As Long = 5
+Public Const COST_PRICE_CURRENCY_COL As Long = 6
+Public Const SELL_PRICE_COL As Long = 7
+Public Const SELL_PRICE_CURRENCY_COL As Long = 8
+Public Const MFG_CNTRY_COL As Long = 9
+Public Const COMMODITY_CODE_COL As Long = 10
+Public Const COMMODITY_CODE_COL_NAME As String = "J"
+Public Const FR_STAT_CODE_COL As Long = 11
+Public Const CZ_STAT_CODE_COL As Long = 12
+Public Const SUPP_UNIT_COL As Long = 13
+Public Const SUPP_QTY_COL As Long = 14
+Public Const TRANSPORT_MODE_INBOUND_COL As Long = 15
+Public Const TRANSPORT_MODE_MFN_COL As Long = 16
+Public Const DELIVERY_COND_MFN_COL As Long = 17
+Public Const ERR_MSG_COL As Long = 18
+Public Const ERR_MSG_COL_NAME As String = "R"
+
+'--- Data Column Numbers in Valid Value Sheet
+Public Const COMMODITY_CODE_VALID_VALUES As String = "L"
+Public Const SUPP_UNIT_COL_VALID_VALUES As Long = 15
+
+'Template sheet data row markers
+Public Const DATA_BEGIN_ROW As Long = 4
+Public Const DATA_BEGIN_COL As Long = 2
+Public Const DATA_BEGIN_COL_NAME As String = "B"
+Public Const DATA_END_COL As Long = DELIVERY_COND_MFN_COL
+Public Const DATA_END_COL_NAME As String = "Q"
+
+'Important ranges
+'Public Const SORTKEY1_TXNTYPE As String = TXN_TYPE_COL_NAME & DATA_BEGIN_ROW & DELIM_COLON & TXN_TYPE_COL_NAME   'D4:D
+'Public Const SORTKEY2_TXNEVENTID As String = CURR_INVOICE_COL_NAME & DATA_BEGIN_ROW & DELIM_COLON & CURR_INVOICE_COL_NAME  'E4:E
+Public Const DATA_MAX_RNG As String = DATA_BEGIN_COL_NAME & DATA_BEGIN_ROW & DELIM_COLON & DATA_END_COL_NAME     'C4:AP   'VS CHECK: TODO confirm the range, previously was open ended A:AP
+Public Const ERR_MSG_RNG As String = ERR_MSG_COL_NAME & DATA_BEGIN_ROW & DELIM_COLON & ERR_MSG_COL_NAME          'AQ4:AQ  'Format Errors
+Public Const ERR_TYPE_RNG As String = ERR_TYPE_COL_NAME & DATA_BEGIN_ROW & DELIM_COLON & ERR_TYPE_COL_NAME       'A4:A
+Public Const COMMODITY_CODE_RNG As String = COMMODITY_CODE_COL_NAME & DELIM_COLON & COMMODITY_CODE_COL_NAME
+Public Const SUPP_UNIT_COL_RNG As String = SUPP_UNIT_COL & DELIM_COLON & SUPP_UNIT_COL
+Public Const COMMODITY_CODE_VALID_VALUE_RNG As String = COMMODITY_CODE_VALID_VALUES & DELIM_COLON & COMMODITY_CODE_VALID_VALUES
+
+
+Public Const TEMPLATE_MAX_RNG As String = ERR_TYPE_COL_NAME & DATA_BEGIN_ROW & DELIM_COLON & ERR_MSG_COL_NAME    'A4:AR
+
+'-- Maximum row numbers used to set formatting
+Public Const MAXROW_TP50 As Long = 10000
+Public Const MAXROW_TP90 As Long = 100000
+
+'-- Error related contants - format, string type
+Public Const ERR_ACTION_STR = "Format Error" 'VS CHECK need to change
+Public Const NO_COLOR As Long = 0
+Public Const BG_ERR_COLOR As Long = 40 'TAN
+Public Const REQUIREDCOLOR As Long = -4165632
+Public Const DEFAULTCOLOR As Long = -4142
+Public Const NOTREQUIREDCOLOR As Long = 13434879  'Yellow   'Black is 0
+
+'ValidValues Sheet Constants---------------------------------------------------------------
+'Constants for Named Table Ranges
+Public Const TABLE_CURRENCY_CODE As String = "table_currency_code"
+'Public Const TABLE_COMMODITY_CODE As String = "table_commodity_code"
+Public Const TABLE_STAT_CODE_CZ As String = "table_stat_code_cz"
+Public Const TABLE_STAT_CODE_FR As String = "table_stat_code_fr"
+Public Const TABLE_COMMODITY_CODE_SUPP_UNIT As String = "table_commodity_code_supp_unit"
+Public Const TABLE_MODE_OF_TRANSPORTATION As String = "table_mode_of_transportation"
+Public Const TABLE_COUNTRY As String = "table_country"
+Public Const TABLE_DELIVERY_CONDITIONS As String = "table_delivery_conditions"
+'Public Const TABLE_MESSAGES As String = "table_messages"  'NOT USED
+Public Const TABLE_COMMODITY_CODE_MAPPING As String = "table_commodity_code_mapping"
+Public Const TABLE_TRANSLATIONS As String = "table_translations"
+
+'Constants for Named List
+Public Const LIST_COMMODITY_CODE As String = "list_commodity_code"
+Public Const LIST_COUNTRY As String = "list_country"
+Public Const LIST_CURRENCY_CODE As String = "list_currency_code"
+Public Const LIST_DELIVERY_CONDITIONS As String = "list_delivery_conditions"
+Public Const LIST_MODE_OF_TRANSPORTATION As String = "list_mode_of_transportation"
+Public Const LIST_SUPP_UNIT As String = "list_supp_unit"
+Public Const LIST_STAT_CODE_CZ As String = "list_stat_code_cz"
+Public Const LIST_STAT_CODE_FR As String = "list_stat_code_fr"
+
+'Constants for Stringids
+Public Const SELECT_VALID_VALUE As String = "visa-val-select-valid-value"
+Public Const ENTER_VALID_AMOUNT As String = "visa-val-enter-valid-amount"
+Public Const ENTER_VALID_COMMODITY_CODE As String = "visa-val-enter-valid-commodity-code"
+Public Const SELECT_SUPP_UNIT As String = "visa-val-select-supp-unit"
+Public Const NOT_VALID_SUPP_UNIT As String = "visa-val-not-valid-supp-unit"
+Public Const NOT_VALID_STAT_CODE As String = "visa-val-not-valid-stat-code"
+Public Const INVALID_CURRENCY As String = "visa-val-invalid-currency"
+Public Const INVALID_DELIVERY_CONDITION As String = "visa-val-invalid-delivery-condition"
+Public Const INVALID_MODE_OF_TRANSPORTATION As String = "visa-val-invalid-mode-of-transportation"
+Public Const INVALID_COUNTRY As String = "visa-val-invalid-country"
+Public Const INVALID_SUPP_UNIT As String = "visa-val-invalid-supp-unit"
+Public Const INVALID_COMMODITY_CODE As String = "visa-val-invalid-commodity-code"
+Public Const INVALID_AMOUNT As String = "visa-val-invalid-amount"
+Public Const INVALID_FIELD As String = "visa-val-invalid-field"
+Public Const INVALID_SUPP_UNIT_QTY As String = "visa-val-invalid-supp-unit-qty"
+Public Const VALID_SUPP_UNIT_QTY As String = "visa-val-valid-supp-unit-qty"
+Public Const FORMAT_ERROR As String = "visa-val-format-error"
+Public Const ERROR As String = "visa-val-error"
+Public Const VALIDATE_TEMPLATE As String = "visa-val-validate-template"
+Public Const GET_NEXT_ERROR As String = "visa-val-get-next-error"
+Public Const CLEAR_ERRORS As String = "visa-val-clear-errors"
+Public Const WAIT_TEMPLATE_BEING_VALIDATED As String = "visa-val-wait-template-being-validated"
+Public Const NO_OF_ROWS_PROCESSED As String = "visa-val-no-of-rows-processed"
+Public Const SECONDS_REMAINING As String = "visa-val-seconds-remaining"
+Public Const PERCENT_COMPLETED As String = "visa-val-percent-completed"
+Public Const VALIDATING_TEMPLATE As String = "visa-val-validating-template"
+Public Const USE_SALES_PRICE_QUESTION As String = "visa-xls-cost-price-conditional3"
+Public Const OVERWRITE_EXISTING_CELLS_QUESTION As String = "visa-xls-cost-price-empty-msg"
+Public Const OVERWRITE_EXISTING_CELLS_HEADER As String = "visa-xls-ovrwrite-msg"
+Public Const ENTER_PERCENTAGE_COST_PRICE As String = "visa-filings-list-price-cost-price"
+Public Const ENTER_VALID_VALUE As String = "visa-monthly-data-upload-file-failure-msg-invalid-template-2"
+Public Const CALCULATE_COST_PRICE As String = "visa-calculate-cost-price"
+Public Const CAPTION_OK As String = "visa-caption-ok"
+Public Const CAPTION_CANCEL As String = "visa-caption-cancel"
+Public Const INVALID_PERCENT_VALUES As String = "visa-percent-invalid-values"
+
+
+Public Const TABLE_TRANSLATIONS_STRINGID As Long = 1
+Public Const TABLE_TRANSLATIONS_STRINGVALUE As Long = 2
+
+Public Const TABLE_COMMODITY_CODE_MAPPING_DATAKEYCOL As Long = 1 'Commodity Code
+Public Const TABLE_COMMODITY_CODE_MAPPING_DATASTART_COL As Long = 2 'CZ Stat Code
+Public Const TABLE_COMMODITY_CODE_MAPPING_DATAEND_COL As Long = 4 'Supplementary Unit
+Public Const OFFICE_VERSION_15 = 15
+
+
+Attribute VB_Name = "frmInputBoxCP"
+Attribute VB_Base = "0{86A6CB17-326C-FE43-9B76-EC6A5167C5E2}{EE8ECC79-9BA6-E74C-A466-829400B95578}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Private m_fPercent As Double
+
+Private Sub cmdCancel_Click()
+    m_fPercent = 0
+    Call Me.Hide
+End Sub
+
+Private Sub cmdOK_Click()
+    Dim sNumber As String
+    
+    sNumber = txtPercentage.Text
+    If IsWholeNumber(sNumber, 1, 100) Then
+        m_fPercent = Val(sNumber) / 100
+        Call Me.Hide
+    Else
+        m_fPercent = 0
+        Call MsgBox(Replace(GetLocalizedString(INVALID_PERCENT_VALUES), "${hash-get costprice}", sNumber), vbOKOnly, GetLocalizedString(CALCULATE_COST_PRICE))
+        txtPercentage.Text = ""
+        Call txtPercentage.SetFocus
+    End If
+        
+End Sub
+
+Public Function GetPercent() As Double
+    GetPercent = m_fPercent
+End Function
+
+
+
+Private Sub UserForm_Initialize()
+    'Set g_oUserStrings = Nothing  'Debug only
+    
+    With Me
+        .Caption = GetLocalizedString(CALCULATE_COST_PRICE)
+        .lblPrompt.Caption = GetLocalizedString(ENTER_PERCENTAGE_COST_PRICE)
+        .cmdOK.Caption = GetLocalizedString(CAPTION_OK)
+        .cmdCancel.Caption = GetLocalizedString(CAPTION_CANCEL)
+    End With
+End Sub
+Attribute VB_Name = "frmValidatePleaseWait"
+Attribute VB_Base = "0{BB5A94D7-75B0-B640-9CA7-901A4F480B15}{9330CF3E-278D-E94C-BC62-E99E1BF84BF2}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+'This form is visibile when user goes to the add-ins in excel and clicks Validate Template
+Private Sub imgCancel_Click()
+    Call Me.Hide
+    Call Unload(Me)
+End Sub
+
+
+Private Sub UserForm_Activate()
+   
+    lblValidatePleaseWait.Caption = GetLocalizedString(WAIT_TEMPLATE_BEING_VALIDATED)
+    Me.Caption = GetLocalizedString(VALIDATING_TEMPLATE)
+    Call ValidateTemplateSheet 'Called from button click event, caller has disabled few excel actions such as Screenupdate for performance reasons
+End Sub
+
+
+Attribute VB_Name = "shTemplate"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+
+'Validates each Cell change except in case of bulk copy paste for performance reason
+Private Sub Worksheet_Change(ByVal Target As Range)
+On Error GoTo final
+    If Target.Row < DATA_BEGIN_ROW Then
+        Application.EnableEvents = False
+        MsgBox GetLocalizedString("visa-header-change-not-allowed")
+        Application.Undo
+        Application.EnableEvents = True
+    End If
+final:
+    Application.EnableEvents = True
+End Sub
+
+'If the focus is given to a cell that has error then add a excel comment and make the the comment visible so user can understand
+'why the cell is of diffferent border or color
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    
+    'VS CHECK NEED TO HANDLE case where they type a wrong value into the cell and hit tab key - this makes the comment of the adjacent visible while focus is on the entry cell
+    On Error Resume Next
+    'VS CHECK why use target.cells.count instead of target.count
+    If Target.count > 1 Then Exit Sub
+    'Call DisableXlsActions
+    Call DisplayCellError(Target)
+    'Call EnableXlsActions
+    
+      
+End Sub
+
+'This function is called when there is change event (e.g. user entering a value in a cell) in template worksheet
+'Assumes caller has excel actions disabled such as ScreenUpdate,templatesheet is active/has focus and is unprotected
+Private Sub ValidateTemplateCell(ByRef Target As Range)
+    Dim sVal As String
+    Dim sDependentVal As String
+    
+    On Error GoTo ErrHandler
+    If Target.count <> 1 Then Exit Sub
+    If Target.Row < DATA_BEGIN_ROW Then Exit Sub
+    If Application.EnableEvents Then Call DisableXlsActions(True) 'this is important to do in case application event is still enabled for some issues.
+    'If only one cell is changed, validate that cell and give error back if any issues
+    With Target
+        sVal = .Value  'don't use Str$(.Value) as .Value is Variant and when empty Str$(.Value) will return 0
+        If sVal <> vbNullString Then
+            
+            Select Case .Column
+                Case SUPP_QTY_COL  'VS CHECK IF WE SHOULD DO THIS
+                    If Not IsNumberWithTwoDecimals(sVal, 0, 99999) Then 'any number with 2 decimal places allowed
+                        Call MsgBox(GetLocalizedString(VALID_SUPP_UNIT_QTY), vbCritical, GetLocalizedString(INVALID_SUPP_UNIT_QTY))
+                        Call Application.Undo 'VS CHECK why undo? Why not Target.Value = vbNullString?
+                    End If
+                Case COST_PRICE_COL
+                    If Not IsNumberWithTwoDecimals(sVal, 0, 99999) Then 'any number with 2 decimal places allowed
+                        Call MsgBox(GetLocalizedString(ENTER_VALID_AMOUNT), vbCritical, GetLocalizedString(INVALID_AMOUNT))
+                        Call Application.Undo 'VS CHECK why undo? Why not Target.Value = vbNullString?
+                    End If
+                Case COMMODITY_CODE_COL
+                    If Not IsCommodityCodeValid(sVal) Then
+                        Call MsgBox(GetLocalizedString(SELECT_VALID_VALUE), vbCritical, GetLocalizedString(INVALID_COMMODITY_CODE))
+                        Call Application.Undo 'VS CHECK why undo? Why not Target.Value = vbNullString?
+                    End If
+                'VS CHECK do we need to check for sales channel, txn type, stat code, commodity code and associated units?
+                Case Else
+                   'Do Nothing
+            End Select
+            
+        End If
+    End With
+    Exit Sub
+    
+ErrHandler:
+    'This is important so that it does not go in loop. This can happen when application.undo goes to a incorrect value and then
+    'the event fires again which then does application.undo which throws an error. To break off the loop it is better to set the target.value to nullstring
+    If Target.Value = sVal Then Target.Value = vbNullString
+    'Do Nothing
+    
+End Sub
+
+
+
+
+Attribute VB_Name = "shValidValues"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+' InQuest injected base64 decoded content
+' *'jQh
+' wUjX
+' y(^z
+' Z+aO
+' *'jQbzW
+
+INQUEST-PP=macro

@@ -1,0 +1,4474 @@
+Attribute VB_Name = "IDLAddinManager"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+'Klasse verwaltet IDL Addins
+
+'ausserhalb Kvd201.dll: Erg|fffd|nzung zu IDLDecentralEntry
+'stellt dann Objektzugriff auf Elemente aus IDLDecentralEntry dar
+
+Private m_LoadedAddins As New Collection 'Menge an Addins, die in unseren Besitz sind, nicht dabei diejenigen Addins, die eigenen Makrolader (GetIDLAddin besitzen)
+
+Private WithEvents m_app As Application 'Ereignis-senke f|fffd|r Excel Ereignisse
+Attribute m_app.VB_VarHelpID = -1
+
+Private m_bSpreadApp As Boolean
+
+#If Win64 Then
+Private m_hProcessIdSpreadApp As LongPtr
+#Else
+Private m_hProcessIdSpreadApp As Long
+#End If
+ Private m_dwThreadIdSpreadApp As Long
+
+Private m_bInprocConnector As Boolean 'true, falls Connector Inprozess aktiv
+
+Private m_nAppisolation As Long
+
+Private m_CommandArgs() As String
+
+#If Win64 Then
+Private Declare PtrSafe Function GetProcAddressLong Lib "Kernel32" Alias "GetProcAddress" (ByVal hModule As LongPtr, ByVal lpProcID As LongPtr) As LongPtr
+
+Private Declare PtrSafe Function GetCurrentThreadId Lib "Kernel32" () As Long
+
+
+Private Declare PtrSafe Function CreateProcessW Lib "kernel32" (ByVal pApplicationName As LongPtr, ByVal lpCommandLine As Longptr, ByVal lpProcessAttributes As Longptr, ByVal lpThreadAttributes As LongPtr, ByVal bInheritHandles As Long, ByVal dwCreationFlags As Long, ByVal lpEnvironment As LongPtr, ByVal lpCurrentDirectory As LongPtr, ByRef lpStartupInfo As STARTUPINFO, ByRef lpProcessInformation As PROCESS_INFORMATION) As Long
+
+Private Declare PtrSafe Function PostThreadMessageA Lib "user32" (ByVal idThread As Long, ByVal Msg As Long, ByVal wParam As LongPtr, ByVal lParam As LongPtr) As Long
+
+Private Declare PtrSafe Function GetExitCodeProcess Lib "kernel32" (ByVal hProcess As LongPtr, ByRef lpExitCode As Long) As Long
+
+
+Private Type PROCESS_INFORMATION
+  hProcess As LongPtr
+  hThread As LongPtr
+  dwProcessId As Long
+  dwThreadId As Long
+End Type
+
+
+Private Type STARTUPINFO
+  cb As Long
+  lpReserved As LongPtr
+  lpDesktop As LongPtr
+  lpTitle As LongPtr
+  dwX As Long
+  dwY As Long
+  dwXSize As Long
+  dwYSize As Long
+  dwXCountChars As Long
+  dwYCountChars As Long
+  dwFillAttribute As Long
+  dwFlags As Long
+  wShowWindow As Integer
+  cbReserved2 As Integer
+  lpReserved2 As LongPtr
+  hStdInput As LongPtr
+  hStdOutput As LongPtr
+  hStdError As LongPtr
+End Type
+
+
+
+#Else
+Private Declare Function GetProcAddressLong Lib "kernel32" Alias "GetProcAddress" (ByVal hModule As Long, ByVal lpProcID As Long) As Long
+
+
+Private Declare Function GetCurrentThreadId Lib "kernel32" () As Long
+
+
+Private Declare Function CreateProcessW Lib "kernel32" (ByVal pApplicationName As Long, ByVal lpCommandLine As Long, ByVal lpProcessAttributes As Long, ByVal lpThreadAttributes As Long, ByVal bInheritHandles As Long, ByVal dwCreationFlags As Long, ByVal lpEnvironment As Long, ByVal lpCurrentDirectory As Long, ByRef lpStartupInfo As STARTUPINFO, ByRef lpProcessInformation As PROCESS_INFORMATION) As Long
+
+Private Declare Function PostThreadMessageA Lib "user32" (ByVal idThread As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
+
+Private Declare Function GetExitCodeProcess Lib "kernel32" (ByVal hProcess As Long, ByRef lpExitCode As Long) As Long
+
+
+Private Type PROCESS_INFORMATION
+  hProcess As Long
+  hThread As Long
+  dwProcessId As Long
+  dwThreadId As Long
+End Type
+
+
+Private Type STARTUPINFO
+  cb As Long
+  lpReserved As Long
+  lpDesktop As Long
+  lpTitle As Long
+  dwX As Long
+  dwY As Long
+  dwXSize As Long
+  dwYSize As Long
+  dwXCountChars As Long
+  dwYCountChars As Long
+  dwFillAttribute As Long
+  dwFlags As Long
+  wShowWindow As Integer
+  cbReserved2 As Integer
+  lpReserved2 As Long
+  hStdInput As Long
+  hStdOutput As Long
+  hStdError As Long
+End Type
+
+
+
+
+#End If
+
+Public Sub initSpreadApp()
+  m_bSpreadApp = True
+End Sub
+
+Public Sub notifyInprocConnector()
+  m_bInprocConnector = True
+End Sub
+
+Public Property Get isInprocConnector() As Boolean
+  isInprocConnector = m_bInprocConnector
+End Property
+#If Win64 = 0 Then
+
+
+Public Function LoadDllModule(ByVal FullPath As String, Optional ByVal Context As Object) As Object
+  If IDLDecentralEntry.isMemLoadDll Then
+    Set LoadDllModule = LoadDllModuleMem(FullPath, Context)
+  Else
+    Set LoadDllModule = LoadDllModuleDirect(FullPath, Context)
+  End If
+End Function
+
+
+'l|fffd|dt registrierungsfreies Dll Modul-Objekt, gem|fffd|ss Standard Signatur f|fffd|r registrierungsfreie Module
+Public Function LoadDllModuleDirect(ByVal FullPath As String, Optional ByVal Context As Object) As Object
+  Dim hr As Long
+  Dim oTemp As Object
+  Dim strError As String
+  Dim nError As Long
+  Dim hModule As Long
+  Dim pFct As Long
+  Dim oModule As Object
+  Const EXPORT_ORDINAL_INITMODULE = 40000
+  
+  verifySystemVersion
+  InitFctPtrStub
+        
+  On Error GoTo ErrHandler
+  
+  If isWin32Unicode Then
+    hModule = LoadLibraryW(StrPtr(FullPath))
+  Else
+    hModule = LoadLibraryA(FullPath)
+  End If
+  If hModule = 0 Then RaiseWinError Err.LastDllError, FullPath
+    
+  pFct = GetProcAddressLong(hModule, EXPORT_ORDINAL_INITMODULE)
+  If pFct = 0 Then
+    RaiseWinError Err.LastDllError, FullPath & ".InitModule"
+  Else
+    hr = PtrFct4(pFct, 0, ObjPtr(Context), VarPtr(oModule), VarPtr(strError))
+    If hr < 0 Then
+      RaiseWinError hr, strError
+    End If
+  End If
+  
+Cleanup:
+  If hModule <> 0 Then
+    FreeLibrary hModule
+    hModule = 0
+  End If
+  If nError <> 0 Then
+    On Error GoTo 0
+    Err.Raise nError, , strError
+  End If
+  
+  Set LoadDllModuleDirect = oModule
+  
+  Exit Function
+ErrHandler:
+  nError = Err.Number
+  strError = Err.Description
+  On Error Resume Next
+  
+  'Fehlernummer hinzuf|fffd|gen
+  If nError < 0 Then
+    strError = strError & vbLf & "Error=" & Hex(nError)
+  Else
+    strError = strError & vbLf & "Error=" & nError
+  End If
+  
+  GoTo Cleanup
+End Function
+
+'l|fffd|dt registrierungsfreies Dll Modul-Objekt, gem|fffd|ss Standard Signatur f|fffd|r registrierungsfreie Module
+'Implementation f|fffd|r In Memory Loader
+Public Function LoadDllModuleMem(ByVal FullPath As String, Optional ByVal Context As Object) As Object
+  Dim oTemp As Object
+  Dim strError As String, nError As Long
+  Dim oModule As Object
+  Dim r As Range
+  
+  Dim pBuffer As Long, dwSize As Long, dwRead As Long, hFile As Long
+  
+  Const INVALID_HANDLE_VALUE = -1
+  Const GENERIC_READ = &H80000000
+  Const FILE_SHARE_READ = 1
+  Const OPEN_EXISTING = 3
+  Const MEM_RESERVE = &H2000
+  Const MEM_COMMIT = &H1000
+  Const PAGE_READWRITE = 4
+  Const MEM_RELEASE = &H8000
+    
+    
+  On Error GoTo ErrHandler
+
+  verifySystemVersion
+  InitFctPtrStub
+    
+  hFile = INVALID_HANDLE_VALUE
+    
+  Set r = ThisWorkbook.Worksheets(1).Range("IDL_START")
+     
+  
+  
+  hFile = CreateFileW(StrPtr(FullPath), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0)
+
+  If hFile = INVALID_HANDLE_VALUE Then
+    RaiseWinError Err.LastDllError, FullPath
+  ElseIf hFile = 0 Then
+    'ggf. Problem mit Makroscanner (Aufrufe wurde geblockt)
+    Err.Raise vbObjectError, , "Generic failure: possibly due to restriction by macro scanner" & vbCrLf & "please contact your administrator"
+  End If
+  
+  dwSize = GetFileSize(hFile, 0)
+  If dwSize = -1 Then RaiseWinError Err.LastDllError
+  
+  pBuffer = VirtualAlloc(0, dwSize, MEM_RESERVE Or MEM_COMMIT, PAGE_READWRITE)
+  If pBuffer = 0 Then RaiseWinError Err.LastDllError
+  
+  If ReadFile(hFile, pBuffer, dwSize, dwRead, 0) = 0 Then RaiseWinError Err.LastDllError
+  
+  Set oModule = InitIntApplication(ObjPtr(Context), r, pBuffer, dwSize)
+    
+Cleanup:
+  If hFile <> INVALID_HANDLE_VALUE Then
+    CloseHandle hFile
+    hFile = INVALID_HANDLE_VALUE
+  End If
+  If pBuffer <> 0 Then
+    VirtualFree pBuffer, 0, MEM_RELEASE
+    pBuffer = 0
+  End If
+  If nError <> 0 Then
+    On Error GoTo 0
+    Err.Raise nError, , strError
+  End If
+  
+  Set LoadDllModuleMem = oModule
+  
+  Exit Function
+ErrHandler:
+  nError = Err.Number
+  strError = Err.Description
+  On Error Resume Next
+  
+  'Fehlernummer hinzuf|fffd|gen
+  If nError < 0 Then
+    strError = strError & vbLf & "Error=" & Hex(nError)
+  Else
+    strError = strError & vbLf & "Error=" & nError
+  End If
+  
+  GoTo Cleanup
+  Resume
+End Function
+
+
+
+
+#End If 'Win64 = 0 Then
+
+
+Private Sub Class_Initialize()
+  Set m_app = Application
+  m_nAppisolation = -1 'unbestimmt
+End Sub
+
+
+
+Private Sub Class_Terminate()
+  If m_hProcessIdSpreadApp <> 0 Then
+    CloseHandle m_hProcessIdSpreadApp
+    m_hProcessIdSpreadApp = 0
+  End If
+End Sub
+
+Private Sub m_app_WorkbookOpen(ByVal wb As Workbook)
+  On Error GoTo ErrHandler
+  Application.EnableCancelKey = xlDisabled
+  DetectIDLAddinImpl wb
+  Exit Sub
+ErrHandler:
+  If Application.DisplayAlerts Then
+    MsgBox Err.Description & vbLf & "ERROR=" & Hex(Err.Number) & vbLf & "SOURCE=" & Err.Source, vbCritical
+  End If
+End Sub
+
+Private Sub m_app_WorkbookActivate(ByVal wb As Workbook)
+  On Error GoTo ErrHandler
+  If Not m_bSpreadApp Then
+    Application.EnableCancelKey = xlDisabled
+    RefreshAddinList
+  End If
+  Exit Sub
+ErrHandler:
+  If Application.DisplayAlerts Then
+    MsgBox Err.Description & vbLf & "ERROR=" & Hex(Err.Number) & vbLf & "SOURCE=" & Err.Source, vbCritical
+  End If
+End Sub
+
+'ermittelt (oder startet ggf) IDLAddin, zugeordnet zu Workbook
+Public Function DetectIDLAddin(ByVal wb As Workbook) As Object
+  Dim oAddinModule As Object
+  Application.EnableCancelKey = xlDisabled
+  
+  Set oAddinModule = FindAddin(wb)
+  If oAddinModule Is Nothing Then
+    Set oAddinModule = DetectIDLAddinImpl(wb)
+  End If
+  Set DetectIDLAddin = oAddinModule
+End Function
+
+'Addin suchen, R|fffd|ckgabe Nothing, falls nicht gefunden
+Private Function FindAddin(ByVal wb As Workbook) As Object
+  Dim vntEntry As Variant
+  Dim strName As String
+  For Each vntEntry In m_LoadedAddins
+    On Error Resume Next
+    strName = vntEntry(0).Name 'Mappen-Name antesten, ung|fffd|ltig, falls entladen
+    If Err = 0 Then
+      If StrComp(strName, wb.Name, vbTextCompare) = 0 Then
+         Set FindAddin = vntEntry(1)
+         Exit For
+      End If
+    End If
+    On Error GoTo 0
+  Next vntEntry
+End Function
+
+
+
+Private Function DetectIDLAddinImpl(ByVal wb As Workbook) As Object
+  Dim oAddin As Object
+  Dim r As Range
+  Dim wsData As Worksheet
+  Dim vntKey As Variant
+  Dim bDisplayAlerts_prev As Boolean
+  Dim nError As Long, strError As String, strSource As String
+  Dim strName As String
+  Dim oName As Name
+  Dim bNoLoad As Boolean
+  
+  
+  If Application.DisplayAlerts Then
+    Application.DisplayAlerts = False 'wegen Office97: Meldung kann Makro XXX nicht finden
+    bDisplayAlerts_prev = True
+  End If
+  On Error Resume Next
+#If VBA6 = 0 Then
+  'Excel97: Addins nicht ber|fffd|cksichtigen, da diese i.A. in Startup und in Startup kann "Makro nicht gefunden ..." nicht ignoriert werden
+  If wb.IsAddin Then GoTo Cleanup
+#End If
+  If m_bSpreadApp And Not m_bInprocConnector Then
+    If wb.Name <> ThisWorkbook.Name Then
+
+      Set wsData = wb.Worksheets("Struktur")
+      If Not wsData Is Nothing Then
+'        Set r = wsData.Range("IDL_START")
+'        If Not r Is Nothing Then
+          bNoLoad = True
+'        End If
+      End If
+
+      If Not bNoLoad Then
+        Set oName = wb.Names("IDL.Connector.Version")
+
+        If oName Is Nothing Then
+          bNoLoad = True
+        End If
+      End If
+
+      If Not bNoLoad Then
+        strName = wb.FullName
+        runSpreadApp strName, onlyNewConnection:=True
+      End If
+    End If
+    Exit Function
+  End If
+  strName = wb.Name
+  If strName <> "" Then
+    Set oAddin = Run("'" & strName & "'!GetIDLAddin")
+    If Err.Number <> 1004 Then
+      GoTo ErrHandler 'alle anderen Fehler ausser Makro nicht gefunden weitergeben
+    End If
+  End If
+  If oAddin Is Nothing Then
+  
+#If Win64 = 0 Then
+    'kein Makro-Addin: dann versuchen es |fffd|ber Strukturblatt aufzusuchen
+    Set wsData = wb.Worksheets("Struktur")
+    If Not wsData Is Nothing Then
+      Set r = wsData.Range("IDL_START")
+      If Not r Is Nothing Then
+        On Error GoTo ErrHandler 'ab hier werden Fehler beachtet, da Addin nun geladen werden muss
+        Set oAddin = InitIntApplication(ObjPtr(wb), r)
+        vntKey = "#" & ObjPtr(wb)
+        On Error Resume Next
+        m_LoadedAddins.Remove vntKey
+        On Error GoTo ErrHandler
+        m_LoadedAddins.Add Array(wb, oAddin), vntKey
+      End If
+    End If
+#End If
+
+  End If
+Cleanup:
+  If bDisplayAlerts_prev Then
+    Application.DisplayAlerts = True
+  End If
+  If nError <> 0 Then
+    On Error GoTo 0
+    Err.Raise nError, strSource, strError
+  End If
+  Set DetectIDLAddinImpl = oAddin
+  Exit Function
+  
+ErrHandler:
+#If VBA6 = 1 Then
+  Debug.Assert False
+#End If
+  nError = Err.Number
+  strError = Err.Description
+  strSource = Err.Source
+  On Error Resume Next
+  GoTo Cleanup
+  Resume
+End Function
+
+Friend Property Get isSpreadApp() As Boolean
+  isSpreadApp = m_bSpreadApp
+End Property
+
+Friend Sub assignCommandArgs(args() As String)
+  m_CommandArgs = args
+End Sub
+Friend Sub runSpreadApp(ByVal FullName As String, Optional ByVal onlyNewConnection As Boolean)
+  Dim strModuleFullName As String
+  Dim strCommandLine As String
+  Dim strMsg As String
+  Dim i As Long
+  Dim vntArg As Variant
+  Const WM_OPEN_CONNECTOR_DOCUMENT = 2048
+#If Win64 Then
+  Dim hProcess As LongPtr
+#Else
+  Dim hProcess As Long
+#End If
+
+  If m_hProcessIdSpreadApp <> 0 Then
+    'TODO: |fffd|berpr|fffd|fen, ob Prozess noch l|fffd|uft
+    If (GetExitCodeProcess(m_hProcessIdSpreadApp, 0) <> 0) Then
+      'l|fffd|uft noch: keine Aktionen n|fffd|tig, da Code von sich aus Mappen bearbeitet
+      PostThreadMessageA m_dwThreadIdSpreadApp, WM_OPEN_CONNECTOR_DOCUMENT, 0, 0
+      Exit Sub
+    End If
+
+    CloseHandle m_hProcessIdSpreadApp
+    m_hProcessIdSpreadApp = 0
+  End If
+
+  If GetThreadLocale = LCID_GERMAN Then
+    strMsg = "Lade Connector Mappe '" & FullName & "'"
+  Else
+    strMsg = "loading connector workbook '" & FullName & "'"
+  End If
+
+  Application.StatusBar = strMsg
+  strModuleFullName = InstallationPath & "ConnectorServer.exe"
+  strCommandLine = "/SpreadApp /GuiThread=" & GetCurrentThreadId & " /ParentProcess=" & GetProcessID
+  
+  'weitere Kommandozeilenargumente
+  i = -1
+  On Error Resume Next
+  i = UBound(m_CommandArgs)
+  On Error GoTo 0
+  If i >= 0 Then
+    For Each vntArg In m_CommandArgs
+      strCommandLine = strCommandLine & " " & vntArg
+    Next vntArg
+  End If
+  
+  If m_bInprocConnector Then
+    'Zeichen, dass ParentProzess einen Connector stellt
+    strCommandLine = strCommandLine & " /ParentConnector"
+  End If
+  If FullName <> "" Then
+    strCommandLine = strCommandLine & " /O=" & FullName
+  End If
+  'dwProcessId = Shell(strCommandLine)
+  startProcess strModuleFullName, strCommandLine
+
+  'TODO: ErrorHandler
+  Application.Cursor = xlWait
+
+End Sub
+
+
+Private Sub RefreshAddinList()
+  Dim vntEntry As Variant
+  Dim vntKey As Variant
+  Dim strName As String
+  For Each vntEntry In m_LoadedAddins
+    On Error Resume Next
+    strName = vntEntry(0).Name 'Mappen-Name antesten, ung|fffd|ltig, falls entladen
+    If Err <> 0 Then
+      vntKey = "#" & ObjPtr(vntEntry(0))
+      m_LoadedAddins.Remove vntKey
+    End If
+    On Error GoTo 0
+  Next vntEntry
+End Sub
+
+
+
+
+
+Public Property Get InstallationPath() As String
+  InstallationPath = IDLDecentralEntry.InstallationPath
+End Property
+
+Public Property Get AddinPath() As String
+  AddinPath = IDLDecentralEntry.AddinPath
+End Property
+
+'Level f|fffd|r Anwendungsisolation (Trennung Excel zu Connectoranwendung)
+'0: Server Datenzugriff und Oberfl|fffd|che in Officeanwendung laden
+'1: Server Datenzugriff separat betreiben, Oberfl|fffd|che in Officeanwendung laden
+'2: Server Datenzugriff und Oberfl|fffd|che separat betreiben
+Public Property Get AppIsolation() As Long
+  Dim vntAppIsolation As Variant
+  
+  If m_nAppisolation < 0 Then
+    'verz|fffd|gert ermitteln
+    Profile_Read "Options.AppIsolation", vntAppIsolation
+    If vntAppIsolation <> "" And IsNumeric(vntAppIsolation) Then
+      m_nAppisolation = CLng(vntAppIsolation)
+    Else
+      m_nAppisolation = 0
+    End If
+  End If
+  AppIsolation = m_nAppisolation
+End Property
+
+Public Property Let AppIsolation(ByVal n As Long)
+  m_nAppisolation = n
+End Property
+
+Private Sub startProcess(ByVal FullName As String, ByVal CommandArgs As String)
+  Dim sa As STARTUPINFO
+  Dim pi As PROCESS_INFORMATION
+  Const NORMAL_PRIORITY_CLASS = &H20
+  
+  If Left$(CommandArgs, 1) <> " " Then
+    CommandArgs = " " & CommandArgs
+  End If
+
+  sa.cb = LenB(sa)
+
+  If CreateProcessW(StrPtr(FullName), StrPtr(CommandArgs), 0, 0, False, NORMAL_PRIORITY_CLASS, 0, 0, sa, pi) = 0 Then
+    RaiseWinError Err.LastDllError, FullName
+  End If
+  
+
+  m_hProcessIdSpreadApp = pi.hProcess
+
+  m_dwThreadIdSpreadApp = pi.dwThreadId
+
+End Sub
+
+
+
+Attribute VB_Name = "IDLConnectorGlobal"
+Option Explicit
+
+
+Public Property Get Plugins(Optional ByRef Index As Variant) As Object
+  If IsMissing(Index) Then
+    Set Plugins = ConnectorApplication.InternalApplication.Plugins
+  Else
+    Set Plugins = ConnectorApplication.InternalApplication.Plugins(Index)
+  End If
+End Property
+
+
+
+Public Property Get ConnectorApplication() As Object
+  Set ConnectorApplication = IDLDecentralEntry.IntApplication
+  ConnectorApplication.runConnector 'externe Makros sollen den Connector starten
+End Property
+
+'interne Anwendung f|fffd|r Connector GUI ohne Run auszuf|fffd|hren
+'auch f|fffd|r externen Starter, um automatisches Load zu simulieren ohne Run auszuf|fffd|hren
+Public Function GetConnectorApplicationInternal() As Object
+  IDLDecentralEntry.notifyProgrammaticStart
+  Set GetConnectorApplicationInternal = IDLDecentralEntry.IntApplication
+End Function
+
+
+'Implementation: Bekanntgabe des Connector Root Object
+'optional, damit nicht als Makro aufgelistet
+Public Sub attachConnectorApplicationInternal(Optional ByVal ConnectorApplication As Object)
+  IDLDecentralEntry.notifyProgrammaticStart
+  Set IDLDecentralEntry.IntApplication = ConnectorApplication
+End Sub
+
+'optional, damit nicht als Makro aufgelistet
+Public Sub attachAppIsolation(Optional ByVal nAppIsolation As Long)
+  Dim oAddinManager As IDLAddinManager
+  IDLDecentralEntry.notifyProgrammaticStart
+  Set oAddinManager = IDLAddinManager
+  oAddinManager.AppIsolation = nAppIsolation
+End Sub
+
+
+
+
+
+'Makro Einstiegspunkt zum Start eines Wurzelklasse
+'l|fffd|dt Modul, darin eine  angegegbene Klasse (ComVisible !) und f|fffd|hrt eine statische create Methode mit der Signatur "Object(Object param)" auf
+'Module kann der Name der Assembly relativ zu RootPath oder ein ByteArray aus den Assembly Daten darstellen
+Public Function loadRootObject(ByVal AppDomain As String, ByVal RootPath As String, Module As Variant, ByVal TypeName As String, ByVal MethodName As String, ParamArray params() As Variant) As Object
+  Dim vntParams() As Variant
+  Dim i As Long, nUbound  As Long
+  nUbound = UBound(params)
+  ReDim vntParams(0 To nUbound)
+  For i = 0 To nUbound
+    If IsObject(params(i)) Then
+      Set vntParams(i) = params(i)
+    Else
+      vntParams(i) = params(i)
+    End If
+  Next i
+  
+  
+  Set loadRootObject = loadRootObjectImpl(AppDomain, RootPath, Module, TypeName, MethodName, vntParams)
+End Function
+
+'f|fffd|r programmatischen Aufruf: explizites Herstellen einer Verbindung
+Public Sub Connect(ByVal AppName As String, ByVal ConnectionName As String, ByVal UserName As String, ByVal Password As String)
+  ConnectorApplication.InternalApplication.Connect AppName, ConnectionName, UserName, Password
+End Sub
+
+'f|fffd|r externen Zugriff auf Arbeitsmappen-Daten
+Public Property Get Workbooks(Optional ByRef Index As Variant) As Object
+  Set Workbooks = ConnectorApplication.InternalApplication.Workbooks(Index)
+End Property
+
+Public Property Get OnlineLanguage() As String                    'Oberfl|fffd|chen-Sprache
+  OnlineLanguage = ConnectorApplication.InternalApplication.OnlineLanguage
+End Property
+
+Public Property Let OnlineLanguage(s As String)                    'Oberfl|fffd|chen-Sprache
+  ConnectorApplication.InternalApplication.OnlineLanguage = s
+End Property
+
+'wichtiger Einstiegspunkt f|fffd|r externe Makros: Verwendung Run("GetConnectorApplication")
+Public Function GetConnectorApplication() As Object
+  Set GetConnectorApplication = IDLDecentralEntry.IntApplication
+  'Kompatibili|fffd|t bez|fffd|glich Fehlerverhalten und Start , damit externe Makros den Connector starten
+  If Not GetConnectorApplication Is Nothing Then
+    GetConnectorApplication.runConnector
+  End If
+End Function
+
+'f|fffd|r ersten Start mit |fffd|bergabe von Kommandozeile
+'nur wirksam f|fffd|r ersten Start
+'implementiert u.A. f|fffd|r Fernaufruf
+'nur sichtbar, falls 64 VBA, da kvd201.dll nicht geladen
+Public Sub RunExcelConnector(args() As String, Optional ByVal NewInstance As Boolean, Optional ByVal RunImmediate As Boolean)
+  Dim oIntApplication As Object
+  Dim oIDLAddinManager As IDLAddinManager
+  Set oIntApplication = IDLDecentralEntry.IntApplication 'nur gesetzt, falls Inprozess
+  If oIntApplication Is Nothing Then
+    'ausserhalb
+    Set oIDLAddinManager = IDLDecentralEntry.IDLAddinManager
+    oIDLAddinManager.assignCommandArgs args
+    If RunImmediate Then
+      oIDLAddinManager.runSpreadApp "", onlyNewConnection:=True
+    End If
+  Else
+    IDLDecentralEntry.IntApplication.RunExcelConnector args, NewInstance:=NewInstance, RunImmediate:=RunImmediate
+  End If
+End Sub
+
+'erlaubt Zugriff auf IDLAddinManager
+Public Function GetIDLAddinManager() As Object
+  Set GetIDLAddinManager = ThisWorkbook.IDLAddinManager
+End Function
+
+
+'erlaubt Zugriff auf IDLAddinManager in der rein Dezentralen Version
+Public Function GetIDLAddinManagerDecentral() As Object
+  Set GetIDLAddinManagerDecentral = IDLDecentralEntry.IDLAddinManagerDecentral
+End Function
+
+Attribute VB_Name = "IDLDecentralEntry"
+'---------------------------
+'IDL Begin
+'Don't change or remove this code !!!
+Option Explicit
+Option Private Module
+
+
+
+#Const DOTNETBUILD = 1
+#Const CENTRALBUILD = 1
+
+'immer m|fffd|glichst .Net 4 laden
+Private Const CLR_VERSION = 40
+
+
+
+
+'Internes Anwendungsobjekt / Wurzelobjekt
+Private m_oIntApplication As Object
+
+#If Win64 Then
+Private Declare PtrSafe Function CorBindToRuntimeEx Lib "mscoree" (ByVal pwszVersion As LongPtr, ByVal pwszBuildFlavor As LongPtr, ByVal startupFlags As Long, ByRef rclsid As tagGUID, ByRef riid As tagGUID, ByVal ppv As LongPtr) As Long
+#Else
+Private Declare Function CorBindToRuntimeEx Lib "mscoree" (ByVal pwszVersion As Long, ByVal pwszBuildFlavor As Long, ByVal startupFlags As Long, ByRef rclsid As tagGUID, ByRef riid As tagGUID, ByVal ppv As Long) As Long
+#End If
+Private m_strProfileFullName As String
+
+
+Private m_oAppDomain As Object 'AppDomain
+Private m_oCorRuntimeHost As IUnknown 'ICorRuntimeHost
+
+
+
+Private Const MAIN_ASSEMBLY = "ConnectorClient"
+Private Const MAIN_ASSEMBLY_MODULE = MAIN_ASSEMBLY & ".exe"
+
+Private Const APP_DOMAIN = "IDL.Connector.1" 'eindeutige Anwendungsdom|fffd|ne mit Versionsnummer, die bei Bedarf (wesentliche Inkompatibilit|fffd|ten zu Vorg|fffd|ngerversion) erh|fffd|ht werden kann
+Private Const APP_CLASS_NAME = "de.idl.connector.ConnectorClient.ConnectorEntry" 'Einstiegsklasse
+
+#If CENTRALBUILD Then
+Private Const APP_CLASS_METHODNAME = "createAddin"
+#Else
+Private Const APP_CLASS_METHODNAME = "createAddinDecentral"
+#End If
+
+Private Const MAIN_MODULE_LEGACY = "KVD201.dll"
+
+
+'Hauptmodul zur Erkennung der Installation
+#If DOTNETBUILD = 1 And CENTRALBUILD = 0 Then
+
+Private Const MAIN_MODULE = MAIN_ASSEMBLY_MODULE
+
+#Else
+Private Const MAIN_MODULE = MAIN_MODULE_LEGACY
+#End If
+
+
+
+#If Win64 Then
+
+Private Declare PtrSafe Function GetFileAttributesW Lib "kernel32" (ByVal lpFileName As LongPtr) As Long
+Public Declare PtrSafe Function GetThreadLocale Lib "kernel32" () As Long
+
+Private Declare PtrSafe Function GetPrivateProfileStringW Lib "kernel32" (ByVal lpAppName As LongPtr, ByVal lpKeyName As LongPtr, ByVal lpDefault As LongPtr, ByVal lpReturnedString As LongPtr, ByVal nSize As Long, ByVal lpFileName As LongPtr) As Long
+
+Private Declare PtrSafe Function WritePrivateProfileStringW Lib "kernel32" (ByVal lpAppName As LongPtr, ByVal lpKeyName As LongPtr, ByVal lpString As LongPtr, ByVal lpFileName As LongPtr) As Long
+
+
+Public Declare PtrSafe Function CreateFileW Lib "kernel32" (ByVal lpFileName As LongPtr, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As LongPtr, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As LongPtr) As Long
+
+Public Declare PtrSafe Function GetFileSize Lib "kernel32" (ByVal hFile As LongPtr, ByVal lpFileSizeHigh As LongPtr) As Long
+
+Public Declare PtrSafe Function ReadFile Lib "kernel32" (ByVal hFile As LongPtr, ByVal lpBuffer As LongPtr, ByVal nNumberOfBytesToRead As Long, ByRef lpNumberOfBytesRead As Long, ByVal lpOverlapped As LongPtr) As Long
+
+Public Declare PtrSafe Function CloseHandle Lib "kernel32" (ByVal hObject As LongPtr) As Long
+
+Private Declare PtrSafe Function CoGetClassObject Lib "ole32" (ByRef rclsid As tagGUID, ByVal dwClsContext As Long, ByVal pServerInfo As LongPtr, ByRef riid As tagGUID, ByVal ppv As LongPtr) As Long
+Private Declare PtrSafe Function CoRegisterClassObject Lib "ole32" (ByRef rclsid As tagGUID, ByVal punk As IUnknown, ByVal dwClsContext As Long, ByVal Flags As Long, ByRef lpdwRegister As Long) As Long
+Private Declare PtrSafe Function CoRevokeClassObject Lib "ole32" (ByVal dwRegister As Long) As Long
+
+Private Declare PtrSafe Function GetCommandLineW Lib "kernel32" () As LongPtr
+Private Declare PtrSafe Function lstrlenW Lib "kernel32" (ByVal Ptr As LongPtr) As Long
+
+
+#Else
+
+Private Declare Function GetFileAttributesW Lib "kernel32" (ByVal lpFileName As Long) As Long
+Public Declare Function GetThreadLocale Lib "kernel32" () As Long
+
+Private Declare Function GetPrivateProfileStringW Lib "kernel32" (ByVal lpAppName As Long, ByVal lpKeyName As Long, ByVal lpDefault As Long, ByVal lpReturnedString As Long, ByVal nSize As Long, ByVal lpFileName As Long) As Long
+
+Private Declare Function WritePrivateProfileStringW Lib "kernel32" (ByVal lpAppName As Long, ByVal lpKeyName As Long, ByVal lpString As Long, ByVal lpFileName As Long) As Long
+
+
+Public Declare Function CreateFileW Lib "kernel32" (ByVal lpFileName As Long, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As Long, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As Long) As Long
+
+Public Declare Function GetFileSize Lib "kernel32" (ByVal hFile As Long, ByVal lpFileSizeHigh As Long) As Long
+
+Public Declare Function ReadFile Lib "kernel32" (ByVal hFile As Long, ByVal lpBuffer As Long, ByVal nNumberOfBytesToRead As Long, ByRef lpNumberOfBytesRead As Long, ByVal lpOverlapped As Long) As Long
+Public Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
+
+Private Declare Function CoGetClassObject Lib "ole32" (ByRef rclsid As tagGUID, ByVal dwClsContext As Long, ByVal pServerInfo As Long, ByRef riid As tagGUID, ByVal ppv As Long) As Long
+Private Declare Function CoRegisterClassObject Lib "ole32" (ByRef rclsid As tagGUID, ByVal punk As IUnknown, ByVal dwClsContext As Long, ByVal Flags As Long, ByRef lpdwRegister As Long) As Long
+Private Declare Function CoRevokeClassObject Lib "ole32" (ByVal dwRegister As Long) As Long
+
+Private Declare Function GetCommandLineW Lib "kernel32" () As Long
+
+Private Declare Function lstrlenW Lib "kernel32" (ByVal Ptr As Long) As Long
+
+
+#End If
+
+
+Public Const LCID_GERMAN = &H407
+
+Private m_bInitDone As Boolean
+Private m_bProgrammaticStart As Boolean
+
+#If CENTRALBUILD Then
+Private m_oIDLAddinManager As IDLAddinManager 'verwaltet das Laden von Addins und Modulen
+#End If 'CENTRALBUILD
+
+
+Public Sub notifyProgrammaticStart()
+  m_bProgrammaticStart = True
+End Sub
+'f|fffd|r Makro Einstiegspunkt zum Start eines Wurzelklasse
+'l|fffd|dt Modul, darin eine  angegegbene Klasse (ComVisible !) und f|fffd|hrt eine statische create Methode mit der Signatur "Object(Object[] params)" auf
+'Module kann der Name der Assembly relativ zu RootPath oder ein ByteArray aus den Assembly Daten darstellen
+Public Function loadRootObjectImpl(ByVal AppDomain As String, ByVal RootPath As String, Module As Variant, ByVal TypeName As String, ByVal MethodName As String, params() As Variant) As Object
+  Dim oUnknownRootType As IUnknown 'Type
+  Dim oRootType As Object 'Type
+  Dim oAssembly As Object 'Assembly
+  Const BindingFlags_Static = &H8
+  Const BindingFlags_Public = &H10
+  Const BindingFlags_InvokeMethod = &H100
+    
+  If m_oAppDomain Is Nothing Then
+    Set m_oAppDomain = loadAppDomain(AppDomain, RootPath)
+  End If
+   
+
+  If IsArray(Module) Then
+    Set oAssembly = m_oAppDomain.Load_3(Module)
+  Else
+    Set oAssembly = m_oAppDomain.Load_2(Module)
+  End If
+
+
+  Set oUnknownRootType = oAssembly.GetType_2(TypeName)
+
+  CopyMemory VarPtr(oRootType), VarPtr(oUnknownRootType), sizeof_Ptr
+  ZeroMemory VarPtr(oUnknownRootType), sizeof_Ptr
+
+  Set loadRootObjectImpl = oRootType.InvokeMember_3(MethodName, BindingFlags_Static Or BindingFlags_Public Or BindingFlags_InvokeMethod, Nothing, Empty, params)
+
+
+
+End Function
+
+
+Private Function loadClrNoMetaHost(ByVal nVersion As Long) As IUnknown 'ICorRuntimeHost
+  Dim CLSID_CorRuntimeHost As tagGUID
+  Dim IID_ICorRuntimeHost As tagGUID
+  Dim oCorRuntimeHost As IUnknown 'ICorRuntimeHost
+  Dim hr As Long
+  Dim strVersion As String
+  
+  CLSID_CorRuntimeHost.dw0 = &HCB2F6723
+  CLSID_CorRuntimeHost.dw1 = &H11D2AB3A
+  CLSID_CorRuntimeHost.dw2 = &HC000409C
+  CLSID_CorRuntimeHost.dw3 = &H3E0AA34F
+
+  IID_ICorRuntimeHost.dw0 = &HCB2F6722
+  IID_ICorRuntimeHost.dw1 = &H11D2AB3A
+  IID_ICorRuntimeHost.dw2 = &HC000409C
+  IID_ICorRuntimeHost.dw3 = &H3E0AA34F
+  
+
+  If nVersion >= 40 Then
+    strVersion = "v4.0.30319"
+  Else
+    strVersion = "v2.0.50727"
+  End If
+  
+  hr = CorBindToRuntimeEx(StrPtr(strVersion), StrPtr("wks"), 0, CLSID_CorRuntimeHost, IID_ICorRuntimeHost, VarPtr(oCorRuntimeHost))
+
+  If hr < 0 Then Err.Raise hr
+
+  Set loadClrNoMetaHost = oCorRuntimeHost
+
+End Function
+
+'CLR laden
+'nVersion Major * 10 + Minor (20, 35, 40 f|fffd|r .Net 2.0, 3.5 und 4.0)
+'nVersionMin angegeben: versuchen nVersion zu laden, aber mindestens nVersionMin
+Private Function loadClr(ByVal nVersion As Long, Optional ByVal nVersionMin As Long) As IUnknown 'ICorRuntimeHost
+#If VBA7 Then
+  Dim hMscoree As LongPtr
+  Dim pfnCLRCreateInstance As LongPtr
+#Else
+  Dim hMscoree As Long
+  Dim pfnCLRCreateInstance As Long
+#End If
+
+  Dim needMetaHost As Boolean
+  Dim pMetaHost As IUnknown 'ICLRMetaHost
+  Dim hr As Long
+  Dim CLSID_CLRMetaHost As tagGUID
+  Dim IID_ICLRMetaHost As tagGUID
+  Dim nError As Long, strSource As String, strError As String
+
+  
+  On Error GoTo ErrHandler
+
+  needMetaHost = (nVersion >= 40) 'f|fffd|r Dot Net 4 im Allgemeinen Meta Host Schnittstelle erforderlich (nicht erforderlich nur bei Win32 und noch nicht geladenem .Net 4, ist jedoch innerhalb Excel nicht sichergestellt)
+
+  hMscoree = LoadLibraryW(StrPtr("mscoree"))
+  If hMscoree = 0 Then
+    RaiseWinError Err.LastDllError, "Dot Net Runtime required"
+  End If
+  
+  If Not needMetaHost Then
+    Set loadClr = loadClrNoMetaHost(nVersion)
+  Else
+  
+    pfnCLRCreateInstance = GetProcAddress(hMscoree, "CLRCreateInstance")
+    If pfnCLRCreateInstance = 0 Then
+      GoTo tryLowerVersion
+    End If
+    
+      
+    '{0x9280188d, 0xe8e, 0x4867, {0xb3, 0xc, 0x7f, 0xa8, 0x38, 0x84, 0xe8, 0xde}};
+    CLSID_CLRMetaHost.dw0 = &H9280188D
+    CLSID_CLRMetaHost.dw1 = &H48670E8E
+    CLSID_CLRMetaHost.dw2 = &HA87F0CB3
+    CLSID_CLRMetaHost.dw3 = &HDEE88438
+  
+    '{0xD332DB9E, 0xB9B3, 0x4125, {0x82, 0x07, 0xA1, 0x48, 0x84, 0xF5, 0x32, 0x16}};
+    IID_ICLRMetaHost.dw0 = &HD332DB9E
+    IID_ICLRMetaHost.dw1 = &H4125B9B3
+    IID_ICLRMetaHost.dw2 = &H48A10782
+    IID_ICLRMetaHost.dw3 = &H1632F584
+  
+#If Win64 Then
+    hr = PtrStub3AsLong(VarPtr(CLSID_CLRMetaHost), VarPtr(IID_ICLRMetaHost), VarPtr(pMetaHost), pFct:=pfnCLRCreateInstance)
+#Else
+    hr = PtrFct3(pfnCLRCreateInstance, VarPtr(CLSID_CLRMetaHost), VarPtr(IID_ICLRMetaHost), VarPtr(pMetaHost))
+#End If
+    If hr < 0 Then
+      GoTo tryLowerVersion
+    End If
+    If Not pMetaHost Is Nothing Then
+      'Meta Host Schnittstelle f|fffd|r .Net 4 verwenden
+      Set loadClr = LoadClrMeta(nVersion, pMetaHost)
+    End If
+  End If
+  
+  If loadClr Is Nothing Then
+    Set loadClr = LoadClrMeta(nVersion, pMetaHost)
+  End If
+
+
+  
+Cleanup:
+  If hMscoree <> 0 Then
+    FreeLibrary hMscoree
+    hMscoree = 0
+  End If
+  If nError <> 0 Then
+    On Error GoTo 0
+    Err.Raise nError, strSource, strError
+  End If
+  Exit Function
+  
+tryLowerVersion:
+
+  If nVersion = 40 And nVersionMin <> 20 Then
+    Err.Raise hr, , ".Net 4.0 required"
+  End If
+  
+  Set loadClr = loadClrNoMetaHost(nVersionMin)
+  GoTo Cleanup
+  
+ErrHandler:
+  nError = Err.Number
+  strSource = Err.Source
+  strError = Err.Description
+  On Error Resume Next
+  GoTo Cleanup
+  
+End Function
+
+'pMetaHost as ICLRMetaHost
+Private Function LoadClrMeta(ByVal nVersion As Long, ByVal pMetaHost As IUnknown) As IUnknown 'ICorRuntimeHost
+  Dim hr As Long
+  Dim pRuntimeInfo As IUnknown 'ICLRRuntimeInfo
+  Dim strVersion As String
+#If Win64 Then
+  Dim pTemp As LongPtr
+  
+  Dim pParam2 As LongPtr
+  Dim pParam1 As LongPtr
+  Dim oOrig As LongPtr
+#Else
+  Dim pTemp As Long
+  
+  Dim oOrig As Long
+#End If
+  Const ICLRMetaHost_GetRuntime_VTBLINDEX = 3
+  Const ICLRRuntimeInfo_GetInterface_VTBLINDEX = 9
+  Dim CLSID_CorRuntimeHost As tagGUID
+  Dim IID_ICorRuntimeHost As tagGUID
+
+  Dim IID_ICLRRuntimeInfo As tagGUID
+    
+  oOrig = ObjPtr(pMetaHost)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICLRMetaHost_GetRuntime_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+  'BD39D1D2-BA2F-486a-89B0-B4B0CB466891
+  '{0xBD39D1D2, 0xBA2F, 0x486a, {0x89, 0xB0, 0xB4, 0xB0, 0xCB, 0x46, 0x68, 0x91}};
+  IID_ICLRRuntimeInfo.dw0 = &HBD39D1D2
+  IID_ICLRRuntimeInfo.dw1 = &H486ABA2F
+  IID_ICLRRuntimeInfo.dw2 = &HB0B4B089
+  IID_ICLRRuntimeInfo.dw3 = &H916846CB
+  
+  If nVersion >= 40 Then
+    strVersion = "v4.0.30319"
+  Else
+    strVersion = "v2.0.50727"
+  End If
+  
+#If Win64 Then
+  hr = PtrStub8AsLong(oOrig, StrPtr(strVersion), VarPtr(IID_ICLRRuntimeInfo), VarPtr(pRuntimeInfo), pFct:=pTemp)
+#Else
+  hr = PtrFct4(pTemp, oOrig, StrPtr(strVersion), VarPtr(IID_ICLRRuntimeInfo), VarPtr(pRuntimeInfo))
+#End If
+
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+  
+  
+  oOrig = ObjPtr(pRuntimeInfo)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICLRRuntimeInfo_GetInterface_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+  
+  
+  CLSID_CorRuntimeHost.dw0 = &HCB2F6723
+  CLSID_CorRuntimeHost.dw1 = &H11D2AB3A
+  CLSID_CorRuntimeHost.dw2 = &HC000409C
+  CLSID_CorRuntimeHost.dw3 = &H3E0AA34F
+
+  IID_ICorRuntimeHost.dw0 = &HCB2F6722
+  IID_ICorRuntimeHost.dw1 = &H11D2AB3A
+  IID_ICorRuntimeHost.dw2 = &HC000409C
+  IID_ICorRuntimeHost.dw3 = &H3E0AA34F
+
+
+#If Win64 Then
+  hr = PtrStub8AsLong(oOrig, VarPtr(CLSID_CorRuntimeHost), VarPtr(IID_ICorRuntimeHost), VarPtr(LoadClrMeta), pFct:=pTemp)
+#Else
+  hr = PtrFct4(pTemp, oOrig, VarPtr(CLSID_CorRuntimeHost), VarPtr(IID_ICorRuntimeHost), VarPtr(LoadClrMeta))
+#End If
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+
+  
+
+End Function
+
+
+        
+Public Sub verifySystemVersion()
+  If Not isWin32Unicode Then
+    Err.Raise vbObjectError, , "this program dows not run under windows 98"
+  End If
+End Sub
+
+
+Private Function loadAppDomain(ByVal appDomainName As String, ByVal RootPath As String) As Object 'AppDomain
+  Dim oAppDomainSetup As IUnknown 'IAppDomainSetup
+  Dim oAppDomain As Object 'AppDomain
+
+  If m_oCorRuntimeHost Is Nothing Then
+    verifySystemVersion
+    InitFctPtrStub
+  
+    Set m_oCorRuntimeHost = loadClr(CLR_VERSION)
+  
+    ICorRuntimeHost_Start m_oCorRuntimeHost
+  End If
+
+  '|fffd|berpr|fffd|fen, ob AppDomain bereits existiert, Erfassungsmappen Code pro Version nur einmal geladen werden muss
+  If appDomainName = "" Then
+    'keine Anwendungsdom|fffd|ne: Defaultdom|fffd|ne: RootPath kann nicht angegeben werden
+    Set oAppDomain = ICorRuntimeHost_GetDefaultDomain(m_oCorRuntimeHost)
+  Else
+    Set oAppDomain = findAppDomain(m_oCorRuntimeHost, appDomainName)
+    If oAppDomain Is Nothing Then
+      Set oAppDomainSetup = ICorRuntimeHost_CreateDomainSetup(m_oCorRuntimeHost)
+    
+    
+      IAppDomainSetup_setProperties oAppDomainSetup, ApplicationBase:=RootPath, ApplicationName:=appDomainName
+      
+    
+      Set oAppDomain = ICorRuntimeHost_CreateDomainEx(m_oCorRuntimeHost, appDomainName, pSetup:=oAppDomainSetup)
+    End If
+  End If
+
+  Set loadAppDomain = oAppDomain
+
+End Function
+
+
+
+Private Function ICorRuntimeHost_CreateDomainEx(ByVal oCorRuntimeHost As IUnknown, ByVal pwzFriendlyName As String, ByVal pSetup As IUnknown, Optional ByVal pEvidence As IUnknown) As Object 'AppDomain
+  Dim hr As Long
+  Dim oAppDomainUnk As IUnknown
+  Dim o As Object
+#If Win64 Then
+  Dim pTemp As LongPtr, oOrig As LongPtr
+#Else
+  Dim pTemp As Long, oOrig As Long
+#End If
+  Const ICorRuntimeHost_CreateDomainEx_VTBLINDEX = 17
+      
+  oOrig = ObjPtr(oCorRuntimeHost)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICorRuntimeHost_CreateDomainEx_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+#If Win64 Then
+
+  hr = PtrStub8AsLong(oOrig, StrPtr(pwzFriendlyName), ObjPtr(pSetup), ObjPtr(pEvidence), VarPtr(oAppDomainUnk), pFct:=pTemp)
+#Else
+  
+  hr = PtrFct5(pTemp, oOrig, StrPtr(pwzFriendlyName), ObjPtr(pSetup), ObjPtr(pEvidence), VarPtr(oAppDomainUnk))
+#End If
+  
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+
+  CopyMemory VarPtr(o), VarPtr(oAppDomainUnk), sizeof_Ptr
+  ZeroMemory VarPtr(oAppDomainUnk), sizeof_Ptr
+
+  Set ICorRuntimeHost_CreateDomainEx = o
+End Function
+
+
+Private Function ICorRuntimeHost_GetDefaultDomain(ByVal oCorRuntimeHost As IUnknown) As Object 'AppDomain
+  Dim hr As Long
+  Dim oAppDomainUnk As IUnknown
+  Dim o As Object
+#If Win64 Then
+  Dim pTemp As LongPtr, oOrig As LongPtr
+#Else
+  Dim pTemp As Long, oOrig As Long
+#End If
+  Const ICorRuntimeHost_GetDefaultDomain_VTBLINDEX = 13
+      
+  oOrig = ObjPtr(oCorRuntimeHost)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICorRuntimeHost_GetDefaultDomain_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+#If Win64 Then
+
+  hr = PtrStub3AsLong(oOrig, VarPtr(oAppDomainUnk), pFct:=pTemp)
+#Else
+  
+  hr = PtrFct2(pTemp, oOrig, VarPtr(oAppDomainUnk))
+#End If
+  
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+
+  CopyMemory VarPtr(o), VarPtr(oAppDomainUnk), sizeof_Ptr
+  ZeroMemory VarPtr(oAppDomainUnk), sizeof_Ptr
+
+  Set ICorRuntimeHost_GetDefaultDomain = o
+End Function
+
+
+Private Function ICorRuntimeHost_CreateDomainSetup(ByVal oCorRuntimeHost As IUnknown) As IUnknown 'IAppDomainSetup
+  Dim hr As Long
+#If Win64 Then
+  Dim pTemp As LongPtr
+  
+  Dim oOrig As LongPtr
+#Else
+  Dim pTemp As Long
+  
+  Dim oOrig As Long
+#End If
+  Const ICorRuntimeHost_CreateDomainSetup_VTBLINDEX = 18
+  Const IUnknown_QueryInterface_VTBLINDEX = 0
+  Dim IID_IAppDomainSetup As tagGUID
+  Dim oDomainSetupUnk As IUnknown
+    
+  oOrig = ObjPtr(oCorRuntimeHost)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICorRuntimeHost_CreateDomainSetup_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+#If Win64 Then
+  hr = PtrStub3AsLong(oOrig, VarPtr(oDomainSetupUnk), pFct:=pTemp)
+#Else
+  hr = PtrFct2(pTemp, oOrig, VarPtr(oDomainSetupUnk))
+#End If
+
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+
+  IID_IAppDomainSetup.dw0 = &H27FFF232
+  IID_IAppDomainSetup.dw1 = &H40DDA7A8
+  IID_IAppDomainSetup.dw2 = &H4A734A8D
+  IID_IAppDomainSetup.dw3 = &H41CD9FD5
+
+
+  oOrig = ObjPtr(oDomainSetupUnk)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + IUnknown_QueryInterface_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+#If Win64 Then
+    hr = PtrStub3AsLong(oOrig, VarPtr(IID_IAppDomainSetup), VarPtr(ICorRuntimeHost_CreateDomainSetup), pFct:=pTemp)
+#Else
+  hr = PtrFct3(pTemp, oOrig, VarPtr(IID_IAppDomainSetup), VarPtr(ICorRuntimeHost_CreateDomainSetup))
+#End If
+
+  If hr < 0 Then Err.Raise hr
+
+End Function
+
+        
+
+
+
+
+Private Sub ICorRuntimeHost_Start(ByVal oCorRuntimeHost As IUnknown)
+  Dim hr As Long
+#If Win64 Then
+  Dim pTemp As LongPtr, oOrig As LongPtr
+#Else
+  Dim pTemp As Long, oOrig As Long
+#End If
+  Const ICorRuntimeHost_Start_VTBLINDEX = 10
+      
+  oOrig = ObjPtr(oCorRuntimeHost)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICorRuntimeHost_Start_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+#If Win64 Then
+  hr = PtrStub3AsLong(oOrig, pFct:=pTemp)
+#Else
+  hr = PtrFct1(pTemp, oOrig)
+#End If
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+
+End Sub
+
+
+Private Sub IAppDomainSetup_setProperties(ByVal oAppDomainSetup As IUnknown, Optional ByVal ApplicationBase As String, Optional ByVal ApplicationName As String, Optional ByVal ConfigurationFile As String)
+  Dim hr As Long
+#If Win64 Then
+  Dim pTemp As LongPtr, pVTBL As LongPtr
+  Dim oOrig As LongPtr
+#Else
+  Dim pTemp As Long, oOrig As Long, pVTBL As Long
+#End If
+  Const IAppDomainSetup_ApplicationBase_Let_VTBLINDEX = 4
+  Const IAppDomainSetup_ApplicationName_Let_VTBLINDEX = 6
+  Const IAppDomainSetup_ConfigurationFile_Let_VTBLINDEX = 10
+      
+  oOrig = ObjPtr(oAppDomainSetup)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pVTBL), oOrig, sizeof_Ptr 'VTBL-Pointer
+
+  If ApplicationBase <> "" Then
+    CopyMemory VarPtr(pTemp), pVTBL + IAppDomainSetup_ApplicationBase_Let_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+#If Win64 Then
+    hr = PtrStub3AsLong(oOrig, StrPtr(ApplicationBase), pFct:=pTemp)
+#Else
+    hr = PtrFct2(pTemp, oOrig, StrPtr(ApplicationBase))
+#End If
+
+    If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+  End If
+
+  If ApplicationName <> "" Then
+    CopyMemory VarPtr(pTemp), pVTBL + IAppDomainSetup_ApplicationName_Let_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+#If Win64 Then
+    hr = PtrStub3AsLong(oOrig, StrPtr(ApplicationName), pFct:=pTemp)
+#Else
+    hr = PtrFct2(pTemp, oOrig, StrPtr(ApplicationName))
+#End If
+
+
+    If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+  End If
+
+  If ConfigurationFile <> "" Then
+    CopyMemory VarPtr(pTemp), pVTBL + IAppDomainSetup_ConfigurationFile_Let_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+#If Win64 Then
+    hr = PtrStub3AsLong(oOrig, StrPtr(ConfigurationFile), pFct:=pTemp)
+#Else
+    hr = PtrFct2(pTemp, oOrig, StrPtr(ConfigurationFile))
+#End If
+    If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+  End If
+  
+End Sub
+
+Private Sub startRootAssembly(ByVal wb As Workbook, ByVal rBootStrap As Range, Optional ByVal bMemLoad As Boolean)
+  Dim oUnknownRootType As IUnknown 'Type
+  Dim oRootType As Object 'Type
+  Dim oAssembly As Object 'Assembly
+  Const BindingFlags_Static = &H8
+  Const BindingFlags_Public = &H10
+  Const BindingFlags_InvokeMethod = &H100
+  Dim arData() As Byte
+  Dim arResourceData() As Byte
+  Dim strRootPath As String
+  Dim strAppDomain As String
+  Dim strAppClassName As String
+  Dim strAppMethodName As String
+  Dim strFullName As String
+    
+  strRootPath = locateInstallationPath
+  
+
+  strAppDomain = APP_DOMAIN
+  strAppClassName = APP_CLASS_NAME
+  strAppMethodName = APP_CLASS_METHODNAME
+
+  If m_oAppDomain Is Nothing Then 'ggf. bereits geladen
+      Set m_oAppDomain = loadAppDomain(strAppDomain, strRootPath)
+  End If
+
+  
+
+  '|fffd|berpr|fffd|fen, ob Assembly bereits geladen
+  Set oAssembly = findAssembly(MAIN_ASSEMBLY)
+  
+  If Not oAssembly Is Nothing Then
+    bMemLoad = False 'bereits existent: kein weiteres MemLoad
+  Else
+    'Assembly neu laden
+    strFullName = strRootPath & MAIN_ASSEMBLY_MODULE
+    If FileExists(strFullName) Then
+      If bMemLoad Then
+        BinaryFileToByteAr strFullName, arData
+        Set oAssembly = m_oAppDomain.Load_3(arData)
+      Else
+        Set oAssembly = m_oAppDomain.Load_2(MAIN_ASSEMBLY)
+      End If
+    ElseIf Not rBootStrap Is Nothing Then
+      BytesFromRange rBootStrap, arData
+      Set oAssembly = m_oAppDomain.Load_3(arData)
+      bMemLoad = True
+    Else
+      Err.Raise ERR_INVALIDARG, , "Module '" & strFullName & "' not found"
+    End If
+  
+  End If
+
+
+  Set oUnknownRootType = oAssembly.GetType_2(strAppClassName)
+
+  CopyMemory VarPtr(oRootType), VarPtr(oUnknownRootType), sizeof_Ptr
+  ZeroMemory VarPtr(oUnknownRootType), sizeof_Ptr
+
+  If bMemLoad Then
+    'Annahme, dass Stream angeh|fffd|ngte Resourcendaten enth|fffd|lt
+    extractAssemblyResourceData arData, arResourceData
+
+    'zuerst Bekanntgabe der Resourcen
+    oRootType.InvokeMember_3 "assignResourceLoaderData", BindingFlags_Static Or BindingFlags_Public Or BindingFlags_InvokeMethod, Nothing, Empty, Array(arResourceData)
+  End If
+
+  'dann Addin Hauptmethode aufrufen
+  Set m_oIntApplication = oRootType.InvokeMember_3(strAppMethodName, BindingFlags_Static Or BindingFlags_Public Or BindingFlags_InvokeMethod, Nothing, Empty, Array(wb))
+
+
+End Sub
+
+Private Function findAssembly(ByVal Name As String) As Object 'Assembly
+  Dim arAssemblies() As IUnknown
+  Dim oAssembly As Object
+  Dim i As Long
+  Dim strName As String
+  Dim nFound As Long
+  
+  arAssemblies = m_oAppDomain.GetAssemblies
+  For i = 0 To UBound(arAssemblies)
+    Set oAssembly = arAssemblies(i)
+    strName = oAssembly.FullName
+    nFound = InStr(1, strName, ",")
+    If nFound > 0 Then
+      strName = Left$(strName, nFound - 1)
+    End If
+    strName = Trim$(strName)
+    If StrComp(strName, Name, vbTextCompare) = 0 Then
+      Set findAssembly = oAssembly
+      Exit Function
+    End If
+    
+  Next i
+  
+End Function
+
+
+Private Function findAppDomain(ByVal oCorRuntimeHost As IUnknown, ByVal Name As String) As Object 'AppDomain
+  Dim hr As Long
+  Dim oAppDomainUnk As IUnknown
+  Dim oAppDomain As Object 'AppDomain
+#If Win64 Then
+  Dim pTemp As LongPtr, oOrig As LongPtr
+  Dim hEnum As LongPtr
+#Else
+  Dim pTemp As Long, oOrig As Long
+  Dim hEnum As Long
+#End If
+  Const ICorRuntimeHost_EnumDomains_VTBLINDEX = 14
+  Const ICorRuntimeHost_NextDomain_VTBLINDEX = 15
+  Const ICorRuntimeHost_CloseEnum_VTBLINDEX = 16
+      
+  oOrig = ObjPtr(oCorRuntimeHost)
+  If oOrig = 0 Then Err.Raise vbObjectError
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICorRuntimeHost_EnumDomains_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+#If Win64 Then
+  hr = PtrStub3AsLong(oOrig, VarPtr(hEnum), pFct:=pTemp)
+#Else
+  
+  hr = PtrFct2(pTemp, oOrig, VarPtr(hEnum))
+#End If
+  
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+  
+  
+  'nach Namen suchen
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICorRuntimeHost_NextDomain_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+  
+  Do
+  
+#If Win64 Then
+    hr = PtrStub3AsLong(oOrig, hEnum, VarPtr(oAppDomainUnk), pFct:=pTemp)
+#Else
+    hr = PtrFct3(pTemp, oOrig, hEnum, VarPtr(oAppDomainUnk))
+#End If
+  
+    If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+    
+    If oAppDomainUnk Is Nothing Then
+      Exit Do
+    End If
+  
+    CopyMemory VarPtr(oAppDomain), VarPtr(oAppDomainUnk), sizeof_Ptr
+    ZeroMemory VarPtr(oAppDomainUnk), sizeof_Ptr
+    
+    If InStr(1, oAppDomain.toString, "Name:" & Name & vbCrLf, vbTextCompare) = 1 Then
+      Exit Do 'gefunden
+    Else
+      Set oAppDomain = Nothing
+    End If
+  
+  Loop
+  
+  
+  CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+  CopyMemory VarPtr(pTemp), pTemp + ICorRuntimeHost_CloseEnum_VTBLINDEX * sizeof_Ptr, sizeof_Ptr
+#If Win64 Then
+  hr = PtrStub3AsLong(oOrig, hEnum, pFct:=pTemp)
+#Else
+  hr = PtrFct2(pTemp, oOrig, hEnum)
+#End If
+
+  If hr < 0 Then Err.Raise hr 'TODO: GetErrorInfo
+
+
+  Set findAppDomain = oAppDomain
+End Function
+
+
+'Annahme, dass Stream arData angeh|fffd|ngte Resourcedaten enth|fffd|lt
+'R|fffd|ckgabe der extrahierten Daten
+Private Sub extractAssemblyResourceData(ByRef arData() As Byte, ByRef arResourceDataResult() As Byte)
+  Dim nSizeResource As Long
+  Dim nSize As Long
+#If Win64 Then
+  Dim p As LongPtr
+#Else
+  Dim p As Long
+#End If
+
+  nSize = UBound(arData) + 1
+
+  If nSize < sizeof_Long Then
+    Err.Raise ERR_INVALIDARG
+  End If
+
+  p = VarPtr(arData(0)) + nSize - sizeof_Long
+
+  CopyMemory VarPtr(nSizeResource), p, sizeof_Long
+
+  If nSizeResource > nSize Then
+    Err.Raise ERR_INVALIDARG
+  End If
+
+  If nSizeResource > sizeof_Long Then
+
+    nSizeResource = nSizeResource - sizeof_Long
+    ReDim arResourceDataResult(nSizeResource - 1)
+
+    p = p - nSizeResource
+    CopyMemory VarPtr(arResourceDataResult(0)), p, nSizeResource
+  Else
+    Erase arResourceDataResult
+  End If
+  
+
+  
+End Sub
+
+
+'Datei bin|fffd|r lesen und als Bytearray zur Verf|fffd|gung stellen
+Private Sub BinaryFileToByteAr(ByVal FullName As String, ByRef arBytes() As Byte)
+  Dim dwFileSize As Long, dwRead As Long
+#If Win64 Then
+  Dim pBytes As LongPtr
+#Else
+  Dim pBytes As Long
+#End If
+  Dim hFile As Long
+  Dim nError As Long, strSource As String, strError As String
+  Const ERROR_SHARING_VIOLATION = 32
+  Const INVALID_HANDLE_VALUE = &HFFFFFFFF
+  Const GENERIC_READ = &H80000000
+  Const FILE_SHARE_READ = 1
+  Const OPEN_EXISTING = 3
+  Const FILE_SHARE_WRITE = 2
+
+
+  
+  hFile = INVALID_HANDLE_VALUE
+  On Error GoTo ErrHandler
+  Debug.Assert isWin32Unicode
+  
+    'wichtig: FILE_SHARE_READ, damit auch geladene Dll gelesen werden kann
+  hFile = CreateFileW(StrPtr(FullName), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0)
+  If hFile = INVALID_HANDLE_VALUE Then
+    If Err.LastDllError = ERROR_SHARING_VIOLATION Then
+      'Speziell f|fffd|r bereits geladene Excel Verbunddateien (*.xls;*.xla)
+      hFile = CreateFileW(StrPtr(FullName), GENERIC_READ, FILE_SHARE_READ Or FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0)
+    End If
+  End If
+  If hFile = INVALID_HANDLE_VALUE Then
+    RaiseWinError Err.LastDllError, FullName
+  End If
+  
+  dwFileSize = GetFileSize(hFile, 0)
+  If dwFileSize = 0 Then
+    Erase arBytes
+  Else
+    ReDim arBytes(0 To dwFileSize - 1)
+    pBytes = VarPtr(arBytes(0))
+    
+    If ReadFile(hFile, pBytes, dwFileSize, dwRead, 0) = 0 Then
+      RaiseWinError Err.LastDllError
+    End If
+    If dwFileSize <> dwRead Then
+      Err.Raise ERR_NOTOK
+    End If
+  End If
+Cleanup:
+  If hFile <> INVALID_HANDLE_VALUE Then
+    CloseHandle hFile
+    hFile = INVALID_HANDLE_VALUE
+  End If
+  If nError <> 0 Then
+    On Error GoTo 0
+    Err.Raise nError, strSource, strError
+  End If
+  Exit Sub
+
+ErrHandler:
+  Debug.Assert False
+  nError = Err.Number
+  strError = Err.Description
+  strSource = Err.Source
+  On Error Resume Next
+
+
+  GoTo Cleanup
+  Resume
+End Sub
+
+
+
+
+#If CENTRALBUILD = 0 Then
+
+
+Public Function GetIDLAddin() As Object
+  Set GetIDLAddin = m_oIntApplication
+End Function
+
+'Dezentral
+'Einstiegspunkt f|fffd|r externen Lader
+Private Sub InitConnectorApplicationImpl()
+  Dim r As Range
+#If DOTNETBUILD Then
+  Dim oPlugin As Plugin
+#End If
+  Dim oPluginCentral As Object
+  Dim wb As Workbook
+  Dim oConnctorApplication As Object
+  Dim wsData As Worksheet
+  Const STRCLSID_SINGLETON = "{B2952DE6-2A57-44DD-B1C3-47DB8BB0254D}"
+
+  If m_oIntApplication Is Nothing Then
+
+    On Error Resume Next
+    'zuerst Dezentral antesten, sonst ggf. Probleme
+    'an sich m|fffd|sste die Versionierung automatisch laufen
+    'allerdings sind wegen Sicherheitserweiterungen die Ladezeiten teilweise so verschoben, dass es zu Konflikten kommt
+    Set oConnctorApplication = Run("GetConnectorApplicationInternal")
+    If Not oConnctorApplication Is Nothing Then
+      Set oPluginCentral = oConnctorApplication.InternalApplication.Plugins("DC")
+    End If
+    If Not oPluginCentral Is Nothing Then
+      Exit Sub
+    End If
+
+
+    Set wb = ThisWorkbook
+
+    Set wb = Application.Workbooks(wb.Name) 'normalisieren
+
+#If Win64 = 0 Then
+
+    If m_oIntApplication Is Nothing Then
+      'klassischer Modus nur 32 Bit
+      On Error Resume Next
+      Set wsData = wb.Worksheets!Struktur
+      Set r = wsData.[IDL_START] 'kein Addin, falls IDL_START nicht verf|fffd|gbar (auch bei Vorlage ggf. der Fall)
+          Set rTest = wsData.[IDL_START_NET]
+      On Error GoTo 0
+      If Not r Is Nothing Then
+#If DOTNETBUILD Then
+        'bei DOTNETBUILD: klassischen Starter vorl|fffd|ufig als Singleton, solange bis DotNet gut genug l|fffd|uft
+      Dim strTemp As String
+      Dim hr As Long
+      Dim clsid As tagGUID
+      Dim IID_IDispatch As tagGUID
+      Dim oApplication As Application
+      Const REGCLS_MULTIPLEUSE As Long = 1
+
+
+      If ExcelVersionInt >= 15 And Not rTest Is Nothing Then
+        GoTo DotNetExcel2013Start 'bei Office 2013 m|fffd|glichst Dotnet bevorzugen
+      End If
+
+
+
+      strTemp = "{00020400-0000-0000-C000-000000000046}"
+      IIDFromString StrPtr(strTemp), IID_IDispatch
+
+      strTemp = STRCLSID_SINGLETON
+      CLSIDFromString StrPtr(strTemp), clsid
+      hr = CoGetClassObject(clsid, CLSCTX_INPROC_SERVER, 0, IID_IDispatch, VarPtr(m_oIntApplication))
+      If hr < 0 Then
+        Set oApplication = Application.Application
+        Set m_oIntApplication = InitIntApplication(ObjPtr(oApplication), r)
+        hr = CoRegisterClassObject(clsid, m_oIntApplication, CLSCTX_INPROC_SERVER, REGCLS_MULTIPLEUSE, 0)
+        Debug.Assert hr >= 0
+      End If
+      Set oPlugin = New Plugin
+      oPlugin.InitAsPlugin wb
+
+#Else
+      Set m_oIntApplication = InitIntApplication(ObjPtr(wb), r)
+#End If
+
+      End If
+    End If
+#End If
+
+
+#If DOTNETBUILD Then
+    If m_oIntApplication Is Nothing Then
+
+DotNetExcel2013Start:
+
+      On Error Resume Next
+      Set wsData = wb.Worksheets!Struktur
+      Set r = wsData.[IDL_START_NET]
+      On Error GoTo 0
+  
+      If Not r Is Nothing Then
+        If ExcelVersionInt < 12 Then
+          Err.Raise vbObjectError, , "This Plugin requires Office 2007 or higher"
+        End If
+    
+    
+    
+        Set oPlugin = New Plugin
+        startRootAssembly wb, r, bMemLoad:=isMemLoad
+        oPlugin.InitAsPlugin wb
+      End If
+    End If
+#End If
+
+    If m_oIntApplication Is Nothing Then
+#If Win64 = 1 Then
+     Err.Raise vbObjectError, , "This Plugin can not run under 64 Bit Version of Excel"
+#End If
+      Err.Raise vbObjectError, , "Internal starter (IDL_START) is missing"
+    End If
+
+  End If
+
+End Sub
+
+
+#End If
+
+'Hauptversionsnr von Excel
+Public Property Get ExcelVersionInt() As Long
+  Dim strVersion As String
+  Dim i As Long
+
+  strVersion = Application.Version
+  i = InStr(1, strVersion, ".")
+  If i > 0 Then
+    strVersion = Left$(strVersion, i - 1)
+  End If
+  i = CLng(strVersion)
+  ExcelVersionInt = i
+End Property
+
+
+#If Win64 = 0 Then
+
+
+
+
+
+'ww56
+'Public Function InitIntApplication(ByVal ContextPtr As long, ByVal r As Range, optional ByVal pData as long, Optional ByVal size as long) As Object
+Public Function InitIntApplication(ByVal p10 As Long, ByVal p13 As Range, Optional ByVal p14 As Long, Optional ByVal p15 As Long) As Object
+  Dim p0 As Long, p1 As Long, p2 As Long, p3 As Long, p4 As Long, p5 As Long, p6 As Long
+  Dim p7(0 To 157) As Long
+  Dim p8 As String
+  Dim p9() As String
+  'Dim p10 As Object, p11 As Object 'ww56
+  Dim p11 As Object
+  Dim p12 As Range ', p13 As Range
+
+  verifySystemVersion
+
+  InitFctPtrStub
+
+  p7(0) = &H51EC8B55: p7(1) = &H530C4D8B: p7(2) = &HC18B5756: p7(3) = &H5F99046A: p7(4) = &HF708758B: p7(5) = &HFC4D89FF: p7(6) = &H850FD285: p7(7) = 457: p7(8) = &H7E144D3B: p7(9) = &H321B80A: p7(10) = &HF9E98009: p7(11) = &H33000001: p7(12) = &H4F983FF: p7(13) = &HA68E0F: p7(14) = &H8B660000: p7(15) = &HECE85006: p7(16) = &HF000001: p7(17) = &HF883C0B6: p7(18) = &H4589593F: p7(19) = &H968F0F0C: p7(20) = &H66000001: p7(21) = &H5002468B: p7(22) = &H1D2E8: p7(23) = &HC0B60F00: p7(24) = &H593FF883: p7(25) = &HF084589: p7(26) = &H17C8F: p7(27) = &H468B6600: p7(28) = &HB8E85004: p7(29) = &HF000001: p7(30) = &HFB83D8B6: p7(31) = &H8F0F593F
+  p7(32) = 357: p7(33) = &H6468B66: p7(34) = &H1A1E850: p7(35) = &HB60F0000: p7(36) = &H3FF883C0: p7(37) = &H14458959: p7(38) = &H14B8F0F: p7(39) = &H4D8B0000: p7(40) = &HC458A08: p7(41) = &H6D83D18B: p7(42) = &HFAC104FC: p7(43) = &H2E0C004: p7(44) = &H458BD00A: p7(45) = &H4E1C010: p7(46) = &H8B071488: p7(47) = &H2FAC1D3: p7(48) = &HA06E3C0: p7(49) = &HD10A145D: p7(50) = &H1075488: p7(51) = &H8808C683: p7(52) = &H8302075C: p7(53) = &H7D8303C7: p7(54) = &H8F0F04FC: p7(55) = &HFFFFFF5A: p7(56) = &H47E8366: p7(57) = &H6641753D: p7(58) = &HE850068B: p7(59) = 319: p7(60) = &H83D8B60F: p7(61) = &HF593FFB: p7(62) = 60559: p7(63) = &H468B6600
+  p7(64) = &H28E85002: p7(65) = &HF000001: p7(66) = &HF883C0B6: p7(67) = &H8F0F593F: p7(68) = 213: p7(69) = &HC1104D8B: p7(70) = &HE3C004F8: p7(71) = &H88C30A02: p7(72) = &HE9470F04: p7(73) = 249: p7(74) = &H66068B66: p7(75) = &H3D067E83: p7(76) = &HE8667550: p7(77) = 247: p7(78) = &H83C0B60F: p7(79) = &H89593FF8: p7(80) = &H8F0F0C45: p7(81) = 161: p7(82) = &H2468B66: p7(83) = &HDDE850: p7(84) = &HB60F0000: p7(85) = &H3FFB83D8: p7(86) = &H8A8F0F59: p7(87) = &H66000000: p7(88) = &H5004468B: p7(89) = 50920: p7(90) = &HB60F5900: p7(91) = &H3FF983C8: p7(92) = &H458B777F: p7(93) = &HC1D38B10: p7(94) = &H348D04FA: p7(95) = &HC458A07
+  p7(96) = &HC102E0C0: p7(97) = &HE3C002F9: p7(98) = &HAD00A04: p7(99) = &H168847CB: p7(100) = &H47014E88: p7(101) = 35049: p7(102) = &H91E800: p7(103) = &HB60F0000: p7(104) = &H3FF883C0: p7(105) = &HC458959: p7(106) = &H8B663F7F: p7(107) = &HE8500246: p7(108) = 123: p7(109) = &H83C0B60F: p7(110) = &H89593FF8: p7(111) = &H297F0845: p7(112) = &H4468B66: p7(113) = &H65E850: p7(114) = &HB60F0000: p7(115) = &H3FFB83D8: p7(116) = &H66167F59: p7(117) = &H5006468B: p7(118) = 21224: p7(119) = &HC0B60F00: p7(120) = &H593FF883: p7(121) = &H7E144589: p7(122) = &H308B807: p7(123) = &H38EB8009: p7(124) = &H8A10458B: p7(125) = &HE1C00C4D: p7(126) = &H7348D02: p7(127) = &H8B08458B
+  p7(128) = &H4FAC1D0: p7(129) = &HCB8BD10A: p7(130) = &HC002F9C1: p7(131) = &HE3C004E0: p7(132) = &H145D0A06: p7(133) = &H1688C80A: p7(134) = &H88014E88: p7(135) = &HC783025E: p7(136) = &H18458B03: p7(137) = &HC0333889: p7(138) = &HC95B5E5F: p7(139) = &H8B0014C2: p7(140) = &H66042444: p7(141) = &H7200413D: p7(142) = &H5A3D660A: p7(143) = &H83047700: p7(144) = &H66C3BFC0: p7(145) = &H7200613D: p7(146) = &H7A3D660A: p7(147) = &H83047700: p7(148) = &H66C3B9C0: p7(149) = &H7200303D: p7(150) = &H393D660A: p7(151) = &H83047700: p7(152) = &H66C304C0: p7(153) = &H75002B3D: p7(154) = &HC33EB003: p7(155) = &H2F3D66: p7(156) = &H83C0950F: p7(157) = &HC33FC0
+  p1 = VirtualAlloc(0, 631, &H3000, &H40)
+  If p1 = 0 Then
+    RaiseWinError Err.LastDllError
+  End If
+  CopyMemory p1, VarPtr(p7(0)), 631
+'#If DECENTRAL_TEMPLATE = 0 Then 'ww56
+'  Set p13 = r 'Data.[IDL0]
+'#End If
+  ReDim p9(p13.count - 1)
+  For Each p12 In p13
+    p9(p5) = p12.Value
+    p2 = p2 + Len(p9(p5))
+    p5 = p5 + 1
+  Next p12
+  p4 = p2 * 3 / 4 + 1
+  p6 = VirtualAlloc(0, p4, &H3000, &H40)
+  If p6 = 0 Then
+    RaiseWinError Err.LastDllError
+  End If
+  p3 = 0
+  p4 = 0
+  For p5 = 0 To UBound(p9)
+    p0 = PtrFct5(p1, StrPtr(p9(p5)), Len(p9(p5)), p6 + p3, p2 - p3, VarPtr(p4))
+    If p0 < 0 Then Err.Raise p0
+    p3 = p3 + p4
+  Next p5
+  VirtualFree p1, 0, 32768
+
+  'Set p10 = Context 'ww56
+  p8 = "Kernel32" 'ww58
+  p1 = GetModuleHandleW(StrPtr(p8))
+
+  p8 = ""
+  If p14 = 0 Then 'ww62
+    p15 = p3
+  End If
+  p0 = PtrFct6(p6, p14, p15, p1, p10, VarPtr(p11), VarPtr(p8)) 'ww62
+  VirtualFree p6, 0, 32768
+  If p0 < 0 Then
+    If p8 = "" Then
+      Err.Raise p0
+    Else
+      Err.Raise p0, , p8
+    End If
+  End If
+  
+  Set InitIntApplication = p11
+End Function
+
+
+
+
+
+#End If
+
+
+Private Function decode(ByVal c As Integer) As Integer
+  Const ASC_A_U = 65
+  Const ASC_Z_U = 90
+  Const ASC_A = 97
+  Const ASC_Z = 122
+  Const ASC_0 = 48
+  Const ASC_9 = 57
+  Const ASC_Plus = 43
+  Const ASC_Divide = 47
+  
+  If c >= ASC_A_U And c <= ASC_Z_U Then
+    decode = c - ASC_A_U
+  ElseIf c >= ASC_A And c <= ASC_Z Then
+    decode = c - ASC_A + 26
+  ElseIf c >= ASC_0 And c <= ASC_9 Then
+    decode = c - ASC_0 + 52
+  ElseIf c = ASC_Plus Then
+    decode = 62
+  ElseIf c = ASC_Divide Then
+    decode = 63
+  Else
+    Err.Raise vbObjectError
+  End If
+End Function
+
+Private Function shiftLeft(ByVal l As Long, ByVal count As Integer) As Long
+  Do While count > 0
+    l = l * &H2
+    count = count - 1
+  Loop
+  shiftLeft = l
+End Function
+
+
+Private Function shiftRight(ByVal l As Long, ByVal count As Integer) As Long
+  Do While count > 0
+    l = l \ &H2
+    count = count - 1
+  Loop
+  shiftRight = l
+
+End Function
+
+
+#If VBA7 Then
+Public Sub decodeBase64(ByVal in_buf As LongPtr, ByVal in_len As Long, ByVal out_buf As LongPtr, ByVal max_len As Long, ByRef out_len As Long)
+#Else
+Public Sub decodeBase64(ByVal in_buf As Long, ByVal in_len As Long, ByVal out_buf As Long, ByVal max_len As Long, ByRef out_len As Long)
+#End If
+  Dim nLen As Long
+#If VBA7 Then
+  Dim d As LongPtr
+#Else
+  Dim d As Long
+#End If
+  Dim ip0 As Long, ip1 As Long, ip2 As Long, ip3 As Long
+  Dim ipTemp As Long
+  Dim c As Integer
+  Dim nOutIndex As Long
+  Const ASC_Equal = 61
+
+  
+  nLen = in_len
+  d = in_buf
+
+  If (in_len Mod 4) <> 0 Then
+   Err.Raise vbObjectError
+  End If
+
+
+  If in_len > max_len Then
+   Err.Raise vbObjectError
+  End If
+  nOutIndex = 0
+  Do While nLen > 0
+  
+    CopyMemory VarPtr(c), d, sizeof_Short
+    ip0 = decode(c)
+    d = d + sizeof_Short
+    
+    CopyMemory VarPtr(c), d, sizeof_Short
+    ip1 = decode(c)
+    d = d + sizeof_Short
+    
+    CopyMemory VarPtr(c), d, sizeof_Short
+    If c = ASC_Equal Then
+      If nLen > 4 Then
+        Err.Raise vbObjectError
+      End If
+      ip2 = -1
+    Else
+
+      ip2 = decode(c)
+      d = d + sizeof_Short
+    End If
+    
+    CopyMemory VarPtr(c), d, sizeof_Short
+    If c = ASC_Equal Then
+      If nLen > 4 Then
+        Err.Raise vbObjectError
+      End If
+      ip3 = -1
+    Else
+      ip3 = decode(c)
+      d = d + sizeof_Short
+    End If
+    
+    If nOutIndex = max_len Then
+      Err.Raise vbObjectError
+    End If
+    ipTemp = ((shiftLeft(ip0, 2)) Or (shiftRight(ip1, 4)))
+    CopyMemory out_buf, VarPtr(ipTemp), 1
+    out_buf = out_buf + 1
+    nOutIndex = nOutIndex + 1
+
+    If ip2 >= 0 Then
+      If nOutIndex = max_len Then
+        Err.Raise vbObjectError
+      End If
+      
+      ipTemp = ((shiftLeft(ip1, 4)) Or (shiftRight(ip2, 2)))
+      CopyMemory out_buf, VarPtr(ipTemp), 1
+      out_buf = out_buf + 1
+      nOutIndex = nOutIndex + 1
+    End If
+
+    If ip3 >= 0 Then
+      If nOutIndex = max_len Then
+        Err.Raise vbObjectError
+      End If
+      ipTemp = (shiftLeft(ip2, 6) Or ip3)
+      CopyMemory out_buf, VarPtr(ipTemp), 1
+      out_buf = out_buf + 1
+      nOutIndex = nOutIndex + 1
+    End If
+
+'      out_buf[i + 0] = (ip0 << 2) | (ip1 >> 4);
+'      out_buf[i + 1] = (ip1 << 4) | (ip2 >> 2);
+'      out_buf[i + 2] = (ip2 << 6) |  ip3;
+    nLen = nLen - 4
+  Loop
+
+'    if(d[2] == '=')
+'    {
+'        if((ip0 = decode(d[0])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'        if((ip1 = decode(d[1])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'
+'        out_buf[i] = (ip0 << 2) | (ip1 >> 4);
+'        i++;
+'    }
+'    else if(d[3] == '=')
+'    {
+'        if((ip0 = decode(d[0])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'        if((ip1 = decode(d[1])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'        if((ip2 = decode(d[2])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'
+'        out_buf[i + 0] = (ip0 << 2) | (ip1 >> 4);
+'        out_buf[i + 1] = (ip1 << 4) | (ip2 >> 2);
+'        i += 2;
+'    }
+'    Else
+'    {
+'        if((ip0 = decode(d[0])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'        if((ip1 = decode(d[1])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'        if((ip2 = decode(d[2])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'        if((ip3 = decode(d[3])) > 63)
+'            return SEC_E_INVALID_TOKEN;
+'
+'
+'        out_buf[i + 0] = (ip0 << 2) | (ip1 >> 4);
+'        out_buf[i + 1] = (ip1 << 4) | (ip2 >> 2);
+'        out_buf[i + 2] = (ip2 << 6) |  ip3;
+'        i += 3;
+'    }
+  out_len = nOutIndex
+End Sub
+
+Private Sub BytesFromRange(ByVal p13 As Excel.Range, ByRef arDataResult() As Byte)
+  Dim p2 As Long, p3 As Long, p4 As Long, p5 As Long
+#If VBA7 Then
+  Dim p6 As LongPtr
+#Else
+  Dim p6 As Long
+#End If
+  Dim p9() As String
+  Dim p12 As Excel.Range
+  
+  ReDim p9(p13.count - 1)
+  For Each p12 In p13
+    p9(p5) = p12.Value
+    p2 = p2 + Len(p9(p5))
+    p5 = p5 + 1
+  Next p12
+  p4 = p2 * 3 / 4 + 1
+  
+  
+  ReDim arDataResult(0 To p4 - 1)
+  p6 = VarPtr(arDataResult(0))
+  
+  p3 = 0
+  p4 = 0
+  For p5 = 0 To UBound(p9)
+    decodeBase64 StrPtr(p9(p5)), Len(p9(p5)), p6 + p3, p2 - p3, p4
+    p3 = p3 + p4
+  Next p5
+
+  If p3 < UBound(arDataResult) + 1 Then
+    'genaue Obergrenze einhalten, damit keine F|fffd|llbytes
+    ReDim Preserve arDataResult(p3 - 1)
+  End If
+
+
+  
+End Sub
+
+
+
+
+Public Sub Auto_Open()
+    On Error GoTo ErrHandler
+#If DEBUGBUILD Then
+    Stop
+#End If
+
+  If Application.UserControl And m_oIntApplication Is Nothing Then
+    'Default Laden nur wenn Excel unter Benutzerkontrolle
+    'programmatischer Start: Steuerung muss explizit Ladevorgang anstossen bzw. alternativen Ladevorgang ausf|fffd|hren
+    InitConnectorApplicationImpl
+  End If
+
+Exit Sub
+
+ErrHandler:
+  If Application.DisplayAlerts Then
+    MsgBox Err.Description & vbLf & "ERROR=" & Hex(Err.Number) & vbLf & "SOURCE=" & Err.Source, vbCritical
+  End If
+
+End Sub
+
+
+Public Property Get IntApplication() As Object
+  If m_oIntApplication Is Nothing Then
+    InitConnectorApplicationImpl
+  End If
+  Set IntApplication = m_oIntApplication
+End Property
+
+Public Property Set IntApplication(ByVal o As Object)
+  Set m_oIntApplication = o
+End Property
+
+
+#If CENTRALBUILD Then
+
+
+
+Public Property Get IDLAddinManager() As Object
+  If m_oIDLAddinManager Is Nothing Then
+    Set m_oIDLAddinManager = New IDLAddinManager
+    If Not m_oIntApplication Is Nothing Then
+      m_oIDLAddinManager.notifyInprocConnector
+    End If
+  End If
+  Set IDLAddinManager = m_oIDLAddinManager
+End Property
+
+
+
+Public Property Get IDLAddinManagerDecentral() As Object
+  If m_oIDLAddinManager Is Nothing Then
+    Set m_oIDLAddinManager = New IDLAddinManager
+  End If
+  Set IDLAddinManagerDecentral = m_oIDLAddinManager
+End Property
+
+
+
+Private Function getCommandLineInternal() As String
+  Dim strCommandLine As String
+#If Win64 Then
+  Dim pCommandLine As LongPtr
+#Else
+  Dim pCommandLine As Long
+#End If
+  Dim nLen As Long
+
+  pCommandLine = GetCommandLineW
+  nLen = lstrlenW(pCommandLine)
+
+  strCommandLine = String$(nLen, 0)
+  CopyMemory StrPtr(strCommandLine), pCommandLine, (nLen + 1) * 2
+  getCommandLineInternal = strCommandLine
+End Function
+
+Private Function detectInplaceStart() As Boolean
+  Dim wb As Excel.Workbook
+  
+  If Not m_bProgrammaticStart Then
+
+    If InStr(1, getCommandLineInternal, "-Embedding", vbTextCompare) > 0 Then
+      'interne Kommandozeile bevorzugen
+      detectInplaceStart = True
+      Exit Function
+    End If
+    
+    For Each wb In ThisWorkbook.Application.Workbooks
+    
+      If wb.IsInplace Then
+        detectInplaceStart = True
+        Exit Function
+      End If
+    Next wb
+  End If
+
+End Function
+
+
+Private Sub createDefaultMenu()
+  Dim oCommandBar As CommandBar
+  Dim oPopup As CommandBarPopup
+  Dim strText As String
+
+  Set oCommandBar = CommandBars.Add("IDL.Office.MenuShort", temporary:=True, Position:=MsoBarPosition.msoBarTop)
+  With oCommandBar.Controls
+    If GetThreadLocale = LCID_GERMAN Then
+      strText = "Connector Mappe bearbeiten ..."
+    Else
+      strText = "edit connector workbook ..."
+    End If
+    
+    With .Add
+      .Style = msoButtonCaption
+      .Caption = strText
+      .OnAction = ThisWorkbook.Name & "!OpenConnectorWorkbook"
+    End With
+  End With
+  oCommandBar.Visible = True
+
+End Sub
+
+Public Sub OpenConnectorWorkbook()
+  Dim wb As Workbook
+  Dim strFullName As String
+  Dim strError As String
+  Dim oIDLAddinManager As New IDLAddinManager
+  On Error GoTo ErrHandler
+
+  If m_oIDLAddinManager Is Nothing Then
+    Set m_oIDLAddinManager = New IDLAddinManager
+    If Not m_oIntApplication Is Nothing Then
+      m_oIDLAddinManager.notifyInprocConnector
+    End If
+
+  End If
+
+  Set wb = ActiveWorkbook
+  If wb Is Nothing Then
+    Set wb = Application.Workbooks.Add 'neue Mappe als Moniker
+  End If
+
+  If Not wb Is Nothing Then
+    strFullName = wb.FullName
+  End If
+  m_oIDLAddinManager.runSpreadApp strFullName
+
+  Exit Sub
+
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+
+End Sub
+
+Private Sub InitConnectorApplicationImpl()
+  Dim strModuleFullName As String
+  Dim strError As String
+  Dim nError As Long
+  Dim i As Long
+  Dim oAddinKVM100 As AddIn
+  Dim nAppIsolation As Long
+  Dim strPath As String
+  Const ERROR_FILE_NOT_FOUND = 2
+  
+  Dim bDotNetStart As Boolean
+  Dim wbContext As Excel.Workbook
+
+  If m_bInitDone Then
+    Exit Sub
+  End If
+  m_bInitDone = True
+
+  If m_oIDLAddinManager Is Nothing Then
+    Set m_oIDLAddinManager = New IDLAddinManager 'sofort zuweisen, damit Addin Ladeereignisse auch w|fffd|hrend Addin-Startup registriert
+  End If
+  nAppIsolation = m_oIDLAddinManager.AppIsolation
+
+#If Win64 = 0 Then
+  'inplace vorl|fffd|ufig nicht starten, da Probleme
+  'nicht bei App-Isolation, TODO: genauer
+  If detectInplaceStart Then
+    'vereinfachtes |fffd|ffnen Men|fffd|
+    createDefaultMenu
+    Exit Sub
+  End If
+#End If
+
+
+  Set wbContext = Application.Workbooks(ThisWorkbook.Name) 'normalisieren
+
+  
+           
+On Error Resume Next
+  Set oAddinKVM100 = AddIns("KVM100")
+On Error GoTo ErrHandler
+  If Not oAddinKVM100 Is Nothing Then
+    oAddinKVM100.Installed = False 'altes KVM100 de aktivieren
+  End If
+  If Not m_oIntApplication Is Nothing Then 'k|fffd|nnte bereits durch andere Addins geladen sein (GetConnectorApplication)
+    Exit Sub
+  End If
+
+#If Win64 = 1 Then
+  If nAppIsolation = 0 Then
+    nAppIsolation = 3 'Default f|fffd|r Win64
+  End If
+  If nAppIsolation = 2 Then
+    bDotNetStart = True 'bei Win64 f|fffd|r Isolationsmodus = 2, nur hier wird Modus 2 ausgewertet
+  End If
+#Else
+  If nAppIsolation = 2 Then
+    bDotNetStart = True 'bei Win32 f|fffd|r Isolationsmodus = 2, nur hier wird Modus 2 ausgewertet
+  End If
+#End If
+  
+
+
+If nAppIsolation = 3 Then
+  'beste Isolation: separate SpreadApp
+  m_oIDLAddinManager.initSpreadApp
+  'vereinfachtes |fffd|ffnen Men|fffd|
+  createDefaultMenu
+  Exit Sub 'vorl|fffd|ufig kein Start, da nicht robust
+
+Else
+
+  Dim vntDotNetEnabled As Variant
+  
+  Profile_Read "Options.DotNetEnabled", vntDotNetEnabled
+  If Trim(vntDotNetEnabled) = "0" Then
+    GoTo LegacyStart
+  End If
+
+  i = IDLDecentralEntry.ExcelVersionInt
+  If i >= 12 Then
+    'XLSLink automatisch detektieren und als .Net Wurzelpfad eintragen, falls verf|fffd|gbar und nicht bereits automatisch geladen
+    strPath = detectXLSLinkStart
+    If strPath <> "" And m_oAppDomain Is Nothing Then
+      bDotNetStart = True
+      Set m_oAppDomain = loadAppDomain(APP_DOMAIN, strPath)
+    End If
+  End If
+
+  i = IDLDecentralEntry.ExcelVersionInt
+  If m_oAppDomain Is Nothing And i >= 12 And i <= 14 Then 'DOT Net ab Office2007 bis Office 2010 optional laden, ab Office2013 obligatorisch
+    On Error Resume Next
+    startRootAssembly wbContext, Nothing, bMemLoad:=isMemLoad
+
+    On Error GoTo ErrHandler
+    bDotNetStart = (Not m_oIntApplication Is Nothing)
+  ElseIf i >= 15 Then
+    bDotNetStart = True
+  End If
+End If
+  
+  If m_oIntApplication Is Nothing Then
+    If bDotNetStart Then
+      startRootAssembly wbContext, Nothing, bMemLoad:=isMemLoad
+    Else
+LegacyStart:
+#If Win64 = 1 Then
+        Debug.Assert False
+#Else
+
+          strModuleFullName = locateInstallationPath & MAIN_MODULE_LEGACY
+
+      Set m_oIntApplication = m_oIDLAddinManager.LoadDllModule(strModuleFullName, wbContext)
+#End If
+    End If
+  End If
+  If Not m_oIntApplication Is Nothing And Not m_oIDLAddinManager Is Nothing Then
+    m_oIDLAddinManager.notifyInprocConnector
+  End If
+
+  If Not m_oIDLAddinManager Is Nothing Then
+    If Not m_oIDLAddinManager.isSpreadApp And m_oIDLAddinManager.isInprocConnector Then
+      Set m_oIDLAddinManager = Nothing 'ab jetzt Addins Manager des Connectors
+    End If
+  End If
+
+'  'vereinfachtes |fffd|ffnen Men|fffd|
+'  createDefaultMenu
+  
+Cleanup:
+  If nError <> 0 Then
+    Set m_oIntApplication = Nothing
+    On Error GoTo 0
+    Err.Raise nError, , strError
+  End If
+  Exit Sub
+ErrHandler:
+  nError = Err.Number
+  strError = Err.Description
+  On Error Resume Next
+
+  If bDotNetStart Then
+    strModuleFullName = locateInstallationPath & MAIN_ASSEMBLY_MODULE
+  ElseIf strModuleFullName = "" Then
+    strModuleFullName = locateInstallationPath & MAIN_MODULE_LEGACY
+  End If
+  'Information |fffd|ber Komponente hinzuf|fffd|gen
+  If strModuleFullName <> "" Then
+    If GetThreadLocale = LCID_GERMAN Then
+      strError = "Fehler beim Starten der Komponente " & strModuleFullName & vbLf & strError
+    Else
+      strError = "Error starting component " & strModuleFullName & vbLf & strError
+    End If
+  End If
+
+  
+  GoTo Cleanup
+End Sub
+
+
+'XLSLink dynamisch nachladen, falls erforderlich
+Private Function detectXLSLinkStart() As String
+  Dim oAddin As AddIn
+  Dim strFullName As String
+  Dim strPath As String
+  Dim i As Long
+  
+  On Error Resume Next
+  Dim vntAddinPath As Variant
+  Dim bAutoDetect As Boolean
+  Dim strPathDetected As String
+  Dim bWriteProfile As Boolean
+  
+  Set oAddin = Application.AddIns("IDL_ExcelDna")
+  
+  
+  Profile_Read "Options.AppDomainRootPath", vntAddinPath
+  If vntAddinPath = "1" Then
+    bAutoDetect = True
+  ElseIf vntAddinPath = "0" Or vntAddinPath = "2" Then
+  ElseIf vntAddinPath <> "" Then
+    strPath = vntAddinPath
+    If Right$(strPath, 1) <> "\" Then
+      strPath = strPath & "\"
+    End If
+    strFullName = strPath & "IDL.XLSLINK.exe"
+    If FileExists(strFullName) Then
+      strPathDetected = strPath
+    End If
+  
+  End If
+  If bAutoDetect Then
+  
+    strPath = locateInstallationPath & "..\Components\XLSLink\"
+#If Win64 Then
+    strPath = strPath & "x64\"
+#Else
+    strPath = strPath & "x86\"
+#End If
+
+    strFullName = strPath & "IDL.XLSLINK.exe"
+    
+    If FileExists(strFullName) Then
+      strPathDetected = strPath
+    Else
+      'Test !!!!!
+      'XLSLink im eigenen Verzeichnis
+      strPath = locateInstallationPath
+      strFullName = strPath & "IDL.XLSLINK.exe"
+      If FileExists(strFullName) Then
+        strPathDetected = strPath
+      End If
+    End If
+  
+  End If
+  
+  If Not oAddin Is Nothing Then
+    If oAddin.Installed Then
+    
+      Exit Function 'vorl|fffd|ufig keine Integration
+    
+      strFullName = oAddin.FullName
+      strPath = oAddin.Path
+      If Right$(strPath, 1) <> "\" Then
+        strPath = strPath & "\"
+      End If
+      i = InStrRev(strPath, "IDLAddIn\", Compare:=vbTextCompare)
+      If i > 0 Then
+        strPath = Left$(strPath, i - 1)
+      End If
+      strFullName = strPath & "IDL.XLSLINK.exe"
+      If FileExists(strFullName) Then
+        strPathDetected = strPath
+      End If
+    
+    
+    
+      If vntAddinPath = "2" Then
+        'XLSLink nebeneinander
+        strPathDetected = ""
+      Else
+        oAddin.Installed = False
+        Application.StatusBar = Empty
+        bWriteProfile = True
+      End If
+    End If
+  End If
+  
+  If strPathDetected <> "" And bWriteProfile Then
+    Profile_Write "Options.AppDomainRootPath", strPathDetected
+  End If
+  
+  detectXLSLinkStart = strPathDetected
+  
+End Function
+
+
+Public Property Get isMemLoadDll() As Boolean
+  Dim vntMemLoad As Variant
+  
+  Profile_Read "Options.MemLoad", vntMemLoad
+  If Trim(vntMemLoad) = "" Then
+        'bei Excel 2013 wegen Datenausf|fffd|hrungskonflikt Default kein Mem Load f|fffd|r Dlls
+        'isMemLoadDll = (ExcelVersionInt < 15)
+        isMemLoadDll = False 'momentan: Default kein MemLoad
+  Else
+        isMemLoadDll = (vntMemLoad = "1")
+  End If
+End Property
+
+#End If 'CENTRALBUILD
+
+
+Public Property Get isMemLoad() As Boolean
+  Dim vntMemLoad As Variant
+  
+  Profile_Read "Options.MemLoad", vntMemLoad
+  isMemLoad = (vntMemLoad <> "0")
+End Property
+
+
+'Installationspfad gem|fffd|ss Regeln von ConnectorConfig.cls lokalisieren
+Private Function locateInstallationPath() As String
+  Dim strInstallationPath As String
+  Dim vntPath As String
+  Dim strFullNameContext As String
+
+  
+
+
+  If strInstallationPath = "" Then
+    '|fffd|berpr|fffd|fen, ob Hauptmodul im eigenen Verzeichnis
+    strInstallationPath = AddinPath
+
+#If CENTRALBUILD Then
+        'nur zentral ist Hauptmodul erforderlich
+    vntPath = strInstallationPath & MAIN_MODULE
+    If Not FileExists(vntPath) Then
+      strInstallationPath = ""
+    ElseIf strFullNameContext = "" Then
+      strFullNameContext = vntPath
+    End If
+#End If
+  End If
+
+  If strInstallationPath = "" Then
+    'ini Eintrag auf Verweise auf Hauptmodul |fffd|berpr|fffd|fen
+    Profile_Read "Options.IDLConnectorPath", vntPath
+    If vntPath <> "" Then
+      If Right$(vntPath, 1) <> "\" Then
+        vntPath = vntPath & "\"
+      End If
+      strFullNameContext = vntPath & MAIN_MODULE
+      If FileExists(strFullNameContext) Then
+        strInstallationPath = vntPath
+      Else
+        strInstallationPath = ""
+      End If
+    End If
+  End If
+
+
+  If strInstallationPath = "" Then
+    If strFullNameContext = "" Then
+      strFullNameContext = MAIN_MODULE
+    End If
+    Err.Raise vbObjectError, "IDL Connector", "Main module (" & strFullNameContext & ") not found"
+  End If
+
+  locateInstallationPath = strInstallationPath
+
+End Function
+
+Public Property Get InstallationPath() As String
+  InstallationPath = locateInstallationPath
+End Property
+
+
+Public Sub Profile_Read(Name As String, ByRef vntResult As Variant)
+  Dim strProfileFullName As String
+  strProfileFullName = Profile_FullName
+
+  If FileExists(strProfileFullName) Then
+    Ini_Read strProfileFullName, Name, vntResult
+  Else
+    vntResult = Empty
+  End If
+End Sub
+
+Public Property Get Profile_FullName() As String
+  Dim strPath As String
+
+  If m_strProfileFullName = "" Then
+    m_strProfileFullName = AddinPath & "Connector.ini"
+    If Not FileExists(m_strProfileFullName) Then
+      strPath = VBA.Environ$("AppData")
+      If strPath <> "" Then
+        If Right$(strPath, 1) <> "\" Then
+          strPath = strPath & "\"
+        End If
+        m_strProfileFullName = strPath & "IDL\Connector\Connector.ini"
+      End If
+      
+    End If
+  End If
+
+  Profile_FullName = m_strProfileFullName
+End Property
+
+Public Sub Profile_Write(Name As String, ByRef vntValue As Variant)
+  Dim strProfileFullName As String
+  strProfileFullName = Profile_FullName
+  Ini_Write strProfileFullName, Name, vntValue
+End Sub
+
+'Externe Funktion f|fffd|r Lesen aus Ini Datei
+'in Path: Notation "." getrennt
+'Subset aus ini.bas
+Private Sub Ini_Read(strIniFullPath As String, Name As String, ByRef vntResult As Variant)
+  Dim bEmpty As Boolean
+  Dim i As Long
+  Dim folder_ActSection As String
+  Dim folder_actEntry As String
+  Const IniNameSeparator = "_"   'Separator zur Bildung von Untereintr|fffd|gen in IniFile
+  Const IniStringMAXLEN = 1024
+  Dim strValue As String
+  Dim nLen As Long
+  Const EMPTY_STRING = "<EMPTY>"
+
+  
+  If strIniFullPath = "" Or Name = "" Then Err.Raise vbObjectError
+  
+  i = InStr(1, Name, ".")
+  If i > 0 Then
+    folder_ActSection = Left$(Name, i - 1)
+    folder_actEntry = Replace$(Mid$(Name, i + 1), ".", IniNameSeparator)
+  Else
+    folder_ActSection = Name
+  End If
+  
+  strValue = String$(IniStringMAXLEN, 0)
+    
+  'einfacher Wert
+  nLen = GetPrivateProfileStringW(StrPtr(folder_ActSection), StrPtr(folder_actEntry), StrPtr(EMPTY_STRING), StrPtr(strValue), IniStringMAXLEN, StrPtr(strIniFullPath))
+
+  If nLen >= 0 Then
+    vntResult = Left$(strValue, nLen)
+    If vntResult = EMPTY_STRING Then
+      vntResult = Empty
+    End If
+  End If
+    
+
+End Sub
+
+Private Sub Ini_Write(strIniFullPath As String, Name As String, ByRef vntValue As Variant)
+  Dim bEmpty As Boolean
+  Dim i As Long
+  Dim folder_FullPath As String, folder_ActSection As String, folder_actEntry As String
+  If strIniFullPath = "" Or Name = "" Then
+    Err.Raise ERR_NOTOK
+  End If
+  folder_FullPath = strIniFullPath
+  
+  i = InStr(1, Name, ".")
+  If i > 0 Then
+    folder_ActSection = Left$(Name, i - 1)
+    folder_actEntry = Replace$(Mid$(Name, i + 1), ".", "_")
+  Else
+    folder_ActSection = Name
+  End If
+  
+  
+  If IsObject(vntValue) Then
+    If vntValue Is Nothing Then
+      bEmpty = True
+    End If
+  End If
+  If bEmpty Then
+    Ini_WriteProperty folder_FullPath, folder_ActSection, folder_actEntry, "", ""
+  Else
+    Ini_WriteProperty folder_FullPath, folder_ActSection, folder_actEntry, "", vntValue
+  End If
+End Sub
+
+
+Private Sub Ini_WriteProperty(ByVal folder_FullPath As String, ByVal folder_ActSection As String, ByVal folder_actEntry As String, ByVal Name As String, vntValue As Variant)
+  Dim strEntryName As String
+  Dim i As Long
+  Dim strValue As String
+  
+  If folder_actEntry = "" Then
+    strEntryName = Name
+  ElseIf Name = "" Then
+    strEntryName = folder_actEntry
+  Else
+    strEntryName = folder_actEntry & "_" & Name
+  End If
+  'If Not folder.UnicodeChecked Then
+  '  DetectWriteUnicode folder
+  'End If
+  
+  'einfacher Wert
+  strValue = CStr(vntValue)
+  i = WritePrivateProfileStringW(StrPtr(folder_ActSection), StrPtr(strEntryName), StrPtr(strValue), StrPtr(folder_FullPath))
+  If i = 0 Then
+    RaiseWinError Err.LastDllError, folder_FullPath
+  End If
+  
+    
+End Sub
+
+
+Public Property Get AddinPath() As String
+  AddinPath = ThisWorkbook.Path
+  If Right$(AddinPath, 1) <> "\" Then
+    AddinPath = AddinPath & "\" 'Pfad normalisieren
+  End If
+End Property
+
+
+
+
+Private Function FileExists(ByVal szFileName As String) As Boolean
+  Dim nAttr As Long
+
+  nAttr = GetFileAttributesW(StrPtr(szFileName))
+
+  If nAttr <> -1 Then
+    FileExists = ((nAttr And vbDirectory) = 0) 'Verzeichnisse nicht zulassen
+  End If
+End Function
+
+
+
+
+'IDL End
+'---------------------------
+Attribute VB_Name = "ObjHelper"
+Option Explicit
+Option Private Module
+
+'Declares aus win32.tlb
+Public Type tagGUID
+  dw0 As Long
+  dw1 As Long
+  dw2 As Long
+  dw3 As Long
+End Type
+
+#If Win64 Then
+
+Public Type MULTI_QI_VB
+  pIID As LongPtr  'IID*
+  pItf As LongPtr 'IUnknown *
+  hr As Long 'HRESULT
+End Type
+
+Public Type COSERVERINFO_VB
+  dwReserved1 As Long
+  pwszName As LongPtr 'LPWSTR
+  pAuthInfo As LongPtr 'COAUTHINFO *
+  dwReserved2 As Long
+End Type
+
+#Else
+
+Private Type MULTI_QI_VB
+  pIID As Long  'IID*
+  pItf As Long 'IUnknown *
+  hr As Long 'HRESULT
+End Type
+
+Private Type COSERVERINFO_VB
+  dwReserved1 As Long
+  pwszName As Long 'LPWSTR
+  pAuthInfo As Long 'COAUTHINFO *
+  dwReserved2 As Long
+End Type
+
+#End If
+
+Const PAGE_READWRITE = 4
+Const PAGE_EXECUTE_WRITECOPY = &H80
+Const PAGE_EXECUTE_READWRITE = &H40
+Private Const LOAD_WITH_ALTERED_SEARCH_PATH = 8
+Public Const CLSCTX_INPROC_SERVER = &H1
+Public Const CLSCTX_LOCAL_SERVER = &H4
+Public Const CLSCTX_REMOTE_SERVER = &H10
+
+Public Const ERR_USER_CANCEL = &H800704C7 'HRESULT_FROM_WIN32(ERROR_CANCELLED)
+Public Const ERR_NOTOK = vbObjectError + 440 'Fehlerkonstante f|fffd|r bOK = false (R|fffd|ckgabewert) / allgemeiner Fehler: Automationsfehler, falls kein Fehlertext |fffd|bergeben
+Public Const ERR_INVALIDARG = &H800A0005
+Public Const E_NOTIMPL = &H80004001
+
+Public Const LCID_ENGLISH As Long = &H409
+
+Public Const sizeof_VARIANT = 16
+Public Const sizeof_Short = 2
+Public Const sizeof_Long = 4
+
+Public Const sizeof_LongPtr = 8
+Public Const sizeof_LongLong = 8
+
+
+
+#If Win64 Then
+
+
+#If False Then
+'momentan nicht verwendet
+'zwischengespeicherte Verbinder
+Public Const PTRSTUBS_MAX_COUNT = 5
+Public Const PTRSTUBS_COUNT_VARIABLE = 5 'Konstante f|fffd|r variablen STub (>= 5 Parameter)
+Public PtrStubs(1 To PTRSTUBS_MAX_COUNT) As LongPtr
+Private PtrStubsBuffer() As Byte 'Datenpuffer f|fffd|r PtrStubs
+
+Public Declare PtrSafe Function PtrStubV Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As LongPtr, ByVal pArgs As LongPtr, ByVal argSize As LongPtr, ByVal pStub As LongPtr) As LongPtr
+Public Declare PtrSafe Function PtrStubVAsLong Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As LongPtr, ByVal pArgs As LongPtr, ByVal argSize As LongPtr, ByVal pStub As LongPtr) As Long
+
+Public DelegateStubImpl As DelegateStub
+Public DelegateStub As DelegateStub
+
+#End If
+
+'generischer Stub f|fffd|r Win 64
+'Funktionspointer als letzer Parameter (Verwendung als benannter Parameter)
+
+'f|fffd|r 0 bis 3 Parameter (alle Parameter in Register rcx, rdx, r8 und r9)
+Public Declare PtrSafe Function PtrStub3 Lib "oleaut32" Alias "DllUnregisterServer" (Optional ByVal p0 As LongPtr, Optional ByVal p1 As LongPtr, Optional ByVal p2 As LongPtr, Optional ByVal pFct As LongPtr) As LongPtr
+Public Declare PtrSafe Function PtrStub3AsLong Lib "oleaut32" Alias "DllUnregisterServer" (Optional ByVal p0 As LongPtr, Optional ByVal p1 As LongPtr, Optional ByVal p2 As LongPtr, Optional ByVal pFct As LongPtr) As Long
+
+'f|fffd|r 4 bis 8 Parameter
+Public Declare PtrSafe Function PtrStub8 Lib "oleaut32" Alias "DllRegisterServer" (Optional ByVal p0 As LongPtr, Optional ByVal p1 As LongPtr, Optional ByVal p2 As LongPtr, Optional ByVal p3 As LongPtr, Optional ByVal p4 As LongPtr, Optional ByVal p5 As LongPtr, Optional ByVal p6 As LongPtr, Optional ByVal p7 As LongPtr, Optional ByVal pFct As LongPtr) As LongPtr
+Public Declare PtrSafe Function PtrStub8AsLong Lib "oleaut32" Alias "DllRegisterServer" (Optional ByVal p0 As LongPtr, Optional ByVal p1 As LongPtr, Optional ByVal p2 As LongPtr, Optional ByVal p3 As LongPtr, Optional ByVal p4 As LongPtr, Optional ByVal p5 As LongPtr, Optional ByVal p6 As LongPtr, Optional ByVal p7 As LongPtr, Optional ByVal pFct As LongPtr) As Long
+
+
+Public Declare PtrSafe Function VirtualAlloc Lib "Kernel32" (ByVal lpAddress As LongPtr, ByVal dwSize As LongPtr, ByVal flAllocationType As Long, ByVal flProtect As Long) As LongPtr
+
+
+#End If
+
+
+
+#If Win64 Then
+Public Const sizeof_Ptr = 8
+
+Public Declare PtrSafe Sub CopyMemory Lib "Kernel32" Alias "RtlMoveMemory" (ByVal pvDest As LongPtr, ByVal pvSrc As LongPtr, ByVal cbCopy As LongLong)
+Public Declare PtrSafe Sub ZeroMemory Lib "Kernel32" Alias "RtlZeroMemory" (ByVal pvDest As LongPtr, ByVal cbCopy As LongLong)
+
+Public Declare PtrSafe Function GetModuleHandle Lib "Kernel32" Alias "GetModuleHandleA" (ByVal lpModuleName As String) As LongPtr
+Public Declare PtrSafe Function GetProcAddress Lib "Kernel32" (ByVal hModule As LongPtr, ByVal lpProcName As String) As LongPtr
+Private Declare PtrSafe Function VirtualProtect Lib "Kernel32" (ByVal lpAddress As LongPtr, ByVal dwSize As LongLong, ByVal flNewProtect As Long, ByRef lpflOldProtect As Long) As Long
+Public Declare PtrSafe Function LoadLibraryA Lib "Kernel32" (ByVal strPath As String) As LongPtr
+Public Declare PtrSafe Function LoadLibraryW Lib "Kernel32" (ByVal strPath As LongPtr) As LongPtr
+Public Declare PtrSafe Function FreeLibrary Lib "Kernel32" (ByVal hInst As LongPtr) As Integer
+
+Private Declare PtrSafe Function FormatMessageW Lib "Kernel32" (ByVal dwFlags As Long, ByVal lpSource As LongPtr, ByVal dwMessageId As Long, ByVal dwLanguageId As Long, ByVal lpBuffer As LongPtr, ByVal nSize As Long, ByVal Arguments As LongPtr) As Long
+
+Public Declare PtrSafe Function IIDFromString Lib "ole32" (ByVal lpsz As LongPtr, ByRef lpiid As tagGUID) As Long
+Public Declare PtrSafe Function CLSIDFromString Lib "ole32" (ByVal lpsz As LongPtr, ByRef pclsid As tagGUID) As Long
+
+
+Public Declare PtrSafe Function CoCreateInstanceExVB Lib "ole32" Alias "CoCreateInstanceEx" (ByRef clsid As tagGUID, ByVal punkOuter As IUnknown, ByVal dwClsCtx As Long, ByVal pServerInfo As LongPtr, ByVal dwCount As Long, ByVal pResults As LongPtr) As Long
+
+
+
+
+
+#Else
+
+'Win32
+
+Public Const sizeof_Ptr = 4
+
+
+Public Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal pvDest As Long, ByVal pvSrc As Long, ByVal cbCopy As Long)
+Public Declare Sub ZeroMemory Lib "kernel32" Alias "RtlZeroMemory" (ByVal pvDest As Long, ByVal cbCopy As Long)
+
+Public Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleA" (ByVal lpModuleName As String) As Long
+Public Declare Function GetModuleHandleW Lib "kernel32" (ByVal lpModuleName As Long) As Long
+Public Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
+Public Declare Function LoadLibraryA Lib "kernel32" (ByVal strPath As String) As Long
+Public Declare Function LoadLibraryW Lib "kernel32" (ByVal strPath As Long) As Long
+
+Private Declare Function LoadLibraryExA Lib "kernel32" (ByVal strPath As String, ByVal hFile As Long, ByVal dwFlags As Long) As Long
+Public Declare Function FreeLibrary Lib "kernel32" (ByVal hInst As Long) As Integer
+
+Public Declare Function VirtualProtect Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flNewProtect As Long, ByRef lpflOldProtect As Long) As Long
+Public Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
+Public Declare Function VirtualFree Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal dwFreeType As Long) As Long
+
+
+Private Declare Function FormatMessageA Lib "kernel32" (ByVal dwFlags As Long, ByVal lpSource As Long, ByVal dwMessageId As Long, ByVal dwLanguageId As Long, ByVal lpBuffer As String, ByVal nSize As Long, ByVal Arguments As Long) As Long
+Private Declare Function FormatMessageW Lib "kernel32" (ByVal dwFlags As Long, ByVal lpSource As Long, ByVal dwMessageId As Long, ByVal dwLanguageId As Long, ByVal lpBuffer As Long, ByVal nSize As Long, ByVal Arguments As Long) As Long
+
+Public Declare Function CoCreateInstance Lib "ole32" (ByRef rclsid As tagGUID, ByVal punkOuter As IUnknown, ByVal dwClsContext As Long, ByRef riid As tagGUID, ByVal ppv As Long) As Long
+Public Declare Function CoLoadLibrary Lib "ole32" (ByVal lpszLibName As Long, ByVal bAutoFree As Boolean) As Long
+Public Declare Function IIDFromString Lib "ole32" (ByVal lpsz As Long, ByRef lpiid As tagGUID) As Long
+Public Declare Function CLSIDFromString Lib "ole32" (ByVal lpsz As Long, ByRef pclsid As tagGUID) As Long
+
+
+'generische Vorlagen f|fffd|r stdcall Funktionen
+Public Declare Function PtrFct0 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long) As Long
+Public Declare Function PtrFct1 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long) As Long
+Public Declare Function PtrFct2 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long, ByVal p1 As Long) As Long
+Public Declare Function PtrFct3 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long, ByVal p1 As Long, ByVal p2 As Long) As Long
+Public Declare Function PtrFct4 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long, ByVal p1 As Long, ByVal p2 As Long, ByVal p3 As Long) As Long
+Public Declare Function PtrFct5 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long, ByVal p1 As Long, ByVal p2 As Long, ByVal p3 As Long, ByVal p4 As Long) As Long
+Public Declare Function PtrFct6 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long, ByVal p1 As Long, ByVal p2 As Long, ByVal p3 As Long, ByVal p4 As Long, ByVal p5 As Long) As Long
+Public Declare Function PtrFct7 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long, ByVal p1 As Long, ByVal p2 As Long, ByVal p3 As Long, ByVal p4 As Long, ByVal p5 As Long, ByVal p6 As Long) As Long
+Public Declare Function PtrFct8 Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal p0 As Long, ByVal p1 As Long, ByVal p2 As Long, ByVal p3 As Long, ByVal p4 As Long, ByVal p5 As Long, ByVal p6 As Long, ByVal p7 As Long) As Long
+
+
+Public Declare Function DllGetClassObjectPtr Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByRef rclsid As tagGUID, ByRef riid As tagGUID, ByVal ppv As Long) As Long
+Private Declare Function IClassFactory_CreateInstancePtr Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ByVal This As Long, ByVal punkOuter As IUnknown, ByRef riid As tagGUID, ByVal ppvObject As Long) As Long
+
+Private Declare Function CoCreateInstanceExVB Lib "ole32" Alias "CoCreateInstanceEx" (ByRef clsid As tagGUID, ByVal punkOuter As IUnknown, ByVal dwClsCtx As Long, ByVal pServerInfo As Long, ByVal dwCount As Long, ByVal pResults As Long) As Long
+
+Private Declare Function GetVersion Lib "kernel32" () As Long
+
+#End If
+
+#If Win64 = 1 Then
+
+Public Declare PtrSafe Function ArrayPtr Lib "vbe7" Alias "VarPtr" (ByRef ar() As Any) As LongPtr
+
+'zuerst nach VBA7 fragen, da unter Office 2013 VBA6 und VBA7 gesetzt ist
+#ElseIf VBA7 Then
+Public Declare Function ArrayPtr Lib "vbe7" Alias "VarPtr" (ByRef ar() As Any) As Long
+#ElseIf VBA6 Then
+Public Declare Function ArrayPtr Lib "vbe6" Alias "VarPtr" (ByRef ar() As Any) As Long
+#Else
+Public Declare Function ArrayPtr Lib "vba332" Alias "VarPtr" (ByRef ar() As Any) As Long
+#End If
+
+
+#If VBA6 = 0 Then
+'CallType Enum existiert nicht unter VBA5
+Public Const VbMethod = 1
+Public Const VbGet = 2
+Public Const VbLet = 4
+Public Const VbSet = 8
+#End If
+
+'f|fffd|r CallByID
+'Or Verkn|fffd|pfung mit CallType
+'keine Enum wegen VBA5
+Public Const CallTypeEx_Exception = 0 'Ausnahme wird ausgeworfen
+Public Const CallTypeEx_IgnoreError = &H100 'Fehler wird ignoriert (R|fffd|ckgabewert Empty, falls Fehler)
+Public Const CallTypeEx_ReturnError = &H200 'Fehler wird als Konstante vom Typ Error zur|fffd|ckgeliefert
+
+
+'pr|fffd|ft, ob Array nicht zugewiesen
+'Benutzung: Array_IsNothing(ArrayPtr(<ar>))
+#If Win64 Then
+Public Function Array_IsNothing(ByVal ppSafeArray As LongPtr) As Boolean
+  Dim pTemp As LongPtr
+#Else
+Public Function Array_IsNothing(ByVal ppSafeArray As Long) As Boolean
+  Dim pTemp As Long
+#End If
+  CopyMemory VarPtr(pTemp), ppSafeArray, 4
+  If pTemp = 0 Then
+    'noch nicht dimensioniert
+    Array_IsNothing = True
+  End If
+End Function
+
+'generischen Verbinder f|fffd|r Funktionspointer initialisieren (Prozessweit)
+''Template f|fffd|r Anlegen eines neuen Funktionspointer typedef
+'Win32:
+'Private Declare Function XXXXXPtr Lib "oleaut32" Alias "DllUnregisterServer" (ByVal pFct As Long, ....) As Long
+
+'Win64: siehe PtrStubXXX
+
+Public Sub InitFctPtrStub()
+  Dim b As Byte
+  Dim l As Long
+#If Win64 Then
+  Dim pCodeStart As LongPtr, pCode As LongPtr
+  Const CodeSize As Long = 3
+  Const CodeSizeSub8 As Long = 7
+  
+#Else
+  Dim pCodeStart As Long, pCode As Long
+  Const CodeSize As Long = 5
+#End If
+  Dim nOldProtect As Long
+  
+  'Hier die Adresse der DummyFunction (DllUnregisterServer) ermitteln
+  pCodeStart = GetModuleHandle("oleaut32")
+  If pCodeStart = 0 Then RaiseWinError Err.LastDllError, "oleaut32"
+  pCodeStart = GetProcAddress(pCodeStart, "DllUnregisterServer")
+
+  If pCodeStart = 0 Then RaiseWinError Err.LastDllError, "oleaut32.DllUnregisterServer"
+  
+  'Schutz aufheben
+  If VirtualProtect(pCodeStart, CodeSize, PAGE_READWRITE, nOldProtect) = 0 Then
+    RaiseWinError Err.LastDllError, "VirtualProtect"
+  End If
+  
+  pCode = pCodeStart
+  
+#If Win64 Then
+  b = &H41 'jmp r9
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+
+  b = &HFF
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+
+  b = &HE1
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+#Else
+  
+    
+  b = &H59 'pop ecx 'R|fffd|cksprungaddresse holen
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+  
+  b = &H58 'pop eax  'Funktionspointer holen
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+    
+  b = &H51 'push ecx  R|fffd|cksprungsaddresse zur|fffd|ckschreiben
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+  
+  'Funktionspointer ausf|fffd|hren
+  b = &HFF 'jmp eax
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+  b = &HE0
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+  
+#End If
+
+  
+  Debug.Assert pCode - pCodeStart <= CodeSize
+  'alten Schutz wiederherstellen
+  VirtualProtect pCodeStart, CodeSize, nOldProtect, 0
+
+#If Win64 Then
+#If False Then 'momentan nicht implementiert
+  Dim nArgCount As Long
+  Const CodeSizeSubStubs As Long = 200
+  
+
+  'bei Win64 sind dynamische Stubs erforderlich
+  ReDim PtrStubsBuffer(CodeSizeSubStubs - 1)
+  pCodeStart = VarPtr(PtrStubsBuffer(0))
+  
+    'Schutz aufheben
+  If VirtualProtect(pCodeStart, CodeSizeSubStubs, PAGE_EXECUTE_READWRITE, nOldProtect) = 0 Then
+    RaiseWinError Err.LastDllError, "VirtualProtect"
+  End If
+
+  pCode = pCodeStart
+  For nArgCount = 1 To PTRSTUBS_MAX_COUNT
+    createStubImpl pCode, nArgCount
+  Next nArgCount
+  
+  Debug.Assert pCode - pCodeStart <= CodeSizeSubStubs
+#End If
+
+
+
+  'variablen Stub bis 8 Parameter f|fffd|r Win64 einrichten
+
+  'Hier die Adresse der DummyFunction (DllRegisterServer) ermitteln
+  pCodeStart = GetModuleHandle("oleaut32")
+  If pCodeStart = 0 Then RaiseWinError Err.LastDllError, "oleaut32"
+  pCodeStart = GetProcAddress(pCodeStart, "DllRegisterServer")
+
+  If pCodeStart = 0 Then RaiseWinError Err.LastDllError, "oleaut32.DllRegisterServer"
+  
+  'Schutz aufheben
+  If VirtualProtect(pCodeStart, CodeSizeSub8, PAGE_READWRITE, nOldProtect) = 0 Then
+    RaiseWinError Err.LastDllError, "VirtualProtect"
+  End If
+  
+  pCode = pCodeStart
+  
+  
+  
+  l = &H24448B48 '48 8B 44 24      mov         rax,qword ptr [rsp+9 * sizeof_LongPtr]
+  CopyMemory pCode, VarPtr(l), sizeof_Long
+  pCode = pCode + sizeof_Long
+  b = 9 * sizeof_LongPtr 'Funktionspointer adressieren
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+  
+  l = &HE0FF 'FF E0                jmp         rax
+  CopyMemory pCode, VarPtr(l), 2
+  pCode = pCode + 2
+  
+
+
+  Debug.Assert pCode - pCodeStart <= CodeSizeSub8
+  'alten Schutz wiederherstellen
+  VirtualProtect pCodeStart, CodeSize, nOldProtect, 0
+
+
+
+
+#End If
+
+End Sub
+
+'#If Win64 Then
+#If False Then 'momentan nicht implementiert
+
+Private Sub createStubImpl(ByRef pCodeStart As LongPtr, ByVal argCount As Long)
+  Dim pCode As LongPtr
+  Dim b As Byte
+  Dim l As Long
+  
+  pCode = pCodeStart
+
+  If argCount > 4 Then
+    'dynamische Stackgenerierung
+    '48 81 EC F0 02 00 00 sub         rsp,2F0h
+    'im Moment nicht implementiert
+
+  Else
+    '48 83 EC 50          sub         rsp,50h
+    
+    '49 8B 48 10          mov         rcx,qword ptr [r8+10h]
+    '48 8B 4F 08          mov         rcx,qword ptr [rdi+8]
+
+    '48 8B 4D E8          mov         rcx,qword ptr [rbp-18h]
+    '48 8B 01             mov         rax,qword ptr [rcx]
+    '48 8B 4B 08          mov         rcx,qword ptr [rbx+8]
+    '49 8B 00             mov         rax,qword ptr [r8]
+    '49 8B C8             mov         rcx,r8
+    '48 8B 41 20          mov         rax,qword ptr [rcx+20h]
+    '48 8B 09             mov         rcx,qword ptr [rcx]
+    '4C 8B 49 18          mov         r9,qword ptr [rcx+18h]
+    '4C 8B 41 10          mov         r8,qword ptr [rcx+10h]
+  
+    
+    
+    '48 83 EC 50          sub         rsp,argCount * sizeof_LongPtr
+    l = &HEC8348
+    CopyMemory pCode, VarPtr(l), 3
+    b = argCount * sizeof_LongPtr
+    pCode = pCode + 3
+    CopyMemory pCode, VarPtr(b), 1
+    pCode = pCode + 1
+    
+    
+    '49 8B C8             mov         rcx,r8
+    l = &HC88B49
+    CopyMemory pCode, VarPtr(l), 3
+    pCode = pCode + 3
+    
+    
+    '4C 8B 49 18          mov         r9,qword ptr [rcx+3 * sizeof_LongPtr]
+    l = &H498B4C
+    CopyMemory pCode, VarPtr(l), 3
+    pCode = pCode + 3
+    b = 3 * sizeof_LongPtr
+    CopyMemory pCode, VarPtr(b), 1
+    pCode = pCode + 1
+    
+
+    '4C 8B 41 10          mov         r8,qword ptr [rcx+2 * sizeof_LongPtr]
+    l = &H418B4C
+    CopyMemory pCode, VarPtr(l), 3
+    pCode = pCode + 3
+    b = 2 * sizeof_LongPtr
+    CopyMemory pCode, VarPtr(b), 1
+    pCode = pCode + 1
+
+        
+'    'mov rax,qword ptr [rcx+ 1 * 8]
+'
+'
+'    '48 8B 41 20          mov         rax,qword ptr [rcx+ 1* sizeof_LongPtr]
+'    l = &H418B48
+'    CopyMemory pCode, VarPtr(l), 3
+'    pCode = pCode + 3
+'    b = 1 * sizeof_LongPtr
+'    CopyMemory pCode, VarPtr(b), 1
+'    pCode = pCode + 1
+    
+    'Funktionspointer sichern
+    '48 8B C2             mov         rax,rdx
+    l = &HC28B48
+    CopyMemory pCode, VarPtr(l), 3
+    pCode = pCode + 3
+
+    
+    'TODO: Adressierungsart
+    '48 8B 91 60 08 00 00 mov         rdx,qword ptr [rcx+1* sizeof_LongPtr]
+    l = &H918B48
+    CopyMemory pCode, VarPtr(l), 3
+    pCode = pCode + 3
+    l = 1 * sizeof_LongPtr
+    CopyMemory pCode, VarPtr(l), sizeof_Long
+    pCode = pCode + sizeof_Long
+    
+    
+    '48 8B 09             mov         rcx,qword ptr [rcx]
+    l = &H98B48
+    CopyMemory pCode, VarPtr(l), 3
+    pCode = pCode + 3
+    
+    'Aufruf ausf|fffd|hren
+    'FF D0                call        rax
+    l = &HD0FF
+    CopyMemory pCode, VarPtr(l), 2
+    pCode = pCode + 2
+    
+    If argCount >= 16 Then
+      '48 81 C4 80 00 00 00 add         rsp,argCount * sizeof_LongPtr
+      l = &HC48148
+      CopyMemory pCode, VarPtr(l), 3
+      pCode = pCode + 3
+      l = argCount * sizeof_LongPtr
+      CopyMemory pCode, VarPtr(l), sizeof_Long
+      pCode = pCode + sizeof_Long
+    Else
+ 
+      '48 83 C4 40          add         rsp,argCount * sizeof_LongPtr
+      l = &HC48348
+      CopyMemory pCode, VarPtr(l), 3
+      pCode = pCode + 3
+      b = argCount * sizeof_LongPtr
+      CopyMemory pCode, VarPtr(b), 1
+      pCode = pCode + 1
+      
+    End If
+    
+
+  End If
+  
+  'C3                   ret
+  b = &HC3
+  CopyMemory pCode, VarPtr(b), 1
+  pCode = pCode + 1
+    
+    
+  PtrStubs(argCount) = pCodeStart
+  
+  pCodeStart = pCode
+
+End Sub
+
+
+#End If
+
+
+
+#If Win64 Then
+Public Function DllGetClassObjectPtr(ByVal pFct As LongPtr, ByRef rclsid As tagGUID, ByRef riid As tagGUID, ByVal ppv As LongPtr) As Long
+  DllGetClassObjectPtr = PtrStub3AsLong(VarPtr(rclsid), VarPtr(riid), ppv, pFct:=pFct)
+End Function
+
+#End If
+
+
+
+'Anpassung zu VBA.CVErr
+'akzeptiert direkt HRESULTs ohne interne Konvertierung (VB Fehler Nummern werden automatisch 800A0000 verkn|fffd|pft / Verhalten von VBA.CVErr)
+Public Function CVErrEx(ByVal hr As Long) As Variant
+#If Win64 Then
+  Dim pTemp As LongPtr
+#Else
+  Dim pTemp As Long
+#End If
+  Dim vt As Integer
+  'HRESULT direkt kopieren (CVErr vertr|fffd|gt nur konvertierte Fehler)
+  If (hr And &HFFFF0000) = 0 Then
+    hr = hr Or &H800A0000 'Standard VB Fehler
+  End If
+  pTemp = VarPtr(CVErrEx)
+  vt = vbError
+  CopyMemory pTemp, VarPtr(vt), 2
+  CopyMemory pTemp + 8, VarPtr(hr), 4
+End Function
+
+
+Public Sub RaiseWinError(ByVal nError As Long, Optional ByVal addMessage As String)
+  Dim nTemp As Integer
+  Dim hr As Long
+  Dim strDescription As String
+  If nError <> 0 Then
+    hr = nError
+    'Testen, ob Win32 Fehler
+    CopyMemory VarPtr(nTemp), VarPtr(nError) + sizeof_Short, sizeof_Short
+    If nTemp = 0 Or nTemp = &H8007 Then
+      'entspricht HRESULT_FROM_WIN32 Makro
+      nTemp = &H8007
+      CopyMemory VarPtr(hr) + sizeof_Short, VarPtr(nTemp), sizeof_Short
+      
+      nTemp = 0
+      CopyMemory VarPtr(nError) + sizeof_Short, VarPtr(nTemp), sizeof_Short
+    End If
+    
+    strDescription = WinErrorText(nError)
+    If addMessage <> "" Then
+      If strDescription = "" Then
+        strDescription = addMessage
+      Else
+        strDescription = strDescription & vbLf & addMessage
+      End If
+    End If
+    Err.Raise hr, , strDescription
+  End If
+End Sub
+
+Public Property Get WinErrorText(ByVal nError As Long) As String
+  Dim s As String, dwLen As Long
+  Const FORMAT_MESSAGE_FROM_SYSTEM = &H1000
+  Const FORMAT_MESSAGE_IGNORE_INSERTS = &H200
+  Const nLen = 256
+  s = Space$(nLen)
+
+#If Win64 = 0 Then
+  If isWin32Unicode Then
+#End If
+    dwLen = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM Or FORMAT_MESSAGE_IGNORE_INSERTS, 0, nError, 0, StrPtr(s), nLen, 0)
+#If Win64 = 0 Then
+  Else
+    dwLen = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM Or FORMAT_MESSAGE_IGNORE_INSERTS, 0, nError, 0, s, nLen, 0)
+  End If
+#End If
+
+  If dwLen > 0 Then
+    WinErrorText = Left$(s, dwLen)
+  End If
+End Property
+
+'true,wenn Unicode API verf|fffd|gar (NT-Linie)
+Public Property Get isWin32Unicode() As Boolean
+#If Win64 Then
+  isWin32Unicode = True
+#Else
+  isWin32Unicode = (GetVersion() >= 0)
+#End If
+End Property
+
+
+'gegeben: geladene Basic-Dll/Com-Dll,  nun aus Typelib der Dll die Klasseninfo heraussuchen und Instanz der Klasse erstellen
+'wird gebraucht, um auf Dlls ohne Registrierung zuzugreifen (Client-Server F|fffd|higkeit bei Connector)
+'hModule m|fffd|glichst via CoLoadLibrary erstellen, um Lebensdauer-Problematik korrekt zu handlen
+#If Win64 Then
+Public Function CreateInprocObjectByClsid(ByVal hModule As LongPtr, ByRef clsid As tagGUID) As Object
+#Else
+Public Function CreateInprocObjectByClsid(ByVal hModule As Long, ByRef clsid As tagGUID) As Object
+#End If
+    Const IClassFactory_CreateInstance_VTBLINDEX = 3
+    Dim oCF As IUnknown
+    Dim hr As Long
+#If Win64 Then
+    Dim pTemp As LongPtr, oOrig As LongPtr, ptrDllGetClassObject As LongPtr
+#Else
+    Dim pTemp As Long, oOrig As Long, ptrDllGetClassObject As Long
+#End If
+    Dim IID_IDispatch As tagGUID
+    Dim IID_IClassFactory As tagGUID
+    
+    Dim strTemp As String
+    strTemp = "{00020400-0000-0000-C000-000000000046}"
+    IIDFromString StrPtr(strTemp), IID_IDispatch
+    strTemp = "{00000001-0000-0000-C000-000000000046}"
+    IIDFromString StrPtr(strTemp), IID_IClassFactory
+    
+    ptrDllGetClassObject = GetProcAddress(hModule, "DllGetClassObject")
+    If ptrDllGetClassObject = 0 Then RaiseWinError Err.LastDllError, "DllGetClassObject"
+    hr = DllGetClassObjectPtr(ptrDllGetClassObject, clsid, IID_IClassFactory, VarPtr(oCF))
+    If hr < 0 Then Err.Raise hr
+    
+    oOrig = ObjPtr(oCF)
+    If oOrig = 0 Then Err.Raise 5 'Invalid Arg
+    
+    CopyMemory VarPtr(pTemp), oOrig, sizeof_Ptr 'VTBL-Pointer
+    CopyMemory VarPtr(pTemp), pTemp + IClassFactory_CreateInstance_VTBLINDEX * sizeof_Ptr, sizeof_Ptr  'GetIDsOfNames holen
+    
+#If Win64 Then
+    'TODO
+    Stop
+#Else
+    hr = IClassFactory_CreateInstancePtr(pTemp, oOrig, Nothing, IID_IDispatch, VarPtr(CreateInprocObjectByClsid))
+#End If
+
+    If hr < 0 Then Err.Raise hr
+
+End Function
+
+
+
+'analog VBA.CreateObject, statt Progid jedoch Angabe von CLSID in Stringform: Vorteil, Objekt braucht auf Client nicht registriert zu sein (Progid m|fffd|sste sonst auf Client registriert sein)
+Public Function CreateObjectClsid(ByVal strCLSID As String, Optional ByVal ServerName As String) As Object
+  Dim o As Object
+  Dim clsid As tagGUID
+  Dim IID_IDispatch As tagGUID
+  Dim multiQI As MULTI_QI_VB
+  Dim hr As Long
+  Dim ServerInfo As COSERVERINFO_VB
+#If Win64 Then
+  Dim pServerInfo As LongPtr
+#Else
+  Dim pServerInfo As Long
+#End If
+  Dim strTemp As String
+  
+  hr = CLSIDFromString(StrPtr(strCLSID), clsid)
+  If hr < 0 Then Err.Raise hr
+  
+  strTemp = "{00020400-0000-0000-C000-000000000046}"
+  hr = IIDFromString(StrPtr(strTemp), IID_IDispatch)
+  If hr < 0 Then Err.Raise hr
+  
+  multiQI.pIID = VarPtr(IID_IDispatch)
+  If ServerName <> "" Then
+    ServerInfo.pwszName = StrPtr(ServerName)
+    pServerInfo = VarPtr(ServerInfo)
+  End If
+  
+  hr = CoCreateInstanceExVB(clsid, Nothing, CLSCTX_LOCAL_SERVER Or CLSCTX_REMOTE_SERVER, pServerInfo, 1, VarPtr(multiQI))
+  If hr < 0 Then Err.Raise hr
+  
+  CopyMemory VarPtr(o), VarPtr(multiQI.pItf), sizeof_Ptr
+  Debug.Assert Not o Is Nothing
+  
+  Set CreateObjectClsid = o
+End Function
+
+
+
+
+Attribute VB_Name = "Tabelle1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Public Property Get ConnectorApplication() As Object
+  Set ConnectorApplication = IDLDecentralEntry.IntApplication
+End Property
+
+Public Property Get IDLAddinManager() As Object
+  Set IDLAddinManager = IDLDecentralEntry.IDLAddinManager
+End Property
+
+
+Private Sub Workbook_AddinInstall()
+  IDLDecentralEntry.Auto_Open
+End Sub
+
+
+
+Public Sub OpenConnectorWorkbook()
+  IDLDecentralEntry.OpenConnectorWorkbook
+End Sub
+Attribute VB_Name = "frmFormats"
+Attribute VB_Base = "0{D935C083-096F-4F05-9559-647349734243}{DC2EC8BD-8B24-45FF-A08D-4F31B1A062D3}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+Option Explicit
+
+Private Sub cbCancel_Click()
+  Unload Me
+End Sub
+
+Private Sub cbOK_Click()
+  On Error GoTo ErrHandler
+  
+  ApplyChanges
+  Unload Me
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+End Sub
+
+Private Sub ApplyChanges()
+  Dim rActive As Range
+  Dim oInternalApplication As Object
+  Dim nIndex As Long, nCount As Long
+  Dim vntTemp As Variant
+  Dim oFrmLineDiff As New frmLineDiff
+  
+  Set oInternalApplication = ConnectorApplication.InternalApplication
+  
+  nIndex = lstFormats.ListIndex
+  If nIndex >= 0 Then
+    Set rActive = ActiveCell
+    If Not rActive Is Nothing Then
+    
+      oInternalApplication.Profile_Read "Format." & nIndex & ".Type", vntTemp
+#If SUPPORT_EXCEL97 = 0 Then
+      Debug.Assert vntTemp = "LineDiff"
+#End If
+      oFrmLineDiff.InitFromSelection bOverwriteExistingFormat:=True
+      oInternalApplication.Profile_Read "Format." & nIndex & ".Members", vntTemp
+      oFrmLineDiff.LoadFromStringParameters vntTemp
+      oFrmLineDiff.ApplyChanges
+
+    End If
+  End If
+  
+End Sub
+
+
+Public Sub Init()
+  Dim oInternalApplication As Object
+  Dim i As Long, nCount As Long
+  Dim vntTemp As Variant
+  
+  Set oInternalApplication = ConnectorApplication.InternalApplication
+  
+  Caption = oInternalApplication.LocText_FindByID(406) 'Formate
+  cbOK.Caption = oInternalApplication.LocText_FindByID(412)  'Einf|fffd|gen
+  cbCancel.Caption = oInternalApplication.LocText_FindByID(23) 'Abbrechen
+  cbCopy.Caption = oInternalApplication.LocText_FindByID(413) 'Kopieren
+  cbDelete.Caption = oInternalApplication.LocText_FindByID(414) 'L|fffd|schen
+  cbRename.Caption = oInternalApplication.LocText_FindByID(360) 'Unbenennen
+
+  
+  oInternalApplication.Profile_Read "Format.Count", vntTemp
+  If IsNumeric(vntTemp) Then
+    nCount = CLng(vntTemp)
+  End If
+  lstFormats.Clear
+  For i = 0 To nCount - 1
+    oInternalApplication.Profile_Read "Format." & i & ".Name", vntTemp
+    lstFormats.AddItem vntTemp
+  Next i
+  If nCount > 0 Then
+    lstFormats.Selected(0) = True
+  Else
+    cbOK.Enabled = False
+  End If
+  
+End Sub
+
+Public Sub RunModal()
+  Show
+End Sub
+
+Attribute VB_Name = "frmLineDiff"
+Attribute VB_Base = "0{78754338-BE8A-4612-B46B-8EB852437017}{57D5D8CB-D4A3-4B93-BB04-7F19AAE72924}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+Option Explicit
+
+Private m_bSystemChange As Boolean
+Private m_rSelection As Range
+
+Private Sub cbCancel_Click()
+  Unload Me
+End Sub
+
+Private Sub cbOK_Click()
+  On Error GoTo ErrHandler
+  ApplyChanges
+  Unload Me
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+#If SUPPORT_EXCEL97 Then
+Public Sub ApplyChanges()
+#Else
+Friend Sub ApplyChanges()
+#End If
+  Dim r As Range
+  Dim bHasArray As Boolean
+  If IsNull(m_rSelection.HasArray) Then
+    bHasArray = True
+  Else
+    bHasArray = m_rSelection.HasArray
+  End If
+  If bHasArray Then
+    Set r = Nothing
+    On Error Resume Next
+    'bei zusammengesetzten Bereichen u.U. nicht festgelegt
+    Set r = m_rSelection.CurrentArray 'wichtig: falls bereits ein Array zugeordnet: diese L|fffd|schen, falls Bereiche inkompatibel
+    On Error GoTo 0
+    If Not r Is Nothing Then
+      r.FormulaArray = ""
+    End If
+  End If
+  m_rSelection.FormulaArray = Application.ConvertFormula(CreateFormula(bSaveParams:=False), xlA1, xlR1C1, RelativeTo:=m_rSelection)
+End Sub
+
+'bOverwriteExistingFormat true: evt vorhandenes Format |fffd|berschreiben
+'bExistingOnly: nur pr|fffd|fen, ob geeigneter Connector-Bezug: R|fffd|ckgabe true
+#If SUPPORT_EXCEL97 Then
+Public Function Init(Optional ByVal bOverwriteExistingFormat As Boolean, Optional bExistingOnly As Boolean)
+#Else
+Friend Function Init(Optional ByVal bOverwriteExistingFormat As Boolean, Optional bExistingOnly As Boolean)
+#End If
+  Dim i As Long
+  Dim nColumnMe As Long
+  Dim vntArrayFormula As Variant
+  Dim r As Range
+  Dim oInternalApplication As Object
+  
+  On Error GoTo ErrHandler
+    
+  m_bSystemChange = True
+  
+  Set oInternalApplication = ConnectorApplication.InternalApplication
+  
+  Caption = oInternalApplication.LocText_FindByID(407) 'Zeilenunterschied
+  cbOK.Caption = oInternalApplication.LocText_FindByID(22) 'OK
+  cbCancel.Caption = oInternalApplication.LocText_FindByID(23) 'Abbrechen
+  lblColumn.Caption = oInternalApplication.LocText_FindByID(411) 'Spalte
+  lblcmbCompareOption.Caption = oInternalApplication.LocText_FindByID(415) 'Bedingung zu nachfolgender Zeile
+  cbSaveAs.Caption = oInternalApplication.LocText_FindByID(340) 'Speichern unter ...
+  
+  
+  If Not m_rSelection Is Nothing And (Not bOverwriteExistingFormat Or bExistingOnly) Then
+    vntArrayFormula = m_rSelection.FormulaArray
+    If IsNull(vntArrayFormula) Then
+      Set r = Nothing
+      'speziell antesten, ob CurrentArray bei gemischtem Bereich ermittelbar
+      On Error Resume Next
+      Set r = m_rSelection.CurrentArray
+      On Error GoTo ErrHandler
+      If r Is Nothing Then
+        vntArrayFormula = Empty
+      Else
+        Set m_rSelection = r
+        vntArrayFormula = m_rSelection.FormulaArray
+      End If
+    Else
+      If InStr(1, vntArrayFormula, "IDLLineDiff", vbTextCompare) <= 0 Then
+        vntArrayFormula = Empty
+      End If
+    End If
+  End If
+  If bExistingOnly And IsEmpty(vntArrayFormula) Then
+    m_bSystemChange = False
+    Exit Function
+  End If
+
+
+  cmbCompareOption.Clear
+  cmbCompareOption.AddItem oInternalApplication.LocText_FindByID(416) 'Keine Restriktion
+  cmbCompareOption.AddItem oInternalApplication.LocText_FindByID(417) 'Werte Identisch
+  cmbCompareOption.AddItem oInternalApplication.LocText_FindByID(418) 'Werte Ungleich
+  cmbCompareOption.ListIndex = 0
+  
+  If m_rSelection Is Nothing Then
+    nColumnMe = -1
+  Else
+    nColumnMe = m_rSelection.Column
+  End If
+  
+  cmbColumn.Clear
+  For i = 1 To 256
+    If i <> nColumnMe Then
+      cmbColumn.AddItem ColumnNameFromIndex(i)
+    End If
+  Next i
+  
+  If Not IsEmpty(vntArrayFormula) Then
+    Set g_frmLineDiffInit = Me
+    Application.Evaluate Mid$(vntArrayFormula, 2) 'Testlauf, um Parameter zu erfahren
+    Set g_frmLineDiffInit = Nothing
+    Set m_rSelection = m_rSelection.CurrentArray 'Auswahl nun gesamtes Array
+  End If
+  
+  m_bSystemChange = False
+  If lstLineDiff.ListCount > 0 Then
+    lstLineDiff.Selected(0) = True
+    RefreshQuickEditFromSelection
+  End If
+  Init = True
+  Exit Function
+  
+ErrHandler:
+#If SUPPORT_EXCEL97 = 0 Then
+  Debug.Assert False
+#End If
+  m_bSystemChange = False
+  Err.Raise Err.Number, Err.Source, Err.Description
+  
+End Function
+
+#If SUPPORT_EXCEL97 Then
+Public Sub RunModal()
+#Else
+Friend Sub RunModal()
+#End If
+  Show
+End Sub
+
+'bExistingOnly: nur zeigen, falls geeigneter Connector-Bezug: R|fffd|ckgabe true
+#If SUPPORT_EXCEL97 Then
+Public Function InitFromSelection(Optional ByVal rSelected As Range, Optional ByVal bOverwriteExistingFormat As Boolean, Optional bExistingOnly As Boolean) As Boolean
+#Else
+Friend Function InitFromSelection(Optional ByVal rSelected As Range, Optional ByVal bOverwriteExistingFormat As Boolean, Optional bExistingOnly As Boolean) As Boolean
+#End If
+  Dim nColumn As Long
+
+  If rSelected Is Nothing Then
+    Set rSelected = Selection
+  End If
+  Set rSelected = rSelected.Resize(ColumnSize:=1)
+  If Not rSelected Is Nothing Then
+    nColumn = rSelected.Column
+    If (rSelected.count = 1 Or rSelected.count = 65536) And Not bExistingOnly Then
+      'Bereich wird direkt gesucht, falls einzelne Zelle oder gesamte Spalte gew|fffd|hlt
+      If rSelected.count = 1 Then
+        'einzelne Zelle markiert den oberen Beginn
+        Set rSelected = rSelected.Resize(RowSize:=65536 - rSelected.Row + 1)
+      End If
+      Set rSelected = Intersect(rSelected.Worksheet.UsedRange.EntireRow, rSelected)
+    End If
+  End If
+  Set m_rSelection = rSelected
+  
+  InitFromSelection = Init(bOverwriteExistingFormat, bExistingOnly)
+
+End Function
+
+Private Sub cbSaveAs_Click()
+  On Error GoTo ErrHandler
+  
+  SaveAs
+  
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+Private Sub SaveAs()
+  Dim strName As String
+  Dim oInternalApplication As Object
+  Dim nCount As Long
+  Dim vntTemp As Variant
+  Dim i As Long
+  Set oInternalApplication = ConnectorApplication.InternalApplication
+  Do
+    strName = InputBox("Geben Sie den Namen f|fffd|r die neue Formatdefinition an", "Speichern unter", Default:=strName)
+    If strName = "" Then
+      Exit Do
+    Else
+      oInternalApplication.Profile_Read "Format.Count", vntTemp
+      If IsNumeric(vntTemp) Then
+        nCount = CLng(vntTemp)
+      End If
+      
+      For i = 0 To nCount - 1
+        oInternalApplication.Profile_Read "Format." & i & ".Name", vntTemp
+        If StrComp(vntTemp, strName, vbTextCompare) = 0 Then
+          MsgBox "Name " & strName & " existiert bereits"
+          GoTo ContinueDo
+        End If
+      Next i
+      oInternalApplication.Profile_Write "Format." & nCount & ".Name", strName
+      oInternalApplication.Profile_Write "Format." & nCount & ".Type", "LineDiff"
+      oInternalApplication.Profile_Write "Format." & nCount & ".Members", CreateFormula(bSaveParams:=True)
+      oInternalApplication.Profile_Write "Format.Count", nCount + 1
+      Exit Do
+    End If
+ContinueDo:
+  Loop
+End Sub
+
+
+Private Function Split_VBA5(ByVal Expression As String, ByRef Delimiter As Variant) As Variant
+  Dim arSplit() As String
+  Dim i As Long
+  Dim nCount As Long
+  Dim strTemp As String
+  Do
+    ReDim Preserve arSplit(nCount)
+    i = InStr(1, Expression, Delimiter)
+    If i > 0 Then
+      arSplit(nCount) = Left$(Expression, i - 1)
+      Expression = Mid$(Expression, i + 1)
+      nCount = nCount + 1
+    Else
+      arSplit(nCount) = Expression
+      nCount = nCount + 1
+      Exit Do
+    End If
+  Loop
+  If nCount > 0 Then
+    Split_VBA5 = arSplit
+  End If
+
+End Function
+
+
+'anhand von Parameterliste laden (Format laut Profil)
+#If SUPPORT_EXCEL97 Then
+Public Sub LoadFromStringParameters(ByVal strMembers As String)
+#Else
+Friend Sub LoadFromStringParameters(ByVal strMembers As String)
+#End If
+  Dim i As Long
+  Dim bOk As Boolean
+  Dim nCountRows As Long
+  Dim nCountSrcColumns As Long
+  Dim bEqualPrev As Boolean
+#If SUPPORT_EXCEL97 Then
+  Dim arMembers As Variant
+#Else
+  Dim arMembers() As String
+#End If
+  Dim strActMember As String
+  
+  m_bSystemChange = True
+  lstLineDiff.Clear
+  
+#If SUPPORT_EXCEL97 Then
+  arMembers = Split_VBA5(strMembers, ",")
+#Else
+  arMembers = Split(strMembers, ",")
+#End If
+  
+  bEqualPrev = True 'Default
+  For i = 0 To UBound(arMembers)
+    bOk = False
+    strActMember = Trim$(arMembers(i))
+    'nach einer Spaltenangabe (oder bei erstem Aufruf): |fffd|berpr|fffd|fen, ob Bedingungsoperator
+    If strActMember = "=" Then
+      bOk = True
+      bEqualPrev = True
+    ElseIf strActMember = "<>" Then
+      bEqualPrev = False
+      bOk = True
+    End If
+    If Not bOk Then
+      'noch nicht bearbeitet, dann muss Spaltendef vorliegen
+      lstLineDiff.AddItem strActMember
+      If bEqualPrev Then
+        lstLineDiff.List(nCountSrcColumns, 1) = cmbCompareOption.List(1)
+      Else
+        lstLineDiff.List(nCountSrcColumns, 1) = cmbCompareOption.List(2)
+      End If
+      nCountSrcColumns = nCountSrcColumns + 1
+
+      bEqualPrev = True 'Default Equal
+      
+    End If
+  Next i
+  m_bSystemChange = False
+End Sub
+
+#If SUPPORT_EXCEL97 Then
+Public Sub LoadFromParameters(ByVal nCountColumns As Long, nColumn() As Long, bEqualCondition() As Boolean)
+#Else
+Friend Sub LoadFromParameters(ByVal nCountColumns As Long, nColumn() As Long, bEqualCondition() As Boolean)
+#End If
+  Dim i As Long
+  lstLineDiff.Clear
+
+  For i = 0 To nCountColumns - 1
+
+    lstLineDiff.AddItem ColumnNameFromIndex(nColumn(i))
+    If bEqualCondition(i) Then
+      lstLineDiff.List(i, 1) = cmbCompareOption.List(1)
+    Else
+      lstLineDiff.List(i, 1) = cmbCompareOption.List(2)
+    End If
+  Next i
+End Sub
+
+Private Sub cmbColumn_Click()
+  On Error GoTo ErrHandler
+  OnCmbClick 0
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+Private Sub cmbCompareOption_Click()
+
+  On Error GoTo ErrHandler
+  OnCmbClick 1
+  
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+
+Private Sub lstLineDiff_Change()
+  On Error GoTo ErrHandler
+
+  RefreshQuickEditFromSelection
+  
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+Private Sub lstLineDiff_Click()
+  On Error GoTo ErrHandler
+
+  If m_bSystemChange Then Exit Sub
+  RefreshQuickEditFromSelection
+  
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+'liefert die Formel im A1 Stil (bSaveParams = false)
+'ansonsten Parameter zum Speichern in Profil
+#If SUPPORT_EXCEL97 Then
+Public Function CreateFormula(ByVal bSaveParams As Boolean) As String
+#Else
+Friend Function CreateFormula(ByVal bSaveParams As Boolean) As String
+#End If
+  Dim nIndex As Long
+  Dim strFormula As String
+  Dim strColumn As String
+  Dim strRange As String
+  Dim nStartRow As Long
+  Dim nEndRow As Long
+  
+  
+  If Not bSaveParams Then
+    If Not m_rSelection Is Nothing Then
+      nStartRow = m_rSelection.Row
+      nEndRow = nStartRow + m_rSelection.count - 1
+    End If
+    strFormula = "=IDLLineDiff("
+  End If
+  
+  For nIndex = 0 To lstLineDiff.ListCount - 1
+    If nIndex > 0 Then
+      strFormula = strFormula & ","
+    End If
+    strColumn = lstLineDiff.List(nIndex, 0)
+    If lstLineDiff.List(nIndex, 1) = ConnectorApplication.InternalApplication.LocText_FindByID(418) Then 'Werte Ungleich
+      If bSaveParams Then
+        strFormula = strFormula & "<>,"
+      Else
+        strFormula = strFormula & """<>"","
+      End If
+    End If
+    If bSaveParams Then
+      strRange = strColumn
+    ElseIf nStartRow > 0 Then
+      'mit Bezug:
+      'genaue Angabe des Eingabereichs, damit automatische Aktualisierung gew|fffd|hrleistet
+      strRange = strColumn & nStartRow & ":" & strColumn & nEndRow
+    Else
+      strRange = """" & strColumn & """" 'kein Bezug: nur Konstante f|fffd|r Spalte
+    End If
+    strFormula = strFormula & strRange
+  Next nIndex
+  If Not bSaveParams Then
+    strFormula = strFormula & ")"
+  End If
+  CreateFormula = strFormula
+End Function
+
+Private Sub OnCmbClick(ByVal nIndex As Long)
+  Dim nIndexListAct As Long
+  Dim bNew As Boolean
+  Dim strName As String
+  Dim i As Long
+  
+  If m_bSystemChange Then Exit Sub
+  
+  m_bSystemChange = True
+  nIndexListAct = lstLineDiff.ListIndex
+  
+  strName = cmbColumn
+  
+  bNew = True
+  
+  For i = 0 To lstLineDiff.ListCount - 1
+    If strName < lstLineDiff.List(i, 0) Then
+      Exit For
+    ElseIf strName = lstLineDiff.List(i, 0) Then
+      bNew = False
+      Exit For
+    End If
+  Next i
+  If i = lstLineDiff.ListCount Then
+    bNew = True
+  End If
+  nIndexListAct = i
+  If nIndex = 0 Then
+    'Klick auf Column
+    If bNew Then
+      If cmbCompareOption.ListIndex <= 0 Then
+        cmbCompareOption.ListIndex = 1
+      End If
+    Else
+      cmbCompareOption = lstLineDiff.List(nIndexListAct, 1)
+    End If
+  ElseIf nIndex = 1 Then
+    'Klick auf Bedingung
+    If Not bNew Then
+      If cmbCompareOption.ListIndex <= 0 Then
+        'Eintrag l|fffd|schen
+        lstLineDiff.RemoveItem i
+        If nIndexListAct >= lstLineDiff.ListCount Then
+          nIndexListAct = lstLineDiff.ListCount - 1
+        End If
+        If nIndexListAct >= 0 Then
+          lstLineDiff.ListIndex = nIndexListAct
+          cmbColumn = lstLineDiff.List(nIndexListAct, 0)
+          cmbCompareOption = lstLineDiff.List(nIndexListAct, 1)
+        End If
+      Else
+        'Option |fffd|ndern
+        lstLineDiff.List(nIndexListAct, 1) = cmbCompareOption
+      End If
+    End If
+  End If
+  
+  If bNew Then
+    lstLineDiff.AddItem cmbColumn, nIndexListAct
+    lstLineDiff.List(nIndexListAct, 1) = cmbCompareOption
+  End If
+  
+  If nIndexListAct >= 0 And nIndexListAct < lstLineDiff.ListCount Then
+    lstLineDiff.Selected(nIndexListAct) = True
+  End If
+  
+  
+  
+  
+  m_bSystemChange = False
+  
+End Sub
+
+Private Function ColumnNameFromIndex(ByVal nColumn As Long) As String
+  Dim strTemp As String
+  Dim iFound As Long
+  strTemp = Mid$(Application.ConvertFormula("C" & nColumn, xlR1C1, xlA1), 2) 'ohne $
+  iFound = InStr(1, strTemp, ":")
+  ColumnNameFromIndex = Left$(strTemp, iFound - 1)
+End Function
+
+
+Private Sub RefEdit1_Change()
+  Dim r As Range
+  On Error GoTo ErrHandler
+  
+  If m_bSystemChange Then Exit Sub
+  
+  On Error Resume Next
+  Set r = Range(RefEdit1.Text)
+  cmbColumn.Text = ColumnNameFromIndex(r.Column)
+  RefEdit1.Text = ""
+
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+Private Sub RefreshQuickEditFromSelection()
+  Dim nIndex As Long
+  Dim vnt As Variant
+  If m_bSystemChange Then Exit Sub
+  m_bSystemChange = True
+
+  nIndex = lstLineDiff.ListIndex
+  vnt = lstLineDiff.List(nIndex, 0)
+  If vnt <> "" Then
+    cmbColumn.Text = vnt
+  End If
+  vnt = lstLineDiff.List(nIndex, 1)
+  If vnt <> "" Then
+    cmbCompareOption.Text = vnt
+  End If
+  m_bSystemChange = False
+  
+End Sub
+
+Attribute VB_Name = "modConnectorCall"
+Option Explicit
+
+Option Private Module
+
+#If Win64 Then
+Private Declare PtrSafe Function GetCurrentProcessId Lib "Kernel32" () As Long
+Private Declare PtrSafe Function GetVersion Lib "Kernel32" () As Long
+#Else
+Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
+Private Declare Function GetVersion Lib "kernel32" () As Long
+#End If
+
+Public g_frmLineDiffInit As frmLineDiff 'Variable, damit IDLLineDiff, dass nur Testlauf
+
+
+
+
+'Ersatz f|fffd|r getMenuText, um in Addin besseren Zugriff auf Texte zu haben
+'ausserdem sind Addin-Funktionen  besser f|fffd|r |fffd|bernahme in Dll geeignet
+Public Function SearchTextViaCNT(FormName As String, ControlName As String, Typ As String) As String
+  SearchTextViaCNT = IDLDecentralEntry.IntApplication.SearchTextViaCNT(FormName, ControlName, Typ)
+End Function
+
+
+
+'Einstiegspunkt f|fffd|r Ereignisse der Connector-Anwendung
+Public Sub KVM200_MenuOnClick()
+  IDLDecentralEntry.IntApplication.MenuOnClick
+End Sub
+
+'f|fffd|r externen Start, um Eingabe mit diesem Prozess zu verbinden
+Public Function GetProcessID() As Long
+  GetProcessID = GetCurrentProcessId
+End Function
+
+
+
+
+Public Function IDLLineDiff(ParamArray ColumnReferences() As Variant) As Variant
+  Dim i As Long
+  Dim j As Long
+  Dim bOk As Boolean
+  Dim bOK_Prev As Boolean
+  Dim vntStatus As Variant
+  Dim nCountRows As Long
+  Dim r As Range
+  
+  Dim rCaller As Range
+  Dim nCountSrcColumns As Long
+  Dim bEqualCondition() As Boolean
+  Dim nColumn() As Long 'Index der Bedingungs-Spalte
+  Dim bEqualPrev As Boolean
+  Dim nStartRow As Long
+  Dim nEndRow As Long
+  Dim vntArOneRow(1 To 1, 1 To 1) As Variant 'f|fffd|r Ausgabe einer Zeil
+
+  
+  Dim vntColumnCompareResults() As Variant 'Arrays der Spaltenvergleiche (bei einer Zeile enthalten die Elemente kein Array / Excel !)
+  On Error GoTo ErrHandler
+  If IsMissing(ColumnReferences) Then
+    IDLLineDiff = True 'OK, wenn keine Bedingung
+    Exit Function
+  End If
+  
+  If g_frmLineDiffInit Is Nothing Then
+    Set rCaller = Application.Caller
+  End If
+  
+  bEqualPrev = True 'Default
+  ReDim nColumn(UBound(ColumnReferences))
+  ReDim bEqualCondition(UBound(ColumnReferences))
+  For i = 0 To UBound(ColumnReferences)
+    bOk = False
+    If IsError(ColumnReferences(i)) Then
+      IDLLineDiff = ColumnReferences(i)
+      GoTo Cleanup
+    End If
+    'nach einer Spaltenangabe (oder bei erstem Aufruf): |fffd|berpr|fffd|fen, ob Bedingungsoperator
+    If VarType(ColumnReferences(i)) = vbString Then
+      vntStatus = ColumnReferences(i)
+      If vntStatus = "=" Then
+        bOk = True
+        bEqualPrev = True
+      ElseIf vntStatus = "<>" Then
+        bEqualPrev = False
+        bOk = True
+      End If
+    End If
+    If Not bOk Then
+      'noch nicht bearbeitet, dann muss Spaltendef vorliegen
+      j = -1
+      If IsObject(ColumnReferences(i)) Then
+        If TypeOf ColumnReferences(i) Is Range Then
+          Set r = ColumnReferences(i)
+          j = r.Column
+        End If
+      ElseIf VarType(ColumnReferences(i)) = vbString Then
+        If rCaller Is Nothing Then
+          j = Range(ColumnReferences(i) & "1").Column
+        Else
+          j = rCaller.Worksheet.Range(ColumnReferences(i) & "1").Column
+        End If
+      End If
+      If j >= 0 Then
+        nColumn(nCountSrcColumns) = j
+        bEqualCondition(nCountSrcColumns) = bEqualPrev
+        nCountSrcColumns = nCountSrcColumns + 1
+      End If
+      bEqualPrev = True 'Default Equal
+      
+    End If
+  Next i
+  
+  If Not g_frmLineDiffInit Is Nothing Then
+    'Testlauf
+    If nCountSrcColumns > 0 Then
+      g_frmLineDiffInit.LoadFromParameters nCountSrcColumns, nColumn, bEqualCondition
+    End If
+    Exit Function
+  End If
+  
+  nCountRows = rCaller.Rows.count 'Annahme, dass Spaltenvektor
+  nStartRow = rCaller.Row
+  
+  nEndRow = nStartRow + nCountRows - 1
+  
+  If nCountSrcColumns > 0 Then
+    ReDim vntColumnCompareResults(nCountSrcColumns - 1)
+    For i = 0 To nCountSrcColumns - 1
+      j = nColumn(i)
+      vntColumnCompareResults(i) = Evaluate(Application.ConvertFormula("R" & nStartRow & "C" & j & ":R" & nEndRow & "C" & j & IIf(bEqualCondition(i), "=", "<>") & "R" & nStartRow + 1 & "C" & j & ":R" & nEndRow + 1 & "C" & j, xlR1C1, xlA1))
+    Next i
+  End If
+
+  
+  ReDim vntStatus(1 To nCountRows + 1, 1 To 1) As Variant
+  
+  'zuerst Spaltendefinitionen einlesen
+  
+  For j = 1 To nCountRows
+    bOk = True
+    For i = 0 To nCountSrcColumns - 1
+      If nCountRows = 1 Then
+        If Not vntColumnCompareResults(i) Then '(bei einer Zeile enthalten die Elemente kein Array / Excel !)
+          bOk = False
+          Exit For
+        End If
+      ElseIf Not vntColumnCompareResults(i)(j, 1) Then
+        bOk = False
+        Exit For
+      End If
+    Next i
+    If bOK_Prev Then
+      vntStatus(j, 1) = True
+    Else
+      vntStatus(j, 1) = bOk
+    End If
+    bOK_Prev = bOk
+  Next j
+  If nCountRows > 0 Then
+    'spezielles Handling f|fffd|r letzte Zeile
+    vntStatus(nCountRows + 1, 1) = vntStatus(nCountRows, 1)
+  End If
+  
+  IDLLineDiff = vntStatus
+  
+Cleanup:
+  Exit Function
+  
+ErrHandler:
+#If SUPPORT_EXCEL97 = 0 Then
+  Debug.Assert False
+#End If
+  If rCaller Is Nothing Then
+    Err.Raise Err.Number, Err.Source, Err.Description
+    Resume
+  Else
+    IDLLineDiff = Err.Description & "Error - " & Hex(Err.Number)
+  End If
+  
+End Function
+
+Public Sub Formats_Dialog()
+  Dim frm As New frmFormats
+  On Error GoTo ErrHandler
+  Application.EnableCancelKey = xlDisabled
+  
+  frm.Init
+  frm.RunModal
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+Public Sub LineDiff_Insert(Optional ByVal rSelected As Range)
+  Dim frm As New frmLineDiff
+  On Error GoTo ErrHandler
+  Application.EnableCancelKey = xlDisabled
+  
+  frm.InitFromSelection
+  frm.RunModal
+  
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  
+End Sub
+
+'vorl|fffd|ufiger Einsprunkspunkt f|fffd|r ShowReferenceDialog f|fffd|r LineDiff
+'gibt true zur|fffd|ck, falls Dialog gezeigt wurd
+Public Function LineDiff_Properties_Test(Optional ByVal rSelected As Range) As Boolean
+  Dim frm As New frmLineDiff
+  On Error GoTo ErrHandler
+  Application.EnableCancelKey = xlDisabled
+  
+  LineDiff_Properties_Test = frm.InitFromSelection(bExistingOnly:=True)
+  If LineDiff_Properties_Test Then
+    frm.RunModal
+  End If
+  Exit Function
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+End Function
+
+'Makro: Dateien aus Anhang (*.txt) extrahieren (ab Connector 2.2.0)
+Public Sub ExtractArchive()
+  Dim strSrcFile As String
+  Dim vntTextFile As String
+  Dim strCabFile As String
+  Dim bTextFile As Boolean
+'  Dim oCabFile As Object
+  Dim strDestPath As String
+  On Error GoTo ErrHandler
+  
+  Dim strPath As String
+  Dim hWndParent As Long
+  Dim strTitle As String
+  Dim strPathResult As String
+     
+  vntTextFile = Application.GetOpenFilename("Text Anh|fffd|nge/Archive (*.txt),*.txt,Archiv Dateien (*.cab),*.cab,Alle Dateien (*.*),*.*", Title:="Archiv Datei ausw|fffd|hlen")
+  If vntTextFile = CStr(False) Then Exit Sub 'Abbruch
+  
+  strTitle = "Ziel Ordner f|fffd|r Dateien"
+  
+  ConnectorApplication.InternalApplication.BrowseForFileFolder hWndParent, strTitle, strPath, strPathResult
+  If strPathResult = "" Then Exit Sub 'Abbruch
+  
+  strDestPath = strPathResult
+  If Right$(strDestPath, 1) <> "\" Then strDestPath = strDestPath & "\"
+    
+  bTextFile = (StrComp(Right$(vntTextFile, 4), ".txt", vbTextCompare) = 0)
+  
+  If bTextFile Then
+  
+    strCabFile = strDestPath & "Temp.cab"
+    
+    ReadFileAsText vntTextFile, strCabFile
+    
+  Else
+    strCabFile = vntTextFile
+  End If
+    
+  ConnectorApplication.InternalApplication.ExtractCabinet strCabFile, strDestPath
+  
+  MsgBox "Datei(en) wurde nach: '" & strDestPath & "'" & " entpackt"
+  
+Cleanup:
+  If bTextFile Then
+    Kill strCabFile
+  End If
+  Exit Sub
+  
+ErrHandler:
+  MsgBox Err.Description, vbCritical
+  On Error Resume Next
+  GoTo Cleanup
+End Sub
+
+
+Private Sub ReadFileAsText(ByVal strSrcFile As String, ByVal strDestFile As String)
+  Dim lSrc As Long, lDest As Long
+  Dim strLine As String
+  Dim b As Byte
+  Dim i As Long
+  Dim strTemp As String
+  Dim nError As Long, strError As String, strSource As String
+  
+  On Error GoTo ErrHandler
+  
+  lDest = FreeFile
+  Open strDestFile For Binary Access Write As lDest
+  
+  lSrc = FreeFile
+  Open strSrcFile For Input As lSrc
+  Do While Not EOF(lSrc)
+    Line Input #lSrc, strLine
+    For i = 1 To Len(strLine) Step 2
+      
+      b = CByte("&H" & Mid(strLine, i, 2))
+      Put #lDest, , b
+    Next i
+  Loop
+  
+Cleanup:
+  
+  Close #lDest
+  Close #lSrc
+  If nError <> 0 Then
+    On Error GoTo 0
+    Kill strDestFile
+    Err.Raise nError, strSource, strError
+  End If
+  Exit Sub
+ErrHandler:
+  nError = Err.Number
+  strError = Err.Description
+  strSource = Err.Source
+  On Error Resume Next
+  GoTo Cleanup
+  Resume
+End Sub
+
+
+
+'Aufruf aus tempor|fffd|rer Connector-Leiste: "Entpacken von Leiste" / Start Connector
+Public Sub RunConnector_MenuClick()
+  IDLDecentralEntry.IntApplication.RunConnector_MenuClick
+End Sub
+
+
+
+' InQuest injected base64 decoded content
+' *'"je
+' J'!z
+
+INQUEST-PP=macro

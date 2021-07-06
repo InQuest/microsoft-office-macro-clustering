@@ -1,0 +1,4749 @@
+Attribute VB_Name = "HMRCApi"
+Option Explicit
+Private Function ProcessTokenResponse(token)
+    Dim json As Object
+    ProcessTokenResponse = False
+    
+    Set json = JsonConverter.ParseJson(token)
+    
+    With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+        .Range(g_strRangeACCTOKEN) = json("access_token") ' accesstoken
+        If Len(.Range(g_strRangeACCTOKEN)) > 0 Then
+            ProcessTokenResponse = True
+        End If
+        .Range("HMRCAccessTokenTimestamp") = Time & " " & Date
+    
+        If .Range("HMRCRefreshToken") <> json("refresh_token") And Len(json("refresh_token")) > 0 Then ' refreshtoken
+            .Range("HMRCRefreshToken") = json("refresh_token") ' refreshtoken
+            .Range("HMRCRefreshTokenTimestamp") = Time & " " & Date
+        End If
+        
+    End With
+    
+    Set json = Nothing
+End Function
+Public Function RenewToken()
+    Dim oauthTokenUrl As String
+    Dim clientId As String
+    Dim clientSecret As String
+    Dim refreshToken  As String
+    Dim xmlhttp As MSXML2.XMLHTTP60
+    Dim data As String
+    
+    Set xmlhttp = New MSXML2.XMLHTTP60
+
+    With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+        oauthTokenUrl = .Range("TokenUri")
+        clientId = .Range("ClientId")
+        clientSecret = .Range("ClientSecret")
+        refreshToken = .Range("HMRCRefreshToken")
+    End With
+
+    data = "client_secret=" & clientSecret & _
+                "&client_id=" & clientId & _
+                "&grant_type=refresh_token&refresh_token=" & refreshToken
+
+    With xmlhttp
+        .Open "POST", oauthTokenUrl, False
+        .setRequestHeader "content-type", "application/x-www-form-urlencoded"
+        .send data
+        RenewToken = ProcessTokenResponse(.responseText)
+    End With
+
+End Function
+Private Function ConvertCodeToTokens(code As String)
+    Dim oauthTokenUrl As String
+    Dim clientId As String
+    Dim clientSecret As String
+    Dim redirectUri As String
+    Dim xmlhttp         As MSXML2.XMLHTTP60
+    Dim accesstoken  As String
+    Dim data As String
+        
+    Set xmlhttp = New MSXML2.XMLHTTP60
+
+    With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+        .Range("HMRCCode") = code
+        .Range("HMRCCodeTimestamp") = Time & " " & Date
+        
+        oauthTokenUrl = .Range("TokenUri")
+        clientId = .Range("ClientId")
+        clientSecret = .Range("ClientSecret")
+        redirectUri = .Range("RedirectURI")
+    End With
+
+    data = "client_secret=" & clientSecret & _
+                "&client_id=" & clientId & _
+                "&grant_type=authorization_code&redirect_uri=" & redirectUri & _
+                "&code=" & code
+            
+    With xmlhttp
+        .Open "POST", oauthTokenUrl, False
+        .setRequestHeader "content-type", "application/x-www-form-urlencoded"
+        .send data
+        ConvertCodeToTokens = ProcessTokenResponse(.responseText)
+    End With
+End Function
+
+Private Sub ProcessObligations(data As String)
+    Dim json As Object
+    Dim dataRow As Integer
+    Dim dataCol As Integer
+    Dim value As Object
+    
+    ThisWorkbook.Worksheets(g_strSHEET_DATA).Range("GetObligationsResponse") = data
+    
+    Set json = JsonConverter.ParseJson(data)
+   
+    dataCol = 3
+    With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+        dataRow = .Range("ObligationsResponseData").row
+        For Each value In json("obligations")
+            .Cells(dataRow, dataCol) = value("start")
+            .Cells(dataRow, dataCol + 1) = value("end")
+            .Cells(dataRow, dataCol + 2) = value("due")
+            If value("status") = "O" Then
+                .Cells(dataRow, dataCol + 3) = "Open"
+            Else
+                .Cells(dataRow, dataCol + 3) = "Fulfilled"
+            End If
+            .Cells(dataRow, dataCol + 4) = value("received")
+            .Cells(dataRow, dataCol + 5) = value("periodKey")
+            dataRow = dataRow + 1
+        Next value
+        .Cells(dataRow, dataCol) = ""
+        .Cells(dataRow, dataCol + 1) = ""
+        .Cells(dataRow, dataCol + 2) = ""
+        .Cells(dataRow, dataCol + 3) = ""
+        .Cells(dataRow, dataCol + 4) = ""
+        .Cells(dataRow, dataCol + 5) = ""
+    End With
+    
+    Set json = Nothing
+    
+End Sub
+
+
+Private Function GetObligationsAPI(strFrom As String, strTo As String, strStatus As String)
+    On Error GoTo Err_Handler
+    Dim vatreg As String
+    Dim xmlhttp         As MSXML2.XMLHTTP60
+    Dim strURL          As String
+    Dim accesstoken  As String
+    
+    vatreg = ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range("VATNumber")
+    With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+        accesstoken = .Range(g_strRangeACCTOKEN)
+        strURL = .Range("VATUri") + vatreg + "/obligations?" _
+                        + "from=" + strFrom + "&to=" + strTo + "&status=" + strStatus
+    End With
+    Set xmlhttp = New MSXML2.XMLHTTP60
+    With xmlhttp
+        .Open "GET", strURL, False
+        .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+        .setRequestHeader "Content-Type", "application/json"
+        .setRequestHeader "Authorization", "Bearer " & accesstoken
+        getHMRCHeader xmlhttp
+        .send
+        ThisWorkbook.Worksheets(g_strSHEET_DATA).Range("GetObligationsStatus") = .status
+        If .status = 200 Then
+            ProcessObligations .responseText
+            GetObligationsAPI = True
+        ElseIf .status = 500 Then
+            Err.Raise .status, "GetObligationsAPI", .statusText
+        Else
+            GetObligationsAPI = False
+        End If
+    End With
+
+Exit Function
+Err_Handler:
+    errorHandler Err.Number, Err.Description
+End Function
+
+Public Function HMRCAPI_GetObligations(strFrom As String, strTo As String, strStatus As String)
+    Dim status As Boolean
+    
+    status = GetObligationsAPI(strFrom, strTo, strStatus)
+    If status = False Then
+        ' get new token
+        RenewToken
+        status = GetObligationsAPI(strFrom, strTo, strStatus)
+    End If
+    HMRCAPI_GetObligations = status
+End Function
+Public Function HMRCAPI_Login()
+
+Dim strCode As String
+Dim frmHMRC As frmLogIn
+
+On Error GoTo Err_Handler 'cheese
+
+ThisWorkbook.Worksheets(g_strSHEET_DATA).Range("HMRCCode") = ""
+
+Set frmHMRC = New frmLogIn
+With frmHMRC
+    .Show vbModal
+End With
+
+strCode = Trim(ThisWorkbook.Worksheets(g_strSHEET_DATA).Range("HMRCCode"))
+If Len(strCode) > 0 Then
+    HMRCAPI_Login = ConvertCodeToTokens(strCode)
+    g_blnLoginStatus = HMRCAPI_Login
+Else
+    'user cancel
+    g_blnLoginStatus = False
+End If
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+Private Function ProcessReturnResponse(status, response, Id) As clsVATSubmissionResponse
+    Dim json As Object
+    Dim ProcessingDate
+    Dim result
+    
+    With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+        .Range("SubmitVATReturnResponse") = response
+        .Range("SubmitVATReturnStatus") = status
+        .Range("SubmitVATReturnId") = Id
+    End With
+    
+    Set json = JsonConverter.ParseJson(response)
+    ProcessingDate = Split(json("processingDate"), "T")(0)
+    Set result = New clsVATSubmissionResponse
+    result.ProcessingDate = ProcessingDate
+    result.PaymentIndicator = json("paymentIndicator")
+    result.FormBundleNumber = json("formBundleNumber")
+    result.ChargeRefNumber = json("chargeRefNumber")
+    result.Id = Id
+    result.status = True
+    Set ProcessReturnResponse = result
+End Function
+Public Function SubmitVATReturnAPI(periodsheet, resultsSheet) As clsVATSubmissionResponse
+    'On Error GoTo Err_Handler
+    Dim data As String
+    Dim strURL As String
+    Dim vatreg As String
+    Dim xmlhttp As MSXML2.XMLHTTP60
+    Dim accesstoken  As String
+    
+    Set xmlhttp = New MSXML2.XMLHTTP60
+    
+    vatreg = ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN)
+    With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+        accesstoken = .Range(g_strRangeACCTOKEN)
+        strURL = .Range("VATUri") + vatreg + "/returns"
+    End With
+    
+    With periodsheet
+        data = "{" & _
+                """periodKey"": """ & .Range("periodKey") & """," & _
+                """vatDueSales"": " & .Range("VATSales") & "," & _
+                """vatDueAcquisitions"": " & .Range("VATAcquisitions") & "," & _
+                """totalVatDue"": " & .Range("TotalVAT") & "," & _
+                """vatReclaimedCurrPeriod"": " & .Range("VATReclaimed") & "," & _
+                """netVatDue"": " & .Range("NetVAT") & "," & _
+                """totalValueSalesExVAT"": " & .Range("SalesExVAT") & "," & _
+                """totalValuePurchasesExVAT"": " & .Range("PurchasesExVAT") & "," & _
+                """totalValueGoodsSuppliedExVAT"": " & .Range("SuppliesExVAT") & "," & _
+                """totalAcquisitionsExVAT"": " & .Range("AcquisitionsExVAT") & "," & _
+                """finalised"": " & LCase(.Range("Finalised")) & _
+                "}"
+    End With
+            
+    With xmlhttp
+        .Open "POST", strURL, False
+        .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+        .setRequestHeader "Content-Type", "application/json"
+        .setRequestHeader "Authorization", "Bearer " & accesstoken
+        .send data
+        If .status = 200 Or .status = 201 Then
+            Set SubmitVATReturnAPI = ProcessReturnResponse(.status, .responseText, .getResponseHeader("X-CorrelationId"))
+            With resultsSheet
+                .Range("processingDate") = SubmitVATReturnAPI.ProcessingDate
+                .Range("paymentIndicator") = "'" & SubmitVATReturnAPI.PaymentIndicator
+                .Range("formBundleNumber") = "'" & SubmitVATReturnAPI.FormBundleNumber
+                .Range("chargeRefNumber") = "'" & SubmitVATReturnAPI.ChargeRefNumber
+                .Range("Id") = SubmitVATReturnAPI.Id
+            End With
+        ElseIf .status = 403 And InStr(.responseText, "DUPLICATE_SUBMISSION") <> 0 Then
+            Err.Raise .status, "SubmitVATReturnAPI", "The VAT return was already submitted for the given period."
+        ElseIf .status = 403 Then
+            Err.Raise .status, "SubmitVATReturnAPI", .statusText
+        ElseIf .status = 500 Then
+            Err.Raise .status, "SubmitVATReturnAPI", .statusText
+        Else
+            Set SubmitVATReturnAPI = New clsVATSubmissionResponse
+            SubmitVATReturnAPI.status = False
+        End If
+    End With
+Exit Function
+Err_Handler:
+    errorHandler Err.Number, Err.Description
+End Function
+
+Public Function HMRCAPI_SubmitVATReturn(periodsheet, resultsheet) As clsVATSubmissionResponse
+
+    Dim result As clsVATSubmissionResponse
+     
+    Set result = SubmitVATReturnAPI(periodsheet, resultsheet)
+    If result.status = 401 Then
+        ' get new token
+        RenewToken
+        Set result = SubmitVATReturnAPI(periodsheet, resultsheet)
+    End If
+    Set HMRCAPI_SubmitVATReturn = result
+    
+End Function
+
+
+Public Sub CreateTestOrganisationUser()
+
+Dim data As String
+Dim strURL As String
+Dim vatreg As String
+Dim xmlhttp As MSXML2.XMLHTTP60
+Dim servertoken  As String
+Dim json As Object
+    
+On Error GoTo Err_Handler
+
+    
+strURL = ThisWorkbook.Worksheets(g_strSHEET_DATA).Range("CreateUserAPI")
+Set xmlhttp = New MSXML2.XMLHTTP60
+
+            ' """corporation-tax""," & _
+            ' """paye-for-employers""," & _
+            ' """national-insurance""," & _
+            ' """self-assessment""," & _
+            ' """mtd-income-tax""," & _
+            ' """mtd-vat""," & _
+            ' """lisa""," & _
+            ' """secure-electronic-transfer""," & _
+            ' """relief-at-source""," & _
+            ' """customs-services""," & _
+            '
+data = "{" & _
+        """serviceNames"": [" & _
+            """submit-vat-returns""," & _
+             """corporation-tax""," & _
+             """paye-for-employers""," & _
+             """national-insurance""," & _
+             """self-assessment""," & _
+             """mtd-income-tax""," & _
+             """mtd-vat""," & _
+             """lisa""," & _
+             """secure-electronic-transfer""," & _
+             """relief-at-source""," & _
+             """customs-services""" & _
+          "]" & _
+        "}"
+
+servertoken = "bc8cdb5e3de3daef6cd1a430ffd22514"
+With xmlhttp
+    .Open "POST", strURL, False
+    .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+    .setRequestHeader "Content-Type", "application/json"
+    .setRequestHeader "Authorization", "Bearer " & servertoken
+    .send data
+    If .status = 201 Then
+        Set json = JsonConverter.ParseJson(.responseText)
+        
+        With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+            .Select
+            .Range("HMRCUserId") = "'" & json("userId")
+            .Range("HMRCPassword") = "'" & json("password")
+            .Range(g_strRangeVRN) = "'" & json("vrn")
+            .Range("emailAddress") = "'" & json("emailAddress")
+            .Range("userFullName") = "'" & json("userFullName")
+            .Range("companyName") = "'" & json("organisationDetails")("name")
+            .Range("line1") = "'" & json("organisationDetails")("address")("line1")
+            .Range("line2") = "'" & json("organisationDetails")("address")("line2")
+            .Range("postcode") = "'" & json("organisationDetails")("address")("postcode")
+        End With
+        Set json = Nothing
+    Else
+        MsgBox .responseText
+    End If
+End With
+
+Exit Sub
+Err_Handler:
+    
+    errorHandler Err.Number, Err.Description
+End Sub
+
+
+Attribute VB_Name = "JsonConverter"
+''
+' VBA-JSON v2.2.3
+' (c) Tim Hall - https://github.com/VBA-tools/VBA-JSON
+'
+' JSON Converter for VBA
+'
+' Errors:
+' 10001 - JSON parse error
+'
+' @class JsonConverter
+' @author tim.hall.engr@gmail.com
+' @license MIT (http://www.opensource.org/licenses/mit-license.php)
+'' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+'
+' Based originally on vba-json (with extensive changes)
+' BSD license included below
+'
+' JSONLib, http://code.google.com/p/vba-json/
+'
+' Copyright (c) 2013, Ryo Yokoyama
+' All rights reserved.
+'
+' Redistribution and use in source and binary forms, with or without
+' modification, are permitted provided that the following conditions are met:
+'     * Redistributions of source code must retain the above copyright
+'       notice, this list of conditions and the following disclaimer.
+'     * Redistributions in binary form must reproduce the above copyright
+'       notice, this list of conditions and the following disclaimer in the
+'       documentation and/or other materials provided with the distribution.
+'     * Neither the name of the <organization> nor the
+'       names of its contributors may be used to endorse or promote products
+'       derived from this software without specific prior written permission.
+'
+' THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+' ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+' WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+' DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+' DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+' (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+' LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+' ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+' (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+' SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+Option Explicit
+
+' === VBA-UTC Headers
+#If Mac Then
+
+#If VBA7 Then
+
+' 64-bit Mac (2016)
+Private Declare PtrSafe Function utc_popen Lib "libc.dylib" Alias "popen" _
+    (ByVal utc_Command As String, ByVal utc_Mode As String) As LongPtr
+Private Declare PtrSafe Function utc_pclose Lib "libc.dylib" Alias "pclose" _
+    (ByVal utc_File As Long) As LongPtr
+Private Declare PtrSafe Function utc_fread Lib "libc.dylib" Alias "fread" _
+    (ByVal utc_Buffer As String, ByVal utc_Size As LongPtr, ByVal utc_Number As LongPtr, ByVal utc_File As LongPtr) As LongPtr
+Private Declare PtrSafe Function utc_feof Lib "libc.dylib" Alias "feof" _
+    (ByVal utc_File As LongPtr) As LongPtr
+
+#Else
+
+' 32-bit Mac
+Private Declare Function utc_popen Lib "libc.dylib" Alias "popen" _
+    (ByVal utc_Command As String, ByVal utc_Mode As String) As Long
+Private Declare Function utc_pclose Lib "libc.dylib" Alias "pclose" _
+    (ByVal utc_File As Long) As Long
+Private Declare Function utc_fread Lib "libc.dylib" Alias "fread" _
+    (ByVal utc_Buffer As String, ByVal utc_Size As Long, ByVal utc_Number As Long, ByVal utc_File As Long) As Long
+Private Declare Function utc_feof Lib "libc.dylib" Alias "feof" _
+    (ByVal utc_File As Long) As Long
+
+#End If
+
+#ElseIf VBA7 Then
+
+' http://msdn.microsoft.com/en-us/library/windows/desktop/ms724421.aspx
+' http://msdn.microsoft.com/en-us/library/windows/desktop/ms724949.aspx
+' http://msdn.microsoft.com/en-us/library/windows/desktop/ms725485.aspx
+Private Declare PtrSafe Function utc_GetTimeZoneInformation Lib "kernel32" Alias "GetTimeZoneInformation" _
+    (utc_lpTimeZoneInformation As utc_TIME_ZONE_INFORMATION) As Long
+Private Declare PtrSafe Function utc_SystemTimeToTzSpecificLocalTime Lib "kernel32" Alias "SystemTimeToTzSpecificLocalTime" _
+    (utc_lpTimeZoneInformation As utc_TIME_ZONE_INFORMATION, utc_lpUniversalTime As utc_SYSTEMTIME, utc_lpLocalTime As utc_SYSTEMTIME) As Long
+Private Declare PtrSafe Function utc_TzSpecificLocalTimeToSystemTime Lib "kernel32" Alias "TzSpecificLocalTimeToSystemTime" _
+    (utc_lpTimeZoneInformation As utc_TIME_ZONE_INFORMATION, utc_lpLocalTime As utc_SYSTEMTIME, utc_lpUniversalTime As utc_SYSTEMTIME) As Long
+
+#Else
+
+Private Declare Function utc_GetTimeZoneInformation Lib "kernel32" Alias "GetTimeZoneInformation" _
+    (utc_lpTimeZoneInformation As utc_TIME_ZONE_INFORMATION) As Long
+Private Declare Function utc_SystemTimeToTzSpecificLocalTime Lib "kernel32" Alias "SystemTimeToTzSpecificLocalTime" _
+    (utc_lpTimeZoneInformation As utc_TIME_ZONE_INFORMATION, utc_lpUniversalTime As utc_SYSTEMTIME, utc_lpLocalTime As utc_SYSTEMTIME) As Long
+Private Declare Function utc_TzSpecificLocalTimeToSystemTime Lib "kernel32" Alias "TzSpecificLocalTimeToSystemTime" _
+    (utc_lpTimeZoneInformation As utc_TIME_ZONE_INFORMATION, utc_lpLocalTime As utc_SYSTEMTIME, utc_lpUniversalTime As utc_SYSTEMTIME) As Long
+
+#End If
+
+#If Mac Then
+
+#If VBA7 Then
+Private Type utc_ShellResult
+    utc_Output As String
+    utc_ExitCode As LongPtr
+End Type
+
+#Else
+
+Private Type utc_ShellResult
+    utc_Output As String
+    utc_ExitCode As Long
+End Type
+
+#End If
+
+#Else
+
+Private Type utc_SYSTEMTIME
+    utc_wYear As Integer
+    utc_wMonth As Integer
+    utc_wDayOfWeek As Integer
+    utc_wDay As Integer
+    utc_wHour As Integer
+    utc_wMinute As Integer
+    utc_wSecond As Integer
+    utc_wMilliseconds As Integer
+End Type
+
+Private Type utc_TIME_ZONE_INFORMATION
+    utc_Bias As Long
+    utc_StandardName(0 To 31) As Integer
+    utc_StandardDate As utc_SYSTEMTIME
+    utc_StandardBias As Long
+    utc_DaylightName(0 To 31) As Integer
+    utc_DaylightDate As utc_SYSTEMTIME
+    utc_DaylightBias As Long
+End Type
+
+#End If
+' === End VBA-UTC
+
+#If Mac Then
+#ElseIf VBA7 Then
+
+Private Declare PtrSafe Sub json_CopyMemory Lib "kernel32" Alias "RtlMoveMemory" _
+    (json_MemoryDestination As Any, json_MemorySource As Any, ByVal json_ByteLength As Long)
+
+#Else
+
+Private Declare Sub json_CopyMemory Lib "kernel32" Alias "RtlMoveMemory" _
+    (json_MemoryDestination As Any, json_MemorySource As Any, ByVal json_ByteLength As Long)
+
+#End If
+
+Private Type json_Options
+    ' VBA only stores 15 significant digits, so any numbers larger than that are truncated
+    ' This can lead to issues when BIGINT's are used (e.g. for Ids or Credit Cards), as they will be invalid above 15 digits
+    ' See: http://support.microsoft.com/kb/269370
+    '
+    ' By default, VBA-JSON will use String for numbers longer than 15 characters that contain only digits
+    ' to override set `JsonConverter.JsonOptions.UseDoubleForLargeNumbers = True`
+    UseDoubleForLargeNumbers As Boolean
+
+    ' The JSON standard requires object keys to be quoted (" or '), use this option to allow unquoted keys
+    AllowUnquotedKeys As Boolean
+
+    ' The solidus (/) is not required to be escaped, use this option to escape them as \/ in ConvertToJson
+    EscapeSolidus As Boolean
+End Type
+Public JsonOptions As json_Options
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Convert JSON string to object (Dictionary/Collection)
+'
+' @method ParseJson
+' @param {String} json_String
+' @return {Object} (Dictionary or Collection)
+' @throws 10001 - JSON parse error
+''
+Public Function ParseJson(ByVal JsonString As String) As Object
+    Dim json_Index As Long
+    json_Index = 1
+
+    ' Remove vbCr, vbLf, and vbTab from json_String
+    JsonString = VBA.Replace(VBA.Replace(VBA.Replace(JsonString, VBA.vbCr, ""), VBA.vbLf, ""), VBA.vbTab, "")
+
+    json_SkipSpaces JsonString, json_Index
+    Select Case VBA.Mid$(JsonString, json_Index, 1)
+    Case "{"
+        Set ParseJson = json_ParseObject(JsonString, json_Index)
+    Case "["
+        Set ParseJson = json_ParseArray(JsonString, json_Index)
+    Case Else
+        ' Error: Invalid JSON string
+        Err.Raise 10001, "JSONConverter", json_ParseErrorMessage(JsonString, json_Index, "Expecting '{' or '['")
+    End Select
+End Function
+
+''
+' Convert object (Dictionary/Collection/Array) to JSON
+'
+' @method ConvertToJson
+' @param {Variant} JsonValue (Dictionary, Collection, or Array)
+' @param {Integer|String} Whitespace "Pretty" print json with given number of spaces per indentation (Integer) or given string
+' @return {String}
+''
+Public Function ConvertToJson(ByVal JsonValue As Variant, Optional ByVal Whitespace As Variant, Optional ByVal json_CurrentIndentation As Long = 0) As String
+    Dim json_buffer As String
+    Dim json_BufferPosition As Long
+    Dim json_BufferLength As Long
+    Dim json_Index As Long
+    Dim json_LBound As Long
+    Dim json_UBound As Long
+    Dim json_IsFirstItem As Boolean
+    Dim json_Index2D As Long
+    Dim json_LBound2D As Long
+    Dim json_UBound2D As Long
+    Dim json_IsFirstItem2D As Boolean
+    Dim json_Key As Variant
+    Dim json_Value As Variant
+    Dim json_DateStr As String
+    Dim json_Converted As String
+    Dim json_SkipItem As Boolean
+    Dim json_PrettyPrint As Boolean
+    Dim json_Indentation As String
+    Dim json_InnerIndentation As String
+
+    json_LBound = -1
+    json_UBound = -1
+    json_IsFirstItem = True
+    json_LBound2D = -1
+    json_UBound2D = -1
+    json_IsFirstItem2D = True
+    json_PrettyPrint = Not IsMissing(Whitespace)
+
+    Select Case VBA.VarType(JsonValue)
+    Case VBA.vbNull
+        ConvertToJson = "null"
+    Case VBA.vbDate
+        ' Date
+        json_DateStr = ConvertToIso(VBA.CDate(JsonValue))
+
+        ConvertToJson = """" & json_DateStr & """"
+    Case VBA.vbString
+        ' String (or large number encoded as string)
+        If Not JsonOptions.UseDoubleForLargeNumbers And json_StringIsLargeNumber(JsonValue) Then
+            ConvertToJson = JsonValue
+        Else
+            ConvertToJson = """" & json_Encode(JsonValue) & """"
+        End If
+    Case VBA.vbBoolean
+        If JsonValue Then
+            ConvertToJson = "true"
+        Else
+            ConvertToJson = "false"
+        End If
+    Case VBA.vbArray To VBA.vbArray + VBA.vbByte
+        If json_PrettyPrint Then
+            If VBA.VarType(Whitespace) = VBA.vbString Then
+                json_Indentation = VBA.String$(json_CurrentIndentation + 1, Whitespace)
+                json_InnerIndentation = VBA.String$(json_CurrentIndentation + 2, Whitespace)
+            Else
+                json_Indentation = VBA.Space$((json_CurrentIndentation + 1) * Whitespace)
+                json_InnerIndentation = VBA.Space$((json_CurrentIndentation + 2) * Whitespace)
+            End If
+        End If
+
+        ' Array
+        json_BufferAppend json_buffer, "[", json_BufferPosition, json_BufferLength
+
+        On Error Resume Next
+
+        json_LBound = LBound(JsonValue, 1)
+        json_UBound = UBound(JsonValue, 1)
+        json_LBound2D = LBound(JsonValue, 2)
+        json_UBound2D = UBound(JsonValue, 2)
+
+        If json_LBound >= 0 And json_UBound >= 0 Then
+            For json_Index = json_LBound To json_UBound
+                If json_IsFirstItem Then
+                    json_IsFirstItem = False
+                Else
+                    ' Append comma to previous line
+                    json_BufferAppend json_buffer, ",", json_BufferPosition, json_BufferLength
+                End If
+
+                If json_LBound2D >= 0 And json_UBound2D >= 0 Then
+                    ' 2D Array
+                    If json_PrettyPrint Then
+                        json_BufferAppend json_buffer, vbNewLine, json_BufferPosition, json_BufferLength
+                    End If
+                    json_BufferAppend json_buffer, json_Indentation & "[", json_BufferPosition, json_BufferLength
+
+                    For json_Index2D = json_LBound2D To json_UBound2D
+                        If json_IsFirstItem2D Then
+                            json_IsFirstItem2D = False
+                        Else
+                            json_BufferAppend json_buffer, ",", json_BufferPosition, json_BufferLength
+                        End If
+
+                        json_Converted = ConvertToJson(JsonValue(json_Index, json_Index2D), Whitespace, json_CurrentIndentation + 2)
+
+                        ' For Arrays/Collections, undefined (Empty/Nothing) is treated as null
+                        If json_Converted = "" Then
+                            ' (nest to only check if converted = "")
+                            If json_IsUndefined(JsonValue(json_Index, json_Index2D)) Then
+                                json_Converted = "null"
+                            End If
+                        End If
+
+                        If json_PrettyPrint Then
+                            json_Converted = vbNewLine & json_InnerIndentation & json_Converted
+                        End If
+
+                        json_BufferAppend json_buffer, json_Converted, json_BufferPosition, json_BufferLength
+                    Next json_Index2D
+
+                    If json_PrettyPrint Then
+                        json_BufferAppend json_buffer, vbNewLine, json_BufferPosition, json_BufferLength
+                    End If
+
+                    json_BufferAppend json_buffer, json_Indentation & "]", json_BufferPosition, json_BufferLength
+                    json_IsFirstItem2D = True
+                Else
+                    ' 1D Array
+                    json_Converted = ConvertToJson(JsonValue(json_Index), Whitespace, json_CurrentIndentation + 1)
+
+                    ' For Arrays/Collections, undefined (Empty/Nothing) is treated as null
+                    If json_Converted = "" Then
+                        ' (nest to only check if converted = "")
+                        If json_IsUndefined(JsonValue(json_Index)) Then
+                            json_Converted = "null"
+                        End If
+                    End If
+
+                    If json_PrettyPrint Then
+                        json_Converted = vbNewLine & json_Indentation & json_Converted
+                    End If
+
+                    json_BufferAppend json_buffer, json_Converted, json_BufferPosition, json_BufferLength
+                End If
+            Next json_Index
+        End If
+
+        On Error GoTo 0
+
+        If json_PrettyPrint Then
+            json_BufferAppend json_buffer, vbNewLine, json_BufferPosition, json_BufferLength
+
+            If VBA.VarType(Whitespace) = VBA.vbString Then
+                json_Indentation = VBA.String$(json_CurrentIndentation, Whitespace)
+            Else
+                json_Indentation = VBA.Space$(json_CurrentIndentation * Whitespace)
+            End If
+        End If
+
+        json_BufferAppend json_buffer, json_Indentation & "]", json_BufferPosition, json_BufferLength
+
+        ConvertToJson = json_BufferToString(json_buffer, json_BufferPosition, json_BufferLength)
+
+    ' Dictionary or Collection
+    Case VBA.vbObject
+        If json_PrettyPrint Then
+            If VBA.VarType(Whitespace) = VBA.vbString Then
+                json_Indentation = VBA.String$(json_CurrentIndentation + 1, Whitespace)
+            Else
+                json_Indentation = VBA.Space$((json_CurrentIndentation + 1) * Whitespace)
+            End If
+        End If
+
+        ' Dictionary
+        If VBA.TypeName(JsonValue) = "Dictionary" Then
+            json_BufferAppend json_buffer, "{", json_BufferPosition, json_BufferLength
+            For Each json_Key In JsonValue.Keys
+                ' For Objects, undefined (Empty/Nothing) is not added to object
+                json_Converted = ConvertToJson(JsonValue(json_Key), Whitespace, json_CurrentIndentation + 1)
+                If json_Converted = "" Then
+                    json_SkipItem = json_IsUndefined(JsonValue(json_Key))
+                Else
+                    json_SkipItem = False
+                End If
+
+                If Not json_SkipItem Then
+                    If json_IsFirstItem Then
+                        json_IsFirstItem = False
+                    Else
+                        json_BufferAppend json_buffer, ",", json_BufferPosition, json_BufferLength
+                    End If
+
+                    If json_PrettyPrint Then
+                        json_Converted = vbNewLine & json_Indentation & """" & json_Key & """: " & json_Converted
+                    Else
+                        json_Converted = """" & json_Key & """:" & json_Converted
+                    End If
+
+                    json_BufferAppend json_buffer, json_Converted, json_BufferPosition, json_BufferLength
+                End If
+            Next json_Key
+
+            If json_PrettyPrint Then
+                json_BufferAppend json_buffer, vbNewLine, json_BufferPosition, json_BufferLength
+
+                If VBA.VarType(Whitespace) = VBA.vbString Then
+                    json_Indentation = VBA.String$(json_CurrentIndentation, Whitespace)
+                Else
+                    json_Indentation = VBA.Space$(json_CurrentIndentation * Whitespace)
+                End If
+            End If
+
+            json_BufferAppend json_buffer, json_Indentation & "}", json_BufferPosition, json_BufferLength
+
+        ' Collection
+        ElseIf VBA.TypeName(JsonValue) = "Collection" Then
+            json_BufferAppend json_buffer, "[", json_BufferPosition, json_BufferLength
+            For Each json_Value In JsonValue
+                If json_IsFirstItem Then
+                    json_IsFirstItem = False
+                Else
+                    json_BufferAppend json_buffer, ",", json_BufferPosition, json_BufferLength
+                End If
+
+                json_Converted = ConvertToJson(json_Value, Whitespace, json_CurrentIndentation + 1)
+
+                ' For Arrays/Collections, undefined (Empty/Nothing) is treated as null
+                If json_Converted = "" Then
+                    ' (nest to only check if converted = "")
+                    If json_IsUndefined(json_Value) Then
+                        json_Converted = "null"
+                    End If
+                End If
+
+                If json_PrettyPrint Then
+                    json_Converted = vbNewLine & json_Indentation & json_Converted
+                End If
+
+                json_BufferAppend json_buffer, json_Converted, json_BufferPosition, json_BufferLength
+            Next json_Value
+
+            If json_PrettyPrint Then
+                json_BufferAppend json_buffer, vbNewLine, json_BufferPosition, json_BufferLength
+
+                If VBA.VarType(Whitespace) = VBA.vbString Then
+                    json_Indentation = VBA.String$(json_CurrentIndentation, Whitespace)
+                Else
+                    json_Indentation = VBA.Space$(json_CurrentIndentation * Whitespace)
+                End If
+            End If
+
+            json_BufferAppend json_buffer, json_Indentation & "]", json_BufferPosition, json_BufferLength
+        End If
+
+        ConvertToJson = json_BufferToString(json_buffer, json_BufferPosition, json_BufferLength)
+    Case VBA.vbInteger, VBA.vbLong, VBA.vbSingle, VBA.vbDouble, VBA.vbCurrency, VBA.vbDecimal
+        ' Number (use decimals for numbers)
+        ConvertToJson = VBA.Replace(JsonValue, ",", ".")
+    Case Else
+        ' vbEmpty, vbError, vbDataObject, vbByte, vbUserDefinedType
+        ' Use VBA's built-in to-string
+        On Error Resume Next
+        ConvertToJson = JsonValue
+        On Error GoTo 0
+    End Select
+End Function
+
+' ============================================= '
+' Private Functions
+' ============================================= '
+
+Private Function json_ParseObject(json_String As String, ByRef json_Index As Long) As Dictionary
+    Dim json_Key As String
+    Dim json_NextChar As String
+
+    Set json_ParseObject = New Dictionary
+    json_SkipSpaces json_String, json_Index
+    If VBA.Mid$(json_String, json_Index, 1) <> "{" Then
+        Err.Raise 10001, "JSONConverter", json_ParseErrorMessage(json_String, json_Index, "Expecting '{'")
+    Else
+        json_Index = json_Index + 1
+
+        Do
+            json_SkipSpaces json_String, json_Index
+            If VBA.Mid$(json_String, json_Index, 1) = "}" Then
+                json_Index = json_Index + 1
+                Exit Function
+            ElseIf VBA.Mid$(json_String, json_Index, 1) = "," Then
+                json_Index = json_Index + 1
+                json_SkipSpaces json_String, json_Index
+            End If
+
+            json_Key = json_ParseKey(json_String, json_Index)
+            json_NextChar = json_Peek(json_String, json_Index)
+            If json_NextChar = "[" Or json_NextChar = "{" Then
+                Set json_ParseObject.Item(json_Key) = json_ParseValue(json_String, json_Index)
+            Else
+                json_ParseObject.Item(json_Key) = json_ParseValue(json_String, json_Index)
+            End If
+        Loop
+    End If
+End Function
+
+Private Function json_ParseArray(json_String As String, ByRef json_Index As Long) As Collection
+    Set json_ParseArray = New Collection
+
+    json_SkipSpaces json_String, json_Index
+    If VBA.Mid$(json_String, json_Index, 1) <> "[" Then
+        Err.Raise 10001, "JSONConverter", json_ParseErrorMessage(json_String, json_Index, "Expecting '['")
+    Else
+        json_Index = json_Index + 1
+
+        Do
+            json_SkipSpaces json_String, json_Index
+            If VBA.Mid$(json_String, json_Index, 1) = "]" Then
+                json_Index = json_Index + 1
+                Exit Function
+            ElseIf VBA.Mid$(json_String, json_Index, 1) = "," Then
+                json_Index = json_Index + 1
+                json_SkipSpaces json_String, json_Index
+            End If
+
+            json_ParseArray.Add json_ParseValue(json_String, json_Index)
+        Loop
+    End If
+End Function
+
+Private Function json_ParseValue(json_String As String, ByRef json_Index As Long) As Variant
+    json_SkipSpaces json_String, json_Index
+    Select Case VBA.Mid$(json_String, json_Index, 1)
+    Case "{"
+        Set json_ParseValue = json_ParseObject(json_String, json_Index)
+    Case "["
+        Set json_ParseValue = json_ParseArray(json_String, json_Index)
+    Case """", "'"
+        json_ParseValue = json_ParseString(json_String, json_Index)
+    Case Else
+        If VBA.Mid$(json_String, json_Index, 4) = "true" Then
+            json_ParseValue = True
+            json_Index = json_Index + 4
+        ElseIf VBA.Mid$(json_String, json_Index, 5) = "false" Then
+            json_ParseValue = False
+            json_Index = json_Index + 5
+        ElseIf VBA.Mid$(json_String, json_Index, 4) = "null" Then
+            json_ParseValue = Null
+            json_Index = json_Index + 4
+        ElseIf VBA.InStr("+-0123456789", VBA.Mid$(json_String, json_Index, 1)) Then
+            json_ParseValue = json_ParseNumber(json_String, json_Index)
+        Else
+            Err.Raise 10001, "JSONConverter", json_ParseErrorMessage(json_String, json_Index, "Expecting 'STRING', 'NUMBER', null, true, false, '{', or '['")
+        End If
+    End Select
+End Function
+
+Private Function json_ParseString(json_String As String, ByRef json_Index As Long) As String
+    Dim json_Quote As String
+    Dim json_Char As String
+    Dim json_Code As String
+    Dim json_buffer As String
+    Dim json_BufferPosition As Long
+    Dim json_BufferLength As Long
+
+    json_SkipSpaces json_String, json_Index
+
+    ' Store opening quote to look for matching closing quote
+    json_Quote = VBA.Mid$(json_String, json_Index, 1)
+    json_Index = json_Index + 1
+
+    Do While json_Index > 0 And json_Index <= Len(json_String)
+        json_Char = VBA.Mid$(json_String, json_Index, 1)
+
+        Select Case json_Char
+        Case "\"
+            ' Escaped string, \\, or \/
+            json_Index = json_Index + 1
+            json_Char = VBA.Mid$(json_String, json_Index, 1)
+
+            Select Case json_Char
+            Case """", "\", "/", "'"
+                json_BufferAppend json_buffer, json_Char, json_BufferPosition, json_BufferLength
+                json_Index = json_Index + 1
+            Case "b"
+                json_BufferAppend json_buffer, vbBack, json_BufferPosition, json_BufferLength
+                json_Index = json_Index + 1
+            Case "f"
+                json_BufferAppend json_buffer, vbFormFeed, json_BufferPosition, json_BufferLength
+                json_Index = json_Index + 1
+            Case "n"
+                json_BufferAppend json_buffer, vbCrLf, json_BufferPosition, json_BufferLength
+                json_Index = json_Index + 1
+            Case "r"
+                json_BufferAppend json_buffer, vbCr, json_BufferPosition, json_BufferLength
+                json_Index = json_Index + 1
+            Case "t"
+                json_BufferAppend json_buffer, vbTab, json_BufferPosition, json_BufferLength
+                json_Index = json_Index + 1
+            Case "u"
+                ' Unicode character escape (e.g. \u00a9 = Copyright)
+                json_Index = json_Index + 1
+                json_Code = VBA.Mid$(json_String, json_Index, 4)
+                json_BufferAppend json_buffer, VBA.ChrW(VBA.Val("&h" + json_Code)), json_BufferPosition, json_BufferLength
+                json_Index = json_Index + 4
+            End Select
+        Case json_Quote
+            json_ParseString = json_BufferToString(json_buffer, json_BufferPosition, json_BufferLength)
+            json_Index = json_Index + 1
+            Exit Function
+        Case Else
+            json_BufferAppend json_buffer, json_Char, json_BufferPosition, json_BufferLength
+            json_Index = json_Index + 1
+        End Select
+    Loop
+End Function
+
+Private Function json_ParseNumber(json_String As String, ByRef json_Index As Long) As Variant
+    Dim json_Char As String
+    Dim json_Value As String
+    Dim json_IsLargeNumber As Boolean
+
+    json_SkipSpaces json_String, json_Index
+
+    Do While json_Index > 0 And json_Index <= Len(json_String)
+        json_Char = VBA.Mid$(json_String, json_Index, 1)
+
+        If VBA.InStr("+-0123456789.eE", json_Char) Then
+            ' Unlikely to have massive number, so use simple append rather than buffer here
+            json_Value = json_Value & json_Char
+            json_Index = json_Index + 1
+        Else
+            ' Excel only stores 15 significant digits, so any numbers larger than that are truncated
+            ' This can lead to issues when BIGINT's are used (e.g. for Ids or Credit Cards), as they will be invalid above 15 digits
+            ' See: http://support.microsoft.com/kb/269370
+            '
+            ' Fix: Parse -> String, Convert -> String longer than 15/16 characters containing only numbers and decimal points -> Number
+            ' (decimal doesn't factor into significant digit count, so if present check for 15 digits + decimal = 16)
+            json_IsLargeNumber = IIf(InStr(json_Value, "."), Len(json_Value) >= 17, Len(json_Value) >= 16)
+            If Not JsonOptions.UseDoubleForLargeNumbers And json_IsLargeNumber Then
+                json_ParseNumber = json_Value
+            Else
+                ' VBA.Val does not use regional settings, so guard for comma is not needed
+                json_ParseNumber = VBA.Val(json_Value)
+            End If
+            Exit Function
+        End If
+    Loop
+End Function
+
+Private Function json_ParseKey(json_String As String, ByRef json_Index As Long) As String
+    ' Parse key with single or double quotes
+    If VBA.Mid$(json_String, json_Index, 1) = """" Or VBA.Mid$(json_String, json_Index, 1) = "'" Then
+        json_ParseKey = json_ParseString(json_String, json_Index)
+    ElseIf JsonOptions.AllowUnquotedKeys Then
+        Dim json_Char As String
+        Do While json_Index > 0 And json_Index <= Len(json_String)
+            json_Char = VBA.Mid$(json_String, json_Index, 1)
+            If (json_Char <> " ") And (json_Char <> ":") Then
+                json_ParseKey = json_ParseKey & json_Char
+                json_Index = json_Index + 1
+            Else
+                Exit Do
+            End If
+        Loop
+    Else
+        Err.Raise 10001, "JSONConverter", json_ParseErrorMessage(json_String, json_Index, "Expecting '""' or '''")
+    End If
+
+    ' Check for colon and skip if present or throw if not present
+    json_SkipSpaces json_String, json_Index
+    If VBA.Mid$(json_String, json_Index, 1) <> ":" Then
+        Err.Raise 10001, "JSONConverter", json_ParseErrorMessage(json_String, json_Index, "Expecting ':'")
+    Else
+        json_Index = json_Index + 1
+    End If
+End Function
+
+Private Function json_IsUndefined(ByVal json_Value As Variant) As Boolean
+    ' Empty / Nothing -> undefined
+    Select Case VBA.VarType(json_Value)
+    Case VBA.vbEmpty
+        json_IsUndefined = True
+    Case VBA.vbObject
+        Select Case VBA.TypeName(json_Value)
+        Case "Empty", "Nothing"
+            json_IsUndefined = True
+        End Select
+    End Select
+End Function
+
+Private Function json_Encode(ByVal json_Text As Variant) As String
+    ' Reference: http://www.ietf.org/rfc/rfc4627.txt
+    ' Escape: ", \, /, backspace, form feed, line feed, carriage return, tab
+    Dim json_Index As Long
+    Dim json_Char As String
+    Dim json_AscCode As Long
+    Dim json_buffer As String
+    Dim json_BufferPosition As Long
+    Dim json_BufferLength As Long
+
+    For json_Index = 1 To VBA.Len(json_Text)
+        json_Char = VBA.Mid$(json_Text, json_Index, 1)
+        json_AscCode = VBA.AscW(json_Char)
+
+        ' When AscW returns a negative number, it returns the twos complement form of that number.
+        ' To convert the twos complement notation into normal binary notation, add 0xFFF to the return result.
+        ' https://support.microsoft.com/en-us/kb/272138
+        If json_AscCode < 0 Then
+            json_AscCode = json_AscCode + 65536
+        End If
+
+        ' From spec, ", \, and control characters must be escaped (solidus is optional)
+
+        Select Case json_AscCode
+        Case 34
+            ' " -> 34 -> \"
+            json_Char = "\"""
+        Case 92
+            ' \ -> 92 -> \\
+            json_Char = "\\"
+        Case 47
+            ' / -> 47 -> \/ (optional)
+            If JsonOptions.EscapeSolidus Then
+                json_Char = "\/"
+            End If
+        Case 8
+            ' backspace -> 8 -> \b
+            json_Char = "\b"
+        Case 12
+            ' form feed -> 12 -> \f
+            json_Char = "\f"
+        Case 10
+            ' line feed -> 10 -> \n
+            json_Char = "\n"
+        Case 13
+            ' carriage return -> 13 -> \r
+            json_Char = "\r"
+        Case 9
+            ' tab -> 9 -> \t
+            json_Char = "\t"
+        Case 0 To 31, 127 To 65535
+            ' Non-ascii characters -> convert to 4-digit hex
+            json_Char = "\u" & VBA.Right$("0000" & VBA.Hex$(json_AscCode), 4)
+        End Select
+
+        json_BufferAppend json_buffer, json_Char, json_BufferPosition, json_BufferLength
+    Next json_Index
+
+    json_Encode = json_BufferToString(json_buffer, json_BufferPosition, json_BufferLength)
+End Function
+
+Private Function json_Peek(json_String As String, ByVal json_Index As Long, Optional json_NumberOfCharacters As Long = 1) As String
+    ' "Peek" at the next number of characters without incrementing json_Index (ByVal instead of ByRef)
+    json_SkipSpaces json_String, json_Index
+    json_Peek = VBA.Mid$(json_String, json_Index, json_NumberOfCharacters)
+End Function
+
+Private Sub json_SkipSpaces(json_String As String, ByRef json_Index As Long)
+    ' Increment index to skip over spaces
+    Do While json_Index > 0 And json_Index <= VBA.Len(json_String) And VBA.Mid$(json_String, json_Index, 1) = " "
+        json_Index = json_Index + 1
+    Loop
+End Sub
+
+Private Function json_StringIsLargeNumber(json_String As Variant) As Boolean
+    ' Check if the given string is considered a "large number"
+    ' (See json_ParseNumber)
+
+    Dim json_Length As Long
+    Dim json_CharIndex As Long
+    json_Length = VBA.Len(json_String)
+
+    ' Length with be at least 16 characters and assume will be less than 100 characters
+    If json_Length >= 16 And json_Length <= 100 Then
+        Dim json_CharCode As String
+        Dim json_Index As Long
+
+        json_StringIsLargeNumber = True
+
+        For json_CharIndex = 1 To json_Length
+            json_CharCode = VBA.Asc(VBA.Mid$(json_String, json_CharIndex, 1))
+            Select Case json_CharCode
+            ' Look for .|0-9|E|e
+            Case 46, 48 To 57, 69, 101
+                ' Continue through characters
+            Case Else
+                json_StringIsLargeNumber = False
+                Exit Function
+            End Select
+        Next json_CharIndex
+    End If
+End Function
+
+Private Function json_ParseErrorMessage(json_String As String, ByRef json_Index As Long, ErrorMessage As String)
+    ' Provide detailed parse error message, including details of where and what occurred
+    '
+    ' Example:
+    ' Error parsing JSON:
+    ' {"abcde":True}
+    '          ^
+    ' Expecting 'STRING', 'NUMBER', null, true, false, '{', or '['
+
+    Dim json_StartIndex As Long
+    Dim json_StopIndex As Long
+
+    ' Include 10 characters before and after error (if possible)
+    json_StartIndex = json_Index - 10
+    json_StopIndex = json_Index + 10
+    If json_StartIndex <= 0 Then
+        json_StartIndex = 1
+    End If
+    If json_StopIndex > VBA.Len(json_String) Then
+        json_StopIndex = VBA.Len(json_String)
+    End If
+
+    json_ParseErrorMessage = "Error parsing JSON:" & VBA.vbNewLine & _
+                             VBA.Mid$(json_String, json_StartIndex, json_StopIndex - json_StartIndex + 1) & VBA.vbNewLine & _
+                             VBA.Space$(json_Index - json_StartIndex) & "^" & VBA.vbNewLine & _
+                             ErrorMessage
+End Function
+
+Private Sub json_BufferAppend(ByRef json_buffer As String, _
+                              ByRef json_Append As Variant, _
+                              ByRef json_BufferPosition As Long, _
+                              ByRef json_BufferLength As Long)
+#If Mac Then
+    json_buffer = json_buffer & json_Append
+#Else
+    ' VBA can be slow to append strings due to allocating a new string for each append
+    ' Instead of using the traditional append, allocate a large empty string and then copy string at append position
+    '
+    ' Example:
+    ' Buffer: "abc  "
+    ' Append: "def"
+    ' Buffer Position: 3
+    ' Buffer Length: 5
+    '
+    ' Buffer position + Append length > Buffer length -> Append chunk of blank space to buffer
+    ' Buffer: "abc       "
+    ' Buffer Length: 10
+    '
+    ' Copy memory for "def" into buffer at position 3 (0-based)
+    ' Buffer: "abcdef    "
+    '
+    ' Approach based on cStringBuilder from vbAccelerator
+    ' http://www.vbaccelerator.com/home/VB/Code/Techniques/RunTime_Debug_Tracing/VB6_Tracer_Utility_zip_cStringBuilder_cls.asp
+
+    Dim json_AppendLength As Long
+    Dim json_LengthPlusPosition As Long
+
+    json_AppendLength = VBA.LenB(json_Append)
+    json_LengthPlusPosition = json_AppendLength + json_BufferPosition
+
+    If json_LengthPlusPosition > json_BufferLength Then
+        ' Appending would overflow buffer, add chunks until buffer is long enough
+        Dim json_TemporaryLength As Long
+
+        json_TemporaryLength = json_BufferLength
+        Do While json_TemporaryLength < json_LengthPlusPosition
+            ' Initially, initialize string with 255 characters,
+            ' then add large chunks (8192) after that
+            '
+            ' Size: # Characters x 2 bytes / character
+            If json_TemporaryLength = 0 Then
+                json_TemporaryLength = json_TemporaryLength + 510
+            Else
+                json_TemporaryLength = json_TemporaryLength + 16384
+            End If
+        Loop
+
+        json_buffer = json_buffer & VBA.Space$((json_TemporaryLength - json_BufferLength) \ 2)
+        json_BufferLength = json_TemporaryLength
+    End If
+
+    ' Copy memory from append to buffer at buffer position
+    json_CopyMemory ByVal json_UnsignedAdd(StrPtr(json_buffer), _
+                    json_BufferPosition), _
+                    ByVal StrPtr(json_Append), _
+                    json_AppendLength
+
+    json_BufferPosition = json_BufferPosition + json_AppendLength
+#End If
+End Sub
+
+Private Function json_BufferToString(ByRef json_buffer As String, ByVal json_BufferPosition As Long, ByVal json_BufferLength As Long) As String
+#If Mac Then
+    json_BufferToString = json_buffer
+#Else
+    If json_BufferPosition > 0 Then
+        json_BufferToString = VBA.Left$(json_buffer, json_BufferPosition \ 2)
+    End If
+#End If
+End Function
+
+#If VBA7 Then
+Private Function json_UnsignedAdd(json_Start As LongPtr, json_Increment As Long) As LongPtr
+#Else
+Private Function json_UnsignedAdd(json_Start As Long, json_Increment As Long) As Long
+#End If
+
+    If json_Start And &H80000000 Then
+        json_UnsignedAdd = json_Start + json_Increment
+    ElseIf (json_Start Or &H80000000) < -json_Increment Then
+        json_UnsignedAdd = json_Start + json_Increment
+    Else
+        json_UnsignedAdd = (json_Start + &H80000000) + (json_Increment + &H80000000)
+    End If
+End Function
+
+''
+' VBA-UTC v1.0.3
+' (c) Tim Hall - https://github.com/VBA-tools/VBA-UtcConverter
+'
+' UTC/ISO 8601 Converter for VBA
+'
+' Errors:
+' 10011 - UTC parsing error
+' 10012 - UTC conversion error
+' 10013 - ISO 8601 parsing error
+' 10014 - ISO 8601 conversion error
+'
+' @module UtcConverter
+' @author tim.hall.engr@gmail.com
+' @license MIT (http://www.opensource.org/licenses/mit-license.php)
+'' ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ '
+
+' (Declarations moved to top)
+
+' ============================================= '
+' Public Methods
+' ============================================= '
+
+''
+' Parse UTC date to local date
+'
+' @method ParseUtc
+' @param {Date} UtcDate
+' @return {Date} Local date
+' @throws 10011 - UTC parsing error
+''
+Public Function ParseUtc(utc_UtcDate As Date) As Date
+    On Error GoTo utc_ErrorHandling
+
+#If Mac Then
+    ParseUtc = utc_ConvertDate(utc_UtcDate)
+#Else
+    Dim utc_TimeZoneInfo As utc_TIME_ZONE_INFORMATION
+    Dim utc_LocalDate As utc_SYSTEMTIME
+
+    utc_GetTimeZoneInformation utc_TimeZoneInfo
+    utc_SystemTimeToTzSpecificLocalTime utc_TimeZoneInfo, utc_DateToSystemTime(utc_UtcDate), utc_LocalDate
+
+    ParseUtc = utc_SystemTimeToDate(utc_LocalDate)
+#End If
+
+    Exit Function
+
+utc_ErrorHandling:
+    Err.Raise 10011, "UtcConverter.ParseUtc", "UTC parsing error: " & Err.Number & " - " & Err.Description
+End Function
+
+''
+' Convert local date to UTC date
+'
+' @method ConvertToUrc
+' @param {Date} utc_LocalDate
+' @return {Date} UTC date
+' @throws 10012 - UTC conversion error
+''
+Public Function ConvertToUtc(utc_LocalDate As Date) As Date
+    On Error GoTo utc_ErrorHandling
+
+#If Mac Then
+    ConvertToUtc = utc_ConvertDate(utc_LocalDate, utc_ConvertToUtc:=True)
+#Else
+    Dim utc_TimeZoneInfo As utc_TIME_ZONE_INFORMATION
+    Dim utc_UtcDate As utc_SYSTEMTIME
+
+    utc_GetTimeZoneInformation utc_TimeZoneInfo
+    utc_TzSpecificLocalTimeToSystemTime utc_TimeZoneInfo, utc_DateToSystemTime(utc_LocalDate), utc_UtcDate
+
+    ConvertToUtc = utc_SystemTimeToDate(utc_UtcDate)
+#End If
+
+    Exit Function
+
+utc_ErrorHandling:
+    Err.Raise 10012, "UtcConverter.ConvertToUtc", "UTC conversion error: " & Err.Number & " - " & Err.Description
+End Function
+
+''
+' Parse ISO 8601 date string to local date
+'
+' @method ParseIso
+' @param {Date} utc_IsoString
+' @return {Date} Local date
+' @throws 10013 - ISO 8601 parsing error
+''
+Public Function ParseIso(utc_IsoString As String) As Date
+    On Error GoTo utc_ErrorHandling
+
+    Dim utc_Parts() As String
+    Dim utc_DateParts() As String
+    Dim utc_TimeParts() As String
+    Dim utc_OffsetIndex As Long
+    Dim utc_HasOffset As Boolean
+    Dim utc_NegativeOffset As Boolean
+    Dim utc_OffsetParts() As String
+    Dim utc_Offset As Date
+
+    utc_Parts = VBA.Split(utc_IsoString, "T")
+    utc_DateParts = VBA.Split(utc_Parts(0), "-")
+    ParseIso = VBA.DateSerial(VBA.CInt(utc_DateParts(0)), VBA.CInt(utc_DateParts(1)), VBA.CInt(utc_DateParts(2)))
+
+    If UBound(utc_Parts) > 0 Then
+        If VBA.InStr(utc_Parts(1), "Z") Then
+            utc_TimeParts = VBA.Split(VBA.Replace(utc_Parts(1), "Z", ""), ":")
+        Else
+            utc_OffsetIndex = VBA.InStr(1, utc_Parts(1), "+")
+            If utc_OffsetIndex = 0 Then
+                utc_NegativeOffset = True
+                utc_OffsetIndex = VBA.InStr(1, utc_Parts(1), "-")
+            End If
+
+            If utc_OffsetIndex > 0 Then
+                utc_HasOffset = True
+                utc_TimeParts = VBA.Split(VBA.Left$(utc_Parts(1), utc_OffsetIndex - 1), ":")
+                utc_OffsetParts = VBA.Split(VBA.Right$(utc_Parts(1), Len(utc_Parts(1)) - utc_OffsetIndex), ":")
+
+                Select Case UBound(utc_OffsetParts)
+                Case 0
+                    utc_Offset = TimeSerial(VBA.CInt(utc_OffsetParts(0)), 0, 0)
+                Case 1
+                    utc_Offset = TimeSerial(VBA.CInt(utc_OffsetParts(0)), VBA.CInt(utc_OffsetParts(1)), 0)
+                Case 2
+                    ' VBA.Val does not use regional settings, use for seconds to avoid decimal/comma issues
+                    utc_Offset = TimeSerial(VBA.CInt(utc_OffsetParts(0)), VBA.CInt(utc_OffsetParts(1)), Int(VBA.Val(utc_OffsetParts(2))))
+                End Select
+
+                If utc_NegativeOffset Then: utc_Offset = -utc_Offset
+            Else
+                utc_TimeParts = VBA.Split(utc_Parts(1), ":")
+            End If
+        End If
+
+        Select Case UBound(utc_TimeParts)
+        Case 0
+            ParseIso = ParseIso + VBA.TimeSerial(VBA.CInt(utc_TimeParts(0)), 0, 0)
+        Case 1
+            ParseIso = ParseIso + VBA.TimeSerial(VBA.CInt(utc_TimeParts(0)), VBA.CInt(utc_TimeParts(1)), 0)
+        Case 2
+            ' VBA.Val does not use regional settings, use for seconds to avoid decimal/comma issues
+            ParseIso = ParseIso + VBA.TimeSerial(VBA.CInt(utc_TimeParts(0)), VBA.CInt(utc_TimeParts(1)), Int(VBA.Val(utc_TimeParts(2))))
+        End Select
+
+        ParseIso = ParseUtc(ParseIso)
+
+        If utc_HasOffset Then
+            ParseIso = ParseIso + utc_Offset
+        End If
+    End If
+
+    Exit Function
+
+utc_ErrorHandling:
+    Err.Raise 10013, "UtcConverter.ParseIso", "ISO 8601 parsing error for " & utc_IsoString & ": " & Err.Number & " - " & Err.Description
+End Function
+
+''
+' Convert local date to ISO 8601 string
+'
+' @method ConvertToIso
+' @param {Date} utc_LocalDate
+' @return {Date} ISO 8601 string
+' @throws 10014 - ISO 8601 conversion error
+''
+Public Function ConvertToIso(utc_LocalDate As Date) As String
+    On Error GoTo utc_ErrorHandling
+
+    ConvertToIso = VBA.Format$(ConvertToUtc(utc_LocalDate), "yyyy-mm-ddTHH:mm:ss.000Z")
+
+    Exit Function
+
+utc_ErrorHandling:
+    Err.Raise 10014, "UtcConverter.ConvertToIso", "ISO 8601 conversion error: " & Err.Number & " - " & Err.Description
+End Function
+
+' ============================================= '
+' Private Functions
+' ============================================= '
+
+#If Mac Then
+
+Private Function utc_ConvertDate(utc_Value As Date, Optional utc_ConvertToUtc As Boolean = False) As Date
+    Dim utc_ShellCommand As String
+    Dim utc_Result As utc_ShellResult
+    Dim utc_Parts() As String
+    Dim utc_DateParts() As String
+    Dim utc_TimeParts() As String
+
+    If utc_ConvertToUtc Then
+        utc_ShellCommand = "date -ur `date -jf '%Y-%m-%d %H:%M:%S' " & _
+            "'" & VBA.Format$(utc_Value, "yyyy-mm-dd HH:mm:ss") & "' " & _
+            " +'%s'` +'%Y-%m-%d %H:%M:%S'"
+    Else
+        utc_ShellCommand = "date -jf '%Y-%m-%d %H:%M:%S %z' " & _
+            "'" & VBA.Format$(utc_Value, "yyyy-mm-dd HH:mm:ss") & " +0000' " & _
+            "+'%Y-%m-%d %H:%M:%S'"
+    End If
+
+    utc_Result = utc_ExecuteInShell(utc_ShellCommand)
+
+    If utc_Result.utc_Output = "" Then
+        Err.Raise 10015, "UtcConverter.utc_ConvertDate", "'date' command failed"
+    Else
+        utc_Parts = Split(utc_Result.utc_Output, " ")
+        utc_DateParts = Split(utc_Parts(0), "-")
+        utc_TimeParts = Split(utc_Parts(1), ":")
+
+        utc_ConvertDate = DateSerial(utc_DateParts(0), utc_DateParts(1), utc_DateParts(2)) + _
+            TimeSerial(utc_TimeParts(0), utc_TimeParts(1), utc_TimeParts(2))
+    End If
+End Function
+
+Private Function utc_ExecuteInShell(utc_ShellCommand As String) As utc_ShellResult
+#If VBA7 Then
+    Dim utc_File As LongPtr
+    Dim utc_Read As LongPtr
+#Else
+    Dim utc_File As Long
+    Dim utc_Read As Long
+#End If
+
+    Dim utc_Chunk As String
+
+    On Error GoTo utc_ErrorHandling
+    utc_File = utc_popen(utc_ShellCommand, "r")
+
+    If utc_File = 0 Then: Exit Function
+
+    Do While utc_feof(utc_File) = 0
+        utc_Chunk = VBA.Space$(50)
+        utc_Read = utc_fread(utc_Chunk, 1, Len(utc_Chunk) - 1, utc_File)
+        If utc_Read > 0 Then
+            utc_Chunk = VBA.Left$(utc_Chunk, utc_Read)
+            utc_ExecuteInShell.utc_Output = utc_ExecuteInShell.utc_Output & utc_Chunk
+        End If
+    Loop
+
+utc_ErrorHandling:
+    utc_ExecuteInShell.utc_ExitCode = utc_pclose(utc_File)
+End Function
+
+#Else
+
+Private Function utc_DateToSystemTime(utc_Value As Date) As utc_SYSTEMTIME
+    utc_DateToSystemTime.utc_wYear = VBA.Year(utc_Value)
+    utc_DateToSystemTime.utc_wMonth = VBA.Month(utc_Value)
+    utc_DateToSystemTime.utc_wDay = VBA.Day(utc_Value)
+    utc_DateToSystemTime.utc_wHour = VBA.Hour(utc_Value)
+    utc_DateToSystemTime.utc_wMinute = VBA.Minute(utc_Value)
+    utc_DateToSystemTime.utc_wSecond = VBA.Second(utc_Value)
+    utc_DateToSystemTime.utc_wMilliseconds = 0
+End Function
+
+Private Function utc_SystemTimeToDate(utc_Value As utc_SYSTEMTIME) As Date
+    utc_SystemTimeToDate = DateSerial(utc_Value.utc_wYear, utc_Value.utc_wMonth, utc_Value.utc_wDay) + _
+        TimeSerial(utc_Value.utc_wHour, utc_Value.utc_wMinute, utc_Value.utc_wSecond)
+End Function
+
+#End If
+
+
+Attribute VB_Name = "LoginResult"
+Attribute VB_Base = "0{C62B2667-33B2-4A24-82CA-00A8202EAAC3}{492CF88E-17CD-4CA8-ACCA-1F98C4FE8161}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Sub cmdOK_Click()
+
+On Error GoTo Err_Handler
+
+Unload Me
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet2"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet7"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Private Sub Workbook_Open()
+
+On Error GoTo Err_Handler
+
+'pop up MTD registration message
+MsgBox g_strMTDRegistration, vbOKOnly, g_strAPP_TITLE
+
+'allow programmatic access to worksheets
+ThisWorkbook.Worksheets(g_strSHEET_VAT100).Protect g_strPwD, UserInterfaceOnly:=True
+ThisWorkbook.Worksheets(g_strSHEET_DATA).Protect g_strPwD, UserInterfaceOnly:=True
+
+'clear the return sheet
+'clearReturnSheet
+With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+    g_strHMRC_API_URL = Trim(.Range("HMRC_API_URL").value)
+    g_strHMRC_API_SIGN = Trim(.Range("HMRC_API_SIGN").value)
+End With
+
+'update to not logged in
+ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strLoginStatus) = g_strNotLogged
+
+'format the return sheet
+formatReturnSheet
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+Attribute VB_Name = "clsVATSubmissionResponse"
+Attribute VB_Base = "0{FCFB3D2A-A0FA-1068-A738-08002B3371B5}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Public ProcessingDate   As String
+Public PaymentIndicator As String
+Public FormBundleNumber As String
+Public ChargeRefNumber  As String
+Public Id               As String
+Public status           As Boolean
+
+Attribute VB_Name = "frmAddTransactions"
+Attribute VB_Base = "0{9CCFD17C-39BB-4CA9-8437-05E9EA22290B}{999F51AE-379A-4089-BDEF-D0E38826355C}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+Private Const m_strCOUNTRIES As String = "[Select from List]:UK:EU:Other"
+
+Private Sub cmdOK_Click()
+
+On Error GoTo Err_Handler
+
+Unload Me
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub populateCountryCBO()
+
+Dim strCountry() As String
+Dim sngLoop    As Single
+Dim sngEnd     As Single
+
+On Error GoTo Err_Handler
+
+strCountry = Split(m_strCOUNTRIES, ":")
+sngEnd = UBound(strCountry)
+
+With cboCountry
+    For sngLoop = 0 To sngEnd
+        .AddItem strCountry(sngLoop)
+    Next sngLoop
+    .ListIndex = 0
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+
+Attribute VB_Name = "frmGetDates"
+Attribute VB_Base = "0{AE8DFAA2-B84E-4252-91E0-778C0B52D49D}{49E8911B-72E7-4C31-978B-00B4E8B7957A}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+
+
+Option Explicit
+
+Public blnGetDates  As Boolean
+Public strDateFrom  As String
+Public strDateTo    As String
+
+Private Const m_strErrorDate   As String = "Error with selected dates." & vbCrLf & _
+                                            vbCrLf & "Please check your From and To dates."
+
+Private Sub cmdCancel_Click()
+
+On Error GoTo Err_Handler
+
+blnGetDates = False
+Unload Me
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Private Sub cmdOK_Click()
+
+On Error GoTo Err_Handler
+
+If validateData = True Then
+    blnGetDates = True
+    strDateFrom = formatFileDate(txtDateFrom.value)
+    strDateTo = formatFileDate(txtDateTo.value)
+    Me.Hide
+End If
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Function validateData() As Boolean
+
+Dim dtmFrom As Date
+Dim dtmTo   As Date
+
+On Error GoTo Err_Handler
+
+validateData = True
+
+If IsDate(txtDateFrom.value) = False Then
+    validateData = False
+    MsgBox m_strErrorDate, vbCritical, g_strAPP_TITLE
+Else
+    dtmFrom = CDate(txtDateFrom.value)
+End If
+
+If validateData = True Then
+    If IsDate(txtDateTo.value) = False Then
+        validateData = False
+        MsgBox m_strErrorDate, vbCritical, g_strAPP_TITLE
+    Else
+        dtmTo = CDate(txtDateTo.value)
+    End If
+End If
+
+If validateData = True Then
+    dtmFrom = CDate(txtDateFrom.value)
+    dtmTo = CDate(txtDateTo.value)
+    'date to before date from
+    If dtmTo < dtmFrom Then
+        validateData = False
+        MsgBox m_strErrorDate, vbCritical, g_strAPP_TITLE
+    End If
+End If
+
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+
+End Function
+
+Private Function formatFileDate(ByVal dtmDate As Date) As String
+
+Dim strDate As String
+
+On Error GoTo Err_Handler
+
+strDate = Format(CStr(dtmDate), "yyyy-mm-dd")
+formatFileDate = strDate
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Attribute VB_Name = "frmGetReturnObligations"
+Attribute VB_Base = "0{4F88BDEA-7B9C-49BD-A77B-81FED8250FED}{82A389F5-3620-4A63-BB55-0D0466C212DE}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Option Explicit
+
+Public blnGetDates  As Boolean
+Public strDateFrom  As String
+Public strDateTo    As String
+
+Private Const m_strErrorDate   As String = "Error with selected dates." & vbCrLf & _
+                                            vbCrLf & "Please check your From and To dates."
+
+
+Private Sub cmdCancel_Click()
+
+On Error GoTo Err_Handler
+
+blnGetDates = False
+Unload Me
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Private Sub cmdOK_Click()
+
+On Error GoTo Err_Handler
+
+If Me.chkObligations.value = True Then
+    If validateData = True Then
+        blnGetDates = True
+        strDateFrom = formatFileDate(txtDateFrom.value)
+        strDateTo = formatFileDate(txtDateTo.value)
+        Me.Hide
+    End If
+Else
+    MsgBox g_strMESSAGE_OBLIGATIONS_CHECK, vbExclamation, g_strAPP_TITLE
+End If
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Function validateData() As Boolean
+
+Dim dtmFrom As Date
+Dim dtmTo   As Date
+
+On Error GoTo Err_Handler
+
+validateData = True
+
+If IsDate(txtDateFrom.value) = False Then
+    validateData = False
+    MsgBox m_strErrorDate, vbCritical, g_strAPP_TITLE
+Else
+    dtmFrom = CDate(txtDateFrom.value)
+End If
+
+If validateData = True Then
+    If IsDate(txtDateTo.value) = False Then
+        validateData = False
+        MsgBox m_strErrorDate, vbCritical, g_strAPP_TITLE
+    Else
+        dtmTo = CDate(txtDateTo.value)
+    End If
+End If
+
+If validateData = True Then
+    dtmFrom = CDate(txtDateFrom.value)
+    dtmTo = CDate(txtDateTo.value)
+    'date to before date from
+    If dtmTo < dtmFrom Then
+        validateData = False
+        MsgBox m_strErrorDate, vbCritical, g_strAPP_TITLE
+    End If
+End If
+
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+
+End Function
+
+Private Function formatFileDate(ByVal dtmDate As Date) As String
+
+Dim strDate As String
+
+On Error GoTo Err_Handler
+
+strDate = Format(CStr(dtmDate), "yyyy-mm-dd")
+formatFileDate = strDate
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+
+Attribute VB_Name = "frmLogIn"
+Attribute VB_Base = "0{496256EB-FEBE-40FF-8EE9-9C07A7696EC0}{6A379F02-FD01-4ABD-BF86-A578F2B97647}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+#If VBA7 Then
+
+  Private Declare PtrSafe Function ShellExecute _
+      Lib "shell32.dll" Alias "ShellExecuteA" ( _
+      ByVal hwnd As Long, _
+      ByVal Operation As String, _
+      ByVal Filename As String, _
+      Optional ByVal Parameters As String, _
+      Optional ByVal Directory As String, _
+      Optional ByVal WindowStyle As Long = vbMinimizedFocus _
+  ) As Long
+  
+#Else
+
+    Private Declare Function ShellExecute _
+      Lib "shell32.dll" Alias "ShellExecuteA" ( _
+      ByVal hwnd As Long, _
+      ByVal Operation As String, _
+      ByVal Filename As String, _
+      Optional ByVal Parameters As String, _
+      Optional ByVal Directory As String, _
+      Optional ByVal WindowStyle As Long = vbMinimizedFocus _
+      ) As Long
+    
+#End If
+
+Private Sub cmdCancel_Click()
+
+On Error GoTo Err_Handler
+
+Unload Me
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Sub cmdFinish_Click()
+
+On Error GoTo Err_Handler
+
+If Trim(txtCode.value) = "" Then
+    MsgBox g_strErrLoginCode, vbCritical, g_strAPP_TITLE
+Else
+    ThisWorkbook.Worksheets(g_strSHEET_DATA).Range("HMRCCode") = Trim(txtCode.value)
+    Unload Me
+End If
+Exit Sub
+    
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Sub cmdLogin_Click()
+
+Dim lSuccess        As Long
+Dim clientId        As String
+Dim redirectUri     As String
+Dim scope           As String
+Dim code            As String
+Dim strURL          As String
+Dim hmrcOauthUri    As String
+Dim ret             As Long
+
+On Error GoTo Err_Handler
+        
+With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+    hmrcOauthUri = .Range("HMRCLogin")
+    clientId = .Range("ClientId")
+    redirectUri = .Range("RedirectURI")
+    scope = .Range("scope")
+End With
+      
+strURL = hmrcOauthUri & "response_type=code" & _
+                "&client_id=" & clientId & _
+                "&scope=" & scope & _
+                "&redirect_uri=" & redirectUri & ""
+                
+ 
+txtHMRCURL.Text = strURL
+
+lSuccess = ShellExecute(0, "Open", strURL)
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+Attribute VB_Name = "frmMessage"
+Attribute VB_Base = "0{DE4B7D01-13FD-48CF-81C0-0A7A64FEA6C7}{1C2F6D4C-22EA-4131-99B6-D0717440C684}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Option Explicit
+
+Private Sub cmdOK_Click()
+
+On Error GoTo Err_Handler
+
+Unload Me
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Attribute VB_Name = "frmObligations"
+Attribute VB_Base = "0{94519367-98D8-488F-91E8-498F63F895ED}{5C7825F4-34E0-4EE3-BEBD-6D30852F6262}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+Option Explicit
+
+
+Private Sub cmdOK_Click()
+
+On Error GoTo Err_Handler
+
+Unload Me
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Attribute VB_Name = "frmSubmissionSuccess"
+Attribute VB_Base = "0{C3A0A4CE-70D5-43BA-840B-5CB4D92EF11D}{99AF5E00-5208-4035-A318-F964246801C4}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = False
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = False
+
+Option Explicit
+
+Private Sub cmdOK_Click()
+
+Unload Me
+
+End Sub
+
+Private Sub UserForm_Initialize()
+
+Dim strMsg  As String
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    strMsg = "VAT registration number: " & Trim(.Range(g_strRangeVRN).value) & vbCrLf & _
+             "Period Start: " & Trim(.Range("PeriodStart").value) & vbCrLf & _
+             "Period End: " & Trim(.Range("PeriodEnd").value) & vbCrLf & _
+             "Submission Date: " & Trim(.Range("SubmissionDate").value) & vbCrLf & _
+             "Submisison ID:" & Trim(.Range("SubmissionID").value)
+End With
+
+lblResult.Caption = strMsg & vbCrLf & vbCrLf
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+Attribute VB_Name = "modGetLiabilities"
+Option Explicit
+
+
+
+Public Sub getLiabilities()
+
+Dim frmLiabilitiesRequest   As frmGetDates
+Dim strFrom                 As String
+Dim strTo                   As String
+Dim strVATreg               As String
+Dim strAccTok               As String
+Dim blnValid                As Boolean
+
+On Error GoTo Err_Handler
+
+blnValid = False
+Set frmLiabilitiesRequest = New frmGetDates
+With frmLiabilitiesRequest
+    .Caption = g_strAPP_TITLE
+    .fraGetDates.Caption = g_strCaptionLiabilities
+    .Show vbModal
+    If .blnGetDates = True Then
+        blnValid = True
+        strFrom = .strDateFrom
+        strTo = .strDateTo
+    End If
+    Set frmLiabilitiesRequest = Nothing
+End With
+
+If blnValid = True Then
+    'get access token
+    strAccTok = CStr(ThisWorkbook.Worksheets(g_strSHEET_DATA).Range(g_strRangeACCTOKEN).value)
+    
+    'get VAT reg
+    strVATreg = CStr(ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value)
+    
+    getVATLiabilities strFrom, strTo, strVATreg, strAccTok, g_strHMRC_API_URL
+End If
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Sub getVATLiabilities(ByVal strFrom As String, _
+                              ByVal strTo As String, _
+                              ByVal strVATreg As String, _
+                              ByVal strAccessToken As String, _
+                              ByVal strURL As String)
+
+Dim strReturn   As String
+Dim strData     As String
+Dim xmlhttp     As MSXML2.XMLHTTP60
+
+On Error GoTo Err_Handler
+
+'/vat/{vrn}/liabilities
+strData = "from=" & strFrom & "&to=" & strTo
+
+strURL = strURL + strVATreg + "/liabilities?" & strData
+
+Set xmlhttp = New MSXML2.XMLHTTP60
+
+'strURL = "https://test-api.service.hmrc.gov.uk/vat/123456789/liabilities?from=2017-01-01&to=2017-12-31"
+With xmlhttp
+    .Open "GET", strURL, False
+    .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+    .setRequestHeader "Content-Type", "application/json"
+    .setRequestHeader "Authorization", "Bearer " & strAccessToken
+    .setRequestHeader "Gov-Test-Scenario", "MULTIPLE_LIABILITIES"
+    getHMRCHeader xmlhttp
+    .send
+    strReturn = CStr(.responseText)
+    strReturn = formatHMRCReturn(strReturn)
+    strReturn = formatMessagePayLiab(strReturn)
+    displayMessage strReturn, g_strLiabilities
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Attribute VB_Name = "modGetPayments"
+Option Explicit
+
+
+Public Sub getPayments()
+
+Dim frmPaymentsRequest  As frmGetDates
+Dim strFrom             As String
+Dim strTo               As String
+Dim strVATreg           As String
+Dim strAccTok           As String
+Dim blnValid            As Boolean
+
+On Error GoTo Err_Handler
+
+blnValid = False
+Set frmPaymentsRequest = New frmGetDates
+With frmPaymentsRequest
+    .Caption = g_strAPP_TITLE
+    .fraGetDates.Caption = g_strCaptionPayments
+    .Show vbModal
+    If .blnGetDates = True Then
+        blnValid = True
+        strFrom = .strDateFrom
+        strTo = .strDateTo
+    End If
+    Set frmPaymentsRequest = Nothing
+End With
+
+If blnValid = True Then
+
+    'get access token
+    strAccTok = CStr(ThisWorkbook.Worksheets(g_strSHEET_DATA).Range(g_strRangeACCTOKEN).value)
+    
+    'get VAT reg
+    strVATreg = CStr(ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value)
+    
+    getVATPayments strFrom, strTo, strVATreg, strAccTok, g_strHMRC_API_URL
+End If
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Sub getVATPayments(ByVal strFrom As String, _
+                              ByVal strTo As String, _
+                              ByVal strVATreg As String, _
+                              ByVal strAccessToken As String, _
+                              ByVal strURL As String)
+
+Dim strReturn       As String
+Dim strData         As String
+Dim xmlhttp         As MSXML2.XMLHTTP60
+
+On Error GoTo Err_Handler
+
+
+strData = "from=" & strFrom & "&to=" & strTo
+
+strURL = strURL + strVATreg + "/payments?" & strData
+
+Set xmlhttp = New MSXML2.XMLHTTP60
+
+With xmlhttp
+    .Open "GET", strURL, False
+    .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+    .setRequestHeader "Content-Type", "application/json"
+    .setRequestHeader "Authorization", "Bearer " & strAccessToken
+    .setRequestHeader "Gov-Test-Scenario", "MULTIPLE_LIABILITIES"
+    getHMRCHeader xmlhttp
+    .send
+    
+    strReturn = CStr(.responseText)
+    strReturn = formatHMRCReturn(strReturn)
+    displayMessage strReturn, g_strPayments
+End With
+
+Exit Sub
+
+Err_Handler:
+
+If Err.Number = g_lngERR_HMRC_LOGIN Then
+    Err.Clear
+    MsgBox g_strERR_HMRC_LOGIN, vbCritical, g_strAPP_TITLE
+Else
+    errorHandler Err.Number, Err.Description
+End If
+
+End Sub
+
+
+
+
+
+Attribute VB_Name = "modGetVATObligations"
+Option Explicit
+
+Private Type m_udtObligations
+    start       As String
+    end         As String
+    due         As String
+    status      As String
+    periodKey   As String
+    received    As String
+End Type
+
+Public Sub getObligations()
+
+Dim frmObligationRequest    As frmGetReturnObligations
+Dim strFrom                 As String
+Dim strTo                   As String
+Dim strStatus               As String
+Dim strVATreg               As String
+Dim strAccTok               As String
+Dim status                  As Integer
+Dim blnValid                As Boolean
+
+On Error GoTo Err_Handler
+
+If isvalidVRN Then
+
+    blnValid = False
+    Set frmObligationRequest = New frmGetReturnObligations
+    
+    With frmObligationRequest
+        .Caption = g_strCaptionObligations
+        .chkObligations.SetFocus
+        .Show vbModal
+        If .blnGetDates = True Then
+            blnValid = True
+            strFrom = .strDateFrom
+            strTo = .strDateTo
+        End If
+        Set frmObligationRequest = Nothing
+    End With
+    
+    If blnValid = True Then
+        'get access token
+        strAccTok = CStr(ThisWorkbook.Worksheets(g_strSHEET_DATA).Range(g_strRangeACCTOKEN).value)
+        
+        'get VAT reg
+        strVATreg = CStr(ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value)
+        
+        'get obligations
+        status = getVATObligations(strFrom, strTo, strVATreg, strAccTok, g_strHMRC_API_URL)
+        If status = 400 Then
+            
+        End If
+        If status = 403 Then
+            ' refresh token
+            RenewToken
+            'get obligations
+            strAccTok = CStr(ThisWorkbook.Worksheets(g_strSHEET_DATA).Range(g_strRangeACCTOKEN).value)
+            status = getVATObligations(strFrom, strTo, strVATreg, strAccTok, g_strHMRC_API_URL)
+        End If
+    End If
+Else
+
+    MsgBox g_strErrVRN, vbCritical, g_strAPP_TITLE
+End If
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Function getVATObligations(ByVal strFrom As String, _
+                              ByVal strTo As String, _
+                              ByVal strVATreg As String, _
+                              ByVal strAccessToken As String, _
+                              ByVal strURL As String) As Integer
+
+
+Dim sngCounter      As Single
+Dim sngLoop         As Single
+Dim strObligation   As String
+Dim strData         As String
+Dim strResponse     As String
+Dim xmlhttp         As MSXML2.XMLHTTP60
+Dim objJson         As Object
+Dim objObligations  As Object
+Dim objObligation   As Object
+Dim frmObligation   As frmObligations
+Dim udtObligations() As m_udtObligations
+
+On Error GoTo Err_Handler
+
+strData = "from=" & strFrom & "&to=" & strTo
+          
+strURL = strURL + strVATreg + "/obligations?" & strData
+
+Set xmlhttp = New MSXML2.XMLHTTP60
+
+With xmlhttp
+    .Open "GET", strURL, False
+    .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+    .setRequestHeader "Content-Type", "application/json"
+    .setRequestHeader "Authorization", "Bearer " & strAccessToken
+    getHMRCHeader xmlhttp
+    .send
+    
+    getVATObligations = .status
+    If .status = 200 Or .status = 201 Then
+        'instantiate obligations form
+        Set frmObligation = New frmObligations
+        
+        sngCounter = -1
+        Set objJson = JsonConverter.ParseJson(.responseText)
+        Set objObligations = objJson(g_strObligationsText)
+        For Each objObligation In objObligations
+            If UCase(Trim(objObligation(g_strReturnStatus))) = "O" Then
+                'populate open obligations array and listbox
+                sngCounter = sngCounter + 1
+                ReDim Preserve udtObligations(sngCounter)
+                'add to array
+                udtObligations(sngCounter).periodKey = objObligation(g_strPeriodKey)
+                udtObligations(sngCounter).start = objObligation(g_strPeriodStart)
+                udtObligations(sngCounter).end = objObligation(g_strPeriodEnd)
+                udtObligations(sngCounter).due = objObligation(g_strReturnDue)
+                udtObligations(sngCounter).status = objObligation(g_strReturnStatus)
+                'add to list box
+                strObligation = "Period " & objObligation(g_strPeriodStart) & " to " & _
+                                    objObligation(g_strPeriodEnd) & " (Due:" & _
+                                    objObligation(g_strReturnDue) & ")"
+                frmObligation.lbObligationsOpen.AddItem strObligation
+            ElseIf UCase(Trim(objObligation(g_strReturnStatus))) = "F" Then
+                'populate fulfilled obligations fulfilled listbox
+                strObligation = "Period " & objObligation(g_strPeriodStart) & " to " & _
+                                objObligation(g_strPeriodEnd) & " (Received:" & _
+                               objObligation(g_strReturnReceived) & ")"
+                frmObligation.lbObligationsFulfiled.AddItem strObligation
+            End If
+        Next
+        If sngCounter < 0 Then
+            'no obligations to display
+            displayMessage g_strObligationsNone, g_strAPP_TITLE
+        Else
+            'populate VRN label
+            frmObligation.lblObligationsVRN = "GB" & strVATreg
+            
+            'show form
+            frmObligation.Show vbModal
+            
+            'find selected period and allocate period key
+            If frmObligation.lbObligationsOpen.ListIndex > -1 Then
+                For sngLoop = 0 To frmObligation.lbObligationsOpen.ListIndex
+                    If frmObligation.lbObligationsOpen.Selected(sngLoop) = True Then
+                        'update sheet with period information
+                        With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+                            .Select
+                            .Range("PeriodKey").value = udtObligations(sngLoop).periodKey
+                            .Range("PeriodStart").value = udtObligations(sngLoop).start
+                            .Range("PeriodEnd").value = udtObligations(sngLoop).end
+                        End With
+                    End If
+                Next sngLoop
+            Else
+                'no period selectd
+                displayMessage g_strObligationsSelect, g_strAPP_TITLE
+            End If
+        End If
+        'release object variable
+        Set frmObligation = Nothing
+    
+    ElseIf .status <> 403 Then
+        strResponse = formatResponseText(.responseText)
+        displayMessage g_strError & vbCrLf & " (" & strResponse & ")", g_strObligations
+        getVATObligations = True
+    End If
+End With
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+
+
+Attribute VB_Name = "modGetVATReturn"
+Option Explicit
+
+
+Public Sub getReturn()
+
+Dim strPeriod       As String
+Dim strVATreg       As String
+Dim strAccTok       As String
+Dim blnValid        As Boolean
+
+On Error GoTo Err_Handler
+
+strPeriod = Trim(ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range("PeriodKey").value)
+
+If Len(strPeriod) = 4 Then
+    'get access token
+    strAccTok = CStr(ThisWorkbook.Worksheets(g_strSHEET_DATA).Range(g_strRangeACCTOKEN).value)
+    
+    'get VAT reg
+    strVATreg = CStr(ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value)
+    
+    getVATReturn strPeriod, strVATreg, strAccTok, g_strHMRC_API_URL
+    
+Else
+    MsgBox g_strErrorPeriodKey, vbCritical, g_strAPP_TITLE
+End If
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Sub getVATReturn(ByVal strPeriod As String, _
+                         ByVal strVATreg As String, _
+                         ByVal strAccessToken As String, _
+                         ByVal strBaseURL As String)
+
+Dim strReturn       As String
+Dim xmlhttp         As MSXML2.XMLHTTP60
+Dim strURL          As String
+
+On Error GoTo Err_Handler
+     
+strURL = strBaseURL + strVATreg + "/returns/" & strPeriod
+'/vat/{vrn}/returns/{periodKey}
+Set xmlhttp = New MSXML2.XMLHTTP60
+
+With xmlhttp
+    .Open "GET", strURL, False
+    .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+    .setRequestHeader "Content-Type", "application/json"
+    .setRequestHeader "Authorization", "Bearer " & strAccessToken
+    getHMRCHeader xmlhttp
+    .send
+    
+    If .status > 400 Then
+        strReturn = .statusText
+    Else
+    strReturn = CStr(.responseText)
+    strReturn = formatHMRCReturn(strReturn) & vbCrLf
+    strReturn = strReturn & vbCrLf & "Submission Date:" & ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range("SubmissionDate").value & _
+                vbCrLf & "Submission ID: " & ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range("SubmissionID").value
+    End If
+    displayMessage strReturn, g_strReturn
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Attribute VB_Name = "modHMRCHeader"
+Option Explicit
+
+#If VBA7 Then
+    Declare PtrSafe Function GetCurrentProcessId Lib "kernel32" () As Long
+    Declare PtrSafe Function GetClientRect Lib "user32" (ByVal hwnd As Long, lpRect As udtRect) As Long
+#Else
+    Declare Function GetCurrentProcessId Lib "kernel32" () As Long
+    Declare Function GetClientRect Lib "user32" (ByVal hwnd As Long, lpRect As udtRect) As Long
+#End If
+
+Private Type udtRect
+    lngx1 As Long
+    lngy1 As Long
+    lngx2 As Long
+    lngy2 As Long
+End Type
+
+             
+Public Sub getHMRCHeader(ByRef xmlhttp As MSXML2.XMLHTTP60)
+
+Dim strHeaders() As String
+Dim strResponse  As String
+
+On Error GoTo Err_Handler
+
+strHeaders = Split(g_strHMRC_HEADER, ";")
+
+With xmlhttp
+    .setRequestHeader strHeaders(0), g_strHMRC_HEADER_RESPONSE_CONNECTION_METHOD
+    Debug.Print strHeaders(0) & " - " & g_strHMRC_HEADER_RESPONSE_CONNECTION_METHOD
+    
+    .setRequestHeader strHeaders(1), g_strHMRC_HEADER_RESPONSE_VENDOR_VERSION
+    Debug.Print strHeaders(1) & " - " & g_strHMRC_HEADER_RESPONSE_VENDOR_VERSION
+    
+    .setRequestHeader strHeaders(2), g_strHMRC_HEADER_RESPONSE_VENDOR_LICENSE
+    Debug.Print strHeaders(2) & " - " & g_strHMRC_HEADER_RESPONSE_VENDOR_LICENSE
+    
+    strResponse = getHMRC_HeaderUserID
+    .setRequestHeader strHeaders(3), strResponse
+    Debug.Print strHeaders(3) & " - " & strResponse
+    
+    strResponse = getHMRC_HeaderWindowSize
+    .setRequestHeader strHeaders(4), strResponse
+    Debug.Print strHeaders(4) & " - " & strResponse
+    
+    strResponse = getHMRC_HeaderDeviceID
+    .setRequestHeader strHeaders(5), strResponse
+    Debug.Print strHeaders(5) & " - " & strResponse
+    
+    strResponse = getHMRC_HeaderTimeZone
+    .setRequestHeader strHeaders(6), strResponse
+    Debug.Print strHeaders(6) & " - " & strResponse
+    
+    strResponse = getHMRC_HeaderLocalIP
+    .setRequestHeader strHeaders(7), strResponse
+    Debug.Print strHeaders(7) & " - " & strResponse
+    
+    strResponse = getHMRC_HeaderDisplay
+    .setRequestHeader strHeaders(8), strResponse
+    Debug.Print strHeaders(8) & " - " & strResponse
+    
+    strResponse = getHMRC_HeaderModel
+    .setRequestHeader strHeaders(9), strResponse
+    Debug.Print strHeaders(9) & " - " & strResponse
+    
+    strResponse = getHMRC_HeaderLocalMAC
+    .setRequestHeader strHeaders(10), strResponse
+    Debug.Print strHeaders(10) & " - " & strResponse
+    
+End With
+
+Exit Sub
+
+Err_Handler:
+
+MsgBox Err.Description
+
+End Sub
+
+
+Private Function getHMRC_HeaderLocalIP() As String
+ 
+Dim objWMISrvEx       As Object
+Dim objWMIObjSet      As Object
+Dim objWMIObjEx       As Object
+Dim strWQL            As String
+Dim strAdapters       As String
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderLocalIP = ""
+
+strWQL = "Select * From Win32_NetworkAdapterConfiguration"
+Set objWMISrvEx = GetObject("winmgmts:root/CIMV2")
+Set objWMIObjSet = objWMISrvEx.ExecQuery(strWQL)
+
+For Each objWMIObjEx In objWMIObjSet
+    If Not IsNull(objWMIObjEx.IPAddress) Then
+        strAdapters = strAdapters + objWMIObjEx.IPAddress(0)
+    End If
+Next
+
+getHMRC_HeaderLocalIP = strAdapters
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+getHMRC_HeaderLocalIP = ""
+
+End Function
+
+Private Function getHMRC_HeaderLocalMAC() As String
+ 
+Dim objWMISrvEx       As Object
+Dim objWMIObjSet      As Object
+Dim objWMIObjEx       As Object
+Dim strWQL            As String
+Dim strMACs           As String
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderLocalMAC = ""
+
+strWQL = "Select * From Win32_NetworkAdapterConfiguration"
+Set objWMISrvEx = GetObject("winmgmts:root/CIMV2")
+Set objWMIObjSet = objWMISrvEx.ExecQuery(strWQL)
+
+For Each objWMIObjEx In objWMIObjSet
+    If Not IsNull(objWMIObjEx.IPAddress) Then
+        strMACs = strMACs + objWMIObjEx.MACAddress
+    End If
+Next
+
+getHMRC_HeaderLocalMAC = strMACs
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+
+getHMRC_HeaderLocalMAC = ""
+
+End Function
+
+
+Private Function getHMRC_HeaderUserID() As String
+
+Dim objWMIRootObject  As Object
+Dim objWMIQueryResult As Object
+Dim objWMIObjEx       As Object
+Dim strWMIQuery       As String
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderUserID = ""
+
+strWMIQuery = "SELECT * FROM Win32_ComputerSystem"
+Set objWMIRootObject = GetObject("winmgmts:root/CIMV2")
+Set objWMIQueryResult = objWMIRootObject.ExecQuery(strWMIQuery)
+
+' The username
+For Each objWMIObjEx In objWMIQueryResult
+    'Put a STOP here then View > Locals Window to see all properties
+    If Not IsNull(objWMIObjEx) Then
+        getHMRC_HeaderUserID = objWMIObjEx.Username
+    End If
+Next
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+getHMRC_HeaderUserID = ""
+    
+End Function
+
+Private Function getHMRC_HeaderModel() As String
+
+Dim objWMIRootObject  As Object
+Dim objWMIQueryResult As Object
+Dim objWMIObjEx       As Object
+Dim strWMIQuery       As String
+Dim strResult         As String
+Dim strFamily         As String
+Dim strVersion        As String
+Dim strManufacturer   As String
+Dim strModel          As String
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderModel = ""
+
+strWMIQuery = "SELECT * FROM Win32_ComputerSystem"
+Set objWMIRootObject = GetObject("winmgmts:root/CIMV2")
+Set objWMIQueryResult = objWMIRootObject.ExecQuery(strWMIQuery)
+
+'Manufacturer & Model
+For Each objWMIObjEx In objWMIQueryResult
+    'Put a STOP here then View > Locals Window to see all properties
+    If Not IsNull(objWMIObjEx) Then
+        strManufacturer = objWMIObjEx.Manufacturer
+        strModel = objWMIObjEx.Model
+    End If
+Next
+
+strWMIQuery = "SELECT * FROM Win32_OperatingSystem"
+Set objWMIRootObject = GetObject("winmgmts:root/CIMV2")
+Set objWMIQueryResult = objWMIRootObject.ExecQuery(strWMIQuery)
+
+'OS Family & Version
+For Each objWMIObjEx In objWMIQueryResult
+    'Put a STOP here then View > Locals Window to see all properties
+    If Not IsNull(objWMIObjEx) Then
+        strFamily = objWMIObjEx.Caption
+        strVersion = objWMIObjEx.BuildNumber
+    End If
+Next
+
+strResult = strFamily & "/" & strVersion & " (" & strManufacturer & "/" & strModel & ")"
+getHMRC_HeaderModel = strResult
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+getHMRC_HeaderModel = ""
+
+End Function
+
+Private Function getHMRC_HeaderDeviceID() As String
+
+Dim objWMIRootObject  As Object
+Dim objWMIQueryResult As Object
+Dim objWMIObjEx       As Object
+Dim strWMIQuery       As String
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderDeviceID = ""
+
+strWMIQuery = "SELECT * FROM Win32_ComputerSystemProduct"
+Set objWMIRootObject = GetObject("winmgmts:root/CIMV2")
+Set objWMIQueryResult = objWMIRootObject.ExecQuery(strWMIQuery)
+
+For Each objWMIObjEx In objWMIQueryResult
+    'Put a STOP here then View > Locals Window to see all properties
+    If Not IsNull(objWMIObjEx) Then
+        getHMRC_HeaderDeviceID = objWMIObjEx.UUID
+    End If
+Next
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+getHMRC_HeaderDeviceID = ""
+
+End Function
+
+Private Function getHMRC_HeaderWindowSize() As String
+
+Dim udtMDIRect      As udtRect
+Dim lngWidthPixels  As Long
+Dim lngHeightPixels As Long
+Dim strResult       As String
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderWindowSize = ""
+
+' Get the screen coordinates and window size of the MDIClient area'
+GetClientRect Application.hwnd, udtMDIRect
+
+lngWidthPixels = udtMDIRect.lngx2 - udtMDIRect.lngx1
+lngHeightPixels = udtMDIRect.lngy2 - udtMDIRect.lngy1
+
+getHMRC_HeaderWindowSize = "Width=" & lngWidthPixels & ",Height=" & lngHeightPixels
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+
+getHMRC_HeaderWindowSize = ""
+    
+End Function
+
+
+Private Function getHMRC_HeaderTimeZone()
+
+Dim objWMIRootObject  As Object   'SWbemServicesEx
+Dim objWMIQueryResult As Object   'SWbemServicesObjectSet
+Dim objWMIObjEx       As Object   'SWbemObjectEx
+Dim strWMIQuery       As String   'WQL Statement
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderTimeZone = ""
+
+strWMIQuery = "SELECT * FROM Win32_TimeZone"
+Set objWMIRootObject = GetObject("winmgmts:root/CIMV2")
+Set objWMIQueryResult = objWMIRootObject.ExecQuery(strWMIQuery)
+
+For Each objWMIObjEx In objWMIQueryResult
+    'Put a STOP here then View > Locals WindobjW to see all properties
+    If Not IsNull(objWMIObjEx) Then
+        getHMRC_HeaderTimeZone = objWMIObjEx.Caption
+    End If
+Next
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+
+getHMRC_HeaderTimeZone = ""
+
+
+End Function
+
+Private Function getHMRC_HeaderDisplay() As String
+ 
+Dim objWMISrvEx         As Object   'SWbemServicesEx
+Dim objWMIObjSet        As Object   'SWbemServicesObjectSet
+Dim objWMIObjEx         As Object   'SWbemObjectEx
+Dim strWQL              As String   'WQL Statement
+Dim strDisplayAdapters  As String   'List of displayAdapters and key properties
+
+On Error GoTo Err_Handler
+
+getHMRC_HeaderDisplay = ""
+
+strWQL = "Select * From Win32_VideoController"
+Set objWMISrvEx = GetObject("winmgmts:root/CIMV2")
+Set objWMIObjSet = objWMISrvEx.ExecQuery(strWQL)
+
+For Each objWMIObjEx In objWMIObjSet
+    'The card with Availability = 3 is the current card. A card with Availability=8 is not in use.
+    If (objWMIObjEx.Availability = 3) Then
+        strDisplayAdapters = strDisplayAdapters + objWMIObjEx.Caption + " ("
+        strDisplayAdapters = strDisplayAdapters + objWMIObjEx.VideoModeDescription
+        strDisplayAdapters = strDisplayAdapters + "); "
+    End If
+Next
+
+getHMRC_HeaderDisplay = strDisplayAdapters
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+
+getHMRC_HeaderDisplay = ""
+
+    
+End Function
+
+
+Attribute VB_Name = "modHMRCLogin"
+Option Explicit
+
+
+Public Sub VATApp_Login()
+
+Dim strUserID   As String
+Dim strPassword As String
+Dim frmLoginRes As LoginResult
+
+On Error GoTo Err_Handler
+
+g_blnLoginStatus = False
+
+With ThisWorkbook.Worksheets(g_strSHEET_DATA)
+    g_strHMRC_API_URL = Trim(.Range("HMRC_API_URL").value)
+    g_strHMRC_API_SIGN = Trim(.Range("HMRC_API_SIGN").value)
+End With
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    'blank out logged in status
+    .Range(g_strLoginStatus) = ""
+    'log in
+    HMRCAPI_Login
+    If g_blnLoginStatus = True Then
+        .Range(g_strLoginStatus) = g_strLoggedIn
+        Set frmLoginRes = New LoginResult
+        frmLoginRes.Caption = g_strAPP_TITLE
+        frmLoginRes.Show vbModal
+        Set frmLoginRes = Nothing
+    Else
+        .Range(g_strLoginStatus) = g_strNotLogged
+    End If
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Attribute VB_Name = "modSubmitVAT"
+Option Explicit
+
+Private m_blnSubmissionSuccess As Boolean
+
+
+Public Sub formatReturnSheet()
+
+Dim sngLoop  As Single
+
+On Error GoTo Err_Handler
+
+g_strRangeNames = Split(g_strSHEET_VAT_NAME, ",")
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    For sngLoop = 10 To 18
+        .Range(g_strRangeNames(sngLoop)).Select
+        If sngLoop = 12 Or sngLoop = 14 Then
+            'totals
+            With Selection.Interior
+                .Pattern = xlSolid
+                .PatternColorIndex = xlAutomatic
+                .ThemeColor = xlThemeColorAccent2
+                .TintAndShade = 0.799981688894314
+                .PatternTintAndShade = 0
+            End With
+        Else
+            'non totals
+            With Selection.Interior
+                .Pattern = xlSolid
+                .PatternColorIndex = xlAutomatic
+                .ThemeColor = xlThemeColorAccent2
+                .TintAndShade = 0
+                .PatternTintAndShade = 0
+            End With
+        End If
+        '.Range(g_strRangeNames(sngLoop)).value = ""
+    Next sngLoop
+    
+    'totals for box 3 and 5
+    .Range("TotalVAT").FormulaR1C1 = "=SUM(ROUND(VATSales,2),ROUND(VATAcquisitions,2))"
+    .Range("NetVAT").FormulaR1C1 = "=ABS(ROUND(TotalVAT,2)-ROUND(VATReclaimed,2))"
+    
+    .Range("A1").Select
+End With
+
+Exit Sub
+
+Err_Handler:
+
+If Err.Number = g_sngERR_ProtectedCell Then
+    Resume Next
+Else
+    errorHandler Err.Number, Err.Description
+End If
+
+End Sub
+
+
+Private Function isValidPeriodKey() As Boolean
+
+Dim blnValid     As Boolean
+Dim strPeriodKey As String
+
+On Error GoTo Err_Handler
+
+blnValid = False
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    strPeriodKey = Trim(.Range(g_strPeriodKey).value)
+    If Len(strPeriodKey) = 4 Then
+        blnValid = True
+    End If
+End With
+
+isValidPeriodKey = blnValid
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Private Function submitVATReturn(ByVal strPeriodKey As String, _
+                                ByVal strVATDueSales As String, _
+                                ByVal strVATDueAcq As String, _
+                                ByVal strTotalVATDue As String, _
+                                ByVal strVATRecCurrPer As String, _
+                                ByVal strNetVATDue As String, _
+                                ByVal strTotalSalesExVAT As String, _
+                                ByVal strTotalPurExVAT As String, _
+                                ByVal strTotalGoodsExVAT As String, _
+                                ByVal strTotalAcqExVAT As String, _
+                                ByVal strFinalised As String, _
+                                ByVal strVATreg As String, _
+                                ByVal strAccessToken As String, _
+                                ByVal strURL As String) As clsVATSubmissionResponse
+
+Dim strData         As String
+Dim xmlhttp         As MSXML2.XMLHTTP60
+
+On Error GoTo Err_Handler
+
+strData = "{" & _
+        """periodKey"": """ & strPeriodKey & """," & _
+        """vatDueSales"": " & strVATDueSales & "," & _
+        """vatDueAcquisitions"": " & strVATDueAcq & "," & _
+        """totalVatDue"": " & strTotalVATDue & "," & _
+        """vatReclaimedCurrPeriod"": " & strVATRecCurrPer & "," & _
+        """netVatDue"": " & strNetVATDue & "," & _
+        """totalValueSalesExVAT"": " & strTotalSalesExVAT & "," & _
+        """totalValuePurchasesExVAT"": " & strTotalPurExVAT & "," & _
+        """totalValueGoodsSuppliedExVAT"": " & strTotalGoodsExVAT & "," & _
+        """totalAcquisitionsExVAT"": " & strTotalAcqExVAT & "," & _
+        """finalised"": " & strFinalised & _
+        "}"
+
+
+strURL = strURL + strVATreg + "/returns"
+
+Set xmlhttp = New MSXML2.XMLHTTP60
+
+With xmlhttp
+    .Open "POST", strURL, False
+    .setRequestHeader "Accept", "application/vnd.hmrc.1.0+json"
+    .setRequestHeader "Content-Type", "application/json"
+    .setRequestHeader "Authorization", "Bearer " & strAccessToken
+    getHMRCHeader xmlhttp
+    .send strData
+    If .status = 200 Or .status = 201 Then
+        Set submitVATReturn = ProcessReturnResponse(.status, .responseText, .getResponseHeader("X-CorrelationId"))
+        
+        updateSubmittedStatus CStr(submitVATReturn.ProcessingDate), CStr(submitVATReturn.PaymentIndicator), CStr(submitVATReturn.Id)
+        
+        m_blnSubmissionSuccess = True
+    ElseIf .status = 403 And InStr(.responseText, "DUPLICATE_SUBMISSION") <> 0 Then
+        Err.Raise .status, "SubmitVATReturn", "The VAT return was already submitted for the given period."
+    ElseIf .status = 403 Then
+        Err.Raise .status, "SubmitVATReturn", .responseText
+    ElseIf .status = 400 Then
+        Err.Raise .status, "SubmitVATReturn", .responseText
+    ElseIf .status = 500 Then
+        Err.Raise .status, "SubmitVATReturn", .statusText
+    Else
+        Set submitVATReturn = New clsVATSubmissionResponse
+        submitVATReturn.status = False
+    End If
+End With
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Public Sub eFileReturn()
+
+Dim sngLoop     As Single
+Dim sngBox      As Single
+Dim strBox      As String
+Dim strPeriod   As String
+Dim strBox1     As String
+Dim strBox2     As String
+Dim strBox3     As String
+Dim strBox4     As String
+Dim strBox5     As String
+Dim strBox6     As String
+Dim strBox7     As String
+Dim strBox8     As String
+Dim strBox9     As String
+Dim strFinal    As String
+Dim strVATreg   As String
+Dim strAccTok   As String
+Dim strMsg      As String
+Dim strVRN      As String
+Dim frmSuccess  As frmSubmissionSuccess
+
+On Error GoTo Err_Handler
+
+m_blnSubmissionSuccess = False
+
+If isValidUser Then
+    'proceed to file
+    copyFormat
+    g_strRangeNames = Split(g_strSHEET_VAT_NAME, ",")
+    
+    With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+        strVRN = Trim(.Range(g_strRangeVRN).value)
+        If UCase(Left(strVRN, 2)) = "GB" Then
+            strMsg = strVRN & vbCrLf
+        Else
+            strMsg = "GB" & strVRN & vbCrLf
+        End If
+        strMsg = strMsg & "Period start: " & Trim(.Range("PeriodStart").value) & vbCrLf & _
+                         "Period end: " & Trim(.Range("PeriodEnd").value) & vbCrLf & vbCrLf
+        
+        
+        For sngLoop = 1 To 4
+            strBox = "Box " & CStr(sngLoop) & ": |fffd|" & _
+                convertDecimalPlaces(Trim(.Range(g_strRangeNames(sngLoop + 9)).value)) & vbCrLf
+            strMsg = strMsg & strBox
+        Next sngLoop
+        
+        strBox = "Box 5" & ": |fffd|" & _
+                convertDecimalPlacesPositive(Trim(.Range(g_strRangeNames(sngLoop + 9)).value)) & vbCrLf
+            strMsg = strMsg & strBox
+        
+        For sngLoop = 6 To 9
+            strBox = "Box " & CStr(sngLoop) & ": |fffd|" & _
+                convertNoDecimalPlaces(Trim(.Range(g_strRangeNames(sngLoop + 9)).value)) & vbCrLf
+            strMsg = strMsg & strBox
+        Next sngLoop
+        
+    End With
+    
+    strMsg = strMsg & vbCrLf & g_strDECLARATION
+    
+    If MsgBox(strMsg, vbYesNo, g_strAPP_TITLE) = vbYes Then
+    
+        'get access token
+        strAccTok = CStr(ThisWorkbook.Worksheets(g_strSHEET_DATA).Range(g_strRangeACCTOKEN).value)
+        
+        'get VAT reg
+        strVATreg = CStr(ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value)
+        
+        With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+            .Select
+            .Range("Finalised").value = g_strTRUE
+            strPeriod = Trim(CStr(.Range("PeriodKey").value))
+            strBox1 = Trim(CStr(.Range("VATSales").value))
+            strBox1 = convertDecimalPlaces(strBox1)
+            strBox2 = Trim(CStr(.Range("VATAcquisitions").value))
+            strBox2 = convertDecimalPlaces(strBox2)
+            strBox3 = Trim(CStr(.Range("TotalVAT").value))
+            strBox3 = convertDecimalPlaces(strBox3)
+            strBox4 = Trim(CStr(.Range("VATReclaimed").value))
+            strBox4 = convertDecimalPlaces(strBox4)
+            
+            strBox5 = Trim(CStr(.Range("NetVAT").value))
+            strBox5 = convertDecimalPlacesPositive(strBox5)
+            
+            strBox6 = Trim(CStr(.Range("SalesExVAT").value))
+            strBox6 = convertNoDecimalPlaces(strBox6)
+            strBox7 = Trim(CStr(.Range("PurchasesExVAT").value))
+            strBox7 = convertNoDecimalPlaces(strBox7)
+            strBox8 = Trim(CStr(.Range("SuppliesExVAT").value))
+            strBox8 = convertNoDecimalPlaces(strBox8)
+            strBox9 = Trim(CStr(.Range("AcquisitionsExVAT").value))
+            strBox9 = convertNoDecimalPlaces(strBox9)
+            strFinal = "true" 'LCase(Trim(CStr(.Range("Finalised").value)))
+        End With
+        
+        
+        If isValidPeriodKey = False Then
+            MsgBox g_strErrorPeriodKey, vbCritical, g_strAPP_TITLE
+        Else
+            If isValidReturnData Then
+            
+                'format for overseas
+                strBox1 = Replace(strBox1, ",", ".")
+                strBox2 = Replace(strBox2, ",", ".")
+                strBox3 = Replace(strBox3, ",", ".")
+                strBox4 = Replace(strBox4, ",", ".")
+                strBox5 = Replace(strBox5, ",", ".")
+                
+                submitVATReturn strPeriod, _
+                                strBox1, strBox2, strBox3, strBox4, strBox5, strBox6, strBox7, strBox8, strBox9, _
+                                strFinal, strVATreg, strAccTok, g_strHMRC_API_URL
+                pasteFormat
+                
+                If m_blnSubmissionSuccess = True Then
+                    Set frmSuccess = New frmSubmissionSuccess
+                    frmSuccess.Show vbModal
+                    Set frmSuccess = Nothing
+                End If
+            Else
+                MsgBox g_strErrorReturnData, vbCritical, g_strAPP_TITLE
+            End If
+        End If
+        
+    End If
+Else
+    'either invalid user or error checking with PwC API
+    MsgBox g_strErr_InvalidUserAccount, vbCritical, g_strAPP_TITLE
+End If
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Sub updateSubmittedStatus(ByVal strProcessDate As String, _
+                                  ByVal strPayInd As String, ByVal strID As String)
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    .Range("SubmissionDate").value = strProcessDate
+    .Range("PaymentIndicator").value = strPayInd
+    .Range("SubmissionID").value = strID
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+End Sub
+
+Private Function ProcessReturnResponse(status, response, Id) As clsVATSubmissionResponse
+
+Dim json As Object
+Dim ProcessingDate
+Dim result
+
+On Error GoTo Err_Handler
+
+With Worksheets(g_strSHEET_DATA)
+    .Range("SubmitVATReturnResponse") = response
+    .Range("SubmitVATReturnStatus") = status
+    .Range("SubmitVATReturnId") = Id
+End With
+
+    Set json = JsonConverter.ParseJson(response)
+    ProcessingDate = Split(json("processingDate"), "T")(0)
+    Set result = New clsVATSubmissionResponse
+    result.ProcessingDate = ProcessingDate
+    result.PaymentIndicator = json("paymentIndicator")
+    result.FormBundleNumber = json("formBundleNumber")
+    result.ChargeRefNumber = json("chargeRefNumber")
+    result.Id = Id
+    result.status = True
+    Set ProcessReturnResponse = result
+    
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+    
+End Function
+
+
+Private Function isValidReturnData() As Boolean
+
+Dim blnValid    As Boolean
+Dim sngLoop     As Single
+Dim strBoxes(9) As String
+
+On Error GoTo Err_Handler
+
+blnValid = True
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    strBoxes(1) = Trim(CStr(.Range("VATSales").value))
+    strBoxes(2) = Trim(CStr(.Range("VATAcquisitions").value))
+    strBoxes(3) = Trim(CStr(.Range("TotalVAT").value))
+    strBoxes(4) = Trim(CStr(.Range("VATReclaimed").value))
+    strBoxes(5) = Trim(CStr(.Range("NetVAT").value))
+    strBoxes(6) = Trim(CStr(.Range("SalesExVAT").value))
+    strBoxes(7) = Trim(CStr(.Range("PurchasesExVAT").value))
+    strBoxes(8) = Trim(CStr(.Range("SuppliesExVAT").value))
+    strBoxes(9) = Trim(CStr(.Range("AcquisitionsExVAT").value))
+End With
+
+'boxes 1 to 5.  numeric
+For sngLoop = 1 To 5
+    If Not IsNumeric(strBoxes(sngLoop)) Then
+        blnValid = False
+    Else
+        If sngLoop = 5 Then 'positive
+            If CDbl(strBoxes(sngLoop)) < 0 Then
+                blnValid = False
+            End If
+        End If
+    End If
+Next sngLoop
+
+'boxes 6 to 9.  numeric
+For sngLoop = 6 To 9
+    If Not IsNumeric(strBoxes(sngLoop)) Then
+        blnValid = False
+    End If
+Next sngLoop
+
+If blnValid = False Then
+    MsgBox g_strERROR_RETURN_VALUES, vbCritical, g_strAPP_TITLE
+End If
+
+isValidReturnData = blnValid
+
+Exit Function
+
+Err_Handler:
+
+If Err.Number = g_sngERR_ProtectedCell Then
+    Resume Next
+Else
+    errorHandler Err.Number, Err.Description
+End If
+
+End Function
+
+Private Function convertDecimalPlaces(ByVal strValue As String) As String
+
+Dim dblValue As Double
+
+On Error GoTo Err_Handler
+
+strValue = Trim(strValue)
+If IsNumeric(strValue) Then
+    dblValue = CDbl(strValue)
+    dblValue = Round(dblValue, 2)
+    strValue = Format(dblValue, "#0.00")
+End If
+convertDecimalPlaces = strValue
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Private Function convertDecimalPlacesPositive(ByVal strValue As String) As String
+
+Dim dblValue As Double
+
+On Error GoTo Err_Handler
+
+strValue = Trim(strValue)
+If IsNumeric(strValue) Then
+    dblValue = Abs(CDbl(strValue))
+    dblValue = Round(dblValue, 2)
+    strValue = Format(dblValue, "#0.00")
+End If
+convertDecimalPlacesPositive = strValue
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Private Function convertNoDecimalPlaces(ByVal strValue As String) As String
+
+Dim dblValue As Double
+
+On Error GoTo Err_Handler
+
+strValue = Trim(strValue)
+If IsNumeric(strValue) Then
+    dblValue = CDbl(strValue)
+    dblValue = Round(dblValue, 0)
+    strValue = Format(strValue, "##0")
+End If
+convertNoDecimalPlaces = strValue
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+
+Private Sub copyFormat()
+
+Dim sngLoop     As Single
+Dim sngCount    As Single
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    sngCount = 0
+    For sngLoop = 18 To 26
+        If Not sngLoop = 20 Then
+            If Not sngLoop = 22 Then
+                g_strBoxFomula(sngCount) = .Cells(sngLoop, 3).Formula
+                sngCount = sngCount + 1
+            End If
+        End If
+    Next sngLoop
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Sub pasteFormat()
+
+Dim sngLoop     As Single
+Dim sngCount    As Single
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    sngCount = 0
+    For sngLoop = 18 To 26
+        If Not sngLoop = 20 Then
+            If Not sngLoop = 22 Then
+                .Cells(sngLoop, 3).Formula = g_strBoxFomula(sngCount)
+                sngCount = sngCount + 1
+            End If
+        End If
+    Next sngLoop
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Attribute VB_Name = "modUtilities"
+Option Explicit
+
+Private Const g_strAPPTitle             As String = "PwC VAT reporting"
+
+Private Const m_strERROR_UNEXPECTED     As String = "An unexpected error has occured." & vbCrLf
+Private Const m_strERROR_CONTINUE       As String = "Do you wish to continue?"
+Private Const m_strERROR_BESPOKE        As String = ""
+
+Private m_strBoxInformation       As String
+
+Private Const g_sngERR_PIVOT    As Single = 1004
+
+Public Sub TestAddtransactions()
+
+Dim frmTrans As frmAddTransactions
+
+On Error GoTo Err_Handler
+
+Set frmTrans = New frmAddTransactions
+
+frmTrans.populateCountryCBO
+
+frmTrans.Show vbModal
+
+Set frmTrans = Nothing
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+Public Function formatMessagePayLiab(ByVal strMessage As String) As String
+
+On Error GoTo Err_Handler
+
+strMessage = Replace(strMessage, g_strTextChangeLiabilitiesFrom, g_strTextChangeLiabilitiesTo)
+strMessage = Replace(strMessage, g_strTextChangeOriginalFrom, g_strTextChangeOriginalTo)
+strMessage = Replace(strMessage, g_strTextChangeOutstandingFrom, g_strTextChangeOutstandingTo)
+strMessage = Replace(strMessage, g_strTextChangeTaxPeriod1From, g_strTextChangeTaxPeriodTo)
+strMessage = Replace(strMessage, g_strTextChangeTaxPeriod2From, g_strTextChangeTaxPeriodTo)
+
+formatMessagePayLiab = strMessage
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+
+Public Sub clearReturnSheet()
+
+Dim sngLoop As Single
+Dim sngEnd  As Single
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    .Select
+    
+    g_strRangeNames = Split(g_strSHEET_VAT_NAME, ",")
+
+    sngEnd = UBound(g_strRangeNames)
+
+    'clear current values
+    For sngLoop = 0 To sngEnd
+        .Range(g_strRangeNames(sngLoop)).value = ""
+    Next sngLoop
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Private Function prependGB(ByVal strVRN As String) As String
+
+Dim strISO      As String
+
+On Error GoTo Err_Handler
+
+If Len(strVRN) > 2 Then
+    strISO = UCase(Left(strVRN, 2))
+    If Not strISO = "GB" Then
+        strVRN = "GB" & strVRN
+    End If
+End If
+
+prependGB = strVRN
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Public Sub setHMRCConnectionParameters()
+
+On Error GoTo Err_Handler
+
+g_strRangeHMRCConnect = Split(g_strSHEET_HMRC_NAME, ",")
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Public Sub informationBox()
+
+On Error GoTo Err_Handler
+
+displayMessage g_strInformationBox, g_strAPP_TITLE
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub informationAuthenticate()
+
+On Error GoTo Err_Handler
+
+displayMessage g_strInformationAuthenticate, g_strAPP_TITLE
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub informationRetrieveObligations()
+
+On Error GoTo Err_Handler
+
+displayMessage g_strInformationObligations, g_strAPP_TITLE
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub informationSubmitVATReturn()
+
+On Error GoTo Err_Handler
+
+displayMessage g_strInformationSubmit, g_strAPP_TITLE
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub informationViewVATReturn()
+
+On Error GoTo Err_Handler
+
+displayMessage g_strInformationView, g_strAPP_TITLE
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub informationRetrieveVATLiabilities()
+
+On Error GoTo Err_Handler
+
+displayMessage g_strInformationPayments, g_strAPP_TITLE
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Public Sub informationRetrieveVATPayment()
+
+On Error GoTo Err_Handler
+
+displayMessage g_strInformationPayments, g_strAPP_TITLE
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+
+Public Function formatHMRCReturn(ByVal strReturn As String) As String
+
+On Error GoTo Err_Handler
+
+strReturn = Replace(strReturn, "{", "")
+strReturn = Replace(strReturn, "}", "")
+strReturn = Replace(strReturn, "[", "")
+strReturn = Replace(strReturn, "]", "")
+strReturn = Replace(strReturn, Chr(34), "")
+strReturn = Replace(strReturn, Chr(44), Chr(13))
+
+formatHMRCReturn = strReturn
+
+Exit Function
+
+Err_Handler:
+
+Err.Clear
+
+formatHMRCReturn = strReturn
+
+End Function
+
+
+Public Sub colourCellBlue(ByVal strSheet As String, ByVal sngRow As Single, ByVal sngCol As Single)
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(strSheet)
+    .Select
+    .Cells(sngRow, sngCol).Select
+    With Selection.Font
+        .Name = "Calibri"
+        .FontStyle = "Bold"
+        .Size = 14
+        .Strikethrough = False
+        .Superscript = False
+        .Subscript = False
+        .OutlineFont = False
+        .Shadow = False
+        .Underline = xlUnderlineStyleNone
+        .ThemeColor = xlThemeColorLight2
+        .TintAndShade = 0.399975585
+        .ThemeFont = xlThemeFontMinor
+    End With
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+
+Public Sub errorHandler(ByVal lngErrNumber As Long, ByVal strErrDescription As String)
+
+Dim strMessage  As String
+Dim sngContinue As Single
+
+On Error GoTo Err_Handler
+
+Err.Clear
+
+Application.Cursor = xlDefault
+Application.StatusBar = ""
+
+strMessage = "Error " & lngErrNumber & vbCrLf & strErrDescription & vbCrLf & vbCrLf & m_strERROR_BESPOKE
+
+Select Case lngErrNumber
+
+Case g_lngERR_HMRC_LOGIN
+    ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range("LoginStatus").value = g_strNotLogged
+    strMessage = g_strERR_HMRC_LOGIN
+Case g_lngERR_PwC_LOGIN
+    strMessage = g_strERR_PwC_LOGIN
+Case g_lngERR_HMRC_SUBMIT
+    strMessage = g_strERR_HMRC_SUBMIT
+Case g_lngErr_HMRC_USER
+    strMessage = g_strERR_HMRC_USER
+
+End Select
+
+MsgBox strMessage, vbCritical, g_strAPP_TITLE
+
+
+Exit Sub
+
+Err_Handler:
+
+Err.Clear
+
+MsgBox m_strERROR_UNEXPECTED & vbCrLf & "The application will stop." & vbCrLf & vbCrLf & Err.Description
+
+End Sub
+Public Function FindLastCol(ByVal strSheetName As String) As Single
+
+    Dim sngLastCol  As Single
+    
+On Error GoTo Err_Handler
+
+    'find last row in worksheet
+    sngLastCol = ThisWorkbook.Worksheets(strSheetName).Cells.Find(What:="*", SearchDirection:=xlPrevious, _
+                SearchOrder:=xlByColumns).Column
+    
+    'assign function return value
+    FindLastCol = sngLastCol
+
+Exit Function
+
+Err_Handler:
+    
+    If Err.Number = 91 Then
+        'return 0 as no last row
+        Err.Clear
+        FindLastCol = 0
+        Exit Function
+    End If
+    
+    errorHandler Err.Number, "modUtilities.FindLastCol : " & Err.Description
+    
+End Function
+
+Public Function FindLastRow(ByVal strSheetName As String) As Single
+
+    Dim sngLastRow  As Single
+    
+On Error GoTo Err_Handler
+
+    'find last row in worksheet
+    sngLastRow = ThisWorkbook.Worksheets(strSheetName).Cells.Find(What:="*", SearchDirection:=xlPrevious, _
+                SearchOrder:=xlByRows).row
+    
+    'assign function return value
+    FindLastRow = sngLastRow
+
+Exit Function
+
+Err_Handler:
+    
+    If Err.Number = 91 Then
+        'return 0 as no last row
+        Err.Clear
+        FindLastRow = 0
+        Exit Function
+    End If
+    
+    errorHandler Err.Number, "modUtilities.FindLastRow : " & Err.Description
+    
+End Function
+
+
+
+
+
+Public Function worksheetExists(ByVal strWorksheetName As String) As Boolean
+
+Dim blnSheetExists  As Boolean
+Dim wksSheet        As Worksheet
+
+On Error GoTo Err_Handler
+
+'assume that sheet does not exist
+blnSheetExists = False
+
+For Each wksSheet In ThisWorkbook.Worksheets
+    If UCase(Trim(wksSheet.Name)) = UCase(Trim(strWorksheetName)) Then
+        blnSheetExists = True
+    End If
+Next wksSheet
+
+worksheetExists = blnSheetExists
+
+Exit Function
+
+Err_Handler:
+    
+    errorHandler Err.Number, "modUtilities.worksheetExists : " & Err.Description
+
+End Function
+
+Public Sub formatDate(ByVal sngCol As Single, ByVal strSheet As String)
+
+On Error GoTo Err_Handler
+
+    ThisWorkbook.Worksheets(strSheet).Range(Columns(sngCol), Columns(sngCol)).Select
+    Selection.Replace What:=".", Replacement:="/", LookAt:=xlPart, _
+        SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+        ReplaceFormat:=False
+    Selection.NumberFormat = "dd/mm/yyyy;@"
+
+Exit Sub
+
+Err_Handler:
+
+   errorHandler Err.Number, "modUtilities.formatDate : " & Err.Description
+
+End Sub
+
+Public Sub resetFilter(ByVal strSheetName As String)
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(strSheetName)
+    .Rows("1:1").Select
+    Selection.AutoFilter
+    Selection.AutoFilter
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, "modUtilities.formatWorksheet : " & Err.Description
+End Sub
+
+
+Public Sub formatWorksheet(ByVal strSheetName As String)
+
+Dim sngLastCol  As Single
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(strSheetName)
+    .Select
+    .Activate
+    sngLastCol = FindLastCol(.Name)
+    .Range(Cells(1, 1), Cells(1, sngLastCol)).Select
+    Selection.AutoFilter
+    Selection.Font.Bold = True
+    .Range("A2").Select
+    ActiveWindow.FreezePanes = True
+    .Cells.Select
+    .Cells.EntireColumn.AutoFit
+    .Range("A1").Select
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, "modUtilities.formatWorksheet : " & Err.Description
+
+End Sub
+
+Public Sub formatNumber(ByVal sngCol As Single, ByVal strSheet As String)
+
+On Error GoTo Err_Handler
+
+    ThisWorkbook.Worksheets(strSheet).Range(Columns(sngCol), Columns(sngCol)).Select
+    Selection.Replace What:=".", Replacement:="", LookAt:=xlPart, _
+        SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+        ReplaceFormat:=False
+    Selection.Replace What:=",", Replacement:=".", LookAt:=xlPart, _
+        SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+        ReplaceFormat:=False
+    Selection.NumberFormat = "#,##0.00"
+
+Exit Sub
+
+Err_Handler:
+
+  errorHandler Err.Number, "modUtilities.formatNumber : " & Err.Description
+
+End Sub
+
+Public Sub tableNameDelete(ByVal strTableName As String)
+
+Dim tblName As Name
+
+On Error GoTo Err_Handler
+
+For Each tblName In ThisWorkbook.Names
+    If UCase(Trim(tblName.Name)) = UCase(Trim(strTableName)) Then
+        tblName.Delete
+    End If
+Next tblName
+    
+Exit Sub
+
+Err_Handler:
+
+  errorHandler Err.Number, "modUtilities.tableNameDelete : " & Err.Description
+
+End Sub
+
+
+Public Sub tableNameAllDelete(ByVal strDummy As String)
+
+Dim tblName As Name
+
+On Error GoTo Err_Handler
+
+For Each tblName In ThisWorkbook.Names
+    tblName.Delete
+Next tblName
+    
+Exit Sub
+
+Err_Handler:
+
+  errorHandler Err.Number, "modUtilities.tableNameAllDelete : " & Err.Description
+
+End Sub
+
+
+Public Sub tableNameAdd(ByVal strSheetName As String, ByVal strTableName As String)
+
+Dim sngLastRow  As Single
+Dim sngLastCol  As Single
+Dim strRange    As String
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(strSheetName)
+    sngLastRow = FindLastRow(.Name)
+    sngLastCol = FindLastCol(.Name)
+    strRange = "='" & strSheetName & "'!R1C1:R" & CStr(sngLastRow) & "C" & CStr(sngLastCol)
+    
+End With
+
+ThisWorkbook.Names.Add Name:=strTableName, RefersToR1C1:=strRange
+
+Exit Sub
+
+Err_Handler:
+
+  errorHandler Err.Number, "modUtilities.tableNameAdd : " & Err.Description
+
+End Sub
+Public Sub worksheetsAdd(ByVal strSheetName As String)
+
+On Error GoTo Err_Handler
+
+'disable user warnings
+Application.DisplayAlerts = False
+
+strSheetName = Left(strSheetName, 31)
+
+'check if worksheets exist
+If worksheetExists(strSheetName) Then
+    ThisWorkbook.Worksheets(strSheetName).Delete
+End If
+
+'reinstate worksheet
+'add new sheet
+ThisWorkbook.Worksheets.Add(after:=ThisWorkbook.Worksheets(Worksheets.Count)).Name = strSheetName
+
+'enable user warnings
+Application.DisplayAlerts = True
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub worksheetsDelete(ByVal strSheetName As String)
+
+On Error GoTo Err_Handler
+
+'disable user warnings
+Application.DisplayAlerts = False
+
+'check if last worksheet
+If ThisWorkbook.Worksheets.Count > 1 Then
+    If worksheetExists(strSheetName) Then
+        'delete worksheet
+        ThisWorkbook.Worksheets(strSheetName).Delete
+    End If
+End If
+
+'enable user warnings
+Application.DisplayAlerts = True
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Sub generatePivotReport(ByVal strSheetName As String, _
+                                ByVal varFilters As Variant, _
+                                ByVal varRows As Variant, _
+                                ByVal varCols As Variant, _
+                                ByVal varData As Variant, _
+                                ByVal strDataSheet As String)
+
+Dim sngLoop     As Single
+Dim sngEnd      As Single
+Dim sngLastRow  As Single
+Dim sngLastCol  As Single
+Dim strRange    As String
+Dim strNet      As String
+Dim strColHead()  As String
+
+On Error GoTo Err_Handler
+
+Application.StatusBar = "generating " & strSheetName & " report..."
+
+sngLastRow = FindLastRow(strDataSheet)
+sngLastCol = FindLastCol(strDataSheet)
+strRange = strDataSheet & "!R1C1:R" & CStr(sngLastRow) & "C" & CStr(sngLastCol)
+
+worksheetsAdd strSheetName
+
+ThisWorkbook.Worksheets(strSheetName).Activate
+
+'get column headers
+For sngLoop = 1 To sngLastCol
+    ReDim Preserve strColHead(sngLoop)
+    strColHead(sngLoop) = Trim(ThisWorkbook.Worksheets(strDataSheet).Cells(1, sngLoop).value)
+Next sngLoop
+
+'add pivot
+ThisWorkbook.PivotCaches.Create(SourceType:=xlDatabase, SourceData:= _
+    strRange, Version:=xlPivotTableVersion12).CreatePivotTable _
+    TableDestination:=ThisWorkbook.Worksheets(strSheetName).Cells(1, 1), TableName:=strSheetName, DefaultVersion _
+    :=xlPivotTableVersion12
+
+With ThisWorkbook.Worksheets(strSheetName).PivotTables(strSheetName)
+    'add filters
+    sngEnd = UBound(varFilters)
+    For sngLoop = 0 To sngEnd
+        .PivotFields(strColHead(varFilters(sngLoop))).Orientation = xlPageField
+        .PivotFields(strColHead(varFilters(sngLoop))).Position = sngLoop + 1
+    Next sngLoop
+    
+    'add rows
+    sngEnd = UBound(varRows)
+    For sngLoop = 0 To sngEnd
+        .PivotFields(strColHead(varRows(sngLoop))).Orientation = xlRowField
+        .PivotFields(strColHead(varRows(sngLoop))).Position = sngLoop + 1
+    Next sngLoop
+    
+    'add columns
+    sngEnd = UBound(varCols)
+    For sngLoop = 0 To sngEnd
+        .PivotFields(strColHead(varCols(sngLoop))).Orientation = xlColumnField
+        .PivotFields(strColHead(varCols(sngLoop))).Position = sngLoop + 1
+    Next sngLoop
+    
+    'add data
+    sngEnd = UBound(varData)
+    For sngLoop = 0 To sngEnd
+        ThisWorkbook.Worksheets(strSheetName).PivotTables(strSheetName).AddDataField _
+        ThisWorkbook.Worksheets(strSheetName).PivotTables(strSheetName).PivotFields(strColHead(varData(sngLoop))), _
+                                            "Sum of " & strColHead(varData(sngLoop)), xlSum
+        'format numeric fields
+        .PivotFields("Sum of " & strColHead(varData(sngLoop))).NumberFormat = "#,##0.00"
+    Next sngLoop
+    
+    'remove subtotals
+    sngEnd = UBound(varRows)
+    For sngLoop = 0 To sngEnd
+        ThisWorkbook.Worksheets(strSheetName).PivotTables(strSheetName).PivotFields(strColHead(varRows(sngLoop))).Subtotals = _
+        Array(False, False, False, False, False, False, False, False, False, False, False, False)
+        If sngLoop < sngEnd Then
+            ThisWorkbook.Worksheets(strSheetName).PivotTables(strSheetName).PivotFields(strColHead(varRows(sngLoop))).ShowDetail = True
+        End If
+    Next sngLoop
+'remove grand total
+    ThisWorkbook.Worksheets(strSheetName).PivotTables(strSheetName).ColumnGrand = False
+    ThisWorkbook.Worksheets(strSheetName).PivotTables(strSheetName).RowGrand = False
+    
+    
+    'format pivot table
+    .InGridDropZones = True
+    .InGridDropZones = True
+    .DisplayFieldCaptions = True
+    .RowAxisLayout xlTabularRow
+    
+End With
+
+With Worksheets(strSheetName)
+    .Cells.Select
+    .Cells.EntireColumn.AutoFit
+    .Range("A1").Select
+End With
+
+Exit Sub
+
+Err_Handler:
+
+If Err.Number = g_sngERR_PIVOT Then
+    Err.Clear
+    Resume Next
+Else
+    errorHandler Err.Number, Err.Description
+End If
+
+End Sub
+
+
+Public Sub fixColumnHeaders(ByVal strSheet As String)
+
+Dim sngLoop     As Single
+Dim sngLastCol  As Single
+Dim strCell     As String
+
+On Error GoTo Err_Handler
+
+'ensure there are no duplicate column header names
+
+With ThisWorkbook.Worksheets(strSheet)
+    sngLastCol = FindLastCol(.Name)
+    For sngLoop = 1 To sngLastCol
+        strCell = .Cells(1, sngLoop).value
+        strCell = Trim(strCell)
+        strCell = Replace(strCell, " ", "_")
+        .Cells(1, sngLoop).value = strCell & " (" & CStr(sngLoop) & ")"
+    Next sngLoop
+End With
+
+Exit Sub
+
+Err_Handler:
+
+    Application.Cursor = xlDefault
+    
+    errorHandler Err.Number, Err.Description
+    
+End Sub
+
+
+
+
+Public Function formatJScriptString(ByVal strInput As String) As String
+
+On Error GoTo Err_Handler
+
+strInput = Trim(strInput)
+strInput = Replace(strInput, "'", "\'")
+strInput = Replace(strInput, "|fffd|", "")
+strInput = Replace(strInput, "|fffd|", "")
+strInput = Replace(strInput, "|fffd|", "")
+strInput = Replace(strInput, Chr(10), " ")
+strInput = Replace(strInput, Chr(13), " ")
+strInput = Replace(strInput, "|fffd|", "E")
+strInput = Replace(strInput, "|fffd|", "e")
+strInput = Replace(strInput, "|fffd|", "e")
+strInput = Replace(strInput, "|fffd|", "u")
+strInput = Replace(strInput, "|fffd|", "u")
+strInput = Replace(strInput, "|fffd|", "a")
+strInput = Replace(strInput, "|fffd|", "a")
+strInput = Replace(strInput, "|fffd|", "a")
+strInput = Replace(strInput, "|fffd|", "a")
+strInput = Replace(strInput, "|fffd|", "o")
+strInput = Replace(strInput, "|fffd|", "e")
+strInput = Replace(strInput, "|fffd|", "e")
+strInput = Replace(strInput, "|fffd|", "")
+strInput = Replace(strInput, "|fffd|", "o")
+strInput = Replace(strInput, "|fffd|", "o")
+strInput = Replace(strInput, "|fffd|", "-")
+strInput = Replace(strInput, "", "-")
+strInput = Replace(strInput, "|fffd|", "c")
+strInput = Replace(strInput, "|fffd|", "ss")
+strInput = Replace(strInput, "|fffd|", "Eur")
+strInput = Replace(strInput, "|fffd|", "n")
+
+strInput = Replace(strInput, "|fffd|", "z")
+strInput = Replace(strInput, "|fffd|", "a")
+strInput = Replace(strInput, "|fffd|", "e")
+strInput = Replace(strInput, "|fffd|", "n")
+strInput = Replace(strInput, "|fffd|", "c")
+strInput = Replace(strInput, "|fffd|", "a")
+strInput = Replace(strInput, "|fffd|", "i")
+strInput = Replace(strInput, "|fffd|", "i")
+
+
+formatJScriptString = strInput
+
+Exit Function
+
+Err_Handler:
+
+MsgBox Err.Description
+
+End Function
+
+
+Public Sub printSheet()
+
+Dim strFileName As String
+
+On Error GoTo Err_Handler
+
+With ThisWorkbook.Worksheets(g_strSHEET_VAT100)
+    strFileName = ThisWorkbook.Name & "_" & (.Range(g_strRangeVRN).value) & "_" & Format(Now, "yyyy-mm-dd")
+    strFileName = Replace(strFileName, ".xlsm", "")
+    .ExportAsFixedFormat _
+    Type:=xlTypePDF, _
+    Filename:=strFileName, _
+    Quality:=xlQualityStandard, _
+    IncludeDocProperties:=True, _
+    IgnorePrintAreas:=False, _
+    OpenAfterPublish:=True
+End With
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Function CountstrInString(ByVal strString As String, ByVal strFind As String) As Single
+
+    Dim sngResult As Single
+    Dim strParts() As String
+    
+On Error GoTo Err_Handler
+
+    strParts = Split(strString, strFind)
+
+    sngResult = UBound(strParts, 1)
+
+    If (sngResult = -1) Then
+        sngResult = 0
+    End If
+
+    CountstrInString = sngResult
+    
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Public Function formatVRN(ByVal strVRN As String) As String
+
+Dim sngLoop      As Single
+Dim sngLenth     As Single
+Dim sngCount     As Single
+Dim strChar      As String
+Dim strLetters() As String
+
+On Error GoTo Err_Handler
+
+sngCount = 0
+ReDim Preserve strLetters(sngCount)
+strLetters(sngCount) = ""
+
+sngLenth = Len(strVRN)
+For sngLoop = 1 To sngLenth
+    strChar = Mid(strVRN, sngLoop, 1)
+    If Not IsNumeric(strChar) Then
+        sngCount = sngCount + 1
+        ReDim Preserve strLetters(sngCount)
+        strLetters(sngCount) = strChar
+    End If
+Next sngLoop
+
+'remove characters
+For sngLoop = 1 To sngCount
+    strVRN = Replace(strVRN, strLetters(sngLoop), "")
+Next sngLoop
+
+formatVRN = strVRN
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Public Function isvalidVRN() As Boolean
+
+Dim strVRN As String
+
+On Error GoTo Err_Handler
+
+isvalidVRN = False
+
+strVRN = ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value
+strVRN = formatVRN(strVRN)
+If Len(strVRN) = 9 Then
+    isvalidVRN = True
+    ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value = strVRN
+End If
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+Public Function isValidUser() As Boolean
+
+Dim strVRN          As String
+Dim strData         As String
+Dim strResponse     As String
+Dim strURL          As String
+Dim xmlhttp         As MSXML2.XMLHTTP60
+
+On Error GoTo Err_Handler
+
+'for development
+isValidUser = True
+Exit Function
+'end development version
+
+isValidUser = False
+
+'prepend GB
+
+strVRN = ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range(g_strRangeVRN).value
+
+strVRN = prependGB(strVRN)
+
+Set xmlhttp = New MSXML2.XMLHTTP60
+
+strURL = g_strPwCURL & strVRN & g_strPwCURLEnd
+
+With xmlhttp
+    .Open "GET", strURL, False
+    .send
+    If .status = 200 Or .status = 201 Then
+        strResponse = UCase(Trim(CStr(.responseText)))
+        If strResponse = "TRUE" Then
+            isValidUser = True
+        End If
+    ElseIf .status <> 403 Then
+        displayMessage g_strError & " (" & .responseText & ")", g_strAPP_TITLE
+    End If
+End With
+
+Set xmlhttp = Nothing
+
+isValidUser = True
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+
+Attribute VB_Name = "modVariables"
+Option Explicit
+
+Public Const g_strAPP_TITLE     As String = "PwC electronic VAT submission tool"
+
+'Public Const g_strPwCURL        As String = "https://stg-vatfiling-api.azurewebsites.net/api/subscription/"
+Public Const g_strDUMMY_VRN     As String = "GB123456789"
+Public Const g_strPwCURL        As String = "https://api-vatfiling.pwc.co.uk/api/subscription/"
+
+Public Const g_strPwCURLEnd     As String = "/isactive"
+
+Public g_strHMRC_API_URL   As String
+Public g_strHMRC_API_SIGN  As String
+
+Public Const g_strHMRC_HEADER As String = _
+             "Gov-Client-Connection-Method;Gov-Vendor-Version;Gov-Vendor-License-IDs;" & _
+             "Gov-Client-User-IDs;Gov-Client-Window-Size;Gov-Client-Device-ID;" & _
+             "Gov-Client-Timezone;Gov-Client-Local-IPs;Gov-Client-Screens;" & _
+             "Gov-Client-User-Agent;Gov-Client-MAC-Addresses"
+             
+Public Const g_strHMRC_HEADER_RESPONSE_CONNECTION_METHOD = "DESKTOP_APP_DIRECT"
+Public Const g_strHMRC_HEADER_RESPONSE_VENDOR_VERSION = "1.2.2"
+Public Const g_strHMRC_HEADER_RESPONSE_VENDOR_LICENSE = ""
+
+Public Const g_strSHEET_VAT100  As String = "UK VAT return"
+Public Const g_strSHEET_DATA    As String = "Data"
+
+Public Const g_strLoginStatus   As String = "LoginStatus"
+
+Public Const g_strError         As String = "There has been an error."
+Public Const g_strPwD           As String = "pwctaxtechnology"
+Public Const g_strObligations   As String = "View obligations"
+Public Const g_strReturn        As String = "View return"
+Public Const g_strLiabilities   As String = "View liabilities"
+Public Const g_strPayments      As String = "View payments"
+
+Public Const g_strCaptionLiabilities    As String = "Retrieve VAT liabilities"
+Public Const g_strCaptionPayments       As String = "Retrieve VAT payments"
+Public Const g_strCaptionObligations    As String = "Retrieve open obligations"
+
+Public Const g_strTextChangeTaxPeriod1From   As String = "taxPeriod:"
+Public Const g_strTextChangeTaxPeriod2From   As String = "Tax Period:"
+Public Const g_strTextChangeOriginalFrom     As String = "originalAmount:"
+Public Const g_strTextChangeOutstandingFrom  As String = "outstandingAmount:"
+Public Const g_strTextChangeLiabilitiesFrom  As String = "liabilities:"
+Public Const g_strTextChangeStatusOFrom      As String = "status:O"
+Public Const g_strTextChangeStatusFFrom      As String = "status:F"
+
+Public Const g_strObligationsText   As String = "obligations"
+Public Const g_strPeriodKey         As String = "periodKey"
+Public Const g_strPeriodStart       As String = "start"
+Public Const g_strPeriodEnd         As String = "end"
+Public Const g_strReturnDue         As String = "due"
+Public Const g_strReturnStatus      As String = "status"
+Public Const g_strReturnReceived    As String = "received"
+
+Public Const g_strTextChangeTaxPeriodTo   As String = vbCrLf & vbCrLf & "Tax Period:" & vbCrLf
+Public Const g_strTextChangeOriginalTo    As String = "Original amount:"
+Public Const g_strTextChangeOutstandingTo As String = "Outstanding amount:"
+Public Const g_strTextChangeLiabilitiesTo As String = "Liabilities:" & vbCrLf
+Public Const g_strTextChangeStatusOTo     As String = "status:Open"
+Public Const g_strTextChangeStatusFTo     As String = "status:Fulfilled"
+
+
+Public Const g_strTRUE                      As String = "True"
+
+Public Const g_strPeriodInput   As String = "Please enter the period key?"
+Public Const g_strDECLARATION   As String = "Declaration" & vbCrLf & vbCrLf & _
+                                "When you submit the above information you are making a legal " & _
+                                "declaration that the information is true and complete. A false " & _
+                                "declaration can result in prosecution." & vbCrLf & vbCrLf & _
+                                "Continue with submission?"
+Public Const g_strErrorReturnData As String = "Please check your VAT return data and try again"
+Public Const g_strErrorPeriodKey  As String = "You need to confirm your obligations before you can submit your return." & vbCrLf & _
+                                              "Please retrieve your obligations using the 'Retrieve obligations' button."
+Public Const g_strERR_AUTH      As String = "There has been an issue in authenticating with the HMRC service." & vbCrLf & _
+                                            vbCrLf & "Please ensure that you have a valid user ID and password and try again."
+
+Public Const g_strErr_InvalidUserAccount As String = "Your account could not be validated." & vbCrLf & vbCrLf & _
+                                                    "This service is restricted to organisations that have registered with PwC." & vbCrLf & _
+                                                    "Please contact PwC VAT eFile support."
+                                                    
+Public Const g_strMESSAGE_OBLIGATIONS_CHECK As String = "You need to confirm that you have successfully registered for MTD with HMRC and have received email confirmation from the tax authority." & vbCrLf & vbCrLf & _
+                                                        "You will not be able to retrieve your obligations without this confirmation from HMRC."
+
+Public Const g_lngERR_HMRC_LOGIN As Long = -2147012890
+Public Const g_lngERR_PwC_LOGIN  As Long = -2147012891
+Public Const g_lngErr_HMRC_USER   As Long = -2147024891
+
+Public Const g_lngERR_HMRC_SUBMIT As Long = 500
+
+Public Const g_strERR_HMRC_LOGIN As String = "Could not log in to HRMC service." & vbCrLf & vbCrLf & _
+                                             "Please check your login credentials."
+Public Const g_strERR_PwC_LOGIN  As String = "The application could not verify with PwC's registration service." & vbCrLf & vbCrLf & _
+                                             "Please ensure that " & vbCrLf & _
+                                             "1. You have registered with PwC in order to use this service." & vbCrLf & _
+                                             "2. Your firewall is able allows traffic to https://api-vatfiling.pwc.co.uk/api/subscription/GB123456789/isactive"
+
+Public Const g_strERR_HMRC_SUBMIT As String = "There was a problem in communicating with the HMRC systems." & vbCrLf & vbCrLf & _
+                                              "Please try again later.  You may wish to contact HMRC to confirm the nature of the issue."
+                                              
+Public Const g_strERR_HMRC_USER   As String = "There was a problem in communicating with the HMRC systems." & vbCrLf & vbCrLf & _
+                                              "Please try again later."
+                                              
+Public Const g_strERROR_RETURN_VALUES As String = "There was an error with the values on your return." & vbCrLf & _
+                                                  "Please note:" & vbCrLf & vbCrLf & _
+                                                  "Box 5 value must be positive." & vbCrLf & _
+                                                  "All box values must be numeric"
+Public Const g_strErrVRN               As String = "Please check your VAT registration number in cell 'C5'."
+
+Public Const g_strErrorOpenObligations As String = "You have no open obligations to file."
+Public Const g_strObligationsSelect    As String = "You must select a period to file against."
+Public Const g_strResponseObligations  As String = "You have the following obligations for the specified period:" & vbCrLf
+Public Const g_strErrLoginCode         As String = "You need to copy the HMRC authentication code into the text box to proceed."
+
+Public Const g_sngERR_ProtectedCell As Single = 1004
+Public Const g_strSHEET_VAT_NAME As String = "HMRCUserId,HMRCPassword,VATRegNum,userFullName,emailAddress,companyName,line1,line2,postcode,PeriodKey,VATSales,VATAcquisitions,TotalVAT,VATReclaimed,NetVAT,SalesExVAT,PurchasesExVAT,SuppliesExVAT,AcquisitionsExVAT,Finalised,LoginStatus,SubmissionDate,PaymentIndicator,SubmissionID,PeriodStart,PeriodEnd"
+Public Const g_strSHEET_HMRC_NAME As String = "ClientId,ClientSecret,HMRCLogin,VATUri,TokenUri,GrantURI,ManageUri"
+
+Public Const g_strInformationAuthenticate   As String = "You need to authenticate with HMRC's service before you can submit your VAT return." & vbCrLf & vbCrLf & _
+                                                        "You will need a valid HMRC userID and password to proceed." & vbCrLf & vbCrLf & _
+                                                        "If you have a valid HMRC userID and password then click the 'Authenticate' button and follow the onscreen instructions." & vbCrLf & vbCrLf & _
+                                                        "If you do not have a valid HMRC account then please contact HMRC to request one."
+
+Public Const g_strInformationObligations   As String = "HMRC have stipualted that users should review their open filing obligations prior to submitting their VAT return" & vbCrLf & vbCrLf & _
+                                                       "You should click the 'Retrieve obligations' button once you have authenticated." & vbCrLf & vbCrLf & _
+                                                       "You will then be prompted to enter a date range, spanning your return obligation period." & vbCrLf & vbCrLf & _
+                                                       "The period key for the last open obligation will automatically be selected." & vbCrLf & vbCrLf & _
+                                                       "You should change this manually in cell C15 on the spreadsheet should you wish to file for another period."
+                        
+
+Public Const g_strInformationSubmit   As String = "Once you have confirmed your return figures you should click the 'submit' button to file your VAT return with HMRC." & vbCrLf & vbCrLf & _
+                                                  "HMRC will return a submission ID which will be stored on the worksheet upon their receipt of your VAT return figures."
+
+Public Const g_strInformationView   As String = "You can view your submitted returns by clicking the 'View' button."
+
+Public Const g_strInformationLiabilities   As String = "You can view your liabilites by clicking the 'Liabilities' button."
+
+Public Const g_strInformationPayments   As String = "You can view your payments by clicking the 'Payments' button."
+
+Public Const g_strInformationBox    As String = "Your return information should be entered into the 9 boxes provided." & vbCrLf & vbCrLf & _
+                                               "Please note:" & vbCrLf & vbCrLf & "1. Boxes 3 and 5 will be automatically calculated." & vbCrLf & _
+                                               "2. Figures in boxes 1 to 4 must be numbers to 2 decimal places." & vbCrLf & _
+                                               "3. The box 5 figure must be positive and to 2 decimal places." & vbCrLf & _
+                                               "4. Figures in boxes 6 to 9 must be positive whole numbers." & vbCrLf & _
+                                               "5. You must enter a figure in each box.  Do not leave a box blank."
+
+
+Public Const g_strMTDRegistration   As String = "IMPORTANT NOTICE" & vbCrLf & vbCrLf & _
+                                                "You should only use this software to submit your VAT return if you have successfully registered for MTD with HMRC." & vbCrLf & vbCrLf & _
+                                                "If you have not had confirmation from HMRC that your account has been successfully migrated to MTD you will not be able to use this service and you should file your VAT return via the HMRC website." & vbCrLf & vbCrLf & _
+                                                "If you are in any doubt as to the status of your HMRC account then please log into your account on the HMRC website."
+
+Public Const g_strObligationsNone   As String = "You do not have any open periods to file against. " & vbCrLf & _
+                                                vbCrLf & "Please visit your online HMRC account to confirm this or contact HMRC."
+
+Public Const g_strRangeVRN          As String = "VATRegNum"
+Public Const g_strRangeACCTOKEN     As String = "HMRCAccessToken"
+
+Public Const g_strLoggedIn  As String = "Logged in"
+Public Const g_strNotLogged As String = "Logged out"
+
+Public g_strRangeNames() As String
+Public g_strRangeHMRCConnect() As String
+Public g_blnLoginStatus As Boolean
+Public g_strBoxFomula(7) As String
+
+
+Public Sub displayMessage(ByVal strMessage As String, ByVal strTitle As String)
+
+Dim frmDisplay As frmMessage
+Dim strGreet   As String
+
+On Error GoTo Err_Handler
+
+'strGreet = ThisWorkbook.Worksheets(g_strSHEET_VAT100).Range("userFullName").value
+'strGreet = "Dear " & strGreet
+strGreet = ""
+Set frmDisplay = New frmMessage
+frmDisplay.txtMessage = strGreet + vbCrLf & vbCrLf & strMessage
+frmDisplay.fraMessage.Caption = strTitle
+frmDisplay.Show vbModal
+
+Set frmDisplay = Nothing
+
+Exit Sub
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Sub
+
+Public Function formatResponseText(ByVal strText As String) As String
+
+On Error GoTo Err_Handler
+
+formatResponseText = Replace(strText, "{", "")
+formatResponseText = Replace(formatResponseText, "}", "")
+formatResponseText = Replace(formatResponseText, Chr(34), "")
+formatResponseText = Replace(formatResponseText, ",", Chr(32))
+
+Exit Function
+
+Err_Handler:
+
+errorHandler Err.Number, Err.Description
+
+End Function
+
+' InQuest injected base64 decoded content
+' K+-zd
+' xZ+-
+
+INQUEST-PP=macro

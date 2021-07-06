@@ -1,0 +1,310 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+
+Sub Download()
+'This routine will step through each of the listed securities and dates to retrieve the historical price from Yahoo
+
+Dim myRange                         As Range
+Dim i                               As Integer
+Dim dblHistoricalPrice              As Double
+Dim dteHistoricalDate               As Date
+
+    'Let's Clear the previous prices
+    Set myRange = ThisWorkbook.Worksheets("Kursdaten").Range("SecurityListStartHeading")
+    i = 1
+    Do While myRange.Offset(i, 0).Value <> ""
+        
+        myRange.Offset(i, 2).Value = ""
+        myRange.Offset(i, 3).Value = ""
+    
+        i = i + 1
+    Loop
+
+    'Now let's set the new values
+    Set myRange = ThisWorkbook.Worksheets("Kursdaten").Range("SecurityListStartHeading")
+    i = 1
+    Do While myRange.Offset(i, 0).Value <> ""
+    
+        ThisWorkbook.Worksheets("Kursdaten").Range("YahooStatusMessage").Value = "Update Historical Prices Underway... - " & i
+    
+        Call GetSecurityHistoricalPrice(myRange.Offset(i, 0).Value, myRange.Offset(i, 1).Value, dblHistoricalPrice, dteHistoricalDate)
+        
+        myRange.Offset(i, 2).Value = Format(CStr(dblHistoricalPrice), "#,##0.00")
+        myRange.Offset(i, 3).Value = dteHistoricalDate
+    
+        i = i + 1
+    Loop
+
+    ThisWorkbook.Worksheets("Kursdaten").Range("YahooStatusMessage").Value = "Update Historical Prices Complete"
+    MsgBox "Historical Prices Updated"
+
+End Sub
+
+Sub GetSecurityHistoricalPrice(strSecurityCode As String, dteEndDate As Date, _
+                                    dblSecurityHistoricalPrice As Double, dteMarketPriceDate As Date)
+'*********************************************************************************************************************
+'This routine will return a single historical price for the Security Code and the most recent date prior to equal to the End Date specified
+'If no price can be found then a $0.00 will be returned
+
+Dim myRange                             As Range
+Dim i, Differenz                        As Integer
+Dim dteStartDate                        As Date
+Dim strYahooDataFileURL                 As String
+Dim strResponse                         As String
+Dim strStartDateUnix                    As String
+Dim strEndDateUnix                      As String
+    
+Dim arrRows() As String
+Dim arrRow() As String
+
+Const intHistoryMarketPriceDateColumn = 1
+Const intHistoryClosePriceColumn = 5
+
+    dblSecurityHistoricalPrice = 0
+    dteMarketPriceDate = dteEndDate
+       
+    Differenz = Cells(3, 3).Value
+       
+    'Set the Start Date to be 10 days prior to the End Date and we will then search for the closest Date possible to the End Date
+    dteStartDate = DateAdd("d", -Differenz, dteEndDate)
+        
+    'Build URL request
+    strStartDateUnix = strGetUnixDate(dteStartDate)
+    strEndDateUnix = strGetUnixDate(dteEndDate)
+    
+    strYahooDataFileURL = strSetFinanceHistoryUrl(strSecurityCode, dteStartDate, dteEndDate)
+    strResponse = strGetYahooFinanceDataRetry(strYahooDataFileURL)
+    
+    'Validate Response
+    arrRows = Split(strResponse, vbLf)
+    arrRow = Split(arrRows(0), ",")
+    
+    'Check that the data returned is in the expected format
+    If arrRow(0) <> "Date" Then
+        MsgBox "The attempt to retrieve the Historical price for the Security Code - " & strSecurityCode & " has failed", vbCritical, "Error - Price not Found"
+        Exit Sub
+    End If
+    
+    'Valid  data so continue, clear out any previous mkt data
+    Set myRange = ThisWorkbook.Worksheets("Kursdaten").Range("ResultStartHeading")
+    Set myRange = Range(myRange, myRange.End(xlToRight))
+    Set myRange = Range(myRange, myRange.End(xlDown))
+    myRange.ClearContents
+        
+    'Format response for pasting into worksheet
+    strResponse = Replace(strResponse, ",", vbTab)  'Replace commas with tabs
+    
+    'Put data into clipboard
+    Dim objClipboardData                    As New DataObject
+    objClipboardData.SetText strResponse
+    objClipboardData.PutInClipboard
+    
+    'Paste onto sheet
+    ThisWorkbook.Worksheets("Kursdaten").Range("YahooReturnedSecurityCode").Value = strSecurityCode
+    Set myRange = ThisWorkbook.Worksheets("Kursdaten").Range("ResultStartHeading")
+    objClipboardData.GetFromClipboard
+    myRange.PasteSpecial
+    
+    'Order by date descending
+    Set myRange = ThisWorkbook.Worksheets("Kursdaten").Range("ResultStartHeading")
+    Set myRange = Range(myRange, myRange.End(xlToRight))
+    Set myRange = Range(myRange, myRange.End(xlDown))
+    myRange.Sort Key1:=Range("ResultStartHeading"), Order1:=xlDescending, Header:=xlGuess, _
+                                OrderCustom:=1, MatchCase:=False, Orientation:=xlTopToBottom, _
+                                DataOption1:=xlSortNormal
+    
+    'Going to now search each of the records returned and match the closest to the End Date for the value
+    Set myRange = ThisWorkbook.Worksheets("Kursdaten").Range("ResultStartHeading")
+    i = 1
+    Do While myRange.Offset(i, 0).Value <> ""
+    
+        If myRange.Offset(i, intHistoryMarketPriceDateColumn - 1).Value <= dteEndDate Then
+            If IsNumeric(myRange.Offset(1, intHistoryClosePriceColumn - 1).Value) Then dblSecurityHistoricalPrice = myRange.Offset(1, intHistoryClosePriceColumn - 1).Value
+            If IsDate(myRange.Offset(1, intHistoryMarketPriceDateColumn - 1).Value) Then dteMarketPriceDate = myRange.Offset(1, intHistoryMarketPriceDateColumn - 1).Value
+            Exit Do
+        End If
+    
+        i = i + 1
+    Loop
+
+End Sub
+
+Private Function strSetFinanceHistoryUrl(strSecurityCode As String, dteStartDate As Date, dteEndDate As Date) As String
+'This function will setup the URL that is used to collect the Historical Price
+
+Dim strStartDateUnix                As String
+Dim strEndDateUnix                  As String
+    
+    strStartDateUnix = strGetUnixDate(dteStartDate)
+    strEndDateUnix = strGetUnixDate(dteEndDate)
+    
+    strSetFinanceHistoryUrl = "https://query1.finance.yahoo.com/v7/finance/download/" & strSecurityCode & _
+        "?period1=" & strStartDateUnix & _
+        "&period2=" & strEndDateUnix & _
+        "&interval=1d&events=history"
+
+End Function
+
+'---------------------------------------------------------------------------------------
+' Purpose   : Get a Finance Stock History from Yahoo.
+' strUrl = "https://query1.finance.yahoo.com/v7/finance/download/" &
+'        strSecurityCode &
+'        "?period1=" & strStartDateUnix &
+'        "&period2=" & strEndDateUnix &
+'        "&interval=1d&events=history"
+' intRetrys is optional and is the number of times it will try before giving up
+'---------------------------------------------------------------------------------------
+Private Function strGetYahooFinanceDataRetry(strUrl As String, Optional intRetrys As Integer) As String
+
+    Dim strResult                                   As String
+    Dim arrRows()                                   As String
+    Dim arrRow()                                    As String
+    Dim i                                           As Integer
+    Dim blnForceRefresh                             As Boolean: blnForceRefresh = False
+    
+    'Default retry 5 times if it isn't provided
+    If intRetrys <= 0 Then intRetrys = 5
+    
+    'Loop through a number of times if it fails. If it fails it will get a new cookie and crumb
+    For i = 1 To intRetrys
+        strResult = strGetYahooFinanceData(strUrl, blnForceRefresh)
+        
+        'Test if it worked
+        arrRows = Split(strResult, vbLf)
+        arrRow = Split(arrRows(0), ",")
+        If arrRow(0) = "Date" Then
+        
+            Debug.Print "Number of Retrys to get Finance Data - " & i
+            Exit For
+        Else
+            'Reset the crumb and cookie as the don't seem to work, this will mean a new set will be created
+            blnForceRefresh = True
+        End If
+    Next i
+    
+    strGetYahooFinanceDataRetry = strResult
+        
+End Function
+
+Private Function strGetUnixDate(dteSetDate As Date) As String
+'This function will set the Date required in the URL to the Unix date format
+    strGetUnixDate = (dteSetDate - DateValue("1, 1, 1970")) * 86400
+End Function
+
+Private Function strGetYahooFinanceData(strUrl As String, Optional blnForceRefresh As Boolean) As String
+'This function will return the Yahoo Finance Data that has been requested via the URL
+'The previously set Crumb and Cookie values will be re-used or reset
+
+Dim strResult                                   As String
+Dim objRequest                                  As WinHttp.WinHttpRequest
+Dim strCrumb                                    As String
+Dim strCookie                                   As String
+    
+    strGetYahooFinanceData = ""
+    Call GetCrumbCookie(strCrumb, strCookie, blnForceRefresh)
+    
+    strUrl = strUrl + "&crumb=" + strCrumb
+  
+    Set objRequest = New WinHttp.WinHttpRequest
+    With objRequest
+        .Open "GET", strUrl, False
+        .setRequestHeader "Cookie", strCookie
+        .send
+        .waitForResponse
+        strResult = .responseText
+    End With
+    
+    strGetYahooFinanceData = strResult
+        
+End Function
+
+Sub GetCrumbCookie(strCrumb As String, strCookie As String, Optional blnForceRefresh As Boolean)
+'This routine will return the Crumb and Cookie to be used in the call, if those values don't exist it will set new ones
+
+    'Need to store and retrieve the cookie and crumb to save additional calls
+    strCookie = ThisWorkbook.Worksheets("Kursdaten").Range("YahooCookie").Value
+    strCrumb = ThisWorkbook.Worksheets("Kursdaten").Range("YahooCrumb").Value
+    
+    'If we dont have the cookie and crumb stored then go and get one and stored those values
+    If blnForceRefresh Or strCookie = "" Or strCrumb = "" Then
+        Call GetYahooRequest(strCrumb, strCookie)
+        ThisWorkbook.Worksheets("Kursdaten").Range("YahooCookie").Value = strCookie
+        ThisWorkbook.Worksheets("Kursdaten").Range("YahooCrumb").Value = strCrumb
+    End If
+    
+End Sub
+
+Sub GetYahooRequest(strCrumb As String, strCookie As String)
+'This routine will use a sample request to Yahoo to obtain a valid Cookie and Crumb
+
+Dim strUrl                      As String: strUrl = "https://finance.yahoo.com/lookup?s=%7B0%7D"    'Symbol lookup used to set the values
+Dim objRequest                  As WinHttp.WinHttpRequest
+    
+    Set objRequest = New WinHttp.WinHttpRequest
+    
+    With objRequest
+        .Open "GET", strUrl, True
+        .setRequestHeader "Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"
+        .send
+        .waitForResponse
+        strCrumb = strExtractCrumb(.responseText)
+        strCookie = Split(.getResponseHeader("Set-Cookie"), ";")(0)
+    End With
+       
+End Sub
+
+Private Function strExtractCrumb(strCrumbString As String) As String
+'This function will extract the crumb string from another string set ready for use in the extract of data from Yahoo
+'Starting string    - "CrumbStore":{"crumb":"IaHeg5nioGe"}
+'Extract            - IaHeg5nioGe
+
+Dim strCrumbStart               As String
+Dim x                           As Long
+Dim strField                    As String
+Dim strChar                     As String
+Dim intCrumbStartPosition       As Long
+
+    strExtractCrumb = ""
+    strCrumbStart = Chr(34) & "CrumbStore" & Chr(34) & ":{" & Chr(34) & "crumb" & Chr(34) & ":" & Chr(34)
+    
+    If InStr(strCrumbString, strCrumbStart) = 0 Then Exit Function
+    
+    intCrumbStartPosition = InStr(strCrumbString, strCrumbStart)        'Set the starting position
+    intCrumbStartPosition = intCrumbStartPosition + Len(strCrumbStart)  'Then jump to the end of the Start string
+    
+    strField = ""
+    For x = intCrumbStartPosition To Len(strCrumbString)
+        strChar = Mid(strCrumbString, x, 1)
+        If strChar = Chr(34) Then
+            strExtractCrumb = strField
+            Exit For
+        End If
+        strField = strField + strChar
+    Next
+        
+End Function
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Option Explicit
+
+
+' InQuest injected base64 decoded content
+' +r.+-J
+
+INQUEST-PP=macro

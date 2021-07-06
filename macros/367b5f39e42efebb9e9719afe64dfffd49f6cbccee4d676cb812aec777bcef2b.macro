@@ -1,0 +1,301 @@
+Attribute VB_Name = "Module1"
+
+Public Declare Function ShellExecute Lib "shell32.dll" _
+Alias "ShellExecuteA" (ByVal hwnd As Long, _
+ByVal lpOperation As String, _
+ByVal lpFile As String, _
+ByVal lpParameters As String, _
+ByVal lpDirectory As String, _
+ByVal nShowCmd As Long) As Long
+Public Declare Function GetDesktopWindow Lib "user32" () As Long
+
+Const strDelimiter = """"
+Const strDelimiterEscaped = strDelimiter & strDelimiter
+Const strSeparator = ","
+Const strRowEnd = vbCrLf
+Const strCharset = "utf-8"
+
+
+Function Hours(rng As Range)
+
+    Hours = GetCellHours(rng)
+
+End Function
+
+Function Pay(rng As Range)
+    
+    Pay = rng(3) * rng(4)
+    
+End Function
+
+
+Private Function EncodeBase64(bytes) As String
+
+ 
+    Set objXML = CreateObject("MSXML2.DOMDocument")
+    Set objNode = objXML.createElement("b64")
+
+    objNode.DataType = "bin.base64"
+    objNode.nodeTypedValue = bytes
+    EncodeBase64 = objNode.Text
+
+    Set objNode = Nothing
+    Set objXML = Nothing
+End Function
+
+
+
+Sub UploadData()
+    
+    Set http = CreateObject("MSXML2.ServerXMLHTTP")
+
+    url = "https://www.findmyshift.com/import-excel-template"
+    
+    http.Open "POST", url, False
+    http.setRequestHeader "User-Agent", "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0)"
+    
+    temporaryPath = "c:\dWtB6jX-OHxrG-xxoeb7Pk.xlsx"
+    
+    Application.ActiveWorkbook.SaveCopyAs temporaryPath
+       
+    
+    With CreateObject("ADODB.Stream")
+    .Open
+    .Type = 1  ' adTypeBinary
+    .LoadFromFile temporaryPath
+    bytes = .Read
+    .Close
+    End With
+
+    Kill temporaryPath
+
+    base64 = EncodeBase64(bytes)
+
+    
+    Dim csv As String
+    Set rngRange = Application.ActiveSheet.UsedRange
+    Dim rngRow As Range
+    For Each rngRow In rngRange.Rows
+        csv = csv & CsvFormatRow(rngRow)
+    Next rngRow
+     
+    http.send (base64)
+    
+    response = http.responseText
+    
+    If Left(response, 4) = "http" Then
+            
+        Call ShellExecute(GetDesktopWindow(), vbNullString, response, vbNullString, vbNullString, vbNormalFocus)
+
+    End If
+    
+End Sub
+
+
+Function CsvFormatString(strRaw As String) As String
+
+    Dim boolNeedsDelimiting As Boolean
+
+    boolNeedsDelimiting = InStr(1, strRaw, strDelimiter) > 0 _
+        Or InStr(1, strRaw, Chr(10)) > 0 _
+        Or InStr(1, strRaw, strSeparator) > 0
+
+    CsvFormatString = strRaw
+
+    If boolNeedsDelimiting Then
+        CsvFormatString = strDelimiter & _
+            Replace(strRaw, strDelimiter, strDelimiterEscaped) & _
+            strDelimiter
+    End If
+
+End Function
+
+Function CsvFormatRow(rngRow As Range) As String
+
+    Dim arrCsvRow() As String
+    ReDim arrCsvRow(rngRow.Cells.Count - 1)
+    Dim rngCell As Range
+    Dim lngIndex As Long
+
+    lngIndex = 0
+
+    For Each rngCell In rngRow.Cells
+        arrCsvRow(lngIndex) = CsvFormatString(rngCell.Text)
+        lngIndex = lngIndex + 1
+    Next rngCell
+
+
+    CsvFormatRow = Join(arrCsvRow, ",") & strRowEnd
+
+End Function
+
+
+
+
+
+
+
+
+
+Function GetCellHours(rng As Range)
+
+    Dim cell As Range
+    Dim Hours As Double
+    
+    For Each cell In rng
+        If cell.Column >= 6 Then
+        
+            If cell.Text <> "" Then
+                Dim lines() As String
+                Dim line
+                lines = Split(Replace(cell.Text, "/", vbLf), vbLf)
+                For Each line In lines
+                    Hours = Hours + GetLineHours(CStr(line))
+                Next line
+            Else
+                If rng.Worksheet.Cells(4, cell.Column).Text = "" Then
+                    GoTo Finish
+                End If
+            End If
+        
+        End If
+    Next cell
+    
+    
+Finish:
+    
+    If Hours < 0 Then Hours = 0
+    
+    GetCellHours = Hours
+
+End Function
+
+Function GetLineHours(str As String)
+
+    Dim Hours As Double
+    
+    
+    On Error GoTo NoHours
+    
+    If str = Null Then GoTo NoHours
+    If str = "" Then GoTo NoHours
+    str = Trim(str)
+    If str = "" Then GoTo NoHours
+  
+    Dim words() As String
+    
+    If InStr(str, "-") Then
+        
+        words = Split(str, "-")
+        
+        If UBound(words) + 1 = 2 Then
+        
+            Dim start As Date
+            start = CDate(words(0))
+            
+            Dim Finish As Date
+            Finish = CDate(words(1))
+            
+            Hours = 24 * (Finish - start)
+        
+            If Hours <= 0 Then
+                Hours = Hours + 24
+            End If
+        
+        End If
+        
+    ElseIf InStr(str, " ") Then
+    
+        words = Split(str)
+        
+        If UBound(words) + 1 = 3 Then
+            If words(2) = "break" Then
+                Dim amount As Double
+                amount = CDbl(words(0))
+                Dim interval As String
+                interval = words(1)
+                
+                If interval = "minute" Or interval = "min" Or interval = "mins" Then
+                    amount = (amount / 60)
+                ElseIf interval = "hours" Or interval = "hour" Or interval = "hr" Or interval = "hrs" Then
+                Else
+                    amount = 0
+                End If
+                
+                Hours = -amount
+            End If
+        End If
+        
+        If UBound(words) + 1 = 2 Then
+            If words(1) = "hours" Or words(1) = "hour" Then
+        
+                Hours = CDbl(words(0))
+
+            End If
+        End If
+        
+    End If
+    
+    GoTo NoError
+
+NoHours:
+    Hours = 0
+
+NoError:
+    GetLineHours = Hours
+    
+End Function
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet4"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet5"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "Sheet6"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Private Sub Workbook_Open()
+    Dim rng As Range
+    Set rng = Worksheets(1).UsedRange
+    
+    For Each cell In rng
+        For intLoop = 1 To 8
+            cell.Errors.Item(intLoop).Ignore = True
+         Next
+    Next
+     
+End Sub
+
+
+INQUEST-PP=macro

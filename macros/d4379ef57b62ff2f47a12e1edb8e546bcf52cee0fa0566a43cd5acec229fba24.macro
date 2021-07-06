@@ -1,0 +1,3431 @@
+Attribute VB_Name = "AutoOpen"
+'***********************************************************************
+'Word 97 Macro for WinFax Pro 8.0x, 7.5, 7
+'Symantec Corporation
+'September 19th, 1997
+'***********************************************************************
+Public Sub MAIN()
+ Dim x
+ Dim Counter
+    On Error Resume Next
+    x = WordBasic.CountToolbars()
+    For Counter = 1 To x
+        If WordBasic.[ToolbarName$](Counter, 1) = "WfxToolBar" Then WordBasic.ViewToolbars Toolbar:="WfxToolBar", Delete:=1
+    Next Counter
+    WordBasic.NewToolbar Name:="WfxToolBar", Context:=1
+    WordBasic.AddButton "WfxToolBar", 1, 2, "InstallaMacro", "Inizia l'installazione delle macro di Word 97", 1
+    WordBasic.AddButton "WfxToolBar", 2, 2, "DisinstallaMacro", "Disinstalla le macro di WinFax", 50
+    WordBasic.MoveToolbar "WfxToolBar", 1, 0, 100
+        
+    WordBasic.ViewPage
+    WordBasic.DocMaximize 1
+ '   Set macro = ActiveWindow.Document
+ '   macro.Activate
+ '   StartWizard.MAIN
+End Sub
+Attribute VB_Name = "DDEFaxMerge"
+'***********************************************************************
+'DDEFaxMerge Word 97 Macro for WinFax Pro 9.0x
+'Talkworks PRO 2.0 / Talkworks PRO 3.0
+'Symantec Corporation
+'April 14th, 1999
+'***********************************************************************
+' modified to allow for table support in SR-2
+' starts Controller only if WinFax/Talkworks is not active.
+' allows any format for time/date without error
+
+Type OSVERSIONINFO
+         dwOSVersionInfoSize As Long
+         dwMajorVersion As Long
+         dwMinorVersion As Long
+         dwBuildNumber As Long
+         dwPlatformId As Long
+         szCSDVersion As String * 128   ' Maintenance string for PSS usage.
+End Type
+ 
+'Public Const VER_PLATFORM_WIN32s = 0
+Public Const VER_PLATFORM_WIN32_WINDOWS = 1
+Public Const VER_PLATFORM_WIN32_NT = 2
+ 
+Declare Function GetVersionEx Lib "kernel32" Alias "GetVersionExA" (lpVersionInformation As OSVERSIONINFO) As Long
+'************************************************************************
+Global result As Integer
+Global VersionNum As String
+Private Declare Function GetDriveTypeA Lib "kernel32" (ByVal nDrive As String) As Integer
+Private Declare Function WinExec Lib "kernel32" (ByVal lpCmdLine As String, ByVal nCmdShow As Integer) As Integer
+Private Declare Function FindWindowA Lib "User32" (ByVal lpClassName As String, ByVal lpWindowName As String) As Integer
+Private Declare Function DisplayThumbnail Lib "WfxMacro.dll" (ByVal hWnd As Integer, ByVal szFileName As String, ByVal top As Integer, ByVal left As Integer, ByVal right As Integer, ByVal bottom As Integer) As Integer
+Private Declare Function IsCoverFillable Lib "WfxMacro.dll" (ByVal szFileName As String) As Integer
+Private Declare Function GetCoverDesc Lib "WfxMacro.dll" (ByVal szFileName As String) As String
+Private Declare Function GetBoolRegVal Lib "WfxMacro.dll" (ByVal szSubkeyname As String, ByVal szValueName As String) As Integer
+Private Declare Function SetBoolRegVal Lib "WfxMacro.dll" (ByVal szSubkeyname As String, ByVal szValueName As String, ByVal newvalue As Integer) As Integer
+
+' ***** Registry Read/Write Settings *******
+
+Global Const REG_SZ As Long = 1
+Global Const REG_DWORD As Long = 4
+
+Global Const HKEY_CLASSES_ROOT = &H80000000
+Global Const HKEY_CURRENT_USER = &H80000001
+Global Const HKEY_LOCAL_MACHINE = &H80000002
+Global Const HKEY_USERS = &H80000003
+
+Global Const ERROR_NONE = 0
+Global Const ERROR_BADDB = 1
+Global Const ERROR_BADKEY = 2
+Global Const ERROR_CANTOPEN = 3
+Global Const ERROR_CANTREAD = 4
+Global Const ERROR_CANTWRITE = 5
+Global Const ERROR_OUTOFMEMORY = 6
+Global Const ERROR_INVALID_PARAMETER = 7
+Global Const ERROR_ACCESS_DENIED = 8
+Global Const ERROR_INVALID_PARAMETERS = 87
+Global Const ERROR_NO_MORE_ITEMS = 259
+
+Global Const KEY_ALL_ACCESS = &H3F
+
+Global Const REG_OPTION_NON_VOLATILE = 0
+
+Declare Function RegCloseKey Lib "advapi32.dll" (ByVal hKey As Long) As Long
+Declare Function RegCreateKeyEx Lib "advapi32.dll" Alias "RegCreateKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal Reserved As Long, ByVal lpClass As String, ByVal dwOptions As Long, ByVal samDesired As Long, ByVal lpSecurityAttributes As Long, phkResult As Long, lpdwDisposition As Long) As Long
+Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal ulOptions As Long, ByVal samDesired As Long, phkResult As Long) As Long
+Declare Function RegQueryValueExString Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As String, lpcbData As Long) As Long
+Declare Function RegQueryValueExLong Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, lpData As Long, lpcbData As Long) As Long
+Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As Long, lpcbData As Long) As Long
+Declare Function RegSetValueExString Lib "advapi32.dll" Alias "RegSetValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal Reserved As Long, ByVal dwType As Long, ByVal lpValue As String, ByVal cbData As Long) As Long
+Declare Function RegSetValueExLong Lib "advapi32.dll" Alias "RegSetValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal Reserved As Long, ByVal dwType As Long, lpValue As Long, ByVal cbData As Long) As Long
+
+' ***** End of registry read/write definitions
+
+Dim CRLF As String
+Dim PeakTimeCASFormat As Long
+Dim PeakTimeCASFormat802 As Long
+
+Dim OldPrinterName$, WfxPrinterName$, CoverPage$, CoverPageText$, LastDrive$, Section$, PreviewOnOff, BackGrnd, ModemClass$
+Dim AttachList__$(), DriveList__$(), DirList__$(), FileList__$(), Styles__$(), WfxInfo__$()
+Dim ShowOrNot, SendNowOrNot, SendCoverOrNot, SendAttachmentOrNot, SendHighOrLow, SendMode, AttachmentCounter, SendDlgWasOn
+
+'***********************************************************************
+Public Sub MAIN()
+
+CRLF = Chr$(13)
+
+' check to see if any documents are active.
+If Windows.Count <= 0 Then
+   MsgBox ("Non risulta aperto nessun documento da trasmettere via fax.")
+   Exit Sub
+End If
+
+ItemText = "Prima di avviare la Stampa unione di WinFax, controllare quanto segue:" & CRLF & CRLF
+ItemText = ItemText & "- Il documento attivo viene unito tramite l'opzione 'Strumenti', 'Stampa unione' con i dati esatti." & CRLF
+ItemText = ItemText & "- Lo stile 'wfxFaxNum' viene applicato al documento attivo." & CRLF
+ItemText = ItemText & "- Il documento attivo contiene un'interruzione di sezione per ogni unione." & CRLF
+ItemText = ItemText & "- I numeri di fax includono gli indicativi di paese, se necessario. " & CRLF
+ItemText = ItemText & "- Per maggiori informazioni, consultare il file WFXMACRO.TXT." & CRLF
+ItemText = ItemText & CRLF
+ItemText = ItemText & "Per maggiori informazioni sulla Stampa unione di Word 97, fare clic su ? per visualizzare la Guida in linea" & CRLF
+ItemText = ItemText & CRLF
+ItemText = ItemText & "Avviare la macro di Stampa unione di WinFax adesso?"
+
+result = MsgBox(ItemText, vbYesNo + vbInformation + vbMsgBoxHelpButton, "Stampa unione di WinFax ", "WDMAIN8.HLP", 0)
+
+If result = vbNo Then
+  Exit Sub
+End If
+
+ReDim AttachList__$(50)
+ReDim DriveList__$(25)
+ReDim DirList__$(0)
+ReDim FileList__$(0)
+ReDim Styles__$(7)
+' Concord
+'ReDim WfxInfo__$(7)
+ReDim WfxInfo__$(8)
+Dim FaxNumStyleFound
+Dim stylecount
+Dim i
+Dim x
+Dim Ret
+Dim WizName$
+Dim SectionCount
+Dim Counter
+Dim ChanNum
+Dim x_$
+
+CRLF = Chr$(13)
+OldPrinterName$ = ""
+WfxPrinterName$ = ""
+CoverPage$ = ""
+CoverPageText$ = ""
+LastDrive$ = ""
+Section$ = ""
+PreviewOnOff = 0
+BackGrnd = 0
+ModemClass$ = ""
+ShowOrNot = 0
+SendNowOrNot = 0
+SendCoverOrNot = 0
+SendAttachmentOrNot = 0
+SendHighOrLow = 0
+SendMode = 0
+AttachmentCounter = 0
+SendDlgWasOn = 0
+    Styles__$(0) = "WfxFaxNum"
+    Styles__$(1) = "WfxRecipient"
+    Styles__$(2) = "WfxTime"
+    Styles__$(3) = "WfxDate"
+    Styles__$(4) = "WfxCompany"
+    Styles__$(5) = "WfxSubject"
+    Styles__$(6) = "WfxKeyWord"
+    Styles__$(7) = "WfxBillCode"
+    WfxPrinterName$ = "WinFax"
+    
+    ' Get VersionNum.
+    ' For 8.02 we need to look at HKEY_LOCAL_MACHINE.
+    ' For 8.0 and 8.01 we need to look at HKEY_CURRENT_USER
+    VersionNum = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "Version", "")
+    VersionNum802 = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "Version", "")
+    If VersionNum = "" Or (VersionNum <> "" And VersionNum802 <> "") Then
+      VersionNum = VersionNum802
+    End If
+    
+    ' get the preview mode setting, if YES, set it to NO (OFF)
+    InitialPreviewFax = QueryValue("Software\Delrina\WinFax\7.0\General", "PreviewFax")
+    If UCase$(left$(InitialPreviewFax, 1)) = "Y" Then
+         Res = MsgBox("La modalit|fffd| Anteprima/Annota di WinFax |fffd| disabilitata durante l'unione dei fax." + CRLF + "Questa opzione verr|fffd| abilitata una volta completata l'unione.", vbOKOnly + vbInformation, "WinFax Merge")
+         SetKeyValue "Software\Delrina\WinFax\7.0\General", "PreviewFax", "No", REG_SZ
+    End If
+            
+    FaxNumStyleFound = 0
+    stylecount = WordBasic.CountStyles()
+    For i = 1 To stylecount
+        If UCase(WordBasic.[StyleName$](i)) = UCase(Styles__$(0)) Then
+            WordBasic.StartOfDocument
+            WordBasic.EditFindStyle Style:=Styles__$(0)
+            WordBasic.EditFind Find:="", WholeWord:=0, MatchCase:=0, Direction:=0, Format:=1
+            FaxNumStyleFound = WordBasic.EditFindFound()
+            GoTo QuitLoop
+        End If
+    Next i
+QuitLoop:
+    If Not FaxNumStyleFound Then
+        WordBasic.MsgBox "Lo stile WfxFaxNum non |fffd| stato applicato a questo documento." + Chr(13) + "Le macro non pu|fffd| essere avviata.", "Error", 16
+        Exit Sub
+    End If
+
+    GetDefaults
+    x = CheckIfWinFaxIsActive
+    GetOptions
+    If SendMode <> 0 And Mid(WordBasic.[FileName$](), 2, 2) <> ":\" Then
+        Ret = WordBasic.MsgBox("Questo documento non |fffd| ancora stato salvato." + Chr(13) + "Click OK to display the File Save As dialog", WizName$, 16)
+        WordBasic.FileSave
+    End If
+    If ShowOrNot = 1 Then
+        If SendCoverOrNot Then SendCover
+        If SendAttachmentOrNot Then AddAttachments
+    End If
+
+    SectionCount = GetNumSections
+    WordBasic.StartOfDocument
+    ' modified the following line for Word 97/Wfx 8.0 (added -1)
+    ' for section count, word 97 reports n + 1 sections.
+    For Counter = 1 To SectionCount - 1
+        Section$ = "s" + WordBasic.[LTrim$](Str(Counter))
+' Concord
+'        ReDim WfxInfo__$(7)
+        ReDim WfxInfo__$(8)
+        WordBasic.ScreenUpdating 0
+        GetDocumentInfo
+        WordBasic.ScreenUpdating 1
+        If SendNowOrNot Then
+           If VersionNum < "8.0" Then
+                   WfxInfo__$(2) = "23:00:00"
+           End If
+           If VersionNum >= "8.0" Then
+                 ' place code here to convert the peaktime integer to valid time.
+                  PeakTimeCASFormat = QueryValue("Software\Delrina\WinFax\7.0\Peak Times", "EndPeakTime")
+                  PeakTimeCASFormat802 = QueryValueHLM("Software\Delrina\WinFax\7.0\Peak Times", "EndPeakTime")
+                  If PeakTimeCASFormat = vbNull Or (PeakTimeCASFormat <> vbNull And PeakTimeCASFormat802 <> vbNull) Then
+                    PeakTimeCASFormat = PeakTimeCASFormat802
+                  End If
+                  WfxInfo__$(2) = ConvertCASTime(PeakTimeCASFormat)
+           End If
+           WfxInfo__$(3) = WordBasic.[LTrim$](Str(WordBasic.Month(WordBasic.Now()))) + "/" + WordBasic.[LTrim$](Str(WordBasic.Day(WordBasic.Now()))) + "/" + WordBasic.[LTrim$](WordBasic.[Right$](Str(WordBasic.Year(WordBasic.Now())), 2))
+        End If
+        DoDDE
+        PrintAndCleanUp
+        WordBasic.WW7_EditGoTo Destination:="s"
+    Next Counter
+    
+    ' turn the preview mode back to its original state.
+    SetKeyValue "Software\Delrina\WinFax\7.0\General", "PreviewFax", InitialPreviewFax, REG_SZ
+    
+    ' delay before sending dderequest to WinFax (pause 2 seconds)
+    Pause (2)
+    
+    ChanNum = WordBasic.DDEInitiate("FAXMNG", "CONTROL")
+    x_$ = WordBasic.[DDERequest$](ChanNum, "status")
+    If UCase(x_$) = "IDLE" Then WordBasic.DDEExecute ChanNum, "GoActive"
+    WordBasic.DDETerminate ChanNum
+    If BackGrnd = 1 Then WordBasic.ToolsOptionsPrint Background:=1
+    If OldPrinterName$ <> "" Then
+        WordBasic.FilePrintSetup Printer:=OldPrinterName$, DoNotSetAsSysDefault:=1
+    End If
+    
+    ' turn sendfax wizard on or off.
+    If SendDlgWasOn = 0 Then
+       x = SetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard", 0)
+    End If
+
+End Sub
+'***********************************
+Sub Pause(ByVal nSecond As Single)
+   Dim t0 As Single
+   t0 = Timer
+   
+   Do While Timer - t0 < nSecond
+      Dim dummy As Integer
+      dummy = DoEvents()
+      ' if we cross midnight, back up one day
+      If Timer < t0 Then
+         t0 = t0 - 24 * 60 * 60
+      End If
+   Loop
+   
+End Sub
+'***********************************************************************
+Private Sub ShowCoverThumbnail(YorN$)
+Dim x$
+Dim hDlg
+Dim x_
+    If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+        x$ = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox")
+    Else
+        x$ = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+    End If
+    If UCase(WordBasic.[Right$](x$, 3)) = "CVP" And YorN$ = "Y" Then
+        hDlg = FindWindowA("bosa_sdm_Microsoft Word 8.0", "Seleziona copertina")
+        x_ = DisplayThumbnail(hDlg, x$, 21, 410, 565, 200)
+    Else
+        hDlg = FindWindowA("bosa_sdm_Microsoft Word 8.0", "Seleziona copertina")
+        x_ = DisplayThumbnail(hDlg, "", 21, 410, 565, 200)
+    End If
+End Sub
+'***********************************
+Function DoesStyleExist(Stylename As String)
+      DoesStyleExist = False
+      Dim StyleExist As Object
+      On Error GoTo DSEerrhandler
+      Set StyleExist = ActiveDocument.Styles(Stylename)
+      If StyleExist.NameLocal <> "" Then   'Does the style exist?
+         DoesStyleExist = True
+      End If
+      Exit Function
+
+DSEerrhandler:
+      DoesStyleExist = False
+End Function
+
+'***********************************************************************
+Private Sub GetDocumentInfo()
+
+'Dim Counter
+'Dim wfxString As String
+'    On Error GoTo -1: On Error GoTo GDIErrHandler
+'    For Counter = 0 To 7
+'        result = DoesStyleExist(Styles__$(Counter))
+'        If result = True Then
+'            WordBasic.EditFindStyle Style:=Styles__$(Counter)
+'            WordBasic.EditFind Find:="", WholeWord:=0, MatchCase:=0, Direction:=0, Format:=1
+'        Else
+'            GoTo GDIErrHandler
+'        End If
+        
+'        If WordBasic.EditFindFound() = -1 Then
+            ' modified code here to prevent chr$(13) causing hang up in some modems.
+'            wfxString = WordBasic.[Selection$]()
+            ' found a return, remove it.
+'            If right(wfxString, 1) = Chr$(13) Then
+'                wfxString = Mid$(wfxString, 1, Len(wfxString) - 1)
+'            End If
+                        
+'            If Counter = 2 And Mid(WordBasic.[Selection$](), 3, 1) <> ":" Then GoTo GDIErrHandler
+'            If Counter = 3 And Mid(WordBasic.[Selection$](), 3, 1) <> "/" Then GoTo GDIErrHandler
+'            If Section$ = "s" + WordBasic.[LTrim$](Str(WordBasic.SelInfo(2))) Then
+'                 WfxInfo__$(Counter) = wfxString
+'            End If
+'        End If
+'GDIErrHandler:
+'        Err.Number = 0
+'        WordBasic.WW7_EditGoTo Destination:=Section$
+'    Next Counter
+
+Dim result
+Dim Counter
+Dim wfxString As String
+On Error GoTo -1: On Error GoTo GDIErrHandler
+
+For Counter = 0 To 7
+
+result = DoesStyleExist(Styles__$(Counter))
+
+If result = True Then
+
+'         WordBasic.EditFindStyle Style:=Styles__$(Counter)
+
+  With Selection.Find
+  .Style = Styles__$(Counter)
+  .Execute FindText:=""
+  End With
+
+'    WordBasic.EditFind Find:="", WholeWord:=0, MatchCase:=0, Direction:=0, Format:=1
+  Else
+            GoTo GDIErrHandler
+  End If
+        
+' If WordBasic.EditFindFound() = -1 Then
+
+If Selection.Find.Found = True Then
+
+' modified code here to prevent chr$(13) causing hang up in some
+' modems.
+'wfxString = WordBasic.[Selection$]()
+
+wfxString = Selection.Text
+
+'strip garbage characters below ascii 31 in string
+
+Do Until right(wfxString, 1) > Chr$(31)
+   wfxString = Mid$(wfxString, 1, Len(wfxString) - 1)
+Loop
+
+'   If right(wfxString, 1) = Chr$(13) Or right(wfxString, 1) =
+' Chr$(10) Then
+'      wfxString = Mid$(wfxString, 1, Len(wfxString) - 2)
+'   End If
+' modified code here to prevent chr$(13) causing hang up in some
+' modems.
+            ' WordBasic.CharLeft 1, 1
+' MsgBox wfxString
+
+ ' If Counter = 2 And Mid(WordBasic.[Selection$](), 3, 1) <> ":" Then GoTo GDIErrHandler
+ ' If Counter = 3 And Mid(WordBasic.[Selection$](), 3, 1) <> "/" Then GoTo GDIErrHandler
+
+If Counter = 2 Then
+     wfxString = Format$(wfxString, "HH:MM:SS")
+     ' if invalid time is entered, use the current time
+       If Mid$(wfxString, 3, 1) <> ":" And Mid$(wfxString, 6, 1) <> ":" Then
+            wfxString = Format$(Time$, "HH:MM:SS")
+       End If
+End If
+ 
+If Counter = 3 Then
+       wfxString = Format$(wfxString, "MM/DD/YY")
+       
+       ' if invalid date is entered, use the current date
+       If Mid$(wfxString, 3, 1) <> "/" And Mid$(wfxString, 6, 1) <> "/" Then
+            wfxString = Format$(Date$, "MM/DD/YY")
+      End If
+End If
+                        
+If Section$ = "s" + WordBasic.[LTrim$](Str(WordBasic.SelInfo(2))) Then
+            WfxInfo__$(Counter) = wfxString
+End If
+
+' WfxInfo__$(Counter) = WordBasic.[Selection$]() WfxInfo__$(Counter) = wfxString
+
+End If
+
+GDIErrHandler:
+        Err.Number = 0
+        WordBasic.WW7_EditGoTo Destination:=Section$
+
+    Next Counter
+
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function GetNumSections()
+    WordBasic.EndOfDocument
+    WordBasic.EditSelectAll
+    GetNumSections = WordBasic.SelInfo(2)   'section count.
+    WordBasic.StartOfDocument
+End Function
+'***********************************
+Function SysVersions32()
+    Dim v As OSVERSIONINFO, retval As Long
+    Dim WindowsVersion As String, BuildVersion As String
+    Dim PlatformName As String
+          
+    v.dwOSVersionInfoSize = Len(v)
+    retval = GetVersionEx(v)
+    
+    WindowsVersion = v.dwMajorVersion & "." & v.dwMinorVersion
+    BuildVersion = v.dwBuildNumber And &HFFFF&
+ 
+    Select Case v.dwPlatformId
+        Case VER_PLATFORM_WIN32_WINDOWS
+            PlatformName = "Windows 95"
+        Case VER_PLATFORM_WIN32_NT
+            PlatformName = "Windows NT"
+    End Select
+         
+    'Return the Platform ID number
+    SysVersions32 = v.dwPlatformId
+End Function
+'***********************************************************************
+Private Sub GetDefaults()
+On Error GoTo ErrHandler
+Dim Version
+Dim WfxPort$
+Dim x
+    Dim dlg As Object: Set dlg = WordBasic.DialogRecord.FilePrintSetup(False)
+    WordBasic.CurValues.FilePrintSetup dlg
+    OldPrinterName$ = dlg.Printer
+    Version = SysVersions32()
+    
+    If Version = 1 Then
+        WfxPort$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Print\Printers\" + WfxPrinterName$, "Port", "")
+    Else
+        WfxPort$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Devices\", "WinFax", "")
+        ' WfxPort$ = right$(WfxPort$, 5)
+        Position = InStr(1, WfxPort$, ",")
+        WfxPort$ = Mid$(WfxPort$, Position + 1, Len(WfxPort$))
+    End If
+    
+    If WfxPort$ = "" Then
+        MsgBox ("Il driver della stampante di WinFax non risulta installato." + CRLF + "You must re-install WinFax.")
+        End
+    End If
+    
+    'If System.OperatingSystem = "Windows" Then
+       WordBasic.FilePrintSetup Printer:=WfxPrinterName$ + " on " + WfxPort$, DoNotSetAsSysDefault:=1
+    'End If
+    'If System.OperatingSystem = "Windows NT" Then
+       ' place code here to setup correct printer for Windows NT.
+    '   WordBasic.FilePrintSetup Printer:=WfxPrinterName$ + " on " + WfxPort$, DoNotSetAsSysDefault:=1
+    'End If
+        
+    ModemClass$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\General", "Fax Device", "")
+    ModemClass802$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\General", "Fax Device", "")
+    If ModemClass$ = "" Or (ModemClass$ <> "" And ModemClass802$ <> "") Then
+      ModemClass$ = ModemClass802$
+    End If
+    
+    SendDlgWasOn = GetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard")
+    If SendDlgWasOn Then x = SetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard", 1)
+    
+    Set dlg = WordBasic.CurValues.ToolsOptionsPrint
+    BackGrnd = dlg.Background
+    If BackGrnd = 1 Then WordBasic.ToolsOptionsPrint Background:=0
+    
+    Exit Sub
+ErrHandler:
+    'If the WinFax Printer entry is not found Stop the Macro and infrom the user to
+    're-install WinFax
+    MsgBox ("Il driver della stampante di WinFax non risulta installato." + CRLF + "Occorre reinstallare WinFax.")
+    End
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function CheckIfWinFaxIsActive()
+Dim WfxPath$
+Dim PrintToFaxmng
+Dim x
+Dim sExe As String
+'Dim sFasts As String
+Dim sWindow As String
+Dim sWindowfs As String
+
+'Select Case VersionNum
+'    Case "7.5", "7.0"
+     sExe = "wfxctl32.exe"
+'     sFasts = "wfxsnd32.exe"
+'         sWindow = "WinFax PRO"
+'         sWindowfs = "WinFax PRO Fast Start (Send Fax)"
+'    Case "7.0"
+'         sWindow = "Delrina WinFax PRO"
+'         sWindowfs = "Delrina WinFax PRO Fast Start (Send Fax)"
+'    Case "8.0"
+'         sExe = "faxmng32.exe"
+'         sFasts = "wfxctl32.exe"
+'         sWindow = "WinFax PRO"
+'         sWindowfs = "WinFax PRO Controller"
+'    End Select
+       
+    ' WinFax main program
+    hDlg = FindWindowA("sFaxmng", vbNullString)
+    ' Controller, Fast Start
+    hDlg2 = FindWindowA("cFaxmng", vbNullString)
+    hDlg3 = FindWindowA("QFaxmng", vbNullString)
+        
+    If hDlg = 0 And hDlg2 = 0 And hDlg3 = 0 Then
+    'If WordBasic.AppIsRunning(sWindow) = 0 And WordBasic.AppIsRunning(sWindowfs) = 0 Then
+        WfxPath$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "Exepath", "")
+        WfxPath802$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "Exepath", "")
+        
+        If WfxPath$ = "" Or (WfxPath$ <> "" And WfxPath802$ <> "") Then
+           WfxPath$ = WfxPath802$
+        End If
+               
+        If WordBasic.[Right$](WfxPath$, 1) <> "\" Then WfxPath$ = WfxPath$ + "\"
+        'PrintToFaxmng = GetBoolRegVal("Software\Delrina\WinFax\7.0\Printer Driver", "AlwaysPrintToFaxmng")
+        'If PrintToFaxmng = 0 Then
+        '    WfxPath$ = Chr(34) + WfxPath$ + sFasts + Chr(34)
+        'Else
+            WfxPath$ = Chr(34) + WfxPath$ + sExe + Chr(34)
+        'End If
+        x = WinExec(WfxPath$, 6)
+    End If
+
+End Function
+'***********************************
+
+'***********************************************************************
+Private Sub GetOptions()
+    On Error GoTo -1: On Error GoTo GetOptionsErrHandler
+    WordBasic.BeginDialog 360, 172, "DDEFaxMerge Macro", "DDEFaxMerge.OptionsProc"
+'        WordBasic.GroupBox 10, 6, 262, 53, "Send Dialog Options", "Group1"
+'        WordBasic.OptionGroup "SDOpt"
+          '  WordBasic.OptionButton 20, 19, 239, 16, "Show WinFax Send Dialog", "Show"
+          ' option removed for DDEfaxmerge
+'            WordBasic.OptionButton 20, 36, 239, 16, "DDE Fax merge", "NoShow"
+'        WordBasic.GroupBox 290, 6, 290, 53, "FAX Scheduling Options", "Group2"
+'        WordBasic.OptionGroup "SchOpt"
+'            WordBasic.OptionButton 300, 19, 143, 16, "Send FAX Now", "Now"
+'            WordBasic.OptionButton 300, 36, 239, 16, "Schedule Fax for Off-Peak Hours", "Later"
+        
+        WordBasic.GroupBox 10, 6, 330, 53, "Opzioni di pianificazione FAX", "Group2"
+        WordBasic.OptionGroup "SchOpt"
+            WordBasic.OptionButton 20, 19, 143, 16, "Invia FAX adesso", "Now"
+            WordBasic.OptionButton 20, 36, 309, 16, "Pianifica l'invio fax nelle ore a tariffa ridotta", "Later"
+        
+        WordBasic.GroupBox 10, 64, 330, 70, "Opzioni di invio", "Group3"
+            WordBasic.CheckBox 20, 79, 223, 16, "Invia copertina di WinFax", "SendCover"
+            WordBasic.CheckBox 20, 96, 167, 16, "Invia allegati", "SendAttachments"
+            WordBasic.CheckBox 20, 112, 149, 16, "Alta risoluzione", "HighRes"
+
+'        WordBasic.GroupBox 290, 64, 290, 70, "Transmission Mode Options", "Group4"
+'        WordBasic.OptionGroup "ModeOpt"
+'            WordBasic.OptionButton 300, 79, 270, 16, "Fax (Default for Merge Macro)", "FaxMode"
+'            WordBasic.OptionButton 300, 96, 195, 16, "BFT (N/A for merge)", "BFTMode"
+'            WordBasic.OptionButton 300, 112, 270, 16, "Compressed BFT (N/A for merge)", "ZipMode"
+        WordBasic.OKButton 155, 145, 90, 21
+        WordBasic.CancelButton 250, 145, 90, 21
+    WordBasic.EndDialog
+    Dim dlg As Object: Set dlg = WordBasic.CurValues.UserDialog
+    WordBasic.Dialog.UserDialog dlg
+      
+    GoTo GetOptionsBye:
+GetOptionsErrHandler:
+    If Err.Number = 102 Then
+        End
+    End If
+GetOptionsBye:
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub ShowHide(Var_)
+Dim Counter
+      
+    For Counter = 1 To 8
+        WordBasic.DlgEnable Counter, Var_
+    Next Counter
+''    WordBasic.DlgEnable "BFTMode", 0
+''    WordBasic.DlgEnable "ZipMode", 0
+'   DlgEnable "Group4", 0
+'   DlgEnable "FaxMode", 0
+''    If ModemClass$ <> "Class1" Then
+''        WordBasic.DlgEnable "BFTMode", 0
+''        WordBasic.DlgEnable "ZipMode", 0
+''    End If
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function OptionsProc(C$, A, S)
+Dim x
+ '
+    Select Case A
+        Case 1
+            ShowHide (1)    ' changed from 0 to 1 for DDEmerge to remove show dialog option
+            WordBasic.DlgValue "HighRes", 1
+        Case 2
+            Select Case C$
+                Case "Show"
+                    ShowHide (0)
+                Case "NoShow"
+                    ShowHide (1)
+                Case "OK"
+                    ' ShowOrNot = WordBasic.DlgValue("SDOpt")
+                    ShowOrNot = 1 ' default to do not show send dialog
+                    SendNowOrNot = WordBasic.DlgValue("SchOpt")
+                    SendCoverOrNot = WordBasic.DlgValue("SendCover")
+                    SendAttachmentOrNot = WordBasic.DlgValue("SendAttachments")
+                    SendHighOrLow = WordBasic.DlgValue("HighRes")
+                    ''SendMode = WordBasic.DlgValue("ModeOpt")
+                    SendMode = 0 ' default to Fax send
+                Case "Cancel"
+                    If BackGrnd = 1 Then WordBasic.ToolsOptionsPrint Background:=1
+                    If OldPrinterName$ <> "" Then
+                        WordBasic.FilePrintSetup Printer:=OldPrinterName$, DoNotSetAsSysDefault:=1
+                    End If
+                    If Not SendDlgWasOn Then x = SetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard", 0)
+                Case Else
+            End Select
+        Case Else
+    End Select
+End Function
+'***********************************
+
+'***********************************************************************
+Private Function GetRealFileName$()
+    If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+        GetRealFileName$ = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox") ' + Chr$(34)
+    Else
+        GetRealFileName$ = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+    End If
+End Function
+'***********************************
+
+'***********************************************************************
+Private Sub SendCover()
+Dim CoverPath$
+    On Error GoTo -1: On Error GoTo SendCoverErrHandler
+    GetDrives
+    CoverPath$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "Cover Path", "")
+    CoverPath802$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "Cover Path", "")
+    
+    If CoverPath$ = "" Or (CoverPath$ <> "" And CoverPath802$ <> "") Then
+      CoverPath$ = CoverPath802$
+    End If
+       
+    If WordBasic.[Right$](CoverPath$, 1) <> "\" Then CoverPath$ = CoverPath$ + "\"
+    WordBasic.ChDir CoverPath$
+    GetFilesAndDirs "*.CVP"
+    WordBasic.BeginDialog 768, 240, "Seleziona copertina", "DDEFaxMerge.SendCoverProc"
+        WordBasic.DropListBox 280, 125, 245, 68, DriveList__$(), "DriveListBox"
+        WordBasic.ListBox 280, 20, 245, 105, DirList__$(), "DirListBox"
+        WordBasic.ListBox 15, 20, 245, 125, FileList__$(), "FileListBox"
+        WordBasic.OKButton 544, 208, 100, 21 '334, 163, 88, 21
+        WordBasic.CancelButton 654, 208, 100, 21 '438, 163, 88, 21
+        WordBasic.Text 17, 5, 93, 10, "Percorso corrente:"
+        WordBasic.Text 100, 4, 668, 13, "", "FullPath"
+        WordBasic.Picture 545, 20, 206, 165, "PictureFileName", 0, "Picture1"
+        WordBasic.CheckBox 545, 189, 89, 16, "Anteprima", "Preview"
+        WordBasic.Text 15, 145, 370, 13, "", "CoverDesc"
+        WordBasic.Text 15, 169, 129, 13, "Testo copertina:", "Text1"
+        WordBasic.TextBox 14, 185, 509, 44, "CoverText", 1
+    WordBasic.EndDialog
+    Dim dlg As Object: Set dlg = WordBasic.CurValues.UserDialog
+    WordBasic.Dialog.UserDialog dlg
+    GoTo SendCoverBye
+SendCoverErrHandler:
+SendCoverBye:
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function SendCoverProc(C$, A, S)
+Dim x$
+Dim Test$
+Dim Ret
+Dim a_$
+    On Error GoTo -1: On Error GoTo SendCoverErrHandler
+    Select Case A
+        Case 1
+            CheckPath
+            x$ = GetRealFileName$
+            WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+            If IsCoverFillable(x$) <> 0 Then
+                WordBasic.DlgEnable "Text1", 0
+                WordBasic.DlgEnable "CoverText", 0
+            Else
+                WordBasic.DlgEnable "Text1", 1
+                WordBasic.DlgEnable "CoverText", 1
+            End If
+        Case 2
+            Select Case C$
+                Case "FileListBox"
+                    x$ = GetRealFileName$
+                    If UCase(WordBasic.[Right$](x$, 3)) = "CVP" Then
+                        WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+                        If IsCoverFillable(x$) <> 0 Then
+                            WordBasic.DlgEnable "Text1", 0
+                            WordBasic.DlgEnable "CoverText", 0
+                        Else
+                            WordBasic.DlgEnable "Text1", 1
+                            WordBasic.DlgEnable "CoverText", 1
+                        End If
+                        If PreviewOnOff = 1 Then ShowCoverThumbnail "Y"
+                    Else
+                        ShowCoverThumbnail "N"
+                    End If
+                Case "DriveListBox"
+                    ReDim DirList__$(0)
+                    ReDim FileList__$(0)
+SendCoverTryAgain:  'Used for Error Handler if removable drives aren't ready
+                    WordBasic.ChDir WordBasic.[Left$](WordBasic.[DlgText$]("DriveListBox"), 2)
+                    GetFilesAndDirs "*.CVP"
+                    CheckPath
+                    WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                    WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+                    x$ = GetRealFileName$
+                    If UCase(WordBasic.[Right$](x$, 3)) = "CVP" Then
+                        WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+                        If IsCoverFillable(x$) <> 0 Then
+                            WordBasic.DlgEnable "Text1", 0
+                            WordBasic.DlgEnable "CoverText", 0
+                        Else
+                            WordBasic.DlgEnable "Text1", 1
+                            WordBasic.DlgEnable "CoverText", 1
+                        End If
+                        If PreviewOnOff = 1 Then ShowCoverThumbnail "Y"
+                    Else
+                        ShowCoverThumbnail "N"
+                    End If
+                Case "Preview"
+                    PreviewOnOff = WordBasic.DlgValue("Preview")
+                    If PreviewOnOff = 0 Then
+                        ShowCoverThumbnail "N"
+                    Else
+                        ShowCoverThumbnail "Y"
+                    End If
+SendCoverNoReTry:   'Used for Error Handler if removable drives aren't ready
+                Case Else
+                    If C$ = "OK" And WordBasic.[DlgFocus$]() = "DirListBox" Then
+                        If WordBasic.[DlgText$]("DirListBox") <> "[..]" Then
+                            WordBasic.ChDir WordBasic.[DlgText$]("DirListBox")
+                        Else
+                            Test$ = WordBasic.[Files$](".")
+                            If WordBasic.[Right$](Test$, 1) <> "\" Then WordBasic.ChDir ".."
+                        End If
+                        ReDim DirList__$(0)
+                        ReDim FileList__$(0)
+                        GetFilesAndDirs "*.CVP"
+                        CheckPath
+                        WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                        WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+                        x$ = GetRealFileName$
+                        If UCase(WordBasic.[Right$](x$, 3)) = "CVP" Then
+                            WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+                            If IsCoverFillable(x$) <> 0 Then
+                                WordBasic.DlgEnable "Text1", 0
+                                WordBasic.DlgEnable "CoverText", 0
+                            Else
+                                WordBasic.DlgEnable "Text1", 1
+                                WordBasic.DlgEnable "CoverText", 1
+                            End If
+                            If PreviewOnOff = 1 Then ShowCoverThumbnail "Y"
+                        Else
+                            ShowCoverThumbnail "N"
+                        End If
+                        SendCoverProc = 1
+                    End If
+                    If C$ = "OK" And (WordBasic.[DlgFocus$]() = "FileListBox" Or WordBasic.[DlgFocus$]() = "OK") Then
+                        CoverPageText$ = WordBasic.[DlgText$]("CoverText")
+                        
+                        ' code to ensure text is entered in cover page text for DDEmerge.
+                        If Len(CoverPageText$) = 0 Then
+                          CoverPageText$ = " "
+                        End If
+                                 
+                        If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+                            CoverPage$ = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox")
+                        Else
+                            CoverPage$ = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+                        End If
+                    End If
+                    If C$ = "Cancel" Then
+                      End
+                    End If
+            End Select
+        Case Else
+    End Select
+    GoTo SendCoverBye
+SendCoverErrHandler:
+    If Err.Number = 76 Then
+        Ret = WordBasic.MsgBox("Unit|fffd| non pronta", "Print2WinFax", 21)
+        If Ret < 0 Then
+            Err.Number = 0
+            GoTo SendCoverTryAgain
+        ElseIf Ret = 0 Then
+            a_$ = WordBasic.[Files$](".")
+            Err.Number = 0
+            WordBasic.DlgText "DriveListBox", WordBasic.[Left$](a_$, 2)
+            If WordBasic.[Right$](a_$, 1) <> "\" Then a_$ = a_$ + "\"
+            WordBasic.DlgText "FullPath", a_$
+            GoTo SendCoverNoReTry
+        End If
+    End If
+    If Err.Number = 102 Then
+        SendCoverOrNot = 0
+    End If
+    Err.Number = 0
+SendCoverBye:
+End Function
+'***********************************
+
+'***********************************************************************
+Private Sub GetFilesAndDirs(Mask$)
+Dim x
+Dim count_
+Dim A$
+    WordBasic.WaitCursor 1
+    ReDim DirList__$(WordBasic.CountDirectories())
+    DirList__$(0) = "[..]"
+    For x = 1 To WordBasic.CountDirectories()
+        DirList__$(x) = LCase(WordBasic.[GetDirectory$](x))
+    Next
+    count_ = 1
+    A$ = WordBasic.[Files$](Mask$)
+    While WordBasic.[Files$]() <> ""
+        count_ = count_ + 1
+    Wend
+    ReDim FileList__$(count_ - 1)
+    If WordBasic.[Files$](Mask$) <> "" Then
+        FileList__$(0) = LCase(WordBasic.[FileNameInfo$](WordBasic.[Files$](Mask$), 3))
+        For x = 1 To count_ - 1
+            FileList__$(x) = LCase(WordBasic.[FileNameInfo$](WordBasic.[Files$](), 3))
+        Next
+    End If
+    If WordBasic.CountDirectories() > 0 Then WordBasic.SortArray DirList__$()
+    If count_ > 1 Then WordBasic.SortArray FileList__$()
+    WordBasic.WaitCursor 0
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub GetDrives()
+Dim x
+Dim A
+Dim DriveCount
+Dim DrvType$
+Dim NumDrives
+    For x = 0 To 25
+        A = GetDriveTypeA(Chr(x + 65) + ":\")
+        If A > 1 And A < 7 Then
+            DriveCount = DriveCount + 1
+        End If
+    Next x
+    ReDim DriveList__$(DriveCount - 1)
+    For x = 0 To 25
+        A = GetDriveTypeA(Chr(x + 65) + ":\")
+        If A > 1 And A < 7 Then
+            If A = 2 Then DrvType$ = "   Unit|fffd| floppy"
+            If A = 3 Then DrvType$ = "   Unit|fffd| disco rigido"
+            If A = 4 Then DrvType$ = "   Unit|fffd| di rete"
+            If A = 5 Then DrvType$ = "   Unit|fffd| CD ROM"
+            If A = 6 Then DrvType$ = "   Unit|fffd| RAM"
+            DriveList__$(NumDrives) = Chr(x + 65) + ":" + DrvType$
+            NumDrives = NumDrives + 1
+        End If
+    Next x
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub AddAttachments()
+    On Error GoTo -1: On Error GoTo AddAttachmentsErr
+    GetDrives
+    GetFilesAndDirs "*.*"
+    WordBasic.BeginDialog 640, 292, "Aggiungi Allegati", "DDEFaxMerge.DlgControl"
+        WordBasic.DropListBox 280, 125, 245, 68, DriveList__$(), "DriveListBox"
+        WordBasic.ListBox 280, 20, 245, 105, DirList__$(), "DirListBox"
+        WordBasic.ListBox 15, 20, 245, 125, FileList__$(), "FileListBox"
+        WordBasic.ListBox 15, 182, 610, 106, AttachList__$(), "AttachListBox"
+        WordBasic.OKButton 540, 20, 88, 21
+        WordBasic.CancelButton 540, 45, 88, 21
+        WordBasic.PushButton 440, 155, 88, 21, "Aggiungi", "Add"
+        WordBasic.PushButton 540, 155, 88, 21, "Elimina", "Remove"
+        WordBasic.Text 17, 5, 75, 10, "Percorso corrente:"
+        WordBasic.Text 100, 4, 540, 13, "", "FullPath"
+        WordBasic.Text 17, 165, 200, 10, "Elenco allegati da inviare"
+    WordBasic.EndDialog
+    Dim dlg As Object: Set dlg = WordBasic.CurValues.UserDialog
+    WordBasic.Dialog.UserDialog dlg
+    GoTo AddAttachmentsBye
+AddAttachmentsErr:
+    If Err.Number = 102 Then 'User clicked Cancel
+    End If
+    Err.Number = 0
+AddAttachmentsBye:
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function DlgControl(C$, A, S)
+Dim Test$
+Dim Ret
+Dim a_$
+    On Error GoTo -1: On Error GoTo DlgControlErrHandler
+    Select Case A
+        Case 1
+            CheckPath
+        Case 2
+            Select Case C$
+                Case "Add"
+                    AddToAttachList
+                    DlgControl = 1
+                Case "Remove"
+                    RemoveFromAttachList
+                    DlgControl = 1
+                Case "DriveListBox"
+                    ReDim DirList__$(0)
+                    ReDim FileList__$(0)
+TryAgain:   'Used for Error Handler if removable drives aren't ready
+                    WordBasic.ChDir WordBasic.[Left$](WordBasic.[DlgText$]("DriveListBox"), 2)
+                    GetFilesAndDirs "*.*"
+                    CheckPath
+                    WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                    WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+NoReTry:    'Used for Error Handler if removable drives aren't ready
+                Case "Ok"
+                Case "Cancel"
+                Case Else
+                    If C$ = "OK" And WordBasic.[DlgFocus$]() = "DirListBox" Then
+                        If WordBasic.[DlgText$]("DirListBox") <> "[..]" Then
+                            WordBasic.ChDir WordBasic.[DlgText$]("DirListBox")
+                        Else
+                            Test$ = WordBasic.[Files$](".")
+                            If WordBasic.[Right$](Test$, 1) <> "\" Then WordBasic.ChDir ".."
+                        End If
+                        ReDim DirList__$(0)
+                        ReDim FileList__$(0)
+                        GetFilesAndDirs "*.*"
+                        CheckPath
+                        WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                        WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+                        DlgControl = 1
+                    End If
+                    If C$ = "OK" And WordBasic.[DlgFocus$]() = "FileListBox" Then
+                        AddToAttachList
+                        DlgControl = 1
+                    End If
+            End Select
+        Case Else
+    End Select
+    GoTo DlgControlBye
+DlgControlErrHandler:
+    If Err.Number = 76 Then
+        Ret = WordBasic.MsgBox("Unit|fffd| non pronta", "Print2WinFax", 21)
+        If Ret < 0 Then
+            Err.Number = 0
+            GoTo TryAgain
+        ElseIf Ret = 0 Then
+            a_$ = WordBasic.[Files$](".")
+            Err.Number = 0
+            WordBasic.DlgText "DriveListBox", WordBasic.[Left$](a_$, 2)
+            If WordBasic.[Right$](a_$, 1) <> "\" Then a_$ = a_$ + "\"
+            WordBasic.DlgText "FullPath", a_$
+            GoTo NoReTry
+        End If
+    End If
+    Err.Number = 0
+DlgControlBye:
+End Function
+'***********************************
+
+'***********************************************************************
+Private Sub CheckPath()
+Dim A$
+    A$ = WordBasic.[Files$](".")
+    If WordBasic.[Left$](A$, 1) = Chr(34) Then
+        WordBasic.DlgText "DriveListBox", Mid(A$, 2, 2)
+        If WordBasic.[Right$](A$, 2) <> "\" Then A$ = WordBasic.[Left$](A$, Len(A$) - 1) + "\" + Chr(34)
+    Else
+        WordBasic.DlgText "DriveListBox", WordBasic.[Left$](A$, 2)
+        If WordBasic.[Right$](A$, 1) <> "\" Then A$ = A$ + "\"
+    End If
+    WordBasic.DlgText "FullPath", A$
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub AddToAttachList()
+    If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+        AttachList__$(AttachmentCounter) = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox") ' + Chr$(34)
+    Else
+        AttachList__$(AttachmentCounter) = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+    End If
+    AttachmentCounter = AttachmentCounter + 1
+    WordBasic.DlgListBoxArray "AttachListBox", AttachList__$()
+    WordBasic.DlgValue "AttachListBox", AttachmentCounter - 1
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub RemoveFromAttachList()
+Dim Counter
+    AttachList__$(WordBasic.DlgValue("AttachListBox")) = ""
+    AttachmentCounter = AttachmentCounter - 1
+    For Counter = WordBasic.DlgValue("AttachListBox") To 49
+        AttachList__$(Counter) = AttachList__$(Counter + 1)
+    Next Counter
+    WordBasic.DlgListBoxArray "AttachListBox", AttachList__$()
+    WordBasic.DlgValue "AttachListBox", AttachmentCounter - 1
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub DoDDE()
+Dim ChanNum
+Dim x$
+Dim Mode$
+Dim Counter
+Dim Recipient$
+Dim Res$
+    On Error GoTo -1: On Error GoTo DoDDEErrHandler
+    Pause (1)
+    ChanNum = WordBasic.DDEInitiate("FAXMNG", "CONTROL")
+    x$ = WordBasic.[DDERequest$](ChanNum, "status")
+    If UCase(x$) = "ACTIVE" Then WordBasic.DDEExecute ChanNum, "GoIdle"
+    WordBasic.DDETerminate ChanNum
+    Pause (1)
+    ChanNum = WordBasic.DDEInitiate("FAXMNG", "TRANSMIT")
+'Build the recipient information line from the document styles
+    Select Case SendMode
+        Case 0
+            Mode$ = "Fax"
+        Case 1
+            Mode$ = "BFT"
+        Case 2
+            Mode$ = "Compressed BFT"
+' Concord
+        Case 3
+            Mode$ = "Internet"
+        Case Else
+    End Select
+
+' Concord
+' if this sending by fax and WinFax is set to always use Internet Fax, change
+' send method to Internet
+    EnableIFax = QueryValue("Software\Delrina\WinFax\7.0\InternetFax", "EnableIFax")
+    IFaxUsage = QueryValue("Software\Delrina\WinFax\7.0\InternetFax", "Usage")
+    If ((SendMode = 0) And (EnabledIFax = 1) And (IFaxUsage = 2)) Then
+            Mode$ = "Internet"
+    End If
+
+
+' Concord
+' make sure RecipientName is not blank
+' if use WfxFaxNum style and print to Ifax, Name must also be set
+If WfxInfo__$(1) = "" Then
+    WfxInfo__$(1) = WfxInfo__$(0)
+End If
+
+' Concord
+'    For Counter = 0 To 7
+    For Counter = 0 To 8
+' Truncate recipient parameters to maximum lengths
+        Select Case Counter
+            Case 0
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 46)
+            Case 1
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 29)
+            Case 4
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 42)
+            Case 5
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 79)
+            Case 6
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 33)
+            Case 7
+                ' Billing Code
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 26)
+' Concord
+            Case 8
+                WfxInfo__$(Counter) = Mode$
+            Case Else
+        End Select
+        
+        ' Check if a Time was entered, if yes ensure a date is entered.
+        ' if no date entered, assume current date and add this.
+        ' Corrected Sept. 19/ 8.02
+        If WfxInfo__$(2) <> "" And WfxInfo__$(3) = "" Then
+            WfxInfo__$(3) = Format$(Date$, "MM/DD/YY")
+        End If
+        
+        WfxInfo__$(Counter) = Chr(34) + WfxInfo__$(Counter) + Chr(34) + Chr(44)
+    
+    Next Counter
+        
+    Recipient$ = "recipient("
+    Recipient$ = Recipient$ + WfxInfo__$(0) + WfxInfo__$(2) + WfxInfo__$(3) + WfxInfo__$(1) + WfxInfo__$(4) + WfxInfo__$(5) + WfxInfo__$(6) + WfxInfo__$(7) + Chr(34) + Mode$ + Chr(34) + ")"
+    
+    WordBasic.DDEPoke ChanNum, "sendfax", Recipient$
+    Pause (1)
+    
+    If SendMode <> 0 Then
+        WordBasic.DDEPoke ChanNum, "sendfax", "attach(" + Chr(34) + WordBasic.[FileName$]() + Chr(34) + ")"
+    End If
+    For Counter = 0 To 50
+        If AttachList__$(Counter) <> "" Then
+            WordBasic.DDEPoke ChanNum, "sendfax", "attach(" + Chr(34) + AttachList__$(Counter) + Chr(34) + ")"
+        End If
+    Next Counter
+    If SendCoverOrNot = 1 Then
+        WordBasic.DDEPoke ChanNum, "sendfax", "setcoverpage(" + Chr(34) + CoverPage$ + Chr(34) + ")"
+        WordBasic.DDEPoke ChanNum, "sendfax", "fillcoverpage(" + Chr(34) + CoverPageText$ + Chr(34) + ")"
+    End If
+    If ShowOrNot = 1 Then
+        WordBasic.DDEPoke ChanNum, "sendfax", "showsendscreen(" + Chr(34) + "0" + Chr(34) + ")"
+    Else
+        WordBasic.DDEPoke ChanNum, "sendfax", "showsendscreen(" + Chr(34) + "1" + Chr(34) + ")"
+    End If
+    If SendHighOrLow = 0 Then
+        Res$ = "LOW"
+    Else
+        Res$ = "HIGH"
+    End If
+    WordBasic.DDEPoke ChanNum, "sendfax", "resolution(" + Chr(34) + Res$ + Chr(34) + ")"
+    WordBasic.DDETerminate ChanNum
+    GoTo DoDDEBye
+DoDDEErrHandler:
+    Select Case Err.Number
+        Case 500
+            WordBasic.MsgBox "Impossibile inizializzare collegamento." + Chr(13) + "La macro Print2WinFax verr|fffd| annullata.", "Print2WinFax", 16
+            Stop
+        Case 1013
+            WordBasic.MsgBox "La memoria non |fffd| sufficiente per eseguire WinFax PRO." + Chr(13) + "Chiudere alcune applicazioni e riprovare.", "Print2WinFax", 16
+            Stop
+        Case Else
+'           MsgBox Str$(Err)
+    End Select
+    Err.Number = 0
+DoDDEBye:
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub PrintAndCleanUp()
+Dim ChanNum
+Dim bPMWasOff As Boolean
+    
+    ' turn use printer metrics on
+    bPMWasOff = False
+    If ActiveDocument.Compatibility(wdUsePrinterMetrics) = False Then
+        bPMWasOff = True
+        ActiveDocument.Compatibility(wdUsePrinterMetrics) = True
+    End If
+
+    If ShowOrNot = 1 And SendMode <> 0 Then
+        ChanNum = WordBasic.DDEInitiate("FAXMNG", "CONTROL")
+        WordBasic.DDEExecute ChanNum, "SendfaxUI"
+        WordBasic.DDETerminate ChanNum
+    Else
+        WordBasic.FilePrint Background:=0, AppendPrFile:=0, Range:="4", PrToFileName:="", From:="", To:="", Type:=0, NumCopies:="1", Pages:=Section$, Order:=0, PrintToFile:=0, Collate:=1, FileName:=""
+    End If
+'   FilePrintSetup .Printer = OldPrinterName$, .DoNotSetAsSysDefault = 1
+     
+     ' turn printer metrics back off.
+    If bPMWasOff = True Then
+      ActiveDocument.Compatibility(wdUsePrinterMetrics) = False
+    End If
+
+End Sub
+'***********************************
+Public Function SetValueEx(ByVal hKey As Long, sValueName As String, lType As Long, vValue As Variant) As Long
+    Dim lValue As Long
+    Dim sValue As String
+    Select Case lType
+        Case REG_SZ
+            sValue = vValue & Chr$(0)
+            SetValueEx = RegSetValueExString(hKey, sValueName, 0&, lType, sValue, Len(sValue))
+        Case REG_DWORD
+            lValue = vValue
+            SetValueEx = RegSetValueExLong(hKey, sValueName, 0&, lType, lValue, 4)
+        End Select
+End Function
+
+Function QueryValueEx(ByVal lhKey As Long, ByVal szValueName As String, vValue As Variant) As Long
+    Dim cch As Long
+    Dim lrc As Long
+    Dim lType As Long
+    Dim lValue As Long
+    Dim sValue As String
+
+    On Error GoTo QueryValueExError
+
+    ' Determine the size and type of data to be read
+    lrc = RegQueryValueExNULL(lhKey, szValueName, 0&, lType, 0&, cch)
+    If lrc <> ERROR_NONE Then Error 5
+
+    Select Case lType
+        ' For strings
+        Case REG_SZ:
+            sValue = String(cch, 0)
+
+lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, sValue, cch)
+
+            If lrc = ERROR_NONE Then
+                vValue = left$(sValue, cch)
+            Else
+                vValue = Empty
+            End If
+        ' For DWORDS
+        Case REG_DWORD:
+
+lrc = RegQueryValueExLong(lhKey, szValueName, 0&, lType, lValue, cch)
+
+            If lrc = ERROR_NONE Then vValue = lValue
+        Case Else
+            'all other data types not supported
+            lrc = -1
+    End Select
+
+QueryValueExExit:
+
+    QueryValueEx = lrc
+    Exit Function
+
+QueryValueExError:
+
+    Resume QueryValueExExit
+
+End Function
+  Function QueryValueHLM(sKeyName As String, sValueName As String)
+       Dim lRetVal As Long         'result of the API functions
+       Dim hKey As Long         'handle of opened key
+       Dim vValue As Variant      'setting of queried value
+
+       lRetVal = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sKeyName, 0, KEY_ALL_ACCESS, hKey)
+       lRetVal = QueryValueEx(hKey, sValueName, vValue)
+       RegCloseKey (hKey)
+       QueryValueHLM = vValue
+ End Function
+ 
+ Function QueryValue(sKeyName As String, sValueName As String)
+       Dim lRetVal As Long         'result of the API functions
+       Dim hKey As Long         'handle of opened key
+       Dim vValue As Variant      'setting of queried value
+
+       lRetVal = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, KEY_ALL_ACCESS, hKey)
+       lRetVal = QueryValueEx(hKey, sValueName, vValue)
+       RegCloseKey (hKey)
+       QueryValue = vValue
+ End Function
+ 
+ Private Sub SetKeyValue(sKeyName As String, sValueName As String, vValueSetting As Variant, lValueType As Long)
+       Dim lRetVal As Long         'result of the SetValueEx function
+       Dim hKey As Long         'handle of open key
+
+       'open the specified key
+       lRetVal = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, KEY_ALL_ACCESS, hKey)
+       lRetVal = SetValueEx(hKey, sValueName, lValueType, vValueSetting)
+       RegCloseKey (hKey)
+ End Sub
+
+
+Function ConvertCASTime(CASTime As Long)
+ '   *lpSecond = (WORD)((wTime & 0x001F) << 1);
+ '   *lpMinute = (WORD)((wTime & 0x07E0) >> 5);
+ '   *lpHour = (WORD)((wTime & 0xF800) >> 11);
+    Dim lpMinute As Long
+    Dim lpHour As Long
+    lpHour = (CASTime And &HF800) / (2 ^ 11)
+    lpMinute = (CASTime And &H7E0) / (2 ^ 5)
+    ConvertCASTime = lpHour & ":" & lpMinute & ":00"
+End Function
+
+
+Attribute VB_Name = "DisinstallaMacro"
+'***********************************************************************
+' Symantec Macro Remover for WinFax PRO 8, 7.5, 7
+' Symantec Corporation
+' February 25, 1997
+' Version 1.0
+' Italiano Release
+'***********************************************************************
+Dim dlgRecipient, dlgFaxNum, dlgfDate, dlgfTime, dlgCompany, _
+    dlgSubject, dlgKeyword, dlgBillcode, CRLF
+Private Function GetDefTemplateDir$(GroupOrLocal)
+Dim TempDir$
+    On Error GoTo -1: On Error GoTo GDTDErrHandler
+    TempDir$ = WordBasic.[DefaultDir$](GroupOrLocal)
+    If WordBasic.[Right$](TempDir$, 1) <> "\" And TempDir$ <> "" Then
+        GetDefTemplateDir$ = TempDir$ + "\"
+    Else
+        GetDefTemplateDir$ = TempDir$
+    End If
+    GoTo GDTDBye:
+GDTDErrHandler:
+WordBasic.MsgBox Str(Err.Number) & " - " & Err.Description '"oops"
+GDTDBye:
+End Function
+Public Sub MAIN()
+Attribute MAIN.VB_Description = "Programma di disinstallazione macro di WinFax PRO.\r\n"
+Attribute MAIN.VB_ProcData.VB_Invoke_Func = "TemplateProject.RemoveMacros.MAIN"
+Dim GblPrompt
+dlgRecipient = 0
+dlgFaxNum = 0
+dlgfDate = 0
+dlgfTime = 0
+dlgCompany = 0
+dlgSubject = 0
+dlgKeyword = 0
+dlgBillcode = 0
+CRLF = Chr$(13)
+
+If WordBasic.SelInfo(27) Then
+    WordBasic.MsgBox "Comando non eseguibile in una finestra macro"
+    GoTo bye
+End If
+WordBasic.DisableInput 1
+
+If Not WordBasic.DocMaximize() Then WordBasic.DocMaximize
+WordBasic.DisableInput 0
+
+Dim dlg As Object: Set dlg = WordBasic.DialogRecord.ToolsOptionsSave(False)
+WordBasic.CurValues.ToolsOptionsSave dlg
+GblPrompt = dlg.GlobalDotPrompt
+If GblPrompt = 1 Then dlg.GlobalDotPrompt = 0
+
+CheckDelete
+
+
+Set dlg = WordBasic.CurValues.ToolsOptionsSave
+If GblPrompt = 1 Then dlg.GlobalDotPrompt = 1
+
+bye:
+End Sub
+
+Private Sub CheckDelete()
+Dim path$
+Dim glbdot$
+Dim templatepath$
+Dim x
+Dim z
+Dim y
+Dim dlg As Object: Set dlg = WordBasic.DialogRecord.FileSummaryInfo(False)
+WordBasic.CurValues.FileSummaryInfo dlg
+path$ = dlg.Directory
+glbdot$ = dlg.Template
+
+'templatepath$ = WordBasic.[GetProfileString$]("user-dot-path")
+'If templatepath$ = "" Then
+'    templatepath$ = WordBasic.[GetProfileString$]("programdir")
+'End If
+' Check for an existing backslash  - April 5/94
+'If WordBasic.[Right$](templatepath$, (Len(templatepath$) + 1) _
+'    - Len(templatepath$)) <> "\" Then
+'    templatepath$ = templatepath$ + "\"
+'End If
+
+' Open the global template file (normal.dot)
+LocalTemplatePath$ = GetDefTemplateDir$(2)
+GroupTemplatePath$ = GetDefTemplateDir$(3)
+
+WordBasic.FileOpen LocalTemplatePath$ + "NORMAL.DOT" ' templatepath$ + "NORMAL.DOT"
+
+' If Not DocMaximize() Then DocMaximize
+'WordBasic.Activate "WORD97.DOC"
+
+WordBasic.BeginDialog 400, 118, "Programma di disinstallazione macro di WinFax"
+    WordBasic.Text 13, 8, 307, 13, "Questa macro eliminer|fffd| automaticamente le"
+    WordBasic.Text 13, 23, 323, 13, "macro selezionate fornite in WinFax PRO"
+    WordBasic.CheckBox 25, 43, 311, 16, "Stampa sulla macro di WinFax (Print2WinFax)", _
+        "delWinFax"
+    WordBasic.CheckBox 25, 63, 335, 16, "Macro DDE FaxMerge (DDEFaxMerge)", _
+        "delFaxMerge"
+    WordBasic.OKButton 103, 90, 88, 21
+    WordBasic.CancelButton 236, 90, 88, 21
+WordBasic.EndDialog
+'   WordBasic.PushButton 237, 90, 88, 21, "Exit Word"
+ 
+
+Set dlg = WordBasic.CurValues.UserDialog
+x = WordBasic.Dialog.UserDialog(dlg)
+
+If x = 0 Then '
+   x = MsgBox("Nessuna opzione macro eliminata.", vbOKOnly, "Programma di disinstallazione macro di WinFax")
+   WordBasic.Activate "NORMAL.DOT"
+   WordBasic.FileClose 1
+   End
+End If   'GoTo bye  ' Cancel
+
+If dlg.delWinFax = 0 And dlg.DelFaxMerge = 0 Then
+   x = MsgBox("Nessuna opzione macro selezionata.", vbOKOnly, "Programma di disinstallazione macro di WinFax")
+   WordBasic.Activate "NORMAL.DOT"
+   WordBasic.FileClose 1
+   End
+End If
+
+'If x = 1 Then WordBasic.FileExit 2  ' User selected to exit Word.
+
+On Error GoTo errmsg
+
+dlgMsg = CRLF + "Sono state eliminate le seguenti opzioni:" + CRLF + CRLF
+
+ChDir LocalTemplatePath$
+
+' Delete the Print2WinFax macro
+If dlg.delWinFax = 1 Then
+    'WordBasic.ToolsMacro Name:="Print2WinFax.MAIN", Show:=1, Delete:=1, _
+    '    Description:="", NewName:=""
+    Application.OrganizerDelete LocalTemplatePath$ + "NORMAL.DOT", "Print2WinFax", wdOrganizerObjectProjectItems
+    'WordBasic.MsgBox "La macro Print2WinFax |fffd| stata eliminata.", "Programma di disinstallazione macro di Word 97"
+    dlgMsg = dlgMsg + " - macro Print2WinFax."
+End If
+
+' Delete the FaxMerge macro
+If dlg.DelFaxMerge = 1 Then
+   '  WordBasic.ToolsMacro Name:="DDEFaxMerge.MAIN", Show:=1, Delete:=1, _
+   '      Description:="", NewName:=""
+    Application.OrganizerDelete LocalTemplatePath$ + "NORMAL.DOT", "DDEFaxMerge", wdOrganizerObjectProjectItems
+    ' WordBasic.MsgBox "La macro DDEFaxMerge |fffd| stata eliminata.", "Programma di disinstallazione macro di Word 97"
+    dlgMsg = dlgMsg + CRLF + " - macro DDEFaxMerge."
+End If
+ 
+ ' Remove the STYLES, remove all wfx type styles
+ WordBasic.Activate "NORMAL.DOT"
+ Count = WordBasic.CountStyles(0)
+ x = 1
+ Do While x <= Count
+    Select Case WordBasic.[StyleName$](x)
+    Case "WfxFaxNum"
+        Call DelStyle("WfxFaxNum")
+        x = 0
+    Case "WfxRecipient"
+        Call DelStyle("WfxRecipient")
+        x = 0
+    Case "WfxTime"
+      Call DelStyle("WfxTime")
+      x = 0
+    Case "WfxDate"
+      Call DelStyle("WfxDate")
+      x = 0
+    Case "WfxCompany"
+      Call DelStyle("WfxCompany")
+      x = 0
+    Case "WfxSubject"
+      Call DelStyle("WfxSubject")
+      x = 0
+    Case "WfxKeyword"
+      Call DelStyle("WfxKeyword")
+      x = 0
+    Case "WfxBillCode"
+      Call DelStyle("WfxBillCode")
+      x = 0
+   End Select
+   Count = WordBasic.CountStyles(0)
+   x = x + 1
+ Loop
+ dlgMsg = dlgMsg + CRLF + " - Stili di WinFax."
+ 
+ ' Delete the menu options.
+     
+  On Error Resume Next
+  
+  If dlg.delWinFax = 1 Then
+    
+    Set wfxObject = CommandBars("File").Controls("&WinFax...")
+    With wfxObject
+     .Delete
+    End With
+    
+   ' search the standard toolbar for winfax icons
+   NoButtons = CommandBars("Standard").Controls.Count
+   Do While x <= NoButtons
+    Set wfxBtn = CommandBars("Standard").Controls(x)
+    If wfxBtn.OnAction = "Print2WinFax" Then
+      With wfxBtn
+      .Delete
+      End With
+      NoButtons = CommandBars("Standard").Controls.Count
+      x = 0
+    End If
+    x = x + 1
+   Loop
+   dlgMsg = dlgMsg + CRLF + " - Icon di WinFax e menu di toolbar."
+  End If
+   
+  On Error Resume Next
+  If dlg.DelFaxMerge = 1 Then
+    Set wfxObject = CommandBars("Tools").Controls("&WinFax Stampa unione...")
+    With wfxObject
+      .Delete
+    End With
+    dlgMsg = dlgMsg + CRLF + " - Comando Unisci posta di WinFax."
+  End If
+  
+  x = MsgBox(dlgMsg, vbOKOnly + vbInformation, "Programma di disinstallazione macro di WinFax")
+  On Error GoTo errmsg
+  
+bye:
+' Activate and close global template, save all changes
+WordBasic.Activate "NORMAL.DOT"
+WordBasic.FileClose 1
+' Close the document and don't save changes.
+ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+
+errmsg:
+  If Err.Number = 540 Or Err.Number = 5936 Or Err.Number = 5 Or Err.Number = 424 Then
+      ' macro not found
+      Resume Next
+  End If
+  If Err.Number > 0 Then
+      MsgBox "Elimina errore: " & Err.Number & " - " & Err.Description
+  End If
+End Sub
+Function DelStyle(ByVal Stylename As String)
+  With ActiveDocument.Styles(Stylename)
+     .Delete
+  End With
+End Function
+
+
+Attribute VB_Name = "InstallaMacro"
+'***********************************************************************
+' Symantec Macro Install Wizard for WinFax PRO 8.0x, 7.5, 7
+' StartWizard Word 97 Macro
+' Symantec Corporation
+' September 19th, 1997
+' Support for v8.02 added.
+'***********************************************************************
+Dim FoundWinFax As Boolean
+Dim FoundWinFaxMailMerge As Boolean
+Dim Panel, LastPanel
+Dim PanelItems__()
+Dim dlg As Object
+Dim WizName$
+Dim CloseMsg$
+Dim File$
+Dim ThisFile$
+Dim LocalTemplatePath$
+Dim GroupTemplatePath$
+Dim WfxPath$, WordPath$
+
+'***********************************************************************
+Public Sub MAIN()
+Attribute MAIN.VB_Description = "Installa le macro di Unione e Stamp, nonch|fffd| gli stili di WinFax e modifica il menu File."
+Attribute MAIN.VB_ProcData.VB_Invoke_Func = "TemplateProject.StartWizard.MAIN"
+ReDim PanelItems__(10)
+Dim x$
+Panel = 0
+LastPanel = 0
+Set dlg = WordBasic.DialogRecord.UserDialog(False)
+WizName$ = ""
+CloseMsg$ = ""
+File$ = ""
+ThisFile$ = ""
+LocalTemplatePath$ = ""
+GroupTemplatePath$ = ""
+WfxPath$ = ""
+WordPath$ = ""
+On Error GoTo -1:  On Error GoTo FatalError
+WordBasic.PrintStatusBar "Preparazione dell'installazione guidata delle macro di Symantec in corso. Attendere.."
+ThisFile$ = WordBasic.[FileName$]()
+WizName$ = "Installazione guidata macro Word97"
+x$ = WordBasic.[AppInfo$](2)
+If x$ < "8.0" Then
+    WordBasic.MsgBox "Questa macro |fffd| valida solo per Microsoft Word versione 97 o successive." + Chr(13) + Chr(13) + "Fare clic su " + Chr(34) + "OK" + Chr(34) + " per uscire dall'Installazione guidata.", WizName$, 16
+    Exit Sub
+End If
+
+
+' checked for a shared installation path
+WfxSharedPath$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "LocalExePath", "")
+WfxSharedPath802$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "LocalExePath", "")
+
+If WfxSharedPath$ = "" And WfxSharedPath802$ = "" Then
+     ' shared installation key does not exist.
+     SharedInstall = False
+Else
+     SharedInstall = True
+End If
+
+If SharedInstall = False Then
+  ' check exe path of WinFax
+  WfxPath$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "ExePath", "")
+  WfxPath802$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "ExePath", "")
+Else
+  ' set shared install directory as wfxpath$
+  WfxPath$ = WfxSharedPath$
+  WfxPath802$ = WfxSharedPath802$
+End If
+
+' If HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax\ExePath entry
+' does not exist or both entries exist
+' then use the HKEY_LOCAL_MACHINE value (wfxpath802$)
+If WfxPath$ = "" Or (WfxPath$ <> "" And WfxPath802$ <> "") Then
+   WfxPath$ = WfxPath802$
+End If
+
+If WfxPath$ <> "" Then
+    WfxPath$ = WfxPath$ + "Macros\"
+    If WordBasic.[Files$](WfxPath$ + "wfxmacro.dll") = "" Then
+        ' WordBasic.MsgBox "Microsoft Word 97 macros cannot be installed." + Chr(13) + "Run WinFax PRO Setup to copy the Microsoft Word 97 macros to disk before proceeding with this installation.", WizName$, 16
+        result% = MsgBox("Impossibile installare le macro di Microsoft Word 97. Accertarsi che il file WFXMACRO.DLL sia installato nella directory " & WfxPath$ & "MACROS\", vbOKOnly + vbInformation, WizName$)
+        Exit Sub
+    End If
+Else
+    WordBasic.MsgBox "Le impostazioni del registro di configurazione di WinFax non sono state configurate correttamente." + Chr(13) + "Reinstallare WinFax PRO.", WizName$, 16
+    Exit Sub
+End If
+
+CloseMsg$ = "Questa procedura guidata dispone delle opzioni:" + Chr(13) + Chr(13)
+LocalTemplatePath$ = GetDefTemplateDir$(2)
+GroupTemplatePath$ = GetDefTemplateDir$(3)
+WordBasic.BeginDialog 580, 271, WizName$, "InstallaMacro.DlgControl"
+    WordBasic.Picture 10, 227, 561, 11, "LinePic", 1, "LinePicA"        '0
+    WordBasic.Picture 0, 0, 267, 209, "", 1, "FlagBox"              '1 ' old 128, 227, 440, 11
+    WordBasic.OKButton 11, 215, 73, 21                      '2
+    WordBasic.PushButton 109, 230, 73, 19, "&Suggerimento", "Hint"          '3
+    WordBasic.PushButton 139, 243, 103, 24, "<&Indietro", "Back"        '5
+    WordBasic.PushButton 242, 243, 103, 24, "&Avanti>", "Next"        '6
+    WordBasic.CancelButton 353, 243, 103, 24                    '4
+    WordBasic.PushButton 465, 243, 103, 24, "&Fine", "FastForward"    '7
+    WordBasic.Picture 14, 9, 167, 209, "LogoPic", 1, "PictBox"      '8
+    PanelItems__(0) = 9
+'End Dialog
+
+'Panel 1
+    WordBasic.Text 195, 24, 349, 135, "Installazione guidata macro Symantec" + Chr(13) + Chr(13) + Chr(13) + "Questa procedura guidata installa i seguenti elementi nel file NORMAL.DOT di Word 97 consentendone quindi l'accesso in qualsiasi momento:" + Chr(13) + Chr(13) + "- Gli stili di " + Chr(34) + "Styles" + Chr(34) + Chr(13) + "- La " + Chr(34) + "Print2WinFax" + Chr(34) + " macro" + Chr(13) + "- La " + Chr(34) + "DDEFaxMerge" + Chr(34) + " macro"
+    WordBasic.Text 195, 175, 349, 40, "Fare clic su Avanti per scegliere le opzioni desiderate o fare clic su Fine per confermare i valori predefiniti."
+    ItemsInPanel 2  'The number of controls in panel 1
+
+'Panel 2
+    WordBasic.Text 195, 17, 349, 62, "Digitare il nome della directory in cui si trova il file NORMAL.DOT se |fffd| diversa dalla directory indicata di seguito. Fare clic su " + Chr(34) + "Seleziona" + Chr(34) + " per modificare i valori predefiniti in Word."
+    WordBasic.TextBox 195, 98, 372, 18, "LocalFileName"
+    WordBasic.PushButton 465, 122, 103, 24, "Seleziona", "LocalSelect"
+    WordBasic.TextBox 195, 168, 372, 18, "GroupFileName"
+    WordBasic.PushButton 465, 192, 103, 24, "Seleziona", "GroupSelect"
+    WordBasic.OptionGroup "Sel"
+        WordBasic.OptionButton 195, 77, 133, 16, "Modelli locali", "LocalOption"
+        WordBasic.OptionButton 195, 149, 173, 16, "Modelli gruppo di lavoro", "GroupOption"
+    ItemsInPanel 8
+
+'Panel 3
+    WordBasic.CheckBox 215, 121, 119, 16, "WfxFaxNum", "WfxFaxNum"
+    WordBasic.CheckBox 215, 138, 95, 16, "WfxTime", "WfxTime"
+    WordBasic.CheckBox 215, 155, 95, 16, "WfxDate", "WfxDate"
+    WordBasic.CheckBox 215, 172, 131, 16, "WfxRecipient", "WfxRecipient"
+    WordBasic.CheckBox 215, 189, 127, 16, "WfxCompany", "WfxCompany"
+    WordBasic.CheckBox 418, 121, 116, 16, "WfxSubject", "WfxSubject"
+    WordBasic.CheckBox 418, 138, 131, 16, "WfxKeyword", "WfxKeyword"
+    WordBasic.CheckBox 418, 155, 120, 16, "WfxBillcode", "WfxBillcode"
+    ' WordBasic.CheckBox 418, 172, 100, 16, "WfxMode", "WfxMode"
+    WordBasic.Text 195, 24, 349, 91, "Fare clic sulla seguente casella di controllo per selezionare gli stili da installare. WinFax richiede soltanto lo stile ." + Chr(34) + "WfxFaxNum" + Chr(34) + " Si consiglia tuttavia di installare tutti gli stili."
+    ItemsInPanel 9 'The number of controls in panel 3
+
+'Panel 4
+    WordBasic.CheckBox 215, 74, 180, 16, "Print2WinFax macro", "Print2WinFax"
+    WordBasic.CheckBox 215, 142, 188, 16, "DDEFaxMerge macro", "DDEFaxMerge"
+    WordBasic.Text 215, 96, 245, 28, "Utilizzare questa macro per inviare un documento via fax a una singola persona.", "Text999"
+    WordBasic.Text 215, 166, 247, 30, "Utilizzare questa macro per inviare via fax documenti di unisci posta.", "Text998"
+    WordBasic.Text 215, 27, 349, 33, "|fffd| possibile scegliere di installare entrambe le macro o una di esse. Selezionare le macro desiderate.", "Text997"
+    ItemsInPanel 5
+
+'Panel 5
+    WordBasic.Text 255, 24, 309, 113, "Sono state immesse tutte le informazioni necessarie." + Chr(13) + Chr(13) + "Fare clic su " + Chr(34) + "Fine" + Chr(34) + " per iniziare la procedura di installazione delle macro."
+    ItemsInPanel 1  'The number of controls in panel 3
+WordBasic.EndDialog
+Set dlg = WordBasic.CurValues.UserDialog
+
+WordBasic.ScreenUpdating 0
+WordBasic.PrintStatusBar ""
+If WordBasic.Dialog.UserDialog(dlg, -2) = 0 Then
+Else
+    'Whatever actions are appropriate here.
+End If
+GoTo bye
+FatalError:
+    WordBasic.MsgBox "Impossibile continuare la procedura guidata a causa di un errore interno." + Chr(13) + Str(Err.Number), WizName$
+bye:
+    On Error Resume Next
+    WordBasic.ViewToolbars Toolbar:="WfxToolBar", Delete:=1
+    ' Close the document and don't save changes.
+    ActiveDocument.Close SaveChanges:=wdDoNotSaveChanges
+    
+End Sub
+'***********************************************************************
+
+'***********************************************************************
+Private Function NextPanel(oldPanel)
+    If oldPanel = LastPanel Then
+        NextPanel = oldPanel
+    Else
+        NextPanel = oldPanel + 1 'The normal, default case
+    End If
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Function PrevPanel(oldPanel)
+    If oldPanel = 1 Then
+        PrevPanel = oldPanel 'Safeguard -- leave alone
+    Else
+        PrevPanel = oldPanel - 1 'Default case
+    End If
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Function DoButtonClick(id$, item)
+Dim DlgId
+Dim Ret
+    DlgId = WordBasic.DlgControlId(id$)
+    Ret = 0
+    If id$ = "FastForward" Then
+        Ret = 1 'This means "return from wizard now"
+    End If
+    DoButtonClick = Ret
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Sub ItemsInPanel(howMany)
+    LastPanel = LastPanel + 1
+    PanelItems__(LastPanel) = howMany + PanelItems__(LastPanel - 1)
+End Sub
+'***********************************************************************
+
+'***********************************************************************
+Private Sub EnableControls()
+Select Case LastPanel
+    Case 1
+        WordBasic.DlgFocus "FastForward" '7              'Give the Finish button the focus
+        WordBasic.DlgEnable "Next", 0           'Disable the Next> button
+        WordBasic.DlgEnable "Back", 0           'Disable the <Back button
+    Case Is >= 2
+        Select Case Panel
+            Case 1
+                WordBasic.DlgEnable "Next", 1           'Enable the Next> button
+                WordBasic.DlgFocus "Next"               'Next> button the focus
+                WordBasic.DlgEnable "Back", 0           'Disable the <Back button
+            Case 2
+                WordBasic.DlgEnable "Back", 1           'Enable the <Back button
+                If WordBasic.DlgValue("Sel") = 0 Then
+                    WordBasic.DlgEnable "LocalFileName", 1
+                    WordBasic.DlgEnable "GroupFileName", 0
+                    WordBasic.DlgFocus "LocalFileName"
+                Else
+                    WordBasic.DlgEnable "GroupFileName", 1
+                    WordBasic.DlgEnable "LocalFileName", 0
+                    WordBasic.DlgFocus "GroupFileName"
+                End If
+            Case 3
+                WordBasic.DlgEnable "Back", 1           'Enable the <Back button
+                WordBasic.DlgEnable "Next", 1           'Enable the Next> button
+            Case 4
+                WordBasic.DlgVisible "FlagBox", 0
+                WordBasic.DlgSetPicture "PictBox", "LogoPic", 1
+                WordBasic.DlgVisible "PictBox", 1
+                WordBasic.DlgEnable "Back", 1           'Enable the <Back button
+                WordBasic.DlgEnable "Next", 1           'Enable the Next> button
+            Case 5
+                WordBasic.DlgSetPicture "FlagBox", "FlagPic", 1
+                WordBasic.DlgVisible "FlagBox", 1
+                WordBasic.DlgVisible "PictBox", 0
+                WordBasic.DlgFocus "FastForward"                'Finish button the focus
+                WordBasic.DlgEnable "Next", 0           'Disable the Next> button
+                WordBasic.DlgEnable "Back", 1               'Enable the <Back button
+        End Select
+    Case Else
+End Select
+End Sub
+'***********************************************************************
+
+'***********************************************************************
+Private Sub ShowHideControls(FirstField, LimField, ShowHide)
+Dim iField
+    For iField = FirstField To LimField - 1
+        WordBasic.DlgVisible iField, ShowHide
+    Next
+End Sub
+'***********************************************************************
+
+'***********************************************************************
+Private Sub ChangePanel(old, new_)
+    ShowHideControls (PanelItems__(old - 1)), (PanelItems__(old)), 0
+    ShowHideControls (PanelItems__(new_ - 1)), (PanelItems__(new_)), 1
+    Panel = new_
+    EnableControls
+End Sub 'ChangePanel
+'***********************************************************************
+
+'***********************************************************************
+Private Function DlgControl(id$, iaction, wvalue)
+Dim fRet
+Dim result
+Dim idnum
+Dim x$
+Dim x_
+Dim dummy
+    fRet = 1
+    Select Case iaction
+    Case 1
+        Panel = 1
+        WordBasic.DlgVisible 2          'Hide OK button
+        WordBasic.DlgVisible 3          'Hide Hint button
+        ShowHideControls (PanelItems__(1)), (PanelItems__(LastPanel)), 0
+        ShowHideControls (PanelItems__(Panel - 1)), (PanelItems__(Panel)), 1
+        EnableControls
+        WordBasic.DlgText "LocalFileName", LocalTemplatePath$
+        WordBasic.DlgText "GroupFileName", GroupTemplatePath$
+        WordBasic.DlgValue "WfxFaxNum", 1
+        WordBasic.DlgEnable "WfxFaxNum", 0
+        WordBasic.DlgValue "WfxTime", 1
+        WordBasic.DlgValue "WfxDate", 1
+        WordBasic.DlgValue "WfxRecipient", 1
+        WordBasic.DlgValue "WfxCompany", 1
+        WordBasic.DlgValue "WfxSubject", 1
+        WordBasic.DlgValue "WfxKeyword", 1
+        WordBasic.DlgValue "WfxBillcode", 1
+        ' WordBasic.DlgValue "WfxMode", 1
+        WordBasic.DlgValue "Print2WinFax", 1
+        WordBasic.DlgValue "DDEFaxMerge", 1
+        WordBasic.DlgEnable "GroupFileName", 0
+        WordBasic.DlgEnable "GroupSelect", 0
+        WordBasic.DlgVisible "FlagBox", 0
+        fRet = 0
+    Case 2
+        result = DoButtonClick(id$, idnum)
+        If result = 0 Then
+            Select Case id$
+            Case "Annulla"               'Cancel, so exit dialog box
+                fRet = 0
+            Case "Back"             '<Back
+                ChangePanel Panel, PrevPanel(Panel)
+            Case "Next"             'Next>
+                ChangePanel Panel, NextPanel(Panel)
+            Case "FastForward"              'Finish, so exit dialog box
+                WordBasic.DlgFocus "Annulla"
+                WordBasic.DlgEnable "FastForward", 0
+            Case "LocalSelect"
+                x$ = GetNormalDot$(2)
+                WordBasic.DlgText "LocalFileName", x$
+                WordBasic.DlgFocus "LocalFileName"
+            Case "GroupSelect"
+                x$ = GetNormalDot$(3)
+                WordBasic.DlgText "GroupFileName", x$
+                WordBasic.DlgFocus "GroupFileName"
+            Case "LocalOption"
+                WordBasic.DlgEnable "GroupFileName", 0
+                WordBasic.DlgEnable "GroupSelect", 0
+                WordBasic.DlgEnable "LocalFileName", 1
+                WordBasic.DlgEnable "LocalSelect", 1
+                WordBasic.DlgFocus "LocalFileName"
+            Case "GroupOption"
+                WordBasic.DlgEnable "LocalFileName", 0
+                WordBasic.DlgEnable "LocalSelect", 0
+                WordBasic.DlgEnable "GroupFileName", 1
+                WordBasic.DlgEnable "GroupSelect", 1
+                WordBasic.DlgFocus "GroupFileName"
+            Case Else
+            End Select
+        ElseIf result = 1 Then
+            x_ = DoTheWork(dummy)
+            If x_ = 1 Then
+                WordBasic.MsgBox CloseMsg$, WizName$, 64
+                WordBasic.PrintStatusBar "Installazione completa."
+            ElseIf x_ = 2 Then
+                WordBasic.MsgBox "|fffd| stato scelto di non installare le macro, quindi la procedura guidata |fffd| terminata", WizName$, 16
+            Else
+                WordBasic.MsgBox "Installazione non riuscita" + Chr(13) + "Errore numero: " + Str(x_), WizName$, 16
+                WordBasic.PrintStatusBar "Installazione non riuscita"
+            End If
+            fRet = 0
+        End If
+    Case 3 'Item contents changed
+    Case 4 'item focus changed
+    Case Else
+    End Select
+    DlgControl = fRet
+End Function 'DlgControl
+'***********************************************************************
+
+'***********************************************************************
+Private Function GetNormalDot$(GroupOrLocal)
+    On Error GoTo -1: On Error GoTo ErrHandler
+    'Dim xyz As Object: Set xyz = WordBasic.DialogRecord.ToolsOptionsFileLocations(False)
+    'WordBasic.Dialog.ToolsOptionsFileLocations xyz
+    'MsgBox "here"
+    'dlgAnswer = Dialogs(wdDialogToolsOptionsFileLocations).Show
+    With Dialogs(wdDialogToolsOptions)
+       .DefaultTab = wdDialogToolsOptionsTabFileLocations
+       .Display
+    End With
+    GetNormalDot$ = GetDefTemplateDir$(GroupOrLocal)
+    GoTo bye
+ErrHandler:
+    Select Case Err.Number
+        Case 53
+            WordBasic.MsgBox "Il file: NORMAL.DOT" + " non esiste.", WizName$, 0
+        Case 64
+            WordBasic.MsgBox "L'unit|fffd| specificata non |fffd| disponibile.", WizName$, 0
+        Case 76
+            WordBasic.MsgBox "La cartella specificata non esiste.", WizName$, 0
+        Case 102
+            'If the user cancels the dialog box
+        Case 504
+            WordBasic.MsgBox "Errore: " & Str(Err.Number) & " Il file NORMAL.DOT |fffd| di sola lettura o non |fffd| accessibile.", WizName$, 0
+        Case Else
+            result% = MsgBox("Errore: " & Str$(Err.Number) & " " & Err.Description, vbOKOnly, WizName$)
+            ' WordBasic.MsgBox "Error Number: " + Str(Err.Number) + " has occurred.", WizName$, 0
+    End Select
+    Err.Number = 0
+bye:
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Function GetDefTemplateDir$(GroupOrLocal)
+Dim TempDir$
+    On Error GoTo -1: On Error GoTo GDTDErrHandler
+    TempDir$ = WordBasic.[DefaultDir$](GroupOrLocal)
+    If WordBasic.[Right$](TempDir$, 1) <> "\" And TempDir$ <> "" Then
+        GetDefTemplateDir$ = TempDir$ + "\"
+    Else
+        GetDefTemplateDir$ = TempDir$
+    End If
+    GoTo GDTDBye:
+GDTDErrHandler:
+WordBasic.MsgBox Str(Err.Number) '"Errore di recupero della directory Temp"
+GDTDBye:
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Function DoTheWork(dummy)
+Dim templatepath$
+templatepath$ = Space(255)
+Dim x
+    On Error GoTo -1: On Error GoTo ErrHandler
+    WordBasic.CopyFile FileName:=WfxPath$ + "WfxMacro.Dll", Directory:=WordBasic.[DefaultDir$](9)
+    If WordBasic.DlgValue("Print2WinFax") = 1 Or WordBasic.DlgValue("DDEFaxMerge") = 1 Then
+        WordBasic.PrintStatusBar "Opening " + templatepath$ + "NORMAL.DOT"
+        If WordBasic.DlgValue("Sel") = 0 Then
+            File$ = GetDefTemplateDir$(2) + "NORMAL.DOT"
+        Else
+            File$ = GetDefTemplateDir$(3) + "NORMAL.DOT"
+        End If
+        If WordBasic.[Files$](File$) <> "" Then
+            WordBasic.FileOpen Name:=File$
+        Else
+            WordBasic.FileNew NewTemplate:=1, Template:="NORMAL.DOT"        'Windows
+            WordBasic.FileSaveAs Name:=File$, Format:=1, LockAnnot:=0, Password:="", AddToMru:=1, WritePassword:="", RecommendReadOnly:=0, EmbedFonts:=0, NativePictureFormat:=0, FormsData:=0, SaveAsAOCELetter:=0
+        End If
+        x = CreateAndCopyStyles(dummy)
+               
+        If x = 1 Then
+            CloseMsg$ = CloseMsg$ + "- Stili di WinFax installati" + Chr(13)
+        End If
+        x = CopyTheMacros(dummy)
+        ' If WordBasic.DlgValue("Print2WinFax") = 1 Then UpdateMenu
+        UpdateMenu
+        WordBasic.FileClose (1)
+        DoTheWork = 1
+    Else
+        DoTheWork = 2
+    End If
+    GoTo bye
+ErrHandler:
+    Select Case Err.Number
+    Case 1078
+        WordBasic.MsgBox "Lo " + File$ + "non esiste"
+    Case Else
+    End Select
+    DoTheWork = Err.Number
+    Err.Number = 0
+bye:
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Function CreateAndCopyStyles(dummy)
+Dim A
+Dim x
+Dim templatepath$
+templatepath$ = Space(255)
+    ReDim Temp__$(8)
+    Temp__$(1) = "WfxFaxNum"
+    Temp__$(2) = "WfxTime"
+    Temp__$(3) = "WfxDate"
+    Temp__$(4) = "WfxRecipient"
+    Temp__$(5) = "WfxCompany"
+    Temp__$(6) = "WfxSubject"
+    Temp__$(7) = "WfxKeyword"
+    Temp__$(8) = "WfxBillCode"
+    WordBasic.Activate "NORMAL.DOT"
+    For A = 1 To 8
+        x = CheckIfStyleExists((Temp__$(A)))
+        If WordBasic.DlgValue(A + 18) = 1 And x = 0 Then
+        WordBasic.PrintStatusBar "Copiatura in corso " + Temp__$(A) + " to " + templatepath$ + "NORMAL.DOT"
+        WordBasic.FormatStyle Name:=Temp__$(A), BasedOn:="Normale", NextStyle:="", Type:=0, AddToTemplate:=0, Define:=1
+        
+        ' modified code April 11/97
+        ' ActiveDocument.Styles.Add (Temp__$(A))
+        
+       End If
+    Next A
+    WordBasic.PrintStatusBar "Copiatura degli stili completata"
+    CreateAndCopyStyles = 1
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Function CopyTheMacros(dummy)
+Dim count_
+Dim Counter
+Dim Suf$
+Dim RightNow
+    On Error Resume Next
+    WordBasic.PrintStatusBar "Copiatura degli stili completata"
+    WordBasic.WaitCursor (1)
+     
+    FoundWinFax = False
+    For count_ = 1 To WordBasic.CountMenuItems("File", 0, 0)
+        If WordBasic.[MenuItemText$]("File", 0, count_, 0) = "&WinFax..." Then
+            ' we don't add WinFax to the file menu if FoundWinFax=True
+            FoundWinFax = True
+        End If
+    '    If CommandBars("File").Controls(count_).Caption = "&WinFax..." Then
+    '       WordBasic.ToolsCustomizeMenus Name:="Print2WinFax", Menu:="File", Remove:=1, Context:=1
+    '       'CommandBars("File").Controls("&WinFax...").Delete
+    '    End If
+    Next count_
+    
+    FoundWinFaxMailMerge = False
+    Counter = CommandBars("Tools").Controls.Count
+    For count_ = 1 To Counter 'WordBasic.CountMenuItems("Tools", 0, 0)
+        If CommandBars("Tools").Controls(count_).Caption = "&WinFax Stampa unione..." Then
+       '  If WordBasic.[MenuItemText$]("Tools", 0, count_, 0) = "&WinFax Stampa unione..." Then
+           FoundWinFaxMailMerge = True
+        End If
+    Next count_
+    
+    ' For Counter = 1 To WordBasic.CountMacros(0)
+    
+     ' count number of modules in the normal template.
+    For Each xItem In NormalTemplate.VBProject.VBComponents
+       Count = Count + 1
+    Next xItem
+    
+     For Counter = 1 To Count
+        Suf$ = WordBasic.[LTrim$](Str(WordBasic.Month(WordBasic.Now()))) + WordBasic.[LTrim$](Str(WordBasic.Day(WordBasic.Now()))) + WordBasic.[LTrim$](Str(WordBasic.Year(WordBasic.Now()))) + WordBasic.[LTrim$](Str(WordBasic.Hour(WordBasic.Now()))) + WordBasic.[LTrim$](Str(WordBasic.Minute(WordBasic.Now()))) + WordBasic.[LTrim$](Str(WordBasic.Second(WordBasic.Now())))
+        If WordBasic.[MacroName$](Counter, 0, 0, 0) = "Print2WinFax" Then
+            ' WordBasic.Organizer Rename:=1, Source:=File$, Name:="Print2WinFax", NewName:="WfxPrint" + Suf$, Tab:=3
+            Application.OrganizerRename Source:=File$, Name:="Print2WinFax", NewName:="WfxPrint" + Suf$, Object:=wdOrganizerObjectProjectItems
+            CloseMsg$ = CloseMsg$ + "- Macro Print2WinFax rinominata in: " + "WfxPrint" + Suf$ + Chr(13)
+        ElseIf WordBasic.[MacroName$](Counter, 0, 0, 0) = "DDEFaxMerge" Then
+            ' WordBasic.Organizer Rename:=1, Source:=File$, Name:="DDEFaxMerge", NewName:="WfxMerge" + Suf$, Tab:=3
+            Application.OrganizerRename Source:=File$, Name:="DDEFaxMerge", NewName:="WfxMerge" + Suf$, Object:=wdOrganizerObjectProjectItems
+            CloseMsg$ = CloseMsg$ + "- Macro DDEFaxMerge rinominata in: " + "WfxMerge" + Suf$ + Chr(13)
+        End If
+        RightNow = WordBasic.Now()
+        While WordBasic.Now() < RightNow + 0.000000001
+        Wend
+    Next Counter
+    
+    If WordBasic.DlgValue("Print2WinFax") = 1 Then
+        ' WordBasic.Organizer Copy:=1, Source:=ThisFile$, Destination:=File$, Name:="Print2WinFax", Tab:=3
+        Application.OrganizerCopy Source:=ThisFile$, Destination:=File$, Name:="Print2WinFax", Object:=wdOrganizerObjectProjectItems
+        CloseMsg$ = CloseMsg$ + "- Macro di stampa installata" + Chr(13)
+    End If
+    If WordBasic.DlgValue("DDEFaxMerge") = 1 Then
+        ' WordBasic.Organizer Copy:=1, Source:=ThisFile$, Destination:=File$, Name:="DDEFaxMerge", Tab:=3
+        Application.OrganizerCopy Source:=ThisFile$, Destination:=File$, Name:="DDEFaxMerge", Object:=wdOrganizerObjectProjectItems
+        CloseMsg$ = CloseMsg$ + "- Macro di unione installata " + Chr(13)
+    End If
+    WordBasic.PrintStatusBar "Copiatura delle macro completata"
+    CopyTheMacros = 1
+    WordBasic.WaitCursor (0)
+End Function
+'***********************************************************************
+
+'***********************************************************************
+Private Sub UpdateMenu()
+  
+ If WordBasic.DlgValue("Print2WinFax") = 1 Then
+  If FoundWinFax = False Then  ' only update if FILE, WINFAX does not exist.
+    WordBasic.PrintStatusBar "Aggiornamento del menu File in corso"
+    WordBasic.Activate "NORMAL.DOT"
+    WordBasic.ToolsCustomizeMenus MenuType:=1, Position:=16, Category:=2, Name:="Print2WinFax", Menu:="&File", AddBelow:="Stam&pa...", MenuText:="&WinFax...", Add:=1, Context:=0
+    CloseMsg$ = CloseMsg$ + "- Menu File aggiornato" + Chr(13)
+    ' add the button on the standard toolbar
+    Set wfxBtn = CommandBars("Standard").Controls.Add(Before:=5)
+    With wfxBtn
+        .FaceId = 1707
+        .OnAction = "Print2WinFax"
+        .Caption = "Stampa su WinFax"
+    End With
+     ' add the fax icon to the File, WinFax option
+    With CommandBars("File").Controls("&WinFax...")
+        .FaceId = 1707   ' fax picture
+    End With
+  
+   End If
+  End If
+  
+  If WordBasic.DlgValue("DDEFaxMerge") = 1 Then
+  If FoundWinFaxMailMerge = False Then  ' only update if TOOLS, WINFAX MAIL MERGE does not exist
+    WordBasic.Activate "NORMAL.DOT"
+    WordBasic.ToolsCustomizeMenus MenuType:=1, Position:=16, Category:=2, Name:="DDEFaxMerge", Menu:="&Strumenti", AddBelow:="Stamp&a unione...", MenuText:="&WinFax Stampa unione...", Add:=1, Context:=0
+    CloseMsg$ = CloseMsg$ + "- Menu Strumenti aggiornato" + Chr(13)
+   ' Add a icon for DDEFaxmerge -- not implemented
+   ' Set wfxBtn = CommandBars("Standard").Controls.Add
+   ' With wfxBtn
+   '     .FaceId = 1707
+   '     .OnAction = "DDEFaxMerge"
+   '     .Caption = "WinFax Mail Merge"
+   ' End With
+      ' add the fax icon to the tools, winfax mail merge option
+     With CommandBars("Tools").Controls("&WinFax Stampa unione...")
+        .FaceId = 1707   ' fax picture
+     End With
+  End If
+  
+  End If
+
+End Sub
+'***********************************************************************
+
+'***********************************************************************
+Private Function CheckIfStyleExists(Sty$)
+Dim x
+Dim A
+    x = WordBasic.CountStyles(0, 0)
+    For A = 1 To x
+        If WordBasic.[StyleName$](A) = Sty$ Then
+            CheckIfStyleExists = 1
+        Else
+            CheckIfStyleExists = 0
+        End If
+    Next A
+End Function
+'***********************************************************************
+Attribute VB_Name = "Print2WinFax"
+'***********************************************************************
+' Print2WinFax Word 97 Macro for WinFax PRO 9.0x.
+' Talkworks PRO 2.0 / Talkworks PRO 3.0
+'Symantec Corporation
+' modified April 21, 1999
+'***********************************
+' modified to allow for table support in SR-2
+' starts Controller only if WinFax/Talkworks is not active.
+' date & time in any format now allowed.
+
+Type OSVERSIONINFO
+         dwOSVersionInfoSize As Long
+         dwMajorVersion As Long
+         dwMinorVersion As Long
+         dwBuildNumber As Long
+         dwPlatformId As Long
+         szCSDVersion As String * 128   ' Maintenance string for PSS usage.
+End Type
+ 
+'Public Const VER_PLATFORM_WIN32s = 0
+Public Const VER_PLATFORM_WIN32_WINDOWS = 1
+Public Const VER_PLATFORM_WIN32_NT = 2
+ 
+Declare Function GetVersionEx Lib "kernel32" Alias "GetVersionExA" (lpVersionInformation As OSVERSIONINFO) As Long
+
+'*************************************
+Private Declare Function GetDriveTypeA Lib "kernel32" (ByVal nDrive As String) As Integer
+Private Declare Function WinExec Lib "kernel32" (ByVal lpCmdLine As String, ByVal nCmdShow As Integer) As Integer
+Private Declare Function FindWindowA Lib "User32" (ByVal lpClassName As String, ByVal lpWindowName As String) As Integer
+Private Declare Function DisplayThumbnail Lib "WfxMacro.dll" (ByVal hWnd As Integer, ByVal szFileName As String, ByVal top As Integer, ByVal left As Integer, ByVal right As Integer, ByVal bottom As Integer) As Integer
+Private Declare Function IsCoverFillable Lib "WfxMacro.dll" (ByVal szFileName As String) As Integer
+Private Declare Function GetCoverDesc Lib "WfxMacro.dll" (ByVal szFileName As String) As String
+Private Declare Function GetBoolRegVal Lib "WfxMacro.dll" (ByVal szSubkeyname As String, ByVal szValueName As String) As Integer
+Private Declare Function SetBoolRegVal Lib "WfxMacro.dll" (ByVal szSubkeyname As String, ByVal szValueName As String, ByVal newvalue As Integer) As Integer
+
+' ***** Registry Read/Write Settings *******
+
+Global Const REG_SZ As Long = 1
+Global Const REG_DWORD As Long = 4
+
+Global Const HKEY_CLASSES_ROOT = &H80000000
+Global Const HKEY_CURRENT_USER = &H80000001
+Global Const HKEY_LOCAL_MACHINE = &H80000002
+Global Const HKEY_USERS = &H80000003
+
+Global Const ERROR_NONE = 0
+Global Const ERROR_BADDB = 1
+Global Const ERROR_BADKEY = 2
+Global Const ERROR_CANTOPEN = 3
+Global Const ERROR_CANTREAD = 4
+Global Const ERROR_CANTWRITE = 5
+Global Const ERROR_OUTOFMEMORY = 6
+Global Const ERROR_INVALID_PARAMETER = 7
+Global Const ERROR_ACCESS_DENIED = 8
+Global Const ERROR_INVALID_PARAMETERS = 87
+Global Const ERROR_NO_MORE_ITEMS = 259
+
+Global Const KEY_ALL_ACCESS = &H3F
+
+Global Const REG_OPTION_NON_VOLATILE = 0
+
+Declare Function RegCloseKey Lib "advapi32.dll" (ByVal hKey As Long) As Long
+Declare Function RegCreateKeyEx Lib "advapi32.dll" Alias "RegCreateKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal Reserved As Long, ByVal lpClass As String, ByVal dwOptions As Long, ByVal samDesired As Long, ByVal lpSecurityAttributes As Long, phkResult As Long, lpdwDisposition As Long) As Long
+Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal ulOptions As Long, ByVal samDesired As Long, phkResult As Long) As Long
+Declare Function RegQueryValueExString Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As String, lpcbData As Long) As Long
+Declare Function RegQueryValueExLong Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, lpData As Long, lpcbData As Long) As Long
+Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As Long, lpcbData As Long) As Long
+Declare Function RegSetValueExString Lib "advapi32.dll" Alias "RegSetValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal Reserved As Long, ByVal dwType As Long, ByVal lpValue As String, ByVal cbData As Long) As Long
+Declare Function RegSetValueExLong Lib "advapi32.dll" Alias "RegSetValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal Reserved As Long, ByVal dwType As Long, lpValue As Long, ByVal cbData As Long) As Long
+
+' ***** End of registry read/write definitions
+
+Dim CRLF As String
+Dim OldPrinterName$, WfxPrinterName$, CoverPage$, CoverPageText$, LastDrive$, PreviewOnOff, ModemClass$
+Dim AttachList__$(), DriveList__$(), DirList__$(), FileList__$(), Styles__$(), WfxInfo__$()
+Global UseInternetFaxOn
+Global VersionNum As String
+
+Global sFaxStatus As String
+
+Global unParsedNumber As String
+Global InternetNumber As String
+
+Dim PeakTimeCASFormat As Long
+Dim PeakTimeCASFormat802 As Long
+
+Dim ShowOrNot, SendNowOrNot, SendCoverOrNot, SendAttachmentOrNot, SendHighOrLow, SendMode, AttachmentCounter, SendDlgWasOn, BackGrnd
+
+'***********************************************************************
+Public Sub MAIN()
+' check to see if any documents are active.
+If Windows.Count <= 0 Then
+    MsgBox ("Non risulta aperto nessun documento da trasmettere via fax.")
+    Exit Sub
+End If
+
+ReDim AttachList__$(50)
+ReDim DriveList__$(25)
+ReDim DirList__$(0)
+ReDim FileList__$(0)
+ReDim Styles__$(7)
+' Concord 4/30/01
+'ReDim WfxInfo__$(7)
+ReDim WfxInfo__$(8)
+Dim FaxNumStyleFound
+Dim x
+Dim stylecount
+Dim i
+
+CRLF = Chr$(13)
+OldPrinterName$ = ""
+WfxPrinterName$ = ""
+CoverPage$ = ""
+CoverPageText$ = ""
+LastDrive$ = ""
+PreviewOnOff = 0
+ModemClass$ = ""
+ShowOrNot = 0
+SendNowOrNot = 0
+SendCoverOrNot = 0
+SendAttachmentOrNot = 0
+SendHighOrLow = 0
+SendMode = 0
+AttachmentCounter = 0
+SendDlgWasOn = 0
+BackGrnd = 0
+UseInternetFaxOn = 0
+
+    ' Get VersionNum.
+    ' For 8.02 and 9.0 we need to look at HKEY_LOCAL_MACHINE.
+    ' For 8.0 and 8.01 we need to look at HKEY_CURRENT_USER
+    VersionNum = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "Version", "")
+    VersionNum802 = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "Version", "")
+    If VersionNum = "" Or (VersionNum <> "" And VersionNum802 <> "") Then
+      VersionNum = VersionNum802
+    End If
+    
+    Styles__$(0) = "WfxFaxNum"
+    Styles__$(1) = "WfxRecipient"
+    Styles__$(2) = "WfxTime"
+    Styles__$(3) = "WfxDate"
+    Styles__$(4) = "WfxCompany"
+    Styles__$(5) = "WfxSubject"
+    Styles__$(6) = "WfxKeyWord"
+    Styles__$(7) = "WfxBillCode"
+    WfxPrinterName$ = "WinFax"
+    FaxNumStyleFound = 0
+
+    GetDefaults
+    x = CheckIfWinFaxIsActive
+      
+    stylecount = WordBasic.CountStyles()
+    For i = 1 To stylecount
+        If UCase(WordBasic.[StyleName$](i)) = UCase(Styles__$(0)) Then
+            WordBasic.StartOfDocument
+            WordBasic.EditFindStyle Style:=Styles__$(0)
+            WordBasic.EditFind Find:="", WholeWord:=0, MatchCase:=0, Direction:=0, Format:=1
+            FaxNumStyleFound = WordBasic.EditFindFound()
+            GoTo QuitLoop
+        End If
+    Next i
+QuitLoop:
+    If FaxNumStyleFound Then
+        GetOptions
+        If ShowOrNot = 1 Then
+            If SendNowOrNot Then
+                If VersionNum < "8.0" Then
+                   WfxInfo__$(2) = "23:00:00"
+                End If
+                If VersionNum >= "8.0" Then
+                   ' code here to convert the peaktime integer to valid time.
+             
+                '  The Peak Times are located in HKEY_LOCAL_MACHINE (for 8.02)
+                '  and HKEY_CURRENT_USER in 8.0, 8.01.
+                   PeakTimeCASFormat = QueryValue("Software\Delrina\WinFax\7.0\Peak Times", "EndPeakTime")
+                   PeakTimeCASFormat802 = QueryValueHLM("Software\Delrina\WinFax\7.0\Peak Times", "EndPeakTime")
+                   
+                   If PeakTimeCASFormat = vbNull Or (PeakTimeCASFormat <> vbNull And PeakTimeCASFormat802 <> vbNull) Then
+                       PeakTimeCASFormat = PeakTimeCASFormat802
+                   End If
+                                    
+                   WfxInfo__$(2) = ConvertCASTime(PeakTimeCASFormat)
+                End If
+                WfxInfo__$(3) = WordBasic.[LTrim$](Str(WordBasic.Month(WordBasic.Now()))) + "/" + WordBasic.[LTrim$](Str(WordBasic.Day(WordBasic.Now()))) + "/" + WordBasic.[LTrim$](WordBasic.[Right$](Str(WordBasic.Year(WordBasic.Now())), 2))
+            End If
+            If SendCoverOrNot Then SendCover
+            If SendAttachmentOrNot Then AddAttachments
+        End If
+        WordBasic.StartOfDocument
+        WordBasic.ScreenUpdating 0
+        GetDocumentInfo
+        WordBasic.ScreenUpdating 1
+        DoDDE
+    End If
+
+    PrintIt
+    If BackGrnd = 1 Then WordBasic.ToolsOptionsPrint Background:=1
+    If OldPrinterName$ <> "" Then
+        WordBasic.FilePrintSetup Printer:=OldPrinterName$, DoNotSetAsSysDefault:=1
+    End If
+    
+    ' turn sendfax wizard on/off
+    If SendDlgWasOn = 0 Then
+         x = SetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard", 0)
+    End If
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub ShowCoverThumbnail(YorN$)
+Dim x$
+Dim hDlg
+Dim x_
+     
+    If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+        x$ = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox")
+    Else
+        x$ = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+    End If
+    If UCase(WordBasic.[Right$](x$, 3)) = "CVP" And YorN$ = "Y" Then
+        hDlg = FindWindowA("bosa_sdm_Microsoft Word 8.0", "Seleziona copertina")
+        x_ = DisplayThumbnail(hDlg, x$, 21, 410, 565, 200)
+    Else
+        hDlg = FindWindowA("bosa_sdm_Microsoft Word 8.0", "Seleziona copertina")
+        x_ = DisplayThumbnail(hDlg, "", 21, 410, 565, 200)
+    End If
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub SendCover()
+Dim CoverPath$
+    On Error GoTo -1: On Error GoTo SendCoverErrHandler
+    GetDrives
+    
+    CoverPath$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "Cover Path", "")
+    CoverPath802$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "Cover Path", "")
+    
+    If CoverPath$ = "" Or (CoverPath$ <> "" And CoverPath802$ <> "") Then
+      CoverPath$ = CoverPath802$
+    End If
+    
+    If WordBasic.[Right$](CoverPath$, 1) <> "\" Then CoverPath$ = CoverPath$ + "\"
+    WordBasic.ChDir CoverPath$
+    GetFilesAndDirs "*.CVP"
+    WordBasic.BeginDialog 768, 240, "Seleziona copertina", "Print2WinFax.SendCoverProc"
+        WordBasic.DropListBox 280, 125, 245, 68, DriveList__$(), "DriveListBox"
+        WordBasic.ListBox 280, 20, 245, 105, DirList__$(), "DirListBox"
+        WordBasic.ListBox 15, 20, 245, 125, FileList__$(), "FileListBox"
+        WordBasic.OKButton 544, 208, 100, 21 '334, 163, 88, 21
+        WordBasic.CancelButton 654, 208, 100, 21 '438, 163, 88, 21
+        WordBasic.Text 17, 5, 93, 10, "Percorso corrente:"
+        WordBasic.Text 100, 4, 668, 13, "", "FullPath"
+        WordBasic.Picture 545, 20, 206, 165, "PictureFileName", 0, "Picture1"
+        WordBasic.CheckBox 545, 189, 89, 16, "Anteprima", "Preview"
+        WordBasic.Text 15, 145, 370, 13, "", "CoverDesc"
+        WordBasic.Text 15, 169, 129, 13, "Testo copertina:", "Text1"
+        WordBasic.TextBox 14, 185, 509, 44, "CoverText", 1
+    WordBasic.EndDialog
+    Dim dlg As Object: Set dlg = WordBasic.CurValues.UserDialog
+    WordBasic.Dialog.UserDialog dlg
+    GoTo SendCoverBye
+SendCoverErrHandler:
+SendCoverBye:
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function GetRealFileName$()
+    If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+        GetRealFileName$ = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox") ' + Chr$(34)
+    Else
+        GetRealFileName$ = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+    End If
+End Function
+'***********************************
+
+'***********************************************************************
+Private Function SendCoverProc(C$, A, S)
+Dim x$
+Dim Ret
+Dim Test$
+Dim a_$
+    On Error GoTo -1: On Error GoTo SendCoverErrHandler
+    Select Case A
+        Case 1
+            CheckPath
+            x$ = GetRealFileName$
+            WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+        
+            If IsCoverFillable(x$) <> 0 Then
+                WordBasic.DlgEnable "Text1", 0
+                WordBasic.DlgEnable "CoverText", 0
+            Else
+                WordBasic.DlgEnable "Text1", 1
+                WordBasic.DlgEnable "CoverText", 1
+            End If
+        Case 2
+            Select Case C$
+                Case "FileListBox"
+                    x$ = GetRealFileName$
+                    If UCase(WordBasic.[Right$](x$, 3)) = "CVP" Then
+                        WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+                        If IsCoverFillable(x$) <> 0 Then
+                            WordBasic.DlgEnable "Text1", 0
+                            WordBasic.DlgEnable "CoverText", 0
+                        Else
+                            WordBasic.DlgEnable "Text1", 1
+                            WordBasic.DlgEnable "CoverText", 1
+                        End If
+                        If PreviewOnOff = 1 Then ShowCoverThumbnail "Y"
+                    Else
+                        ShowCoverThumbnail "N"
+                    End If
+                Case "DriveListBox"
+                    ReDim DirList__$(0)
+                    ReDim FileList__$(0)
+SendCoverTryAgain:  'Used for Error Handler if removable drives aren't ready
+                    WordBasic.ChDir WordBasic.[Left$](WordBasic.[DlgText$]("DriveListBox"), 2)
+                    GetFilesAndDirs "*.CVP"
+                    CheckPath
+                    WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                    WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+                    x$ = GetRealFileName$
+                    If UCase(WordBasic.[Right$](x$, 3)) = "CVP" Then
+                        WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+                        If IsCoverFillable(x$) <> 0 Then
+                            WordBasic.DlgEnable "Text1", 0
+                            WordBasic.DlgEnable "CoverText", 0
+                        Else
+                            WordBasic.DlgEnable "Text1", 1
+                            WordBasic.DlgEnable "CoverText", 1
+                        End If
+                        If PreviewOnOff = 1 Then ShowCoverThumbnail "Y"
+                    Else
+                        ShowCoverThumbnail "N"
+                    End If
+                Case "Preview"
+                    PreviewOnOff = WordBasic.DlgValue("Preview")
+                    If PreviewOnOff = 0 Then
+                        ShowCoverThumbnail "N"
+                    Else
+                        ShowCoverThumbnail "Y"
+                    End If
+SendCoverNoReTry:   'Used for Error Handler if removable drives aren't ready
+                Case Else
+                    If C$ = "OK" And WordBasic.[DlgFocus$]() = "DirListBox" Then
+                        If WordBasic.[DlgText$]("DirListBox") <> "[..]" Then
+                            WordBasic.ChDir WordBasic.[DlgText$]("DirListBox")
+                        Else
+                            Test$ = WordBasic.[Files$](".")
+                            If WordBasic.[Right$](Test$, 1) <> "\" Then WordBasic.ChDir ".."
+                        End If
+                        ReDim DirList__$(0)
+                        ReDim FileList__$(0)
+                        GetFilesAndDirs "*.CVP"
+                        CheckPath
+                        WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                        WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+                        x$ = GetRealFileName$
+                        If UCase(WordBasic.[Right$](x$, 3)) = "CVP" Then
+                            WordBasic.DlgText "CoverDesc", GetCoverDesc(x$)
+                            If IsCoverFillable(x$) <> 0 Then
+                                WordBasic.DlgEnable "Text1", 0
+                                WordBasic.DlgEnable "CoverText", 0
+                            Else
+                                WordBasic.DlgEnable "Text1", 1
+                                WordBasic.DlgEnable "CoverText", 1
+                            End If
+                            If PreviewOnOff = 1 Then ShowCoverThumbnail "Y"
+                        Else
+                            ShowCoverThumbnail "N"
+                        End If
+                        SendCoverProc = 1
+                    End If
+                    If C$ = "OK" And (WordBasic.[DlgFocus$]() = "FileListBox" Or WordBasic.[DlgFocus$]() = "OK") Then
+                        CoverPageText$ = WordBasic.[DlgText$]("CoverText")
+                        If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+                            CoverPage$ = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox")
+                        Else
+                            CoverPage$ = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+                        End If
+                    End If
+                    If C$ = "Cancel" Then
+                        End
+                    End If
+            End Select
+        Case Else
+    End Select
+    GoTo SendCoverBye
+SendCoverErrHandler:
+    If Err.Number = 76 Then
+        Ret = WordBasic.MsgBox("Unit|fffd| non pronta", "Print2WinFax", 21)
+        If Ret < 0 Then
+            Err.Number = 0
+            GoTo SendCoverTryAgain
+        ElseIf Ret = 0 Then
+            a_$ = WordBasic.[Files$](".")
+            Err.Number = 0
+            WordBasic.DlgText "DriveListBox", WordBasic.[Left$](a_$, 2)
+            If WordBasic.[Right$](a_$, 1) <> "\" Then a_$ = a_$ + "\"
+            WordBasic.DlgText "FullPath", a_$
+            GoTo SendCoverNoReTry
+        End If
+    End If
+    Err.Number = 0
+SendCoverBye:
+End Function
+'***********************************
+Function SysVersions32()
+    Dim v As OSVERSIONINFO, retval As Long
+    Dim WindowsVersion As String, BuildVersion As String
+    Dim PlatformName As String
+          
+    v.dwOSVersionInfoSize = Len(v)
+    retval = GetVersionEx(v)
+    
+    WindowsVersion = v.dwMajorVersion & "." & v.dwMinorVersion
+    BuildVersion = v.dwBuildNumber And &HFFFF&
+ 
+    Select Case v.dwPlatformId
+        Case VER_PLATFORM_WIN32_WINDOWS
+            PlatformName = "Windows 95"
+        Case VER_PLATFORM_WIN32_NT
+            PlatformName = "Windows NT"
+    End Select
+         
+    'Return the Platform ID number
+    SysVersions32 = v.dwPlatformId
+End Function
+'***********************************************************************
+Private Sub GetDefaults()
+On Error GoTo ErrHandler
+Dim Version
+Dim WfxPort$
+Dim x
+    Dim dlg As Object: Set dlg = WordBasic.DialogRecord.FilePrintSetup(False)
+    WordBasic.CurValues.FilePrintSetup dlg
+    OldPrinterName$ = dlg.Printer
+    
+    Version = SysVersions32()
+    If Version = 1 Then
+        WfxPort$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Print\Printers\" + WfxPrinterName$, "Port", "")
+    Else
+        WfxPort$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\Devices\", "WinFax", "")
+        Position = InStr(1, WfxPort$, ",")
+        WfxPort$ = Mid$(WfxPort$, Position + 1, Len(WfxPort$))
+    End If
+    
+    If WfxPort$ = "" Then
+        MsgBox ("Il driver della stampante di WinFax non risulta installato" + CRLF + "Occorre reinstallare WinFax.")
+        End
+    End If
+    
+    'If System.OperatingSystem = "Windows" Then
+       WfxPrinterName$ = WfxPrinterName$ + " on " + WfxPort$
+    'End If
+    'If System.OperatingSystem = "Windows NT" Then
+     '  WfxPort$ = right$(WfxPort$, 5)
+       ' place code here to setup correct printer for Windows NT.
+      ' WfxPrinterName$ = WfxPrinterName$ + " on " + WfxPort$
+    'End If
+    
+    WordBasic.FilePrintSetup Printer:=WfxPrinterName$, DoNotSetAsSysDefault:=1
+    
+    ' Get FaxModem Class Installed.
+    ModemClass$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\General", "Fax Device", "")
+    ModemClass802$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\General", "Fax Device", "")
+    If ModemClass$ = "" Or (ModemClass$ <> "" And ModemClass802$ <> "") Then
+        ModemClass$ = ModemClass802$
+    End If
+    
+    SendDlgWasOn = GetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard")
+    UseInternetFaxOn = GetBoolRegVal("Software\Delrina\WinFax\7.0\InternetFax", "Enable")
+    
+    If Not SendDlgWasOn Then x = SetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard", 1)
+    
+    Set dlg = WordBasic.CurValues.ToolsOptionsPrint
+    BackGrnd = dlg.Background
+    If BackGrnd = 1 Then WordBasic.ToolsOptionsPrint Background:=0
+    Exit Sub
+ErrHandler:
+    'If the WinFax Printer entry is not found Stop the Macro and infrom the user to
+    're-install WinFax
+    MsgBox ("Il driver della stampante di WinFax non risulta installato." + CRLF + "Occorre reinstallare WinFax.")
+    End
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function CheckIfWinFaxIsActive()
+Dim WfxPath$
+Dim PrintToFaxmng
+Dim x
+Dim sExe As String
+'Dim sFasts As String
+Dim sWindow As String
+Dim sWindowfs As String
+     
+     sExe = "wfxctl32.exe"
+'    sFasts = "wfxsnd32.exe"
+    
+    ' WinFax main program
+    hDlg = FindWindowA("sFaxmng", vbNullString)
+    ' Controller, Fast Start
+    hDlg2 = FindWindowA("cFaxmng", vbNullString)
+    hDlg3 = FindWindowA("QFaxmng", vbNullString)
+        
+    If hDlg = 0 And hDlg2 = 0 And hDlg3 = 0 Then
+    ''If WordBasic.AppIsRunning(sWindow) = 0 And WordBasic.AppIsRunning(sWindowfs) = 0 Then
+        WfxPath$ = WordBasic.[GetPrivateProfileString$]("HKEY_CURRENT_USER\Software\Delrina\WinFax\7.0\WinFax", "Exepath", "")
+        WfxPath802$ = WordBasic.[GetPrivateProfileString$]("HKEY_LOCAL_MACHINE\Software\Delrina\WinFax\7.0\WinFax", "Exepath", "")
+        
+        If WfxPath$ = "" Or (WfxPath$ <> "" And WfxPath802$ <> "") Then
+           WfxPath$ = WfxPath802$
+        End If
+        
+        If WordBasic.[Right$](WfxPath$, 1) <> "\" Then WfxPath$ = WfxPath$ + "\"
+        'PrintToFaxmng = GetBoolRegVal("Software\Delrina\WinFax\7.0\Printer Driver", "AlwaysPrintToFaxmng")
+        'If PrintToFaxmng = 0 Then
+        '    WfxPath$ = Chr(34) + WfxPath$ + sFasts + Chr(34)
+        'Else
+            WfxPath$ = Chr(34) + WfxPath$ + sExe + Chr(34)
+        'End If
+        x = WinExec(WfxPath$, 6)
+    End If
+End Function
+'***********************************
+
+'***********************************************************************
+Private Sub GetOptions()
+    On Error GoTo -1: On Error GoTo GetOptionsErrHandler
+    WordBasic.BeginDialog 282, 250, "Macro Print2WinFax", "Print2WinFax.OptionsProc"
+        WordBasic.GroupBox 10, 6, 262, 53, "Opzioni finestra di dialogo di invio", "Group1"
+        WordBasic.OptionGroup "SDOpt"
+            WordBasic.OptionButton 20, 19, 239, 16, "Mostra finestra di dialogo di invio di WinFax", "Show"
+            WordBasic.OptionButton 20, 36, 239, 16, "Non mostrare la finestra di dialogo di invio di WinFax", "NoShow"
+        WordBasic.GroupBox 10, 160, 262, 53, "Opzioni di pianificazione FAX", "Group2"
+        WordBasic.OptionGroup "SchOpt"
+            WordBasic.OptionButton 20, 174, 143, 16, "Invia FAX adesso", "Now"
+            WordBasic.OptionButton 20, 192, 239, 16, "Pianifica l'invio fax nelle ore a tariffa ridotta", "Later"
+        WordBasic.GroupBox 10, 64, 262, 87, "Opzioni di invio", "Group3"
+            WordBasic.CheckBox 21, 79, 223, 16, "Invia copertina di WinFax", "SendCover"
+            WordBasic.CheckBox 21, 96, 167, 16, "Invia allegati", "SendAttachments"
+            WordBasic.CheckBox 21, 112, 149, 16, "Alta risoluzione", "HighRes"
+' Concord 4/30/01
+            WordBasic.CheckBox 21, 128, 149, 16, "Use Internet Fax", "InternetMode"
+        WordBasic.OKButton 10, 220, 120, 21
+        WordBasic.CancelButton 152, 220, 120, 21
+        WordBasic.Text 10, 158, 250, 25, "Lo stile WfxFaxNum non |fffd| stato trovato." + Chr(13) + "Tutte le opzioni sono state disattivate.", "Message"
+    WordBasic.EndDialog
+    Dim dlg As Object: Set dlg = WordBasic.CurValues.UserDialog
+    WordBasic.Dialog.UserDialog dlg
+    GoTo GetOptionsBye:
+GetOptionsErrHandler:
+    If Err.Number = 102 Then
+       End
+    End If
+    MsgBox ("Errore: " & Err.Number & " - " & Err.Description)
+GetOptionsBye:
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub ShowHide(Var_)
+Dim Counter
+' Concord 4/30/01
+'   For Counter = 4 To 11
+   For Counter = 4 To 12
+        WordBasic.DlgEnable Counter, Var_
+    Next Counter
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function OptionsProc(C$, A, S)
+Dim x
+    Select Case A
+        Case 1
+            ShowHide (0)
+            WordBasic.DlgVisible "Message", 0
+            WordBasic.DlgValue "HighRes", 1
+            
+'            WordBasic.DlgEnable "Group4", 0
+'            WordBasic.DlgEnable "FaxMode", 0
+'            WordBasic.DlgEnable "BFTMode", 0
+'            WordBasic.DlgEnable "ZipMode", 0
+' Concord 4/30/01
+            WordBasic.DlgEnable "InternetMode", 1
+        Case 2
+            Select Case C$
+                Case "Show"
+                    ShowHide (0)
+                Case "NoShow"
+                    ShowHide (1)
+                Case "OK"
+                    ShowOrNot = WordBasic.DlgValue("SDOpt")
+                    SendNowOrNot = WordBasic.DlgValue("SchOpt")
+                    SendCoverOrNot = WordBasic.DlgValue("SendCover")
+                    SendAttachmentOrNot = WordBasic.DlgValue("SendAttachments")
+                    SendHighOrLow = WordBasic.DlgValue("HighRes")
+'                    SendMode = WordBasic.DlgValue("ModeOpt")
+' Concord 4/30/01
+                    ' SendMode values:  0 = Fax   3 = Internet Fax
+                    SendMode = (WordBasic.DlgValue("InternetMode") * 3)
+                Case "Cancel"
+                    If BackGrnd = 1 Then WordBasic.ToolsOptionsPrint Background:=1
+                    If OldPrinterName$ <> "" Then
+                        WordBasic.FilePrintSetup Printer:=OldPrinterName$, DoNotSetAsSysDefault:=1
+                    End If
+                    If Not SendDlgWasOn Then x = SetBoolRegVal("Software\Delrina\WinFax\7.0\SendFax Wizard", "DoNotUseWizard", 0)
+                Case Else
+            End Select
+        Case Else
+    End Select
+End Function
+'***********************************
+
+'***********************************************************************
+Private Sub GetFilesAndDirs(Mask$)
+Dim x
+Dim count_
+Dim A$
+    WordBasic.WaitCursor 1
+    ReDim DirList__$(WordBasic.CountDirectories())
+    DirList__$(0) = "[..]"
+    For x = 1 To WordBasic.CountDirectories()
+        DirList__$(x) = LCase(WordBasic.[GetDirectory$](x))
+    Next
+    count_ = 1
+    A$ = WordBasic.[Files$](Mask$)
+    While WordBasic.[Files$]() <> ""
+        count_ = count_ + 1
+    Wend
+    ReDim FileList__$(count_ - 1)
+    If WordBasic.[Files$](Mask$) <> "" Then
+        FileList__$(0) = LCase(WordBasic.[FileNameInfo$](WordBasic.[Files$](Mask$), 3))
+        For x = 1 To count_ - 1
+            FileList__$(x) = LCase(WordBasic.[FileNameInfo$](WordBasic.[Files$](), 3))
+        Next
+    End If
+    If WordBasic.CountDirectories() > 0 Then WordBasic.SortArray DirList__$()
+    If count_ > 1 Then WordBasic.SortArray FileList__$()
+    WordBasic.WaitCursor 0
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub GetDrives()
+Dim x
+Dim A
+Dim DriveCount
+Dim DrvType$
+Dim NumDrives
+    For x = 0 To 25
+        A = GetDriveTypeA(Chr(x + 65) + ":\")
+        If A > 1 And A < 7 Then
+            DriveCount = DriveCount + 1
+        End If
+    Next x
+    ReDim DriveList__$(DriveCount - 1)
+    For x = 0 To 25
+        A = GetDriveTypeA(Chr(x + 65) + ":\")
+        If A > 1 And A < 7 Then
+            If A = 2 Then DrvType$ = "   Unit|fffd| floppy"
+            If A = 3 Then DrvType$ = "   Unit|fffd| disco rigido"
+            If A = 4 Then DrvType$ = "   Unit|fffd| di rete"
+            If A = 5 Then DrvType$ = "   Unit|fffd| CD ROM"
+            If A = 6 Then DrvType$ = "   Unit|fffd| RAM"
+            DriveList__$(NumDrives) = Chr(x + 65) + ":" + DrvType$
+            NumDrives = NumDrives + 1
+        End If
+    Next x
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub AddAttachments()
+    On Error GoTo -1: On Error GoTo AddAttachmentsErr
+    GetDrives
+    GetFilesAndDirs "*.*"
+    WordBasic.BeginDialog 640, 292, "Aggiungi Allegati", "Print2WinFax.DlgControl"
+        WordBasic.DropListBox 280, 125, 245, 68, DriveList__$(), "DriveListBox"
+        WordBasic.ListBox 280, 20, 245, 105, DirList__$(), "DirListBox"
+        WordBasic.ListBox 15, 20, 245, 125, FileList__$(), "FileListBox"
+        WordBasic.ListBox 15, 182, 610, 106, AttachList__$(), "AttachListBox"
+        WordBasic.OKButton 540, 20, 88, 21
+        WordBasic.CancelButton 540, 45, 88, 21
+        WordBasic.PushButton 440, 155, 88, 21, "Aggiungi", "Add"
+        WordBasic.PushButton 540, 155, 88, 21, "Elimina", "Remove"
+        WordBasic.Text 17, 5, 75, 10, "Percorso corrente:"
+        WordBasic.Text 100, 4, 540, 13, "", "FullPath"
+        WordBasic.Text 17, 165, 200, 10, "Elenco allegati da inviare"
+    WordBasic.EndDialog
+    Dim dlg As Object: Set dlg = WordBasic.CurValues.UserDialog
+    WordBasic.Dialog.UserDialog dlg
+    GoTo AddAttachmentsBye
+AddAttachmentsErr:
+    If Err.Number = 102 Then 'User clicked Cancel
+    End If
+    Err.Number = 0
+AddAttachmentsBye:
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Function DlgControl(C$, A, S)
+Dim Test$
+Dim Ret
+Dim a_$
+    On Error GoTo -1: On Error GoTo DlgControlErrHandler
+    Select Case A
+        Case 1
+            CheckPath
+        Case 2
+            Select Case C$
+                Case "Add"
+                    AddToAttachList
+                    DlgControl = 1
+                Case "Remove"
+                    RemoveFromAttachList
+                    DlgControl = 1
+                Case "DriveListBox"
+                    ReDim DirList__$(0)
+                    ReDim FileList__$(0)
+TryAgain:   'Used for Error Handler if removable drives aren't ready
+                    WordBasic.ChDir WordBasic.[Left$](WordBasic.[DlgText$]("DriveListBox"), 2)
+                    GetFilesAndDirs "*.*"
+                    CheckPath
+                    WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                    WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+NoReTry:    'Used for Error Handler if removable drives aren't ready
+                Case "Ok"
+                Case "Cancel"
+                Case Else
+                    If C$ = "OK" And WordBasic.[DlgFocus$]() = "DirListBox" Then
+                        If WordBasic.[DlgText$]("DirListBox") <> "[..]" Then
+                            WordBasic.ChDir WordBasic.[DlgText$]("DirListBox")
+                        Else
+                            Test$ = WordBasic.[Files$](".")
+                            If WordBasic.[Right$](Test$, 1) <> "\" Then WordBasic.ChDir ".."
+                        End If
+                        ReDim DirList__$(0)
+                        ReDim FileList__$(0)
+                        GetFilesAndDirs "*.*"
+                        CheckPath
+                        WordBasic.DlgListBoxArray "DirListBox", DirList__$()
+                        WordBasic.DlgListBoxArray "FileListBox", FileList__$()
+                        DlgControl = 1
+                    End If
+                    If C$ = "OK" And WordBasic.[DlgFocus$]() = "FileListBox" Then
+                        AddToAttachList
+                        DlgControl = 1
+                    End If
+            End Select
+        Case Else
+    End Select
+    GoTo DlgControlBye
+DlgControlErrHandler:
+    If Err.Number = 76 Then
+        Ret = WordBasic.MsgBox("Unit|fffd| non pronta", "Print2WinFax", 21)
+        If Ret < 0 Then
+            Err.Number = 0
+            GoTo TryAgain
+        ElseIf Ret = 0 Then
+            a_$ = WordBasic.[Files$](".")
+            Err.Number = 0
+            WordBasic.DlgText "DriveListBox", WordBasic.[Left$](a_$, 2)
+            If WordBasic.[Right$](a_$, 1) <> "\" Then a_$ = a_$ + "\"
+            WordBasic.DlgText "FullPath", a_$
+            GoTo NoReTry
+        End If
+    End If
+    Err.Number = 0
+DlgControlBye:
+End Function
+'***********************************
+
+'***********************************************************************
+Private Sub CheckPath()
+Dim A$
+    A$ = WordBasic.[Files$](".")
+    If WordBasic.[Left$](A$, 1) = Chr(34) Then
+        WordBasic.DlgText "DriveListBox", Mid(A$, 2, 2)
+        If WordBasic.[Right$](A$, 2) <> "\" Then A$ = WordBasic.[Left$](A$, Len(A$) - 1) + "\" + Chr(34)
+    Else
+        WordBasic.DlgText "DriveListBox", WordBasic.[Left$](A$, 2)
+        If WordBasic.[Right$](A$, 1) <> "\" Then A$ = A$ + "\"
+    End If
+    WordBasic.DlgText "FullPath", A$
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub AddToAttachList()
+    If WordBasic.[Left$](WordBasic.[DlgText$]("FullPath"), 1) = Chr(34) Then
+        AttachList__$(AttachmentCounter) = Mid(WordBasic.[DlgText$]("FullPath"), 2, Len(WordBasic.[DlgText$]("FullPath")) - 2) + WordBasic.[DlgText$]("FileListBox") ' + Chr$(34)
+    Else
+        AttachList__$(AttachmentCounter) = WordBasic.[DlgText$]("FullPath") + WordBasic.[DlgText$]("FileListBox")
+    End If
+    AttachmentCounter = AttachmentCounter + 1
+    WordBasic.DlgListBoxArray "AttachListBox", AttachList__$()
+    WordBasic.DlgValue "AttachListBox", AttachmentCounter - 1
+End Sub
+'***********************************
+
+'***********************************************************************
+Private Sub RemoveFromAttachList()
+Dim Counter
+    AttachList__$(WordBasic.DlgValue("AttachListBox")) = ""
+    AttachmentCounter = AttachmentCounter - 1
+    For Counter = WordBasic.DlgValue("AttachListBox") To 49
+        AttachList__$(Counter) = AttachList__$(Counter + 1)
+    Next Counter
+    WordBasic.DlgListBoxArray "AttachListBox", AttachList__$()
+    WordBasic.DlgValue "AttachListBox", AttachmentCounter - 1
+End Sub
+'***********************************
+Function DoesStyleExist(Stylename As String)
+      DoesStyleExist = False
+      Dim StyleExist As Object
+      On Error GoTo DSEerrhandler
+      Set StyleExist = ActiveDocument.Styles(Stylename)
+      If StyleExist.NameLocal <> "" Then   'Does the style exist?
+         DoesStyleExist = True
+      End If
+      Exit Function
+
+DSEerrhandler:
+      DoesStyleExist = False
+End Function
+'***********************************************************************
+Private Sub GetDocumentInfo()
+
+Dim result
+Dim Counter
+Dim wfxString As String
+
+On Error GoTo -1: On Error GoTo GDIErrHandler
+
+For Counter = 0 To 7
+        
+result = DoesStyleExist(Styles__$(Counter))
+
+If result = True Then
+
+ With Selection.Find
+  .Style = Styles__$(Counter)
+  .Execute FindText:=""
+ End With
+
+Else
+  GoTo GDIErrHandler
+
+End If
+        
+If Selection.Find.Found = True Then
+
+ wfxString = Selection.Text
+
+'strip garbage characters below ascii 31 in string
+
+ Do Until right(wfxString, 1) > Chr$(31)
+                wfxString = Mid$(wfxString, 1, Len(wfxString) - 1)
+ Loop
+
+ If Counter = 2 Then
+     wfxString = Format$(wfxString, "HH:MM:SS")
+     ' if invalid time is entered, use the current time
+       If Mid$(wfxString, 3, 1) <> ":" And Mid$(wfxString, 6, 1) <> ":" Then
+            wfxString = Format$(Time$, "HH:MM:SS")
+       End If
+ End If
+ 
+ If Counter = 3 Then
+       wfxString = Format$(wfxString, "MM/DD/YY")
+       
+       ' if invalid date is entered, use the current date
+       If Mid$(wfxString, 3, 1) <> "/" And Mid$(wfxString, 6, 1) <> "/" Then
+            wfxString = Format$(Date$, "MM/DD/YY")
+            End If
+ End If
+ 
+ 
+ 'If Counter = 2 And Mid(WordBasic.[Selection$](), 3, 1) <> ":" Then GoTo GDIErrHandler
+ 'If Counter = 3 And Mid(WordBasic.[Selection$](), 3, 1) <> "/" Then GoTo GDIErrHandler
+
+            WfxInfo__$(Counter) = wfxString
+
+
+        End If
+
+GDIErrHandler:
+        Err.Number = 0
+        WordBasic.StartOfDocument
+
+    Next Counter
+
+End Sub
+'***********************************
+Private Sub ParseInternetNumber()
+   Dim result As Integer
+   Dim CRLF As String
+   CRLF = Chr(13) & Chr(10)
+   If left(unParsedNumber, 1) <> "+" Then
+      Msg = "Il numero " & unParsedNumber & " non |fffd| compatibile con il formato di Internet Fax."
+      Msg = Msg & CRLF & "Internet Fax richiede il formato seguente: " & CRLF
+      Msg = Msg & CRLF & "Indicativo di paese (Indicativo di localit|fffd|) Numero locale" & CRLF
+      Msg = Msg & CRLF & "Per esempio, +39 (011) 987 654" & CRLF
+      result = MsgBox(Msg, vbInformation, "Internet Fax")
+      End
+   End If
+   
+   InternetNumber = unParsedNumber
+   
+End Sub
+'***********************************************************************
+Private Sub DoDDE()
+Dim ChanNum
+Dim x$
+'Dim Mode$
+Dim Counter
+Dim Recipient$
+Dim Ret
+Dim WizName$
+Dim Res$
+    On Error GoTo -1: On Error GoTo DoDDEErrHandler
+    Pause (2)
+    
+    ' if user selected to show send screen, we do not need to goidle.
+    'If ShowOrNot = False Then
+    ' ChanNum = WordBasic.DDEInitiate("FAXMNG", "CONTROL")
+    ' x$ = WordBasic.[DDERequest$](ChanNum, "status")
+    ' If UCase(x$) = "ACTIVE" Then WordBasic.DDEExecute ChanNum, "GoIdle"
+    ' WordBasic.DDETerminate ChanNum
+    'End If
+    
+    ChanNum = WordBasic.DDEInitiate("FAXMNG", "TRANSMIT")
+'Build the recipient information line from the document styles
+' Concord 4/30/01
+    Select Case SendMode
+        Case 0
+            Mode$ = "Fax"
+'        Case 1
+'            Mode$ = "BFT"
+'        Case 2
+'            Mode$ = "Compressed BFT"
+' Concord 4/30/01
+        Case 3
+            Mode$ = "Internet"
+        Case Else
+    End Select
+
+' Concord 4/30/01
+' make sure RecipientName is not blank
+' if use WfxFaxNum style and print to Ifax, Name must also be set
+If WfxInfo__$(1) = "" Then
+    WfxInfo__$(1) = WfxInfo__$(0)
+End If
+    
+    
+' Concord 4/30/01
+'    For Counter = 0 To 7
+    For Counter = 0 To 8
+' Truncate recipient parameters to maximum lengths
+        Select Case Counter
+            Case 0
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 46)
+                ' Internet fax option selected, check to see if number is in correct format.
+                If SendMode = 3 Then ' Internet Fax
+                    ' WfxInfo__$(Counter) =
+                    unParsedNumber = WfxInfo__$(Counter)
+                    ParseInternetNumber
+                    WfxInfo__$(Counter) = InternetNumber
+                End If
+            Case 1
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 29)
+            Case 4
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 42)
+            Case 5
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 79)
+            Case 6
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 33)
+            Case 7
+                ' Billing Code
+                WfxInfo__$(Counter) = WordBasic.[Left$](WfxInfo__$(Counter), 26)
+' Concord 4/30/01
+            Case 8
+                WfxInfo__$(Counter) = Mode$
+            Case Else
+        End Select
+        
+        ' Check if a Time was entered, if yes ensure a date is entered.
+        ' if no date entered, assume current date and add this.
+        ' Corrected Sept. 19/ 8.02
+        If WfxInfo__$(2) <> "" And WfxInfo__$(3) = "" Then
+            WfxInfo__$(3) = Format$(Date$, "MM/DD/YY")
+        End If
+        
+        WfxInfo__$(Counter) = Chr(34) + WfxInfo__$(Counter) + Chr(34) + Chr(44)
+    Next Counter
+    Recipient$ = "recipient("
+' Concord 4/30/01
+'   Recipient$ = Recipient$ + WfxInfo__$(0) + WfxInfo__$(2) + WfxInfo__$(3) + WfxInfo__$(1) + WfxInfo__$(4) + WfxInfo__$(5) + WfxInfo__$(6) + WfxInfo__$(7) + Chr(34) + Chr(34) + ")"
+    Recipient$ = Recipient$ + WfxInfo__$(0) + WfxInfo__$(2) + WfxInfo__$(3) + WfxInfo__$(1) + WfxInfo__$(4) + WfxInfo__$(5) + WfxInfo__$(6) + WfxInfo__$(7) + WfxInfo__$(8) + Chr(34) + Chr(34) + ")"
+    WordBasic.DDEPoke ChanNum, "sendfax", Recipient$
+'    If SendMode <> 0 Then
+        If Mid(WordBasic.[FileName$](), 2, 2) <> ":\" Then
+            Ret = WordBasic.MsgBox("Questo documento non |fffd| ancora stato salvato." + Chr(13) + "Fare clic su OK per visualizzare la finestra di dialogo Salva file con nome", WizName$, 16)
+            WordBasic.FileSave
+        End If
+'        WordBasic.DDEPoke ChanNum, "sendfax", "attach(" + Chr(34) + WordBasic.[FileName$]() + Chr(34) + ")"
+'    End If
+    For Counter = 0 To 50
+        If AttachList__$(Counter) <> "" Then
+            WordBasic.DDEPoke ChanNum, "sendfax", "attach(" + Chr(34) + AttachList__$(Counter) + Chr(34) + ")"
+        End If
+    Next Counter
+    If SendCoverOrNot = 1 Then
+        WordBasic.DDEPoke ChanNum, "sendfax", "setcoverpage(" + Chr(34) + CoverPage$ + Chr(34) + ")"
+        WordBasic.DDEPoke ChanNum, "sendfax", "fillcoverpage(" + Chr(34) + CoverPageText$ + Chr(34) + ")"
+    End If
+    If ShowOrNot = 1 Then
+        WordBasic.DDEPoke ChanNum, "sendfax", "showsendscreen(" + Chr(34) + "0" + Chr(34) + ")"
+        WordBasic.DDEPoke ChanNum, "sendfax", "attach(" + Chr(34) + WordBasic.[FileName$]() + Chr(34) + ")"
+    Else
+        WordBasic.DDEPoke ChanNum, "sendfax", "showsendscreen(" + Chr(34) + "1" + Chr(34) + ")"
+    End If
+    If SendHighOrLow = 0 Then
+        Res$ = "LOW"
+    Else
+        Res$ = "HIGH"
+    End If
+    WordBasic.DDEPoke ChanNum, "sendfax", "resolution(" + Chr(34) + Res$ + Chr(34) + ")"
+    WordBasic.DDETerminate ChanNum
+    GoTo DoDDEBye
+DoDDEErrHandler:
+    Select Case Err.Number
+        Case 500
+            WordBasic.MsgBox "Impossibile inizializzare collegamento." + Chr(13) + "La macro Print2WinFax verr|fffd| annullata.", "Print2WinFax", 16
+            Stop
+        Case 1013
+            WordBasic.MsgBox "La memoria non |fffd| sufficiente per eseguire WinFax PRO." + Chr(13) + "Chiudere alcune applicazioni e riprovare.", "Print2WinFax", 16
+            Stop
+        Case Else
+            WordBasic.MsgBox Str(Err.Number) & " - " & Err.Description
+    End Select
+    Err.Number = 0
+DoDDEBye:
+End Sub
+'***********************************
+Sub Pause(ByVal nSecond As Single)
+   Dim t0 As Single
+   t0 = Timer
+   
+   Do While Timer - t0 < nSecond
+      Dim dummy As Integer
+      dummy = DoEvents()
+      ' if we cross midnight, back up one day
+      If Timer < t0 Then
+         t0 = t0 - 24 * 60 * 60
+      End If
+   Loop
+   
+End Sub
+'***********************************************************************
+Private Sub PrintIt()
+Dim ChanNum
+Dim x$
+Dim bPMWasOff As Boolean
+    
+    ' turn use printer metrics on
+    bPMWasOff = False
+    If ActiveDocument.Compatibility(wdUsePrinterMetrics) = False Then
+        bPMWasOff = True
+        ActiveDocument.Compatibility(wdUsePrinterMetrics) = True
+    End If
+    
+    On Error GoTo -1: On Error GoTo PIErrHandler
+    If ShowOrNot = 1 Then 'And SendMode <> 0 Then
+        ChanNum = WordBasic.DDEInitiate("FAXMNG", "TRANSMIT")
+        WordBasic.DDEPoke ChanNum, "sendfax", "SendfaxUI"
+        WordBasic.DDETerminate ChanNum
+    Else
+        WordBasic.FilePrint AppendPrFile:=0, Range:="0", PrToFileName:="", From:="", To:="", Type:=0, NumCopies:="1", Pages:="", Order:=0, PrintToFile:=0, Collate:=1, FileName:=""
+        'If ShowOrNot Then
+        '    ChanNum = WordBasic.DDEInitiate("FAXMNG", "CONTROL")
+        '    x$ = WordBasic.[DDERequest$](ChanNum, "status")
+        '    If UCase(x$) = "IDLE" Then WordBasic.DDEExecute ChanNum, "GoActive"
+        '    WordBasic.DDETerminate ChanNum
+        'End If
+    End If
+    
+    ' turn printer metrics back off.
+    If bPMWasOff = True Then
+      ActiveDocument.Compatibility(wdUsePrinterMetrics) = False
+    End If
+    
+    GoTo PIBye:
+PIErrHandler:
+PIBye:
+End Sub
+
+Public Function SetValueEx(ByVal hKey As Long, sValueName As String, lType As Long, vValue As Variant) As Long
+    Dim lValue As Long
+    Dim sValue As String
+    Select Case lType
+        Case REG_SZ
+            sValue = vValue & Chr$(0)
+            SetValueEx = RegSetValueExString(hKey, sValueName, 0&, lType, sValue, Len(sValue))
+        Case REG_DWORD
+            lValue = vValue
+            SetValueEx = RegSetValueExLong(hKey, sValueName, 0&, lType, lValue, 4)
+        End Select
+End Function
+
+Function QueryValueEx(ByVal lhKey As Long, ByVal szValueName As String, vValue As Variant) As Long
+    Dim cch As Long
+    Dim lrc As Long
+    Dim lType As Long
+    Dim lValue As Long
+    Dim sValue As String
+
+    On Error GoTo QueryValueExError
+
+    ' Determine the size and type of data to be read
+    lrc = RegQueryValueExNULL(lhKey, szValueName, 0&, lType, 0&, cch)
+    If lrc <> ERROR_NONE Then Error 5
+
+    Select Case lType
+        ' For strings
+        Case REG_SZ:
+            sValue = String(cch, 0)
+
+lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, sValue, cch)
+
+            If lrc = ERROR_NONE Then
+                vValue = left$(sValue, cch)
+            Else
+                vValue = Empty
+            End If
+        ' For DWORDS
+        Case REG_DWORD:
+
+lrc = RegQueryValueExLong(lhKey, szValueName, 0&, lType, lValue, cch)
+
+            If lrc = ERROR_NONE Then vValue = lValue
+        Case Else
+            'all other data types not supported
+            lrc = -1
+    End Select
+
+QueryValueExExit:
+
+    QueryValueEx = lrc
+    Exit Function
+
+QueryValueExError:
+
+    Resume QueryValueExExit
+
+End Function
+ ' Query the HLM Registry
+ Function QueryValueHLM(sKeyName As String, sValueName As String)
+       Dim lRetVal As Long         'result of the API functions
+       Dim hKey As Long         'handle of opened key
+       Dim vValue As Variant      'setting of queried value
+
+       lRetVal = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sKeyName, 0, KEY_ALL_ACCESS, hKey)
+       lRetVal = QueryValueEx(hKey, sValueName, vValue)
+       RegCloseKey (hKey)
+       QueryValueHLM = vValue
+ End Function
+ Function QueryValue(sKeyName As String, sValueName As String)
+       Dim lRetVal As Long         'result of the API functions
+       Dim hKey As Long         'handle of opened key
+       Dim vValue As Variant      'setting of queried value
+
+       lRetVal = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, KEY_ALL_ACCESS, hKey)
+       lRetVal = QueryValueEx(hKey, sValueName, vValue)
+       RegCloseKey (hKey)
+       QueryValue = vValue
+ End Function
+
+ Private Sub SetKeyValue(sKeyName As String, sValueName As String, vValueSetting As Variant, lValueType As Long)
+       Dim lRetVal As Long         'result of the SetValueEx function
+       Dim hKey As Long         'handle of open key
+
+       'open the specified key
+       lRetVal = RegOpenKeyEx(HKEY_CURRENT_USER, sKeyName, 0, KEY_ALL_ACCESS, hKey)
+       lRetVal = SetValueEx(hKey, sValueName, lValueType, vValueSetting)
+       RegCloseKey (hKey)
+ End Sub
+
+Function ConvertCASTime(CASTime As Long)
+ '   *lpSecond = (WORD)((wTime & 0x001F) << 1);
+ '   *lpMinute = (WORD)((wTime & 0x07E0) >> 5);
+ '   *lpHour = (WORD)((wTime & 0xF800) >> 11);
+    Dim lpMinute As Long
+    Dim lpHour As Long
+    lpHour = (CASTime And &HF800) / (2 ^ 11)
+    lpMinute = (CASTime And &H7E0) / (2 ^ 5)
+    ConvertCASTime = lpHour & ":" & lpMinute & ":00"
+End Function
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "0{00020906-0000-0000-C000-000000000046}"
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+Attribute VB_Control = "CommandButton3, 2, 2, MSForms, CommandButton"
+Attribute VB_Control = "CommandButton4, 3, 3, MSForms, CommandButton"
+
+
+Private Sub CommandButton3_Click()
+  ' Start Wizard
+  InstallaMacro.MAIN
+End Sub
+
+Private Sub CommandButton4_Click()
+' Remove Macro
+  DisinstallaMacro.MAIN
+End Sub
+
+' InQuest injected base64 decoded content
+' jZ N
+
+INQUEST-PP=macro

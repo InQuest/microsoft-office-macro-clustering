@@ -1,0 +1,745 @@
+Attribute VB_Name = "Sheet1"
+Attribute VB_Base = "0{00020820-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "ThisWorkbook"
+Attribute VB_Base = "0{00020819-0000-0000-C000-000000000046}"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = False
+Attribute VB_Customizable = True
+
+Attribute VB_Name = "cBEX"
+Option Explicit
+
+Private pServerObj As Object
+Private pLogonObj  As Object
+Private pConnObj   As Object
+
+Private pWorkbookID As String
+Private pQueryID    As String
+
+Private pSession As String
+
+Private pJumpType   As String
+Private pJumpTarget As String
+
+Private Const cReturnOK        As Integer = 0  ' connection existed and was used
+Private Const cReturnNoConn    As Integer = 1  ' connection does not exist / add-in is not loaded
+Private Const cReturnWrongConn As Integer = 2  ' connection existed, but addresses the wrong system
+Private Const cReturnError     As Integer = 3  ' connection can not be created on this PC
+
+Sub auto_open()
+  trace False, ">>> auto_open()"
+  
+  legacy_auto_open
+  
+  trace False, "<<< auto_open()"
+End Sub
+
+Sub legacy_auto_open()
+  trace False, ">>> legacy_auto_open()"
+  
+  Dim l_wbid As String
+  Dim l_system As String
+  Dim l_user As String
+  
+  If Not isAddinLoaded(loadIfNotLoaded:=True) Then
+    MsgBox ("Could not find SAPBEX.XLA.")
+    Exit Sub
+  End If
+  
+' Call from Browser?  ===> Load the workbook in the registry
+  l_wbid = registryGet("Software\SAP\BEx\WBID", "", HKEY_CURRENT_USER)
+  If l_wbid <> "" Then
+    If Asc(Left(l_wbid, 1)) <> 0 Then
+      Call registrySet("Software\SAP\BEx\WBID", "", "", HKEY_CURRENT_USER)
+        
+      l_system = registryGet("Software\SAP\SAPLogon\Clipboard", "System", HKEY_CURRENT_USER)
+      l_user = registryGet("Software\SAP\SAPLogon\Clipboard", "User", HKEY_CURRENT_USER)
+        
+      Dim connObj As Object
+      Set connObj = Run(addinName("_") & "!SAPBEXgetConnection")
+            
+      If (connObj.system <> l_system Or connObj.user <> l_user) And _
+          connObj.system <> "" Then
+        connObj.logoff
+      End If
+        
+      Call Run(addinName("_") & "!SapBexReadWorkbook", l_wbid)
+        
+      ' clean up registry
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "Default", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "Client", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "User", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "Client", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "Password", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "Language", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "SystemID", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "System", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "GroupName", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "MessageServer", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "SAPRouter", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "ApplicationServer", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "SystemNumber", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "GRTData", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "Trace", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "ABAPDebug", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "LowSpeedConnection", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "UseRFCIni", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "SNC", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "SNCName", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "SNCQuality", "", HKEY_CURRENT_USER)
+      Call registrySet("Software\SAP\SAPLogon\Clipboard", "CodePage", "", HKEY_CURRENT_USER)
+    End If
+  End If
+  
+  trace False, "<<< legacy_auto_open()"
+End Sub
+
+Public Function SAPBEX0connectionLaunch(ByVal connection As Object, workbookID As String) As Integer
+  trace False, ">>> SAPBEX0connectionLaunch(connection As Object, workbookID=" & workbookID & ")"
+  
+  On Error GoTo unexpectedError
+  
+  'Get AddinName dependant on pSession
+  Dim lAddinName As String
+  lAddinName = addinName(pSession)
+
+  'Load addin if it has not already been loaded
+  If Not isAddinLoaded(loadIfNotLoaded:=True) Then
+    trace False, "Addin " & lAddinName & " is not loaded"
+    SAPBEX0connectionLaunch = cReturnError
+    GoTo functionEnd
+  End If
+  
+  'Get Connection object of Addin
+  trace False, "Run(" & lAddinName & "!SAPBEXgetConnection)"
+  Dim connObj As Object
+  Set connObj = Run(lAddinName & "!SAPBEXgetConnection")
+  If connObj Is Nothing Then
+    trace False, "Connection object is nothing"
+    SAPBEX0connectionLaunch = cReturnError
+    GoTo functionEnd
+  End If
+
+  With connObj
+    If .IsConnected = 1 Then
+      Dim currUser As String
+      currUser = Run(lAddinName & "!SAPBEXgetConnection", 1)
+      If currUser = "" Then currUser = .user
+      
+      Dim currSysNumber As Integer
+      currSysNumber = CInt(Run(lAddinName & "!SAPBEXgetConnection", 2))
+      If currSysNumber = 0 Then currSysNumber = .systemnumber
+      
+      On Error GoTo 0
+      If connection.user = currUser Or currUser = "" Then
+        pWorkbookID = workbookID
+        pQueryID = ""
+        pJumpType = ""
+        pJumpTarget = ""
+        
+        Call doAction
+        
+        SAPBEX0connectionLaunch = cReturnOK
+      Else
+        SAPBEX0connectionLaunch = cReturnWrongConn
+      End If
+    Else
+      .Client = IIf(connection.Client = "", "000", connection.Client)
+      .user = connection.user
+      .password = connection.password
+      .Language = connection.Language
+      .systemnumber = connection.systemnumber
+      .system = connection.system
+      .systemid = connection.systemid
+      .ApplicationServer = connection.ApplicationServer
+      .SAProuter = connection.SAProuter
+      .codepage = connection.codepage
+      .logon 0, True
+      
+      If .IsConnected <> 1 Then
+        .logon 0, False
+        If .IsConnected <> 1 Then Exit Function
+      End If
+      
+      pWorkbookID = workbookID
+      pQueryID = ""
+      pJumpType = ""
+      pJumpTarget = ""
+      Set pConnObj = connObj
+      
+      Call SAPBEX0serverEvent
+      
+      SAPBEX0connectionLaunch = cReturnOK
+    End If
+  End With
+
+  GoTo functionEnd
+
+unexpectedError:
+  GoTo functionEnd
+  
+functionEnd:
+  Select Case SAPBEX0connectionLaunch
+    Case cReturnOK
+      trace False, "SAPBEX0connectionLaunch: connected, Returncode:" & SAPBEX0connectionLaunch
+    Case cReturnNoConn
+      trace False, "SAPBEX0connectionLaunch: no connection, Returncode:" & SAPBEX0connectionLaunch
+    Case cReturnWrongConn
+      trace False, "SAPBEX0connectionLaunch: wrong connection, Returncode:" & SAPBEX0connectionLaunch
+    Case cReturnError
+      trace False, "SAPBEX0connectionLaunch: error, Returncode:" & SAPBEX0connectionLaunch
+    Case Else
+      SAPBEX0connectionLaunch = cReturnError
+      trace False, "SAPBEX0connectionLaunch: unexpected error, Returncode:" & SAPBEX0connectionLaunch
+  End Select
+  
+  trace False, "<<< SAPBEX0connectionLaunch():" & SAPBEX0connectionLaunch
+  
+  Exit Function
+
+End Function
+
+Public Function SAPBEX0directLaunch(sysNo As String, user As String, _
+                                    workbookID As String, queryID As String, _
+                                    Optional jumpType As String, _
+                                    Optional jumpTarget As String) As Integer
+  trace False, ">>> SAPBEX0directLaunch(sysNo=" & sysNo & ", user=" & user & _
+               ", workbookID=" & workbookID & ", queryID=" & queryID & _
+               ", jumpType=" & jumpType & ", jumpTarget=" & jumpTarget
+
+  On Error GoTo unexpectedError
+
+  'Get session dependant on workbookID and correct the workbookID
+  trace False, "Get WorkbookID and SessionID"
+  If InStr(workbookID, "_") <> 0 Then
+    pSession = "_"
+    workbookID = Right(workbookID, Len(workbookID) - 1)
+  End If
+  
+  trace False, "WorkbookID: " & workbookID
+  trace False, "Session: " & pSession
+
+  'Get AddinName dependant on pSession
+  Dim lAddinName As String
+  lAddinName = addinName(pSession)
+
+  'Load addin if it has not already been loaded
+  If Not isAddinLoaded(loadIfNotLoaded:=True) Then
+    trace False, "Addin " & lAddinName & " is not loaded"
+    SAPBEX0directLaunch = cReturnNoConn
+    GoTo functionEnd
+  End If
+  
+  'Get Connection object of Addin
+  trace False, "Run(" & lAddinName & "!SAPBEXgetConnection)"
+  Dim connObj As Object
+  Set connObj = Run(lAddinName & "!SAPBEXgetConnection")
+  If connObj Is Nothing Then
+    trace False, "Connection object is nothing"
+    SAPBEX0directLaunch = cReturnError
+    GoTo functionEnd
+  End If
+  
+  'Check if connection object is connected and if systemnumber and user are identical to the requested
+  trace False, "Check connection object settings"
+  With connObj
+    If .IsConnected = 1 Then
+      trace False, "Connection found"
+     
+      trace False, "Get current user"
+      trace False, "Run(" & lAddinName & "!SAPBEXgetConnection, 1)"
+      Dim lCurrUser As String
+      lCurrUser = Run(lAddinName & "!SAPBEXgetConnection", 1)
+      If lCurrUser = "" Then lCurrUser = .user
+      trace False, "Current user: " & lCurrUser
+     
+      trace False, "Get current system number"
+      trace False, "Run(" & lAddinName & "!SAPBEXgetConnection, 2)"
+      Dim lCurrSysNumber As String
+      lCurrSysNumber = Run(lAddinName & "!SAPBEXgetConnection", 2)
+      If lCurrSysNumber = "" Then lCurrSysNumber = Format(.systemnumber, "00")
+      trace False, "Current system number: " & lCurrSysNumber
+      
+      On Error GoTo 0
+      
+      ' note: '... Or .user = "" ...' is due to bug in 4.5a basis regarding the 'serverLaunch' case
+      If sysNo = lCurrSysNumber And (user = lCurrUser Or lCurrUser = "") Then
+        pWorkbookID = workbookID
+        pQueryID = queryID
+        pJumpType = jumpType
+        pJumpTarget = jumpTarget
+        
+        trace False, "doAction() asynchronous"
+        Application.OnTime Now, "doAction" ' start asynchronous !
+        
+        SAPBEX0directLaunch = cReturnOK
+      Else
+        SAPBEX0directLaunch = cReturnWrongConn
+      End If
+    Else
+      SAPBEX0directLaunch = cReturnNoConn
+    End If
+  End With
+  
+  GoTo functionEnd
+
+unexpectedError:
+  GoTo functionEnd
+
+functionEnd:
+  Select Case SAPBEX0directLaunch
+    Case cReturnOK
+      trace False, "SAPBEX0directLaunch: connected, Returncode:" & SAPBEX0directLaunch
+    Case cReturnNoConn
+      trace False, "SAPBEX0directLaunch: no connection, Returncode:" & SAPBEX0directLaunch
+    Case cReturnWrongConn
+      trace False, "SAPBEX0directLaunch: wrong connection, Returncode:" & SAPBEX0directLaunch
+    Case cReturnError
+      trace False, "SAPBEX0directLaunch: error, Returncode:" & SAPBEX0directLaunch
+    Case Else
+      SAPBEX0directLaunch = cReturnError
+      trace False, "SAPBEX0directLaunch: unexpected error, Returncode:" & SAPBEX0directLaunch
+  End Select
+  
+  trace False, "<<< SAPBEX0directLaunch():" & SAPBEX0directLaunch
+  
+  Exit Function
+  
+End Function
+
+Public Function SAPBEX0serverLaunch(sysNo As String, user As String, _
+                                    workbookID As String, queryID As String, _
+                                    gwService As String, gwHost As String, sessionID As String, _
+                                    Optional jumpType As String, Optional jumpTarget As String) As Integer
+  trace False, ">>> SAPBEX0serverLaunch(sysNo=" & sysNo & ", user=" & user & _
+               ", workbookID=" & workbookID & ", queryID=" & queryID & _
+               ", gwService=" & gwService & ", gwHost=" & gwHost & ", sessionID=" & sessionID & _
+               ", jumpType=" & jumpType & ", jumpTarget=" & jumpTarget
+  
+  'Call SAPBEX0directLaunch
+  Dim lDirectLaunch As Integer
+  lDirectLaunch = SAPBEX0directLaunch(sysNo, user, workbookID, queryID)
+  If lDirectLaunch <> cReturnNoConn Then
+    SAPBEX0serverLaunch = lDirectLaunch
+    GoTo functionEnd
+  End If
+  
+  trace False, "Session: " & pSession
+
+  On Error GoTo unexpectedError
+  
+  'Get server object
+  If Not pServerObj Is Nothing Then
+    pServerObj.finish
+    Set pServerObj = Nothing
+  End If
+  trace False, "Get server Object: CreateObject(""SAP.BIWRFCServerCtrl.1"")"
+  Set pServerObj = CreateObject("SAP.BIWRFCServerCtrl.1")
+  If pServerObj Is Nothing Then
+    trace False, "Get server Object: CreateObject(""SAP.BIWRFCServerCtrl.1"" failed)"
+    GoTo unexpectedError
+  End If
+  
+  Call isAddinLoaded(loadIfNotLoaded:=True)
+  
+  'Get AddinName
+  Dim lAddinName As String
+  lAddinName = addinName(pSession)
+
+  'Set server object
+  trace False, "Set server object"
+  With pServerObj
+    With .configuration
+      Set .ParentApplication = Application
+      .Caller = "RUN"
+      .eventconnected = ThisWorkbook.Name & "!SAPBEX0serverEvent"
+    End With
+    
+    .ProgId = sessionID
+    trace False, "pServerObj.ProgId: " & .ProgId
+    
+    .gwService = gwService
+    trace False, "pServerObj.gwService: " & .gwService
+    
+    .gwHost = gwHost
+    trace False, "pServerObj.gwHost: " & .gwHost
+  
+    'Get SessionID dependant on AddinName
+    If (lAddinName = "BExAnalyzer.xla") Then
+      sessionID = "_" & sessionID
+    End If
+    pSession = sessionID
+    trace False, "Session: " & pSession
+
+    'run sapBEXgetConnection makro of addin and retrieve connection
+    trace False, "Run(" & lAddinName & "!sapBEXgetConnection)"
+    Set pConnObj = Run(lAddinName & "!sapBEXgetConnection")
+    If pConnObj Is Nothing Then
+      trace False, "Connection Object is nothing"
+      GoTo unexpectedError
+    End If
+    Set .connection = pConnObj
+    
+    Dim lRegResult As Boolean
+    lRegResult = .register
+    If lRegResult Then
+      trace False, "registered"
+    Else
+      trace False, "Error in server registration: " & Err.Description
+      GoTo unexpectedError
+    End If
+  End With
+    
+  pWorkbookID = workbookID
+  pQueryID = queryID
+  pJumpType = jumpType
+  pJumpTarget = jumpTarget
+    
+  'the return value should be cReturnOK, however backend does not respond to such an answer
+  SAPBEX0serverLaunch = cReturnNoConn
+  
+  GoTo functionEnd
+  
+unexpectedError:
+  GoTo functionEnd
+  
+functionEnd:
+  Select Case SAPBEX0serverLaunch
+    Case cReturnOK
+      trace False, "SAPBEX0serverLaunch: connected, Returncode:" & SAPBEX0serverLaunch
+    Case cReturnNoConn
+      trace False, "SAPBEX0serverLaunch: connected, Returncode:" & SAPBEX0serverLaunch
+    Case cReturnWrongConn
+      trace False, "SAPBEX0serverLaunch: wrong connection, Returncode:" & SAPBEX0serverLaunch
+    Case cReturnError
+      trace False, "SAPBEX0serverLaunch: error, Returncode:" & SAPBEX0serverLaunch
+    Case Else
+      SAPBEX0serverLaunch = cReturnError
+      trace False, "SAPBEX0serverLaunch: unexpected error, Returncode:" & SAPBEX0serverLaunch
+  End Select
+  
+  trace False, "<<< SAPBEX0serverLaunch():" & SAPBEX0serverLaunch
+  
+  Exit Function
+End Function
+
+Public Sub SAPBEX0serverEvent()
+  trace False, ">>> SAPBEX0serverEvent()"
+  
+  'Get AddinName
+  Dim lAddinName As String
+  lAddinName = addinName(pSession)
+  
+  trace False, "Run(" & lAddinName & "!sapBEXinitConnection," & "pConnObj" & ")"
+  If Run(lAddinName & "!sapBEXinitConnection", pConnObj) Then
+    trace False, "call doAction()"
+    Call doAction
+  End If
+  
+  trace False, "Set connectionObject to Nothing"
+  Set pConnObj = Nothing
+  
+  trace False, "<<< SAPBEX0serverEvent()"
+End Sub
+
+Private Sub doAction()
+  trace False, ">>> doAction()"
+  
+  'Get AddinName
+  Dim lAddinName As String
+  lAddinName = addinName(pSession)
+  
+  If Len(pWorkbookID) Then
+    If isLegacyOpen() Or InStr(pSession, "_") <> 0 Then
+      Run lAddinName & "!SAPBEXreadWorkbook", pWorkbookID
+      With ThisWorkbook.Worksheets(1)
+        If .UsedRange.Cells.Count > 1 Then
+          Run lAddinName & "!SAPBEXsetVariables", .UsedRange
+          Run lAddinName & "!SAPBEXrefresh", True
+          .Cells.ClearContents
+        End If
+      End With
+    Else
+      Run lAddinName & "!RunWorkbook", pWorkbookID
+    End If
+  Else
+    If Len(pQueryID) Then
+      If isLegacyOpen() Then
+        If Len(pJumpType) Then
+          Run lAddinName & "!sapBEXjumpInitial", pQueryID, pJumpType, pJumpTarget
+        Else
+          Run lAddinName & "!sapBEXnewQuery", pQueryID
+        End If
+      Else
+        Run lAddinName & "!RunQuery", pQueryID
+      End If
+    End If
+  End If
+  Application.Visible = True
+  
+  trace False, "<<< doAction()"
+End Sub
+
+Private Function isAddinLoaded(loadIfNotLoaded As Boolean) As Boolean
+  trace False, ">>> isAddinLoaded(loadIfNotloaded=" & loadIfNotLoaded & ")"
+  
+  On Error Resume Next
+  
+  'Get AddinName
+  Dim lAddinName As String
+  lAddinName = addinName(pSession)
+  
+  'Get Addin
+  trace False, "Get Addin: Application.Workbooks(" & lAddinName & ")"
+  Dim lAddin As Workbook
+  Set lAddin = Application.Workbooks(lAddinName)
+  
+  If Not lAddin Is Nothing Then
+    isAddinLoaded = True
+  Else
+    If Not loadIfNotLoaded Then
+      isAddinLoaded = False
+    Else
+      'Load Addin
+      trace False, "Load Addin: Workbooks.Open(" & ThisWorkbook.Path & "\" & lAddinName & ")"
+      Set lAddin = Workbooks.Open(ThisWorkbook.Path & "\" & lAddinName)
+      trace False, "Addin: " & "lAddin"
+      
+      If lAddin Is Nothing Then
+        isAddinLoaded = False
+      Else
+        'Run Addin AutoMacros
+        trace False, "Run Addin Automacros: " & lAddin & ".RunAutoMacros"
+        lAddin.RunAutoMacros (xlAutoOpen)
+        trace False, "RunAutoMacros complete"
+        
+        isAddinLoaded = True
+      End If
+    End If
+  End If
+  
+  trace False, "<<< isAddinLoaded():" & isAddinLoaded
+End Function
+
+Private Function addinName(iSession As String) As String
+  trace False, ">>> addinName(iSession=" & iSession & ")"
+  
+  If InStr(iSession, "_") = 0 Then
+    addinName = "SAPBEX.xla"
+  ElseIf isLegacyOpen() Then
+    addinName = "SAPBEX.xla"
+  Else
+    addinName = "BExAnalyzer.xla"
+  End If
+  
+  trace False, "<<< addinName():" & addinName
+End Function
+
+Private Function isLegacyOpen() As Boolean
+  trace False, ">>> isLegacyOpen()"
+  
+  Static sCalled As Boolean
+  Static sLegacyOpen As Boolean
+  
+  If sCalled Then
+    isLegacyOpen = sLegacyOpen
+  Else
+    sCalled = True
+  
+    If InStr(pSession, "_") = 0 Then
+      sLegacyOpen = True
+    Else
+      trace False, "Get UserSettings: CreateObject(""com.sap.bi.et.analyzer.addin.BExComUserSettings"")"
+      Dim lUserSettings As Object
+      Set lUserSettings = CreateObject("com.sap.bi.et.analyzer.addin.BExComUserSettings")
+      trace False, "UserSettings LegacyVersion: " & lUserSettings.LaunchLegacyVersion
+      
+      sLegacyOpen = lUserSettings.LaunchLegacyVersion
+    End If
+  
+    isLegacyOpen = sLegacyOpen
+  End If
+  
+  trace False, "<<< isLegacyOpen():" & isLegacyOpen
+End Function
+Attribute VB_Name = "cBExTrace"
+Option Explicit
+Option Private Module
+
+Private pBExGlobal As Object
+
+Private Const cTempTraceFile As String = "SAPBEX0.trc"
+
+Function provideComponent(compObj As Object, compName As String, compTitle As String) As Boolean
+  provideComponent = True
+  On Error Resume Next
+  
+  If compObj Is Nothing Then
+    Set compObj = CreateObject(compName)
+    If compObj Is Nothing Then
+      provideComponent = False
+    End If
+  End If
+End Function
+
+Public Function provideGlobal() As Boolean
+  provideGlobal = provideComponent(pBExGlobal, "SAPBExCommonResources.BExGlobal", "Global Services")
+End Function
+
+Public Function isTraceAvailable() As Boolean
+  Static sCalled As Boolean
+  Static sTraceAvailable As Boolean
+  
+  If sCalled Then
+    isTraceAvailable = sTraceAvailable
+    Exit Function
+  End If
+  
+  sCalled = True
+  
+  Dim lTraceEnvironmentVariable As String
+  lTraceEnvironmentVariable = Environ("SAPBEX0_TRACE")
+  If lTraceEnvironmentVariable = "" Then
+    sTraceAvailable = False
+  Else
+    If provideGlobal() Then
+      pBExGlobal.OpenTraceFile cTempTraceFile
+      sTraceAvailable = True
+    Else
+      sTraceAvailable = False
+    End If
+  End If
+  
+  isTraceAvailable = sTraceAvailable
+End Function
+
+Public Sub trace(isheader As Boolean, text As String)
+  If Not isTraceAvailable() Or pBExGlobal Is Nothing Then Exit Sub
+  
+  With pBExGlobal
+    .setactivecomponent "XLA", ThisWorkbook.CustomDocumentProperties!Version
+    .trace 2, IIf(isheader, Format(Now, "hh:mm:ss "), vbTab & "- ") & text
+    .flushtrace
+  End With
+End Sub
+Attribute VB_Name = "cBexRegistry"
+Option Explicit
+
+Public Const HKEY_CLASSES_ROOT = &H80000000
+Public Const HKEY_CURRENT_USER = &H80000001
+Public Const HKEY_LOCAL_MACHINE = &H80000002
+
+Type SECURITY_ATTRIBUTES
+    nLength As Long
+    lpSecurityDescriptor As Long
+    bInheritHandle As Long
+End Type
+Private Declare Function RegCreateKeyEx Lib "advapi32.dll" Alias "RegCreateKeyExA" ( _
+    ByVal hKey As Long, ByVal lpSubKey As String, ByVal Reserved As Long, _
+    ByVal lpClass As String, ByVal dwOptions As Long, ByVal samDesired As Long, _
+    lpSecurityAttributes As SECURITY_ATTRIBUTES, phkResult As Long, lpdwDisposition As Long) As Long
+Private Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" ( _
+    ByVal hKey As Long, ByVal lpSubKey As String, ByVal ulOptions As Long, _
+    ByVal samDesired As Long, phkResult As Long) As Long
+Private Declare Function RegSetValueEx Lib "advapi32.dll" Alias "RegSetValueExA" ( _
+    ByVal hKey As Long, ByVal lpValueName As String, ByVal Reserved As Long, _
+    ByVal dwType As Long, lpData As Any, ByVal cbData As Long) As Long
+Private Declare Function RegDeleteValue Lib "advapi32.dll" Alias "RegDeleteValueA" ( _
+    ByVal hKey As Long, ByVal lpSubKey As String) As Long
+    ' Note that if you declare the lpData parameter as String, you must pass it ByVal
+Private Declare Function RegQueryValueEx Lib "advapi32.dll" Alias "RegQueryValueExA" ( _
+    ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, _
+    lpType As Long, lpData As Any, lpcbData As Long) As Long
+    ' Note that if you declare the lpData parameter as String, you must pass it ByVal
+Private Declare Function RegCloseKey Lib "advapi32.dll" (ByVal hKey As Long) As Long
+
+Function registryGet(key1 As String, key2 As String, hKey As Long) As String
+           
+    Const KEY_QUERY_VALUE = &H1
+    Dim hRegKey As Long
+    Dim hRegSubKey As Long
+    Dim keyName1 As String * 80: keyName1 = key1 & vbNullChar
+    Dim keyName2 As String * 80: keyName2 = key2 & vbNullChar
+    Dim itemBuffer As String * 255
+    Dim itemLength As Long
+
+    If RegOpenKeyEx(hKey, keyName1, 0, KEY_QUERY_VALUE, hRegKey) = 0 Then
+        If Len(keyName2) > 0 Then
+            If RegOpenKeyEx(hRegKey, vbNullChar, 0, KEY_QUERY_VALUE, hRegSubKey) = 0 Then
+                itemLength = 255
+                RegQueryValueEx hRegSubKey, keyName2, 0, 1, ByVal itemBuffer, itemLength
+                RegQueryValueEx hRegSubKey, keyName2, 0, 1, ByVal itemBuffer, itemLength
+                If itemLength > 0 Then
+                    registryGet = Left(itemBuffer, itemLength - 1)
+                End If
+                RegCloseKey hRegKey
+            End If
+        Else
+            If RegOpenKeyEx(hRegKey, keyName2, 0, KEY_QUERY_VALUE, hRegSubKey) = 0 Then
+                itemLength = 255
+                RegQueryValueEx hRegSubKey, vbNullString, 0, 1, ByVal itemBuffer, itemLength
+                RegQueryValueEx hRegSubKey, vbNullString, 0, 1, ByVal itemBuffer, itemLength
+                registryGet = Left(itemBuffer, itemLength - 1)
+                RegCloseKey hRegKey
+            End If
+        End If
+    End If
+
+End Function
+
+Public Sub registrySet(key1 As String, key2 As String, value As String, hKey As Long)
+
+    Const KEY_SET_VALUE = &H2
+    Dim keyName1 As String * 80: keyName1 = key1 & vbNullChar
+    Dim keyName2 As String * 80: keyName2 = key2 & vbNullChar
+    Dim hRegKey As Long
+    Dim hRegSubKey As Long
+    Dim nullSecurity As SECURITY_ATTRIBUTES
+    Dim isNew As Long
+    
+    Dim itemValue As String * 255:  itemValue = value & vbNullChar
+    Dim itemLength As Long:         itemLength = Len(value)
+    
+    If Len(value) > 0 Then
+        If RegCreateKeyEx(hKey, keyName1, 0, vbNullString, 0, KEY_SET_VALUE, nullSecurity, hRegKey, isNew) = 0 Then
+            
+            If Len(keyName2) > 0 Then
+                If RegOpenKeyEx(hRegKey, vbNullChar, 0, KEY_SET_VALUE, hRegSubKey) = 0 Then
+                    RegSetValueEx hRegKey, vbNullString, 0, 1, ByVal itemValue, itemLength
+                    RegCloseKey hRegKey
+                End If
+            Else
+                RegSetValueEx hRegKey, vbNullString, 0, 1, ByVal itemValue, itemLength
+                RegCloseKey hRegKey
+            End If
+        End If
+    Else
+        If key2 <> vbNullString Then
+            If RegOpenKeyEx(hKey, keyName1, 0, KEY_SET_VALUE, hRegKey) = 0 Then
+                RegDeleteValue hRegKey, keyName2
+                RegCloseKey hRegKey
+            End If
+        Else
+            keyName1 = key1 & vbNullChar
+            If RegCreateKeyEx(hKey, keyName1, 0, vbNullString, 0, KEY_SET_VALUE, nullSecurity, hRegKey, isNew) = 0 Then
+                RegSetValueEx hRegKey, vbNullString, 0, 1, ByVal itemValue, itemLength
+                RegCloseKey hRegKey
+            End If
+        End If
+    End If
+
+End Sub
+
+
+
+INQUEST-PP=macro

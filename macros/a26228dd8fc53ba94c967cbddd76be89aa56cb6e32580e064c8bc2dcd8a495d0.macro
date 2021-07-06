@@ -1,0 +1,654 @@
+Attribute VB_Name = "Module1"
+Option Explicit
+'For ADODb.Recordset
+Public Const adOpenForwardOnly = 0, adOpenKeyset = 1, adOpenDynamic = 2, adOpenStatic = 3
+Public Const adLockReadOnly = 1, adLockPessimistic = 2, adLockOptimistic = 3, adLockBatchOptimistic = 4
+
+Public Function Open_sbWORDexcel(XX_sFILEname As String, ByRef mTariffNo As String, ByRef mFilingDate As String, ByRef mEffDate As String, ByRef mStatus As String) As String
+Dim SS_sEXTname As String
+Dim SS_oAP
+Dim SS_oWorkbooks
+Dim SS_oActiveWork
+Dim i As Integer
+
+If Dir(XX_sFILEname) = "" Then
+        MsgBox "WARNING!! File is not existed." & _
+                vbCrLf & vbCrLf & _
+                XX_sFILEname
+        Open_sbWORDexcel = "FAIL"
+        Exit Function
+End If
+'---
+SS_sEXTname = UCase(Right(XX_sFILEname, 3))
+
+    If SS_sEXTname = "DOC" Or SS_sEXTname = "TXT" Then
+        Set SS_oAP = CreateObject("Word.Application")
+    Else
+      Open_sbWORDexcel = "FAIL"
+      Exit Function
+    End If
+'End If
+
+If SS_sEXTname = "DOC" Or SS_sEXTname = "TXT" Then
+    Set SS_oWorkbooks = SS_oAP.Documents
+End If
+'===
+'open workbooks
+With SS_oWorkbooks
+        For i = 1 To .Count
+            If .Item(i).Path & "\" & .Item(i).Name = XX_sFILEname Then Exit For
+        Next i
+        '---
+        If i <= .Count Then
+            .Item(i).Activate
+        Else
+            .Open XX_sFILEname, , False   'Readonly
+        End If
+End With
+
+Set SS_oActiveWork = SS_oWorkbooks.ActiveDocument
+
+
+SS_oActiveWork.Close SaveChanges:=False
+
+Set SS_oAP = Nothing
+Set SS_oWorkbooks = Nothing
+Exit Function
+err_handler:
+   Set SS_oAP = Nothing
+   Set SS_oWorkbooks = Nothing
+   Open_sbWORDexcel = "FAIL"
+   MsgBox Err.Description
+End Function
+
+Sub getHistoryRule()
+'
+' Macro1 Macro
+' Macro recorded 2008/02/15 by Joe Chan
+'
+Dim mText As String, mRuleText As String, i As Integer
+Dim mTariffNo As String, mRuleNo As String
+Dim mRuleName As String, mFilingDate As String, mEffDate As String
+Dim mRuleDesc As String
+Dim mRuleID As Long, mRecSeq As Integer, mFullText As String
+'|fffd|s|fffd|W|fffd||7bf||fffd|:
+'|fffd||6be||fffd|Tariff No, Rule No, Effective date|fffd|h|fffd|M|fffd|w|fffd|O|fffd|_|fffd|O|fffd|s|fffd|W|fffd||66c|O|fffd||fffd|s.
+'|fffd||fffd|s : 1. Delete all the rule description with rule id.
+'       2. Update the rule header with the new data.
+'       3. Insert the rule description.
+'|fffd|s|fffd|W : 1. |fffd||fffd||fffd||fffd|rule id
+'       2. |fffd||fffd||fffd||fffd|rule header
+'       3. |fffd||fffd||fffd||fffd|rule description
+    
+    Do Until mText = "*END"
+       mRuleText = "" '|fffd||fffd||fffd|s|fffd|}|fffd|l|fffd|@|fffd|hrule
+       For i = 1 To 5
+           Selection.EndKey Unit:=wdLine, Extend:=wdExtend
+           mText = Trim(Replace(Selection.Text, vbCr, ""))
+           Selection.MoveRight Unit:=wdCharacter, Count:=1
+           
+           Select Case i
+           Case 1 'Tariff No
+                mTariffNo = mText
+           Case 2 'Rule No
+                mRuleNo = mText
+           Case 3 'Rule Name
+                mRuleName = mText
+           Case 4 'Filing Date
+                mFilingDate = Format(mText, "yyyy/mm/dd")
+           Case 5 'Effective Date
+                mEffDate = Format(mText, "yyyy/mm/dd")
+           End Select
+       Next
+       
+       'get Rule text : |fffd|@|fffd||fffd|@|fffd||fffd||16a||fffd||fffd|,|fffd|J|fffd||fffd|Tariff NO.|fffd||270||fffd||fffd||fffd|.
+       Do Until mText = mTariffNo
+          Selection.EndKey Unit:=wdLine, Extend:=wdExtend
+          mText = Replace(Selection.Text, vbCr, "")
+          If mText = "*END" Then
+             Exit Do
+          Else
+             If mText <> mTariffNo Then
+                mRuleText = mRuleText & mText & vbCr
+                Selection.MoveRight Unit:=wdCharacter, Count:=1
+             End If
+          End If
+       Loop
+       If mText <> "*END" Then '|fffd||fffd||fffd|e|fffd||fffd||fffd||fffd||fffd|tariff no|fffd||fffd||fffd|}|fffd|Y,|fffd|M|fffd||fffd|A|fffd|}|fffd|l|fffd|U|fffd|@|fffd||fffd|loop
+          Selection.MoveLeft Unit:=wdCharacter, Count:=1
+       End If
+       'MsgBox mRuleText
+       '|fffd||2ec|drule|fffd|O|fffd|_|fffd|s|fffd|b by tariff no, rule no and effective date.
+       '|fffd|P|fffd|_|fffd||1e6|^|fffd||fffd|: |fffd||fffd||fffd|N|fffd||1e6|^|fffd|{|fffd||fffd|record|fffd||fffd|rule id; |fffd|Y|fffd|S|fffd||fffd||fffd|N|fffd||1e6|^0; |fffd|Y|fffd|Oexception|fffd|N|fffd||1e6|^-1
+       mRuleID = checkExistRule(mTariffNo, mRuleNo, mEffDate)
+       If mRuleID = 0 Then
+          '|fffd|s|fffd|W:rule id = null
+          '|fffd||fffd||fffd||fffd|rule id
+          mRuleID = getRuleID()
+                         
+          '|fffd|s|fffd|Wrule header : rule id, tariff no, rule no , rule name, cargo trade, amdver no., filing date, effe. date, status
+          On Error GoTo AddHeader_Err
+          If addRuleHeader(mRuleID, mTariffNo, mRuleNo, mRuleName, mFilingDate, mEffDate, "H") = 1 Then '|fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd|\.|fffd||fffd||fffd||fffd|import rule description
+            '|fffd|s|fffd|Wrule description : rule id, rule text
+            '|fffd|N3500|fffd||4e6|r|fffd||fffd||fffd||fffd||fffd|X|fffd|s|fffd||fffd|DB|fffd||e7||fffd|C|fffd|@|fffd||fffd|description|fffd|s|fffd||fffd|Description table.
+            mRecSeq = 0 '|fffd|C3500|fffd||4e6|r|fffd||fffd|,|fffd||3a4|@|fffd||fffd|seq|fffd||4ea||fffd||fffd||fffd|
+            mRuleText = StrConv(mRuleText, vbNarrow) '|fffd|bmRuleText|fffd||fffd||fffd||fffd||fffd|]|fffd|t|fffd||fffd||fffd||3a6|r.|fffd||4a5|H|fffd||fffd||fffd||fffd|mRuleText|fffd||9a8||fffd|b|fffd||6927||fffd||fffd|,|fffd|A|fffd|B|fffd||fffd|
+            Do Until mRuleText = ""
+               If Len(mRuleText) > 3500 Then
+                  mRuleDesc = Left(mRuleText, 3500) '|fffd|C|fffd||fffd||fffd||fffd|3500|fffd||fffd||fffd|r|fffd||fffd|.
+                  mRuleText = Mid(mRuleText, Len(mRuleDesc) + 1, Len(mRuleText) - Len(mRuleDesc)) '|fffd||fffd||fffd|F|fffd|U|fffd|@|fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+               Else
+                  mRuleDesc = mRuleText '|fffd||fffd||fffd|S|fffd||fffd||fffd|j|fffd||fffd|3500|fffd||fffd|,|fffd|N|fffd||fffd||fffd||fffd||fffd||fffd||32b||1aba|text|fffd||fffd|mRuleDesc,|fffd|M|fffd||fffd||fffd|mRuleText|fffd|]|fffd||fffd||fffd||165||fffd|(|fffd|H|fffd|K|fffd||fffd||fffd|Xloop)
+                  mRuleText = ""
+               End If
+               mRecSeq = mRecSeq + 1
+               'save to DB for each record.
+               If addRuleDesc(mRuleID, mRuleDesc, mRecSeq) = 0 Then '|fffd||fffd||fffd||fffd|Import Rule Description |fffd||fffd||fffd||fffd|.|fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+                  MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+               End If
+            Loop
+          Else '0 : |fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd||fffd|. |fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+             MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+          End If
+       ElseIf mRuleID = -1 Then '|fffd|L|fffd|k|fffd||fffd|O|fffd||fffd|rule no|fffd|O|fffd|_|fffd|s|fffd|b|fffd|t|fffd||3a4||fffd|.|fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+          MsgBox "Can not cehck the below rule no whether exist in FRT : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+       Else
+          '|fffd||fffd|s:
+          'delete all the rule description and header with rule id
+          deleteRule (mRuleID)
+          '|fffd|N|fffd|o|fffd||fffd|rule id |fffd||fffd|header|fffd|M description delete|fffd||fffd||fffd||fffd||fffd||fffd|,|fffd|A|fffd||3b3|o|fffd||fffd|rule id|fffd|h|fffd||fffd||fffd|s|fffd|W|fffd||fffd||fffd||2a7|@.
+          '|fffd|s|fffd|Wrule header : rule id, tariff no, rule no , rule name, cargo trade, amdver no., filing date, effe. date, status
+          On Error GoTo AddHeader_Err
+          If addRuleHeader(mRuleID, mTariffNo, mRuleNo, mRuleName, mFilingDate, mEffDate, "H") = 1 Then '|fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd|\.|fffd||fffd||fffd||fffd|import rule description
+            '|fffd|s|fffd|Wrule description : rule id, rule text
+            '|fffd|N3500|fffd||4e6|r|fffd||fffd||fffd||fffd||fffd|X|fffd|s|fffd||fffd|DB|fffd||e7||fffd|C|fffd|@|fffd||fffd|description|fffd|s|fffd||fffd|Description table.
+            mRecSeq = 0 '|fffd|C3500|fffd||4e6|r|fffd||fffd|,|fffd||3a4|@|fffd||fffd|seq|fffd||4ea||fffd||fffd||fffd|
+            mRuleText = StrConv(mRuleText, vbNarrow) '|fffd|bmRuleText|fffd||fffd||fffd||fffd||fffd|]|fffd|t|fffd||fffd||fffd||3a6|r.|fffd||4a5|H|fffd||fffd||fffd||fffd|mRuleText|fffd||9a8||fffd|b|fffd||6927||fffd||fffd|,|fffd|A|fffd|B|fffd||fffd|
+            Do Until mRuleText = ""
+               If Len(mRuleText) > 3500 Then
+                  mRuleDesc = Left(mRuleText, 3500) '|fffd|C|fffd||fffd||fffd||fffd|3500|fffd||fffd||fffd|r|fffd||fffd|.
+                  mRuleText = Mid(mRuleText, Len(mRuleDesc) + 1, Len(mRuleText) - Len(mRuleDesc)) '|fffd||fffd||fffd|F|fffd|U|fffd|@|fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+               Else
+                  mRuleDesc = mRuleText '|fffd||fffd||fffd|S|fffd||fffd||fffd|j|fffd||fffd|3500|fffd||fffd|,|fffd|N|fffd||fffd||fffd||fffd||fffd||fffd||32b||1aba|text|fffd||fffd|mRuleDesc,|fffd|M|fffd||fffd||fffd|mRuleText|fffd|]|fffd||fffd||fffd||165||fffd|(|fffd|H|fffd|K|fffd||fffd||fffd|Xloop)
+                  mRuleText = ""
+               End If
+               mRecSeq = mRecSeq + 1
+               'save to DB for each record.
+               If addRuleDesc(mRuleID, mRuleDesc, mRecSeq) = 0 Then '|fffd||fffd||fffd||fffd|Import Rule Description |fffd||fffd||fffd||fffd|.|fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+                  MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+               End If
+            Loop
+          Else '0 : |fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd||fffd|. |fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+             MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+          End If
+       End If
+    Loop
+    showRuleDesc
+    Exit Sub
+AddHeader_Err:
+MsgBox Err.Description
+Resume Next
+End Sub
+
+
+
+Sub getRule()
+
+Dim mRuleText As String, i As Integer
+Dim mTariffNo As String, mRuleNo As String
+Dim mRuleName As String, mFilingDate As String, mEffDate As String
+Dim mRuleDesc As String, mTrade As String, mAssessorial As String, mStatus As String
+Dim mRuleID As Long, mRecSeq As Integer, mFullText As String
+
+    
+    If Open_sbWORDexcel("D:\Project\AS2 WEB\SERVICE CONTRACT\FMC Filing\USA Business Trip\Tariff Rules\Tariff Rule Sample.doc", mTariffNo, mFilingDate, mEffDate, mStatus) = "Faild" Then
+       Exit Sub
+    End If
+    
+    
+    '|fffd||fffd||fffd|table|fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    'tariff no
+    ActiveDocument.Tables(1).Cell(1, 2).Select
+    '|fffd|btable cell|fffd||fffd||fffd||32b||fffd|,|fffd||677|||fffd|@|fffd||4f9||fffd||fffd|O"."|fffd||fffd||fffd|S|fffd||fffd||fffd|r|fffd||fffd|(ASCII code = 7).|fffd|o|fffd||4e6|r|fffd||fffd||fffd|b|fffd|e|fffd||fffd||fffd|W|fffd||764||fffd||fffd|X|fffd||fffd|.
+    '|fffd||fffd||fffd||fffd||fffd|b"Immediate" window|fffd||fffd|,|fffd|U "? variable name" |fffd||fffd||fffd|O,|fffd|i|fffd|Hshow|fffd|X|fffd||fffd||fffd|e.|fffd|M|fffd||fffd|A|fffd||fffd|copy|fffd||fffd||fffd||89a1|
+    'copy|fffd||fffd||fffd||4ef|S|fffd||fffd||fffd|r|fffd||fffd|,|fffd||2966||fffd|K|fffd||fffd|replace|fffd||fffd||fffd||fffd||fffd|O|fffd||fffd|.
+    mTariffNo = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    
+    MsgBox mTariffNo
+    
+    'rule no
+    ActiveDocument.Tables(1).Cell(2, 2).Select
+    mRuleNo = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    MsgBox mRuleNo
+    
+    'rule name
+    ActiveDocument.Tables(1).Cell(3, 2).Select
+    mRuleName = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    MsgBox mRuleName
+    
+    'trade
+    ActiveDocument.Tables(1).Cell(4, 2).Select
+    mTrade = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    MsgBox mTrade
+    
+    'assessorial
+    ActiveDocument.Tables(1).Cell(5, 2).Select
+    mAssessorial = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    MsgBox mAssessorial
+    
+    'filing date
+    ActiveDocument.Tables(1).Cell(6, 2).Select
+    mFilingDate = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    MsgBox mFilingDate
+    
+    'effective date
+    ActiveDocument.Tables(1).Cell(7, 2).Select
+    mEffDate = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    MsgBox mEffDate
+    
+    'status
+    ActiveDocument.Tables(1).Cell(8, 2).Select
+    mStatus = Replace(Trim(Replace(Selection.Text, vbCr, "")), Chr(7), "")
+    MsgBox mStatus
+    
+    '|fffd||fffd||fffd||c97b||fffd||fffd||fffd|copy|fffd||fffd||fffd||fffd|
+    Selection.MoveDown Unit:=wdLine, Count:=1
+    Selection.EndKey Unit:=wdStory, Extend:=wdExtend
+    
+    mRuleText = Selection.Text
+    
+    '|fffd||fffd||fffd|}|fffd||fffd||fffd||fffd|
+    Selection.MoveDown Unit:=wdLine, Count:=1
+
+    '|fffd||2ec|drule|fffd|O|fffd|_|fffd|s|fffd|b by tariff no, rule no and effective date.
+    '|fffd|P|fffd|_|fffd||1e6|^|fffd||fffd|: |fffd||fffd||fffd|N|fffd||1e6|^|fffd|{|fffd||fffd|record|fffd||fffd|rule id; |fffd|Y|fffd|S|fffd||fffd||fffd|N|fffd||1e6|^0; |fffd|Y|fffd|Oexception|fffd|N|fffd||1e6|^-1
+    mRuleID = checkExistRule(mTariffNo, mRuleNo, mEffDate)
+    If mRuleID = 0 Then
+       '|fffd|s|fffd|W:rule id = null
+       '|fffd||fffd||fffd||fffd|rule id
+       mRuleID = getRuleID()
+                         
+       '|fffd|s|fffd|Wrule header : rule id, tariff no, rule no , rule name, cargo trade, amdver no., filing date, effe. date, status
+       On Error GoTo AddHeader_Err
+       If addRuleHeader(mRuleID, mTariffNo, mRuleNo, mRuleName, mFilingDate, mEffDate, mStatus) = 1 Then '|fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd|\.|fffd||fffd||fffd||fffd|import rule description
+          '|fffd|s|fffd|Wrule description : rule id, rule text
+          '|fffd|N3500|fffd||4e6|r|fffd||fffd||fffd||fffd||fffd|X|fffd|s|fffd||fffd|DB|fffd||e7||fffd|C|fffd|@|fffd||fffd|description|fffd|s|fffd||fffd|Description table.
+          mRecSeq = 0 '|fffd|C3500|fffd||4e6|r|fffd||fffd|,|fffd||3a4|@|fffd||fffd|seq|fffd||4ea||fffd||fffd||fffd|
+          mRuleText = StrConv(mRuleText, vbNarrow) '|fffd|bmRuleText|fffd||fffd||fffd||fffd||fffd|]|fffd|t|fffd||fffd||fffd||3a6|r.|fffd||4a5|H|fffd||fffd||fffd||fffd|mRuleText|fffd||9a8||fffd|b|fffd||6927||fffd||fffd|,|fffd|A|fffd|B|fffd||fffd|
+          Do Until mRuleText = ""
+             If Len(mRuleText) > 3500 Then
+                mRuleDesc = Left(mRuleText, 3500) '|fffd|C|fffd||fffd||fffd||fffd|3500|fffd||fffd||fffd|r|fffd||fffd|.
+                mRuleText = Mid(mRuleText, Len(mRuleDesc) + 1, Len(mRuleText) - Len(mRuleDesc)) '|fffd||fffd||fffd|F|fffd|U|fffd|@|fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+             Else
+                mRuleDesc = mRuleText '|fffd||fffd||fffd|S|fffd||fffd||fffd|j|fffd||fffd|3500|fffd||fffd|,|fffd|N|fffd||fffd||fffd||fffd||fffd||fffd||32b||1aba|text|fffd||fffd|mRuleDesc,|fffd|M|fffd||fffd||fffd|mRuleText|fffd|]|fffd||fffd||fffd||165||fffd|(|fffd|H|fffd|K|fffd||fffd||fffd|Xloop)
+                mRuleText = ""
+             End If
+             mRecSeq = mRecSeq + 1
+             'save to DB for each record.
+             If addRuleDesc(mRuleID, mRuleDesc, mRecSeq) = 0 Then '|fffd||fffd||fffd||fffd|Import Rule Description |fffd||fffd||fffd||fffd|.|fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+                MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+             End If
+          Loop
+       Else '0 : |fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd||fffd|. |fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+          MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+       End If
+    ElseIf mRuleID = -1 Then '|fffd|L|fffd|k|fffd||fffd|O|fffd||fffd|rule no|fffd|O|fffd|_|fffd|s|fffd|b|fffd|t|fffd||3a4||fffd|.|fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+       MsgBox "Can not cehck the below rule no whether exist in FRT : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+    Else
+       '|fffd||fffd|s:
+       'delete all the rule description and header with rule id
+       deleteRule (mRuleID)
+       '|fffd|N|fffd|o|fffd||fffd|rule id |fffd||fffd|header|fffd|M description delete|fffd||fffd||fffd||fffd||fffd||fffd|,|fffd|A|fffd||3b3|o|fffd||fffd|rule id|fffd|h|fffd||fffd||fffd|s|fffd|W|fffd||fffd||fffd||2a7|@.
+       '|fffd|s|fffd|Wrule header : rule id, tariff no, rule no , rule name, cargo trade, amdver no., filing date, effe. date, status
+       On Error GoTo AddHeader_Err
+       If addRuleHeader(mRuleID, mTariffNo, mRuleNo, mRuleName, mFilingDate, mEffDate, "H") = 1 Then '|fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd|\.|fffd||fffd||fffd||fffd|import rule description
+          '|fffd|s|fffd|Wrule description : rule id, rule text
+          '|fffd|N3500|fffd||4e6|r|fffd||fffd||fffd||fffd||fffd|X|fffd|s|fffd||fffd|DB|fffd||e7||fffd|C|fffd|@|fffd||fffd|description|fffd|s|fffd||fffd|Description table.
+          mRecSeq = 0 '|fffd|C3500|fffd||4e6|r|fffd||fffd|,|fffd||3a4|@|fffd||fffd|seq|fffd||4ea||fffd||fffd||fffd|
+          mRuleText = StrConv(mRuleText, vbNarrow) '|fffd|bmRuleText|fffd||fffd||fffd||fffd||fffd|]|fffd|t|fffd||fffd||fffd||3a6|r.|fffd||4a5|H|fffd||fffd||fffd||fffd|mRuleText|fffd||9a8||fffd|b|fffd||6927||fffd||fffd|,|fffd|A|fffd|B|fffd||fffd|
+          Do Until mRuleText = ""
+             If Len(mRuleText) > 3500 Then
+                mRuleDesc = Left(mRuleText, 3500) '|fffd|C|fffd||fffd||fffd||fffd|3500|fffd||fffd||fffd|r|fffd||fffd|.
+                mRuleText = Mid(mRuleText, Len(mRuleDesc) + 1, Len(mRuleText) - Len(mRuleDesc)) '|fffd||fffd||fffd|F|fffd|U|fffd|@|fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+             Else
+                mRuleDesc = mRuleText '|fffd||fffd||fffd|S|fffd||fffd||fffd|j|fffd||fffd|3500|fffd||fffd|,|fffd|N|fffd||fffd||fffd||fffd||fffd||fffd||32b||1aba|text|fffd||fffd|mRuleDesc,|fffd|M|fffd||fffd||fffd|mRuleText|fffd|]|fffd||fffd||fffd||165||fffd|(|fffd|H|fffd|K|fffd||fffd||fffd|Xloop)
+                mRuleText = ""
+             End If
+             mRecSeq = mRecSeq + 1
+             'save to DB for each record.
+             If addRuleDesc(mRuleID, mRuleDesc, mRecSeq) = 0 Then '|fffd||fffd||fffd||fffd|Import Rule Description |fffd||fffd||fffd||fffd|.|fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+                MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+             End If
+          Loop
+        Else '0 : |fffd||fffd||fffd||fffd|Import Header|fffd||fffd||fffd||fffd|. |fffd||fffd||fffd|~|fffd||fffd||fffd||fffd||fffd|,|fffd||22e||264||fffd||fffd||fffd||fffd|B|fffd|z,|fffd|u|fffd||fffd||73f||fffd||fffd|~|fffd|T|fffd||fffd||fffd||f2||fffd||fffd||fffd|U|fffd|@|fffd||fffd|record.
+          MsgBox "Can not import the below rule no : " & vbCrLf & "Tariff no : " & mTariffNo & ", rule no : " & mRuleNo & " and effective date : " & mEffDate
+        End If
+    End If
+    showRuleDesc
+    Exit Sub
+AddHeader_Err:
+MsgBox Err.Description
+Resume Next
+End Sub
+
+Private Sub deleteRule(ByVal ruleID As Long)
+  'Microsoft ActiveX Data Objects 2.X Library |fffd|]|fffd|w|fffd||7a5||3b6||fffd||fffd||fffd|
+    Dim mCon As ADODB.Connection
+    Dim mCMD As ADODB.Command
+    
+    
+    Set mCon = New ADODB.Connection
+    Set mCMD = New ADODB.Command
+    
+
+    '|fffd||fffd||fffd|w|fffd|n|fffd|s|fffd||fffd||fffd||fffd||fffd||fffd||fffd|A|fffd||fffd|
+    'if can can not connect to DB in HQ then connect to ED backup center.(PRIS_BK)
+    'mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS_BK;User ID=frt; Password=blackmanfrt;"
+    mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS;User ID=frt; Password=blackmanfrt;"
+    
+    'delete the cntrct_rules_desc
+    With mCMD
+         .ActiveConnection = mCon
+         .CommandText = "delete cntrct_rules_desc where rule_id = '" & ruleID & "'"
+         .CommandType = adCmdText
+         .Execute
+    End With
+    
+    'delete the cntrct_rules_header
+    With mCMD
+         .ActiveConnection = mCon
+         .CommandText = "delete cntrct_rules_header where rule_id = '" & ruleID & "'"
+         .CommandType = adCmdText
+         .Execute
+    End With
+        
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mCMD = Nothing
+    Set mCon = Nothing
+End Sub
+
+
+Private Function OpenTemplate(ByVal vFile, Optional vSuspend As Boolean = True) As Boolean
+On Error GoTo err_hdl
+    OpenTemplate = False
+    If Dir(vFile) = "" Then GoTo err_hdl
+    Documents.Add Template:=vFile, NewTemplate:=False
+    OpenTemplate = True
+    Exit Function
+    
+err_hdl:
+    If vSuspend Then MsgBox "Cannot open " & vFile & "!"
+End Function
+
+
+
+
+Private Sub showRuleDesc()
+  'Microsoft ActiveX Data Objects 2.X Library |fffd|]|fffd|w|fffd||7a5||3b6||fffd||fffd||fffd|
+    Dim mCon As ADODB.Connection
+    Dim mRs As ADODB.Recordset
+    Dim mRs1 As ADODB.Recordset
+    Dim vSql As String, vSql1 As String, mRuleDesc As String, mRuleID As Long
+    
+    On Error GoTo ErrorHandler
+    
+    Set mCon = New ADODB.Connection
+    Set mRs = New ADODB.Recordset
+    Set mRs1 = New ADODB.Recordset
+    
+
+    '|fffd||fffd||fffd|w|fffd|n|fffd|s|fffd||fffd||fffd||fffd||fffd||fffd||fffd|A|fffd||fffd|
+    'if can can not connect to DB in HQ then connect to ED backup center.(PRIS_BK)
+    'mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS_BK;User ID=frt; Password=blackmanfrt;"
+    mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS;User ID=frt; Password=blackmanfrt;"
+    vSql = "select * from cntrct_rules_header where tariff_no= '" & "000138-050" & "' order by rule_id"
+    mRs.Open vSql, mCon, adOpenStatic, adLockReadOnly
+    mRs.MoveFirst
+    OpenTemplate (ThisDocument.Path & "\BLC.dot")
+    ActiveDocument.Bookmarks("Rule").Select
+    Do Until mRs.EOF
+       mRuleID = mRs.Fields("rule_id")
+       vSql1 = "select * from cntrct_rules_desc where rule_id=" & mRuleID & " order by recseq"
+       mRs1.Open vSql1, mCon, adOpenStatic, adLockReadOnly
+       mRs1.MoveFirst
+       mRuleDesc = mRs.Fields("tariff_no") & vbCrLf & mRs.Fields("rule_no") & vbCrLf & mRs.Fields("filing_date") & vbCrLf & mRs.Fields("eff_date") & vbCrLf
+       Do Until mRs1.EOF
+          mRuleDesc = mRuleDesc & mRs1.Fields("description")
+          mRs1.MoveNext
+       Loop
+       mRs1.Close
+       Selection.TypeText Text:=mRuleDesc
+       mRs.MoveNext
+    Loop
+    mRs.Close
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mRs1 = Nothing
+    Set mRs = Nothing
+    Set mCon = Nothing
+    Exit Sub
+ErrorHandler:
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mRs = Nothing
+    Set mCon = Nothing
+    Exit Sub
+End Sub
+
+
+
+Private Function addRuleDesc(ByVal mRuleID As Long, ByRef mRuleText As String, ByVal mRecSeq As Integer) As Integer
+  'Microsoft ActiveX Data Objects 2.X Library |fffd|]|fffd|w|fffd||7a5||3b6||fffd||fffd||fffd|
+    Dim mCon As ADODB.Connection
+    Dim mCMD As ADODB.Command
+    Dim mSQL As String, ruleText As String
+  
+    
+    On Error GoTo ErrorHandler
+    
+    Set mCon = New ADODB.Connection
+    Set mCMD = New ADODB.Command
+    ruleText = Replace(mRuleText, "'", "''")
+    'ruleText = "CONVERT('" & ruleText & "','UTF8','ZHT16BIG5')"
+    
+    '|fffd||fffd||fffd|w|fffd|n|fffd|s|fffd||fffd||fffd||fffd||fffd||fffd||fffd|A|fffd||fffd|
+    'if can can not connect to DB in HQ then connect to ED backup center.(PRIS_BK)
+    'mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS_BK;User ID=frt; Password=blackmanfrt;"
+    mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS;User ID=frt; Password=blackmanfrt;"
+    mSQL = "INSERT INTO CNTRCT_RULES_DESC(RULE_ID,RECSEQ,DESCRIPTION,IN_USER) VALUES ("
+    mSQL = mSQL & mRuleID & ","
+    mSQL = mSQL & mRecSeq & ","
+    mSQL = mSQL & "'" & ruleText & "',"
+    mSQL = mSQL & "'JOECHAN')"
+    With mCMD
+         .ActiveConnection = mCon
+         .CommandText = mSQL
+         .CommandType = adCmdText
+         .Execute
+    End With
+        
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mCMD = Nothing
+    Set mCon = Nothing
+    addRuleDesc = 1
+    Exit Function
+ErrorHandler:
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mCMD = Nothing
+    Set mCon = Nothing
+    addRuleDesc = 0
+    MsgBox Err.Description
+End Function
+
+
+
+
+Private Function addRuleHeader(ruleID As Long, tariffNo As String, ruleNo As String, ruleName As String, filingDate As String, effDate As String, status As String) As Integer
+  'Microsoft ActiveX Data Objects 2.X Library |fffd|]|fffd|w|fffd||7a5||3b6||fffd||fffd||fffd|
+    Dim mCon As ADODB.Connection
+    Dim mCMD As ADODB.Command
+    Dim mSQL As String
+    Dim ruleFilingDate As String, ruleEffDate As String, ruleTrade As String, mRuleName As String
+    
+    On Error GoTo ErrorHandler
+    
+    Set mCon = New ADODB.Connection
+    Set mCMD = New ADODB.Command
+
+    '|fffd||fffd||fffd|w|fffd|n|fffd|s|fffd||fffd||fffd||fffd||fffd||fffd||fffd|A|fffd||fffd|
+    ruleFilingDate = Replace(filingDate, " ", "")
+    ruleEffDate = Replace(effDate, " ", "")
+    ruleTrade = "TPEB"
+    
+    ruleFilingDate = "TO_DATE('" & ruleFilingDate & "','YYYY/MM/DD')"
+    ruleEffDate = "TO_DATE('" & ruleEffDate & "','YYYY/MM/DD')"
+    
+    mRuleName = Replace(ruleName, "'", "''")
+    'if can can not connect to DB in HQ then connect to ED backup center.(PRIS_BK)
+    'mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS_BK;User ID=frt; Password=blackmanfrt;"
+    mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS;User ID=frt; Password=blackmanfrt;"
+    mSQL = "INSERT INTO CNTRCT_RULES_HEADER(RULE_ID,TARIFF_NO,RULE_NO,RULE_NAME,CGTR_CD,FILING_DATE,EFF_DATE,STATUS) VALUES ("
+    mSQL = mSQL & ruleID & ","
+    mSQL = mSQL & "'" & tariffNo & "',"
+    mSQL = mSQL & "'" & ruleNo & "',"
+    mSQL = mSQL & "'" & mRuleName & "',"
+    mSQL = mSQL & "'" & ruleTrade & "',"
+    mSQL = mSQL & ruleFilingDate & ","
+    mSQL = mSQL & ruleEffDate & ","
+    mSQL = mSQL & "'" & status & "')"
+     With mCMD
+         .ActiveConnection = mCon
+         .CommandText = mSQL
+         .CommandType = adCmdText
+         .Execute
+    End With
+        
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mCMD = Nothing
+    Set mCon = Nothing
+    addRuleHeader = 1
+    Exit Function
+ErrorHandler:
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mCMD = Nothing
+    Set mCon = Nothing
+    addRuleHeader = 0
+End Function
+
+
+
+
+
+Private Function getRuleID() As Long
+  'Microsoft ActiveX Data Objects 2.X Library |fffd|]|fffd|w|fffd||7a5||3b6||fffd||fffd||fffd|
+    Dim mCon As ADODB.Connection
+    Dim mRs As ADODB.Recordset
+    Dim ruleID As Long
+    
+    On Error GoTo ErrorHandler
+    
+    Set mCon = New ADODB.Connection
+    Set mRs = New ADODB.Recordset
+    
+
+    '|fffd||fffd||fffd|w|fffd|n|fffd|s|fffd||fffd||fffd||fffd||fffd||fffd||fffd|A|fffd||fffd|
+    'if can can not connect to DB in HQ then connect to ED backup center.(PRIS_BK)
+    'mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS_BK;User ID=frt; Password=blackmanfrt;"
+    mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS;User ID=frt; Password=blackmanfrt;"
+    
+    With mRs
+        .ActiveConnection = mCon                                    ' |fffd||fffd||fffd|w|fffd|n|fffd||3e5||3aa||fffd|Connection |fffd||fffd||fffd||fffd|
+        .Source = "select rule_id.nextval from dual"                ' |fffd|]|fffd|w|fffd|d|fffd||7f1||fffd||fffd||fffd|
+        .Open                                                       ' |fffd|N|fffd|d|fffd||7f5||fffd||fffd|G|16a||fffd||fffd|mRS |fffd||fffd|
+        ruleID = .Fields(0)                                         ' |fffd|NmRS |fffd||fffd||fffd||fffd||1ab||fffd||fffd|w|fffd||fffd||fffd||73c||fffd|ruleID(sequence no for each rule)
+        .Close                                                      ' |fffd||fffd||fffd||fffd||fffd|d|fffd||fffd|
+    End With
+        
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mRs = Nothing
+    Set mCon = Nothing
+    getRuleID = ruleID
+    Exit Function
+ErrorHandler:
+    '|fffd|p|fffd|G|fffd||fffd|exception,|fffd|h|fffd||3b2|{|fffd||fffd||fffd||fffd|rule id |fffd||fffd||fffd||324|j|fffd||225|[|fffd|@
+    Set mCon = Nothing
+    Set mCon = New ADODB.Connection
+    'if can can not connect to DB in HQ then connect to ED backup center.(PRIS_BK)
+    'mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS_BK;User ID=frt; Password=blackmanfrt;"
+    mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS;User ID=frt; Password=blackmanfrt;"
+    With mRs
+        .ActiveConnection = mCon                                               ' |fffd||fffd||fffd|w|fffd|n|fffd||3e5||3aa||fffd|Connection |fffd||fffd||fffd||fffd|
+        .Source = "select nvl(max(rule_id),0) from cntrct_rules_header"        ' |fffd|]|fffd|w|fffd|d|fffd||7f1||fffd||fffd||fffd|
+        .Open                                                                  ' |fffd|N|fffd|d|fffd||7f5||fffd||fffd|G|16a||fffd||fffd|mRS |fffd||fffd|
+        ruleID = .Fields(0) + 1                                               ' |fffd|NmRS |fffd||fffd||fffd||fffd||1ab||fffd||fffd|w|fffd||fffd||fffd||73c||fffd|ruleID(sequence no)
+        .Close                                                                 ' |fffd||fffd||fffd||fffd||fffd|d|fffd||fffd|
+    End With
+        
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mRs = Nothing
+    Set mCon = Nothing
+    getRuleID = ruleID
+    Exit Function
+End Function
+
+
+Private Function checkExistRule(ByVal tariffNo As String, ruleNo As String, effDate As String) As Long
+  'Microsoft ActiveX Data Objects 2.X Library |fffd|]|fffd|w|fffd||7a5||3b6||fffd||fffd||fffd|
+    Dim mCon As ADODB.Connection
+    Dim mRs As ADODB.Recordset
+    
+    On Error GoTo ErrorHandler
+    
+    Set mCon = New ADODB.Connection
+    Set mRs = New ADODB.Recordset
+    'tariffNo = "000138-050"
+    'ruleNo = "101"
+    'effDate = "2008/01/01"
+
+    '|fffd||fffd||fffd|w|fffd|n|fffd|s|fffd||fffd||fffd||fffd||fffd||fffd||fffd|A|fffd||fffd|
+    'if can can not connect to DB in HQ then connect to ED backup center.(PRIS_BK)
+    'mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS_BK;User ID=frt; Password=blackmanfrt;"
+    mCon.Open ConnectionString:="Provider=MSDAORA;Data Source=PRIS;User ID=frt; Password=blackmanfrt;"
+    
+    With mRs
+        .ActiveConnection = mCon
+        .Source = "select rule_id from cntrct_rules_header where tariff_no='" & tariffNo & "'" & " and rule_no='" & ruleNo & "'" & " and to_char(nvl(eff_date,sysdate), 'yyyy/mm/dd') ='" & effDate & "'"
+        .Open
+        If mRs.EOF Then
+           checkExistRule = 0
+        Else
+           checkExistRule = .Fields(0)
+        End If
+        .Close
+    End With
+        
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mRs = Nothing
+    Set mCon = Nothing
+    Exit Function
+ErrorHandler:
+    '|fffd||fffd||fffd||fffd||fffd||fffd||fffd||fffd|
+    Set mRs = Nothing
+    Set mCon = Nothing
+    checkExistRule = -1
+    Exit Function
+End Function
+
+
+
+
+
+
+
+
+
+
+Attribute VB_Name = "ThisDocument"
+Attribute VB_Base = "1Normal.ThisDocument"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = True
+Attribute VB_Exposed = True
+Attribute VB_TemplateDerived = True
+Attribute VB_Customizable = True
+
+
+INQUEST-PP=macro

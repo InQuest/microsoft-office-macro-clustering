@@ -1,4 +1,4 @@
-This repository contains the data files and algorithms for clustering Microsoft Office documents by their macro content. For access to the original documents, please see [InQuest Labs](https://labs.inquest.net/) or read more about us on the web at https://www.inquest.net.
+This repository contains the data files and algorithms for clustering Microsoft Office documents by their macro content. For an in-depth explanation of what this project is about, check out our blog at https://inquest.net/blog/2020/12/16/Clustering-for-Classification. For access to the original documents, please see [InQuest Labs](https://labs.inquest.net/) or read more about us on the web at https://www.inquest.net.
 
 ## Table of Contents
 * `av_labels/`: Directory of JSON files, one per sample, containing AntiVirus labels (if any).
@@ -20,4 +20,4 @@ MALICIOUS|1790 (17.90%) -------------
 
 Generally, when you're looking to train a supervised model, you'll want 80% of your data to carry labels. Our ratio here is opposite but that's ok for an unsupervised model. In fact, the entire goal of this effort is to automatically expand on our labels within some threshold of confidence. The labels within `classification.csv` were applied through a variety of checks and balances to ensure fidelity. Within `av_labels` you can find a JSON dictionary containing the AV scan results for each of the documents. This data can of course be sourced to generate labels with varying threshold of confidence. For example, rewriting `classification.csv` to label any sample with 4 or more AV positives as malicious, 0 positives as benign, and everything inbetween us unknown, will result in about 85% labeling of the corpus.
 
-When running the notebook, make sure the run each cell individually from top to bottom for best results. The visualizations are also accompanied by sliders to allow one to change them to their whims. For a more in-depth explanation of what is going on, feel free to check out our blog at https://inquest.net/blog/2020/12/16/Clustering-for-Classification
+When running the notebook, make sure the run each cell individually from top to bottom for best results. The visualizations are also accompanied by sliders to allow one to change them to their whims.
